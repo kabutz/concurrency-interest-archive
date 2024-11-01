@@ -1,0 +1,3559 @@
+From webashutosh at gmail.com  Mon Dec  3 06:01:27 2018
+From: webashutosh at gmail.com (Ashutosh Agrawal)
+Date: Mon, 3 Dec 2018 16:31:27 +0530
+Subject: [concurrency-interest] Waiting thread doesn't throw
+	InterruptedException after waking-up
+Message-ID: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+
+Hello,
+
+In the below program, Thread-A enters wait state and gets interrupted by
+Thread-B before waking up. However, after waking-up, it does NOT throw
+an InterruptedException (and its interrupted-status is NOT cleared).
+
+Can anyone please help explain this behaviour?
+Env : Java-8 on a Mac
+
+public class WaitNotifyAll {
+
+    private static Object resourceA = new Object();
+
+    public static void main(String[] args) throws Exception {
+
+        Thread threadA = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (resourceA) {
+                    try {
+                        System.out.println("Thread-A is about to begin
+waiting");
+                        resourceA.wait();
+                        System.out.println("Thread-A came out of waiting
+state. " +
+                                "Its interrupted status is - " +
+Thread.currentThread().isInterrupted());
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        });
+
+        Thread threadB = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (resourceA) {
+                    System.out.println("Thread-B is about to notify");
+                    threadA.interrupt();
+                    resourceA.notify();
+                }
+            }
+        });
+
+        threadA.start();
+        Thread.sleep(1000);
+        threadB.start();
+
+        System.out.println("Program over!");
+    }
+}
+
+*Output - *
+
+Thread-A is about to begin waiting
+Program over!
+Thread-B is about to notify
+Thread-A came out of waiting state. Its interrupted status is - true
+
+
+Originally posted on StackOverflow -
+https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re
+
+Regards,
+Ashutosh
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181203/8ef177e6/attachment.html>
+
+From oleksandr.otenko at gmail.com  Mon Dec  3 06:08:58 2018
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 3 Dec 2018 11:08:58 +0000
+Subject: [concurrency-interest] Waiting thread doesn't throw
+ InterruptedException after waking-up
+In-Reply-To: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+References: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+Message-ID: <216AE66B-FEE9-427D-996D-FD5605FD852A@gmail.com>
+
+That’s the correct behaviour, and is not Mac-specific. Since your thread A received both notify and interrupt, it is OK to prefer notify to interrupt.
+
+If you comment out the resourceA.notify() part, you will see it then has no choice but throw InterruptedException.
+
+Alex
+
+> On 3 Dec 2018, at 11:01, Ashutosh Agrawal via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+> Hello,
+> 
+> In the below program, Thread-A enters wait state and gets interrupted by Thread-B before waking up. However, after waking-up, it does NOT throw an InterruptedException (and its interrupted-status is NOT cleared). 
+> 
+> Can anyone please help explain this behaviour?
+> Env : Java-8 on a Mac
+> 
+> public class WaitNotifyAll {
+> 
+>     private static Object resourceA = new Object();
+> 
+>     public static void main(String[] args) throws Exception {
+> 
+>         Thread threadA = new Thread(new Runnable() {
+>             @Override
+>             public void run() {
+>                 synchronized (resourceA) {
+>                     try {
+>                         System.out.println("Thread-A is about to begin waiting");
+>                         resourceA.wait();
+>                         System.out.println("Thread-A came out of waiting state. " +
+>                                 "Its interrupted status is - " + Thread.currentThread().isInterrupted());
+>                     } catch (InterruptedException e) {
+>                         e.printStackTrace();
+>                     }
+>                 }
+>             }
+>         });
+> 
+>         Thread threadB = new Thread(new Runnable() {
+>             @Override
+>             public void run() {
+>                 synchronized (resourceA) {
+>                     System.out.println("Thread-B is about to notify");
+>                     threadA.interrupt();
+>                     resourceA.notify();
+>                 }
+>             }
+>         });
+> 
+>         threadA.start();
+>         Thread.sleep(1000);
+>         threadB.start();
+> 
+>         System.out.println("Program over!");
+>     }
+> }
+> 
+> Output - 
+> 
+> Thread-A is about to begin waiting
+> Program over!
+> Thread-B is about to notify
+> Thread-A came out of waiting state. Its interrupted status is - true
+> 
+> 
+> Originally posted on StackOverflow - https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re <https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re>
+> 
+> Regards,
+> Ashutosh
+> 
+> 
+> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181203/121e66c7/attachment.html>
+
+From davidcholmes at aapt.net.au  Mon Dec  3 06:32:11 2018
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Mon, 3 Dec 2018 21:32:11 +1000
+Subject: [concurrency-interest] Waiting thread doesn't throw
+	InterruptedException after waking-up
+In-Reply-To: <216AE66B-FEE9-427D-996D-FD5605FD852A@gmail.com>
+References: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+ <216AE66B-FEE9-427D-996D-FD5605FD852A@gmail.com>
+Message-ID: <039e01d48afb$d56075c0$80216140$@aapt.net.au>
+
+I would have sworn we had some words about this in the Object.wait docs as it’s come up before. ☹
+
+ 
+
+If the thread is both notified and interrupted around the same time then the implementation has a choice as to which reason to report that the wait() ended – with the caveat that notifications must not be lost.
+
+ 
+
+In terms of the hotspot implementation, the interrupt unparks the thread and it is then racing with the notify() call. If the notify() is processed before the thread can unlink itself from the wait-queue then it will be seen to be notified. Once it has recorded that it was notified it doesn’t check its interrupt status.
+
+ 
+
+David
+
+ 
+
+From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> On Behalf Of Alex Otenko via Concurrency-interest
+Sent: Monday, December 3, 2018 9:09 PM
+To: Ashutosh Agrawal <webashutosh at gmail.com>
+Cc: concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+
+ 
+
+That’s the correct behaviour, and is not Mac-specific. Since your thread A received both notify and interrupt, it is OK to prefer notify to interrupt.
+
+ 
+
+If you comment out the resourceA.notify() part, you will see it then has no choice but throw InterruptedException.
+
+ 
+
+Alex
+
+
+
+
+
+On 3 Dec 2018, at 11:01, Ashutosh Agrawal via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> > wrote:
+
+ 
+
+Hello,
+
+ 
+
+In the below program, Thread-A enters wait state and gets interrupted by Thread-B before waking up. However, after waking-up, it does NOT throw an InterruptedException (and its interrupted-status is NOT cleared). 
+
+ 
+
+Can anyone please help explain this behaviour?
+
+Env : Java-8 on a Mac
+
+ 
+
+public class WaitNotifyAll {
+
+ 
+
+    private static Object resourceA = new Object();
+
+ 
+
+    public static void main(String[] args) throws Exception {
+
+ 
+
+        Thread threadA = new Thread(new Runnable() {
+
+            @Override
+
+            public void run() {
+
+                synchronized (resourceA) {
+
+                    try {
+
+                        System.out.println("Thread-A is about to begin waiting");
+
+                        resourceA.wait();
+
+                        System.out.println("Thread-A came out of waiting state. " +
+
+                                "Its interrupted status is - " + Thread.currentThread().isInterrupted());
+
+                    } catch (InterruptedException e) {
+
+                        e.printStackTrace();
+
+                    }
+
+                }
+
+            }
+
+        });
+
+ 
+
+        Thread threadB = new Thread(new Runnable() {
+
+            @Override
+
+            public void run() {
+
+                synchronized (resourceA) {
+
+                    System.out.println("Thread-B is about to notify");
+
+                    threadA.interrupt();
+
+                    resourceA.notify();
+
+                }
+
+            }
+
+        });
+
+ 
+
+        threadA.start();
+
+        Thread.sleep(1000);
+
+        threadB.start();
+
+ 
+
+        System.out.println("Program over!");
+
+    }
+
+}
+
+ 
+
+Output - 
+
+ 
+
+Thread-A is about to begin waiting
+
+Program over!
+
+Thread-B is about to notify
+
+Thread-A came out of waiting state. Its interrupted status is - true
+
+ 
+
+ 
+
+Originally posted on StackOverflow - https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re
+
+ 
+
+Regards,
+
+Ashutosh
+
+ 
+
+ 
+
+ 
+
+ 
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu> 
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181203/8bf541b9/attachment-0001.html>
+
+From heinz at javaspecialists.eu  Mon Dec  3 06:45:13 2018
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Mon, 3 Dec 2018 13:45:13 +0200
+Subject: [concurrency-interest] Waiting thread doesn't throw
+ InterruptedException after waking-up
+In-Reply-To: <039e01d48afb$d56075c0$80216140$@aapt.net.au>
+References: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+ <216AE66B-FEE9-427D-996D-FD5605FD852A@gmail.com>
+ <039e01d48afb$d56075c0$80216140$@aapt.net.au>
+Message-ID: <CACLL95qofAFZR=MwM63cB6aP=BYvOk=qVJFo9R-Lt9rwSH+ZDQ@mail.gmail.com>
+
+The spurious wakeup is mentioned in Condition:
+https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html
+
+On Mon, 03 Dec 2018 at 13:35, David Holmes via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> I would have sworn we had some words about this in the Object.wait docs as
+> it’s come up before. ☹
+>
+>
+>
+> If the thread is both notified and interrupted around the same time then
+> the implementation has a choice as to which reason to report that the
+> wait() ended – with the caveat that notifications must not be lost.
+>
+>
+>
+> In terms of the hotspot implementation, the interrupt unparks the thread
+> and it is then racing with the notify() call. If the notify() is processed
+> before the thread can unlink itself from the wait-queue then it will be
+> seen to be notified. Once it has recorded that it was notified it doesn’t
+> check its interrupt status.
+>
+>
+>
+> David
+>
+>
+>
+> *From:* Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> *On
+> Behalf Of *Alex Otenko via Concurrency-interest
+> *Sent:* Monday, December 3, 2018 9:09 PM
+> *To:* Ashutosh Agrawal <webashutosh at gmail.com>
+> *Cc:* concurrency-interest at cs.oswego.edu
+> *Subject:* Re: [concurrency-interest] Waiting thread doesn't throw
+> InterruptedException after waking-up
+>
+>
+>
+> That’s the correct behaviour, and is not Mac-specific. Since your thread A
+> received both notify and interrupt, it is OK to prefer notify to interrupt.
+>
+>
+>
+> If you comment out the resourceA.notify() part, you will see it then has
+> no choice but throw InterruptedException.
+>
+>
+>
+> Alex
+>
+>
+>
+> On 3 Dec 2018, at 11:01, Ashutosh Agrawal via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>
+>
+> Hello,
+>
+>
+>
+> In the below program, Thread-A enters wait state and gets interrupted by
+> Thread-B before waking up. However, after waking-up, it does NOT throw
+> an InterruptedException (and its interrupted-status is NOT cleared).
+>
+>
+>
+> Can anyone please help explain this behaviour?
+>
+> Env : Java-8 on a Mac
+>
+>
+>
+> public class WaitNotifyAll {
+>
+>
+>
+>     private static Object resourceA = new Object();
+>
+>
+>
+>     public static void main(String[] args) throws Exception {
+>
+>
+>
+>         Thread threadA = new Thread(new Runnable() {
+>
+>             @Override
+>
+>             public void run() {
+>
+>                 synchronized (resourceA) {
+>
+>                     try {
+>
+>                         System.out.println("Thread-A is about to begin
+> waiting");
+>
+>                         resourceA.wait();
+>
+>                         System.out.println("Thread-A came out of waiting
+> state. " +
+>
+>                                 "Its interrupted status is - " +
+> Thread.currentThread().isInterrupted());
+>
+>                     } catch (InterruptedException e) {
+>
+>                         e.printStackTrace();
+>
+>                     }
+>
+>                 }
+>
+>             }
+>
+>         });
+>
+>
+>
+>         Thread threadB = new Thread(new Runnable() {
+>
+>             @Override
+>
+>             public void run() {
+>
+>                 synchronized (resourceA) {
+>
+>                     System.out.println("Thread-B is about to notify");
+>
+>                     threadA.interrupt();
+>
+>                     resourceA.notify();
+>
+>                 }
+>
+>             }
+>
+>         });
+>
+>
+>
+>         threadA.start();
+>
+>         Thread.sleep(1000);
+>
+>         threadB.start();
+>
+>
+>
+>         System.out.println("Program over!");
+>
+>     }
+>
+> }
+>
+>
+>
+> *Output - *
+>
+>
+>
+> Thread-A is about to begin waiting
+>
+> Program over!
+>
+> Thread-B is about to notify
+>
+> Thread-A came out of waiting state. Its interrupted status is - true
+>
+>
+>
+>
+>
+> Originally posted on StackOverflow -
+> https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re
+>
+>
+>
+> Regards,
+>
+> Ashutosh
+>
+>
+>
+>
+>
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-- 
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java(tm) Specialists' Newsletter"
+Sun/Oracle Java Champion
+JavaOne Rockstar Speaker
+http://www.javaspecialists.eu
+Tel: +30 69 75 595 262
+Skype: kabutz
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181203/0d96ee0f/attachment.html>
+
+From davidcholmes at aapt.net.au  Mon Dec  3 15:24:20 2018
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Tue, 4 Dec 2018 06:24:20 +1000
+Subject: [concurrency-interest] Waiting thread doesn't throw
+	InterruptedException after waking-up
+In-Reply-To: <CACLL95qofAFZR=MwM63cB6aP=BYvOk=qVJFo9R-Lt9rwSH+ZDQ@mail.gmail.com>
+References: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+ <216AE66B-FEE9-427D-996D-FD5605FD852A@gmail.com>
+ <039e01d48afb$d56075c0$80216140$@aapt.net.au>
+ <CACLL95qofAFZR=MwM63cB6aP=BYvOk=qVJFo9R-Lt9rwSH+ZDQ@mail.gmail.com>
+Message-ID: <03b801d48b46$2cfd8210$86f88630$@aapt.net.au>
+
+Spurious wakeup is not the issue – that’s documented in Object.wait as well.
+
+ 
+
+Condition also has this:
+
+“As interruption generally implies cancellation, and checks for interruption are often infrequent, an implementation can favor responding to an interrupt over normal method return. This is true even if it can be shown that the interrupt occurred after another action that may have unblocked the thread. An implementation should document this behavior.”
+
+which is closer to the current issue, though suggests favoring interruption – which is the opposite of what wait() does.
+
+ 
+
+David
+
+ 
+
+From: Dr Heinz M. Kabutz <heinz at javaspecialists.eu> 
+Sent: Monday, December 3, 2018 9:45 PM
+To: dholmes at ieee.org
+Cc: Alex Otenko <oleksandr.otenko at gmail.com>; Ashutosh Agrawal <webashutosh at gmail.com>; David Holmes <davidcholmes at aapt.net.au>; concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+
+ 
+
+The spurious wakeup is mentioned in Condition:  
+
+https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html
+
+ 
+
+On Mon, 03 Dec 2018 at 13:35, David Holmes via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> > wrote:
+
+I would have sworn we had some words about this in the Object.wait docs as it’s come up before. ☹
+
+ 
+
+If the thread is both notified and interrupted around the same time then the implementation has a choice as to which reason to report that the wait() ended – with the caveat that notifications must not be lost.
+
+ 
+
+In terms of the hotspot implementation, the interrupt unparks the thread and it is then racing with the notify() call. If the notify() is processed before the thread can unlink itself from the wait-queue then it will be seen to be notified. Once it has recorded that it was notified it doesn’t check its interrupt status.
+
+ 
+
+David
+
+ 
+
+From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu> > On Behalf Of Alex Otenko via Concurrency-interest
+Sent: Monday, December 3, 2018 9:09 PM
+To: Ashutosh Agrawal <webashutosh at gmail.com <mailto:webashutosh at gmail.com> >
+Cc: concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> 
+Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+
+ 
+
+That’s the correct behaviour, and is not Mac-specific. Since your thread A received both notify and interrupt, it is OK to prefer notify to interrupt.
+
+ 
+
+If you comment out the resourceA.notify() part, you will see it then has no choice but throw InterruptedException.
+
+ 
+
+Alex
+
+ 
+
+On 3 Dec 2018, at 11:01, Ashutosh Agrawal via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> > wrote:
+
+ 
+
+Hello,
+
+ 
+
+In the below program, Thread-A enters wait state and gets interrupted by Thread-B before waking up. However, after waking-up, it does NOT throw an InterruptedException (and its interrupted-status is NOT cleared). 
+
+ 
+
+Can anyone please help explain this behaviour?
+
+Env : Java-8 on a Mac
+
+ 
+
+public class WaitNotifyAll {
+
+ 
+
+    private static Object resourceA = new Object();
+
+ 
+
+    public static void main(String[] args) throws Exception {
+
+ 
+
+        Thread threadA = new Thread(new Runnable() {
+
+            @Override
+
+            public void run() {
+
+                synchronized (resourceA) {
+
+                    try {
+
+                        System.out.println("Thread-A is about to begin waiting");
+
+                        resourceA.wait();
+
+                        System.out.println("Thread-A came out of waiting state. " +
+
+                                "Its interrupted status is - " + Thread.currentThread().isInterrupted());
+
+                    } catch (InterruptedException e) {
+
+                        e.printStackTrace();
+
+                    }
+
+                }
+
+            }
+
+        });
+
+ 
+
+        Thread threadB = new Thread(new Runnable() {
+
+            @Override
+
+            public void run() {
+
+                synchronized (resourceA) {
+
+                    System.out.println("Thread-B is about to notify");
+
+                    threadA.interrupt();
+
+                    resourceA.notify();
+
+                }
+
+            }
+
+        });
+
+ 
+
+        threadA.start();
+
+        Thread.sleep(1000);
+
+        threadB.start();
+
+ 
+
+        System.out.println("Program over!");
+
+    }
+
+}
+
+ 
+
+Output - 
+
+ 
+
+Thread-A is about to begin waiting
+
+Program over!
+
+Thread-B is about to notify
+
+Thread-A came out of waiting state. Its interrupted status is - true
+
+ 
+
+ 
+
+Originally posted on StackOverflow - https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re
+
+ 
+
+Regards,
+
+Ashutosh
+
+ 
+
+ 
+
+ 
+
+ 
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu> 
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+ 
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu> 
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-- 
+
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java(tm) Specialists' Newsletter"
+Sun/Oracle Java Champion
+JavaOne Rockstar Speaker
+http://www.javaspecialists.eu
+Tel: +30 69 75 595 262
+Skype: kabutz
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181204/df5fc391/attachment-0001.html>
+
+From martinrb at google.com  Mon Dec  3 15:38:05 2018
+From: martinrb at google.com (Martin Buchholz)
+Date: Mon, 3 Dec 2018 12:38:05 -0800
+Subject: [concurrency-interest] Waiting thread doesn't throw
+ InterruptedException after waking-up
+In-Reply-To: <03b801d48b46$2cfd8210$86f88630$@aapt.net.au>
+References: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+ <216AE66B-FEE9-427D-996D-FD5605FD852A@gmail.com>
+ <039e01d48afb$d56075c0$80216140$@aapt.net.au>
+ <CACLL95qofAFZR=MwM63cB6aP=BYvOk=qVJFo9R-Lt9rwSH+ZDQ@mail.gmail.com>
+ <03b801d48b46$2cfd8210$86f88630$@aapt.net.au>
+Message-ID: <CA+kOe09i+LM4VvYFMFn1EC50rGDHpx07EiCPrt7Tghx5dan9=g@mail.gmail.com>
+
+It's in the spirit of Java to specify whether interruption or notification
+wins.
+It would be good for the behaviors of Object.wait and AQS.ConditionObject
+to be consistent.
+(but Condition is an interface, and there should be some implementer
+freedom)
+(ConditionObject should probably have some more specs to tighten promised
+behavior)
+
+On Mon, Dec 3, 2018 at 12:26 PM David Holmes via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Spurious wakeup is not the issue – that’s documented in Object.wait as
+> well.
+>
+>
+>
+> Condition also has this:
+>
+> “As interruption generally implies cancellation, and checks for
+> interruption are often infrequent, an implementation can favor responding
+> to an interrupt over normal method return. This is true even if it can be
+> shown that the interrupt occurred after another action that may have
+> unblocked the thread. An implementation should document this behavior.”
+>
+> which is closer to the current issue, though suggests favoring
+> interruption – which is the opposite of what wait() does.
+>
+>
+>
+> David
+>
+>
+>
+> *From:* Dr Heinz M. Kabutz <heinz at javaspecialists.eu>
+> *Sent:* Monday, December 3, 2018 9:45 PM
+> *To:* dholmes at ieee.org
+> *Cc:* Alex Otenko <oleksandr.otenko at gmail.com>; Ashutosh Agrawal <
+> webashutosh at gmail.com>; David Holmes <davidcholmes at aapt.net.au>;
+> concurrency-interest at cs.oswego.edu
+> *Subject:* Re: [concurrency-interest] Waiting thread doesn't throw
+> InterruptedException after waking-up
+>
+>
+>
+> The spurious wakeup is mentioned in Condition:
+>
+>
+> https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html
+>
+>
+>
+> On Mon, 03 Dec 2018 at 13:35, David Holmes via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+> I would have sworn we had some words about this in the Object.wait docs as
+> it’s come up before. ☹
+>
+>
+>
+> If the thread is both notified and interrupted around the same time then
+> the implementation has a choice as to which reason to report that the
+> wait() ended – with the caveat that notifications must not be lost.
+>
+>
+>
+> In terms of the hotspot implementation, the interrupt unparks the thread
+> and it is then racing with the notify() call. If the notify() is processed
+> before the thread can unlink itself from the wait-queue then it will be
+> seen to be notified. Once it has recorded that it was notified it doesn’t
+> check its interrupt status.
+>
+>
+>
+> David
+>
+>
+>
+> *From:* Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> *On
+> Behalf Of *Alex Otenko via Concurrency-interest
+> *Sent:* Monday, December 3, 2018 9:09 PM
+> *To:* Ashutosh Agrawal <webashutosh at gmail.com>
+> *Cc:* concurrency-interest at cs.oswego.edu
+> *Subject:* Re: [concurrency-interest] Waiting thread doesn't throw
+> InterruptedException after waking-up
+>
+>
+>
+> That’s the correct behaviour, and is not Mac-specific. Since your thread A
+> received both notify and interrupt, it is OK to prefer notify to interrupt.
+>
+>
+>
+> If you comment out the resourceA.notify() part, you will see it then has
+> no choice but throw InterruptedException.
+>
+>
+>
+> Alex
+>
+>
+>
+> On 3 Dec 2018, at 11:01, Ashutosh Agrawal via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>
+>
+> Hello,
+>
+>
+>
+> In the below program, Thread-A enters wait state and gets interrupted by
+> Thread-B before waking up. However, after waking-up, it does NOT throw
+> an InterruptedException (and its interrupted-status is NOT cleared).
+>
+>
+>
+> Can anyone please help explain this behaviour?
+>
+> Env : Java-8 on a Mac
+>
+>
+>
+> public class WaitNotifyAll {
+>
+>
+>
+>     private static Object resourceA = new Object();
+>
+>
+>
+>     public static void main(String[] args) throws Exception {
+>
+>
+>
+>         Thread threadA = new Thread(new Runnable() {
+>
+>             @Override
+>
+>             public void run() {
+>
+>                 synchronized (resourceA) {
+>
+>                     try {
+>
+>                         System.out.println("Thread-A is about to begin
+> waiting");
+>
+>                         resourceA.wait();
+>
+>                         System.out.println("Thread-A came out of waiting
+> state. " +
+>
+>                                 "Its interrupted status is - " +
+> Thread.currentThread().isInterrupted());
+>
+>                     } catch (InterruptedException e) {
+>
+>                         e.printStackTrace();
+>
+>                     }
+>
+>                 }
+>
+>             }
+>
+>         });
+>
+>
+>
+>         Thread threadB = new Thread(new Runnable() {
+>
+>             @Override
+>
+>             public void run() {
+>
+>                 synchronized (resourceA) {
+>
+>                     System.out.println("Thread-B is about to notify");
+>
+>                     threadA.interrupt();
+>
+>                     resourceA.notify();
+>
+>                 }
+>
+>             }
+>
+>         });
+>
+>
+>
+>         threadA.start();
+>
+>         Thread.sleep(1000);
+>
+>         threadB.start();
+>
+>
+>
+>         System.out.println("Program over!");
+>
+>     }
+>
+> }
+>
+>
+>
+> *Output - *
+>
+>
+>
+> Thread-A is about to begin waiting
+>
+> Program over!
+>
+> Thread-B is about to notify
+>
+> Thread-A came out of waiting state. Its interrupted status is - true
+>
+>
+>
+>
+>
+> Originally posted on StackOverflow -
+> https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re
+>
+>
+>
+> Regards,
+>
+> Ashutosh
+>
+>
+>
+>
+>
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> --
+>
+> Dr Heinz M. Kabutz (PhD CompSci)
+> Author of "The Java(tm) Specialists' Newsletter"
+> Sun/Oracle Java Champion
+> JavaOne Rockstar Speaker
+> http://www.javaspecialists.eu
+> Tel: +30 69 75 595 262
+> Skype: kabutz
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181203/f08ae5f9/attachment.html>
+
+From oleksandr.otenko at gmail.com  Mon Dec  3 15:59:11 2018
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 3 Dec 2018 20:59:11 +0000
+Subject: [concurrency-interest] Waiting thread doesn't throw
+ InterruptedException after waking-up
+In-Reply-To: <03b801d48b46$2cfd8210$86f88630$@aapt.net.au>
+References: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+ <216AE66B-FEE9-427D-996D-FD5605FD852A@gmail.com>
+ <039e01d48afb$d56075c0$80216140$@aapt.net.au>
+ <CACLL95qofAFZR=MwM63cB6aP=BYvOk=qVJFo9R-Lt9rwSH+ZDQ@mail.gmail.com>
+ <03b801d48b46$2cfd8210$86f88630$@aapt.net.au>
+Message-ID: <CA107032-5B18-4D4F-9F6F-F7C078FF9449@gmail.com>
+
+Is this what you see in the code or what you see the reproducer do?
+
+The reproducer behaves “as expected”, if you insert Thread.sleep(1000) between interrupt and notify, too. (Note, both are inside the same synchronized, so I am not even sure how wait() can choose one over the other - it can’t exit until the notifier exits, and the exit procedure probably differs depending on whether it is a biased lock or a “fat” lock (promoted due to a sleep))
+
+
+Alex
+
+> On 3 Dec 2018, at 20:24, David Holmes <davidcholmes at aapt.net.au> wrote:
+> 
+> Spurious wakeup is not the issue – that’s documented in Object.wait as well.
+>  
+> Condition also has this:
+> “As interruption generally implies cancellation, and checks for interruption are often infrequent, an implementation can favor responding to an interrupt over normal method return. This is true even if it can be shown that the interrupt occurred after another action that may have unblocked the thread. An implementation should document this behavior.”
+> which is closer to the current issue, though suggests favoring interruption – which is the opposite of what wait() does.
+>  
+> David
+>  
+> From: Dr Heinz M. Kabutz <heinz at javaspecialists.eu> 
+> Sent: Monday, December 3, 2018 9:45 PM
+> To: dholmes at ieee.org
+> Cc: Alex Otenko <oleksandr.otenko at gmail.com>; Ashutosh Agrawal <webashutosh at gmail.com>; David Holmes <davidcholmes at aapt.net.au>; concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+>  
+> The spurious wakeup is mentioned in Condition:  
+> https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html <https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html>
+>  
+> On Mon, 03 Dec 2018 at 13:35, David Holmes via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>> I would have sworn we had some words about this in the Object.wait docs as it’s come up before. ☹
+>>  
+>> If the thread is both notified and interrupted around the same time then the implementation has a choice as to which reason to report that the wait() ended – with the caveat that notifications must not be lost.
+>>  
+>> In terms of the hotspot implementation, the interrupt unparks the thread and it is then racing with the notify() call. If the notify() is processed before the thread can unlink itself from the wait-queue then it will be seen to be notified. Once it has recorded that it was notified it doesn’t check its interrupt status.
+>>  
+>> David
+>>  
+>> From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu>> On Behalf Of Alex Otenko via Concurrency-interest
+>> Sent: Monday, December 3, 2018 9:09 PM
+>> To: Ashutosh Agrawal <webashutosh at gmail.com <mailto:webashutosh at gmail.com>>
+>> Cc: concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>
+>> Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+>>  
+>> That’s the correct behaviour, and is not Mac-specific. Since your thread A received both notify and interrupt, it is OK to prefer notify to interrupt.
+>>  
+>> If you comment out the resourceA.notify() part, you will see it then has no choice but throw InterruptedException.
+>>  
+>> Alex
+>>  
+>> 
+>>> On 3 Dec 2018, at 11:01, Ashutosh Agrawal via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>>>  
+>>> Hello,
+>>>  
+>>> In the below program, Thread-A enters wait state and gets interrupted by Thread-B before waking up. However, after waking-up, it does NOT throw an InterruptedException (and its interrupted-status is NOT cleared). 
+>>>  
+>>> Can anyone please help explain this behaviour?
+>>> Env : Java-8 on a Mac
+>>>  
+>>> public class WaitNotifyAll {
+>>>  
+>>>     private static Object resourceA = new Object();
+>>>  
+>>>     public static void main(String[] args) throws Exception {
+>>>  
+>>>         Thread threadA = new Thread(new Runnable() {
+>>>             @Override
+>>>             public void run() {
+>>>                 synchronized (resourceA) {
+>>>                     try {
+>>>                         System.out.println("Thread-A is about to begin waiting");
+>>>                         resourceA.wait();
+>>>                         System.out.println("Thread-A came out of waiting state. " +
+>>>                                 "Its interrupted status is - " + Thread.currentThread().isInterrupted());
+>>>                     } catch (InterruptedException e) {
+>>>                         e.printStackTrace();
+>>>                     }
+>>>                 }
+>>>             }
+>>>         });
+>>>  
+>>>         Thread threadB = new Thread(new Runnable() {
+>>>             @Override
+>>>             public void run() {
+>>>                 synchronized (resourceA) {
+>>>                     System.out.println("Thread-B is about to notify");
+>>>                     threadA.interrupt();
+>>>                     resourceA.notify();
+>>>                 }
+>>>             }
+>>>         });
+>>>  
+>>>         threadA.start();
+>>>         Thread.sleep(1000);
+>>>         threadB.start();
+>>>  
+>>>         System.out.println("Program over!");
+>>>     }
+>>> }
+>>>  
+>>> Output - 
+>>>  
+>>> Thread-A is about to begin waiting
+>>> Program over!
+>>> Thread-B is about to notify
+>>> Thread-A came out of waiting state. Its interrupted status is - true
+>>>  
+>>>  
+>>> Originally posted on StackOverflow - https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re <https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re>
+>>>  
+>>> Regards,
+>>> Ashutosh
+>>>  
+>>>  
+>>>  
+>>>  
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>>  
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> -- 
+> Dr Heinz M. Kabutz (PhD CompSci)
+> Author of "The Java(tm) Specialists' Newsletter"
+> Sun/Oracle Java Champion
+> JavaOne Rockstar Speaker
+> http://www.javaspecialists.eu <http://www.javaspecialists.eu/>
+> Tel: +30 69 75 595 262
+> Skype: kabutz
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181203/b708539b/attachment-0001.html>
+
+From notcarl at google.com  Mon Dec  3 16:07:40 2018
+From: notcarl at google.com (Carl Mastrangelo)
+Date: Mon, 3 Dec 2018 13:07:40 -0800
+Subject: [concurrency-interest] Waiting thread doesn't throw
+ InterruptedException after waking-up
+In-Reply-To: <CA107032-5B18-4D4F-9F6F-F7C078FF9449@gmail.com>
+References: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+ <216AE66B-FEE9-427D-996D-FD5605FD852A@gmail.com>
+ <039e01d48afb$d56075c0$80216140$@aapt.net.au>
+ <CACLL95qofAFZR=MwM63cB6aP=BYvOk=qVJFo9R-Lt9rwSH+ZDQ@mail.gmail.com>
+ <03b801d48b46$2cfd8210$86f88630$@aapt.net.au>
+ <CA107032-5B18-4D4F-9F6F-F7C078FF9449@gmail.com>
+Message-ID: <CAAcqB+u+7miTF1OrLn2FEbRDZf=oyZX1MXhNZv4KohwV6gm-+g@mail.gmail.com>
+
+In the OpenJDK, the wait() logic is here:
+http://hg.openjdk.java.net/jdk/jdk/file/1871c5d07caf/src/hotspot/share/runtime/objectMonitor.cpp#l1625
+
+
+You can see that it only throws an InterruptedException if it was not
+notified.
+
+On Mon, Dec 3, 2018 at 1:00 PM Alex Otenko via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Is this what you see in the code or what you see the reproducer do?
+>
+> The reproducer behaves “as expected”, if you insert Thread.sleep(1000)
+> between interrupt and notify, too. (Note, both are inside the same
+> synchronized, so I am not even sure how wait() can choose one over the
+> other - it can’t exit until the notifier exits, and the exit procedure
+> probably differs depending on whether it is a biased lock or a “fat” lock
+> (promoted due to a sleep))
+>
+>
+> Alex
+>
+> On 3 Dec 2018, at 20:24, David Holmes <davidcholmes at aapt.net.au> wrote:
+>
+> Spurious wakeup is not the issue – that’s documented in Object.wait as
+> well.
+>
+> Condition also has this:
+> “As interruption generally implies cancellation, and checks for
+> interruption are often infrequent, an implementation can favor responding
+> to an interrupt over normal method return. This is true even if it can be
+> shown that the interrupt occurred after another action that may have
+> unblocked the thread. An implementation should document this behavior.”
+> which is closer to the current issue, though suggests favoring
+> interruption – which is the opposite of what wait() does.
+>
+> David
+>
+> *From:* Dr Heinz M. Kabutz <heinz at javaspecialists.eu>
+> *Sent:* Monday, December 3, 2018 9:45 PM
+> *To:* dholmes at ieee.org
+> *Cc:* Alex Otenko <oleksandr.otenko at gmail.com>; Ashutosh Agrawal <
+> webashutosh at gmail.com>; David Holmes <davidcholmes at aapt.net.au>;
+> concurrency-interest at cs.oswego.edu
+> *Subject:* Re: [concurrency-interest] Waiting thread doesn't throw
+> InterruptedException after waking-up
+>
+> The spurious wakeup is mentioned in Condition:
+>
+> https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html
+>
+> On Mon, 03 Dec 2018 at 13:35, David Holmes via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+> I would have sworn we had some words about this in the Object.wait docs as
+> it’s come up before. ☹
+>
+> If the thread is both notified and interrupted around the same time then
+> the implementation has a choice as to which reason to report that the
+> wait() ended – with the caveat that notifications must not be lost.
+>
+> In terms of the hotspot implementation, the interrupt unparks the thread
+> and it is then racing with the notify() call. If the notify() is processed
+> before the thread can unlink itself from the wait-queue then it will be
+> seen to be notified. Once it has recorded that it was notified it doesn’t
+> check its interrupt status.
+>
+> David
+>
+> *From:* Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> *On
+> Behalf Of *Alex Otenko via Concurrency-interest
+> *Sent:* Monday, December 3, 2018 9:09 PM
+> *To:* Ashutosh Agrawal <webashutosh at gmail.com>
+> *Cc:* concurrency-interest at cs.oswego.edu
+> *Subject:* Re: [concurrency-interest] Waiting thread doesn't throw
+> InterruptedException after waking-up
+>
+> That’s the correct behaviour, and is not Mac-specific. Since your thread A
+> received both notify and interrupt, it is OK to prefer notify to interrupt.
+>
+> If you comment out the resourceA.notify() part, you will see it then has
+> no choice but throw InterruptedException.
+>
+> Alex
+>
+>
+>
+> On 3 Dec 2018, at 11:01, Ashutosh Agrawal via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+> Hello,
+>
+> In the below program, Thread-A enters wait state and gets interrupted by
+> Thread-B before waking up. However, after waking-up, it does NOT throw
+> an InterruptedException (and its interrupted-status is NOT cleared).
+>
+> Can anyone please help explain this behaviour?
+> Env : Java-8 on a Mac
+>
+> public class WaitNotifyAll {
+>
+>     private static Object resourceA = new Object();
+>
+>     public static void main(String[] args) throws Exception {
+>
+>         Thread threadA = new Thread(new Runnable() {
+>             @Override
+>             public void run() {
+>                 synchronized (resourceA) {
+>                     try {
+>                         System.out.println("Thread-A is about to begin
+> waiting");
+>                         resourceA.wait();
+>                         System.out.println("Thread-A came out of waiting
+> state. " +
+>                                 "Its interrupted status is - " +
+> Thread.currentThread().isInterrupted());
+>                     } catch (InterruptedException e) {
+>                         e.printStackTrace();
+>                     }
+>                 }
+>             }
+>         });
+>
+>         Thread threadB = new Thread(new Runnable() {
+>             @Override
+>             public void run() {
+>                 synchronized (resourceA) {
+>                     System.out.println("Thread-B is about to notify");
+>                     threadA.interrupt();
+>                     resourceA.notify();
+>                 }
+>             }
+>         });
+>
+>         threadA.start();
+>         Thread.sleep(1000);
+>         threadB.start();
+>
+>         System.out.println("Program over!");
+>     }
+> }
+>
+> *Output - *
+>
+> Thread-A is about to begin waiting
+> Program over!
+> Thread-B is about to notify
+> Thread-A came out of waiting state. Its interrupted status is - true
+>
+>
+> Originally posted on StackOverflow -
+> https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re
+>
+> Regards,
+> Ashutosh
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> --
+> Dr Heinz M. Kabutz (PhD CompSci)
+> Author of "The Java(tm) Specialists' Newsletter"
+> Sun/Oracle Java Champion
+> JavaOne Rockstar Speaker
+> http://www.javaspecialists.eu
+> Tel: +30 69 75 595 262
+> Skype: kabutz
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181203/cf4fbb89/attachment-0001.html>
+
+From davidcholmes at aapt.net.au  Mon Dec  3 16:11:00 2018
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Tue, 4 Dec 2018 07:11:00 +1000
+Subject: [concurrency-interest] Waiting thread doesn't throw
+	InterruptedException after waking-up
+In-Reply-To: <CA107032-5B18-4D4F-9F6F-F7C078FF9449@gmail.com>
+References: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+ <216AE66B-FEE9-427D-996D-FD5605FD852A@gmail.com>
+ <039e01d48afb$d56075c0$80216140$@aapt.net.au>
+ <CACLL95qofAFZR=MwM63cB6aP=BYvOk=qVJFo9R-Lt9rwSH+ZDQ@mail.gmail.com>
+ <03b801d48b46$2cfd8210$86f88630$@aapt.net.au>
+ <CA107032-5B18-4D4F-9F6F-F7C078FF9449@gmail.com>
+Message-ID: <03cd01d48b4c$b17c3670$1474a350$@aapt.net.au>
+
+If you’re referring to my earlier comment regarding the hotspot implementation, it was by code inspection. If the thread unlinks itself from the wait-set then there should not be any way for it to be “notified”. If the sleep does not force the IE to be thrown then there must be something I’ve overlooked that prevents the thread from being unlinked.
+
+ 
+
+David
+
+ 
+
+From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> On Behalf Of Alex Otenko via Concurrency-interest
+Sent: Tuesday, December 4, 2018 6:59 AM
+To: dholmes at ieee.org
+Cc: concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+
+ 
+
+Is this what you see in the code or what you see the reproducer do?
+
+ 
+
+The reproducer behaves “as expected”, if you insert Thread.sleep(1000) between interrupt and notify, too. (Note, both are inside the same synchronized, so I am not even sure how wait() can choose one over the other - it can’t exit until the notifier exits, and the exit procedure probably differs depending on whether it is a biased lock or a “fat” lock (promoted due to a sleep))
+
+ 
+
+ 
+
+Alex
+
+
+
+
+
+On 3 Dec 2018, at 20:24, David Holmes <davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au> > wrote:
+
+ 
+
+Spurious wakeup is not the issue – that’s documented in Object.wait as well.
+
+ 
+
+Condition also has this:
+
+“As interruption generally implies cancellation, and checks for interruption are often infrequent, an implementation can favor responding to an interrupt over normal method return. This is true even if it can be shown that the interrupt occurred after another action that may have unblocked the thread. An implementation should document this behavior.”
+
+which is closer to the current issue, though suggests favoring interruption – which is the opposite of what wait() does.
+
+ 
+
+David
+
+ 
+
+From: Dr Heinz M. Kabutz <heinz at javaspecialists.eu <mailto:heinz at javaspecialists.eu> > 
+Sent: Monday, December 3, 2018 9:45 PM
+To: dholmes at ieee.org <mailto:dholmes at ieee.org> 
+Cc: Alex Otenko <oleksandr.otenko at gmail.com <mailto:oleksandr.otenko at gmail.com> >; Ashutosh Agrawal <webashutosh at gmail.com <mailto:webashutosh at gmail.com> >; David Holmes <davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au> >; concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> 
+Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+
+ 
+
+The spurious wakeup is mentioned in Condition:  
+
+ <https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html> https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html
+
+ 
+
+On Mon, 03 Dec 2018 at 13:35, David Holmes via Concurrency-interest < <mailto:concurrency-interest at cs.oswego.edu> concurrency-interest at cs.oswego.edu> wrote:
+
+I would have sworn we had some words about this in the Object.wait docs as it’s come up before. ☹
+
+ 
+
+If the thread is both notified and interrupted around the same time then the implementation has a choice as to which reason to report that the wait() ended – with the caveat that notifications must not be lost.
+
+ 
+
+In terms of the hotspot implementation, the interrupt unparks the thread and it is then racing with the notify() call. If the notify() is processed before the thread can unlink itself from the wait-queue then it will be seen to be notified. Once it has recorded that it was notified it doesn’t check its interrupt status.
+
+ 
+
+David
+
+ 
+
+From: Concurrency-interest < <mailto:concurrency-interest-bounces at cs.oswego.edu> concurrency-interest-bounces at cs.oswego.edu> On Behalf Of Alex Otenko via Concurrency-interest
+Sent: Monday, December 3, 2018 9:09 PM
+To: Ashutosh Agrawal < <mailto:webashutosh at gmail.com> webashutosh at gmail.com>
+Cc:  <mailto:concurrency-interest at cs.oswego.edu> concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+
+ 
+
+That’s the correct behaviour, and is not Mac-specific. Since your thread A received both notify and interrupt, it is OK to prefer notify to interrupt.
+
+ 
+
+If you comment out the resourceA.notify() part, you will see it then has no choice but throw InterruptedException.
+
+ 
+
+Alex
+
+ 
+
+On 3 Dec 2018, at 11:01, Ashutosh Agrawal via Concurrency-interest < <mailto:concurrency-interest at cs.oswego.edu> concurrency-interest at cs.oswego.edu> wrote:
+
+ 
+
+Hello,
+
+ 
+
+In the below program, Thread-A enters wait state and gets interrupted by Thread-B before waking up. However, after waking-up, it does NOT throw an InterruptedException (and its interrupted-status is NOT cleared). 
+
+ 
+
+Can anyone please help explain this behaviour?
+
+Env : Java-8 on a Mac
+
+ 
+
+public class WaitNotifyAll {
+
+ 
+
+    private static Object resourceA = new Object();
+
+ 
+
+    public static void main(String[] args) throws Exception {
+
+ 
+
+        Thread threadA = new Thread(new Runnable() {
+
+            @Override
+
+            public void run() {
+
+                synchronized (resourceA) {
+
+                    try {
+
+                        System.out.println("Thread-A is about to begin waiting");
+
+                        resourceA.wait();
+
+                        System.out.println("Thread-A came out of waiting state. " +
+
+                                "Its interrupted status is - " + Thread.currentThread().isInterrupted());
+
+                    } catch (InterruptedException e) {
+
+                        e.printStackTrace();
+
+                    }
+
+                }
+
+            }
+
+        });
+
+ 
+
+        Thread threadB = new Thread(new Runnable() {
+
+            @Override
+
+            public void run() {
+
+                synchronized (resourceA) {
+
+                    System.out.println("Thread-B is about to notify");
+
+                    threadA.interrupt();
+
+                    resourceA.notify();
+
+                }
+
+            }
+
+        });
+
+ 
+
+        threadA.start();
+
+        Thread.sleep(1000);
+
+        threadB.start();
+
+ 
+
+        System.out.println("Program over!");
+
+    }
+
+}
+
+ 
+
+Output - 
+
+ 
+
+Thread-A is about to begin waiting
+
+Program over!
+
+Thread-B is about to notify
+
+Thread-A came out of waiting state. Its interrupted status is - true
+
+ 
+
+ 
+
+Originally posted on StackOverflow -  <https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re> https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re
+
+ 
+
+Regards,
+
+Ashutosh
+
+ 
+
+ 
+
+ 
+
+ 
+
+_______________________________________________
+Concurrency-interest mailing list
+ <mailto:Concurrency-interest at cs.oswego.edu> Concurrency-interest at cs.oswego.edu
+ <http://cs.oswego.edu/mailman/listinfo/concurrency-interest> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+ 
+
+_______________________________________________
+Concurrency-interest mailing list
+ <mailto:Concurrency-interest at cs.oswego.edu> Concurrency-interest at cs.oswego.edu
+ <http://cs.oswego.edu/mailman/listinfo/concurrency-interest> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-- 
+
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java(tm) Specialists' Newsletter"
+Sun/Oracle Java Champion
+JavaOne Rockstar Speaker
+ <http://www.javaspecialists.eu/> http://www.javaspecialists.eu
+Tel: +30 69 75 595 262
+Skype: kabutz
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181204/287d5f0a/attachment-0001.html>
+
+From oleksandr.otenko at gmail.com  Mon Dec  3 18:19:09 2018
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 3 Dec 2018 23:19:09 +0000
+Subject: [concurrency-interest] Waiting thread doesn't throw
+ InterruptedException after waking-up
+In-Reply-To: <03cd01d48b4c$b17c3670$1474a350$@aapt.net.au>
+References: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+ <216AE66B-FEE9-427D-996D-FD5605FD852A@gmail.com>
+ <039e01d48afb$d56075c0$80216140$@aapt.net.au>
+ <CACLL95qofAFZR=MwM63cB6aP=BYvOk=qVJFo9R-Lt9rwSH+ZDQ@mail.gmail.com>
+ <03b801d48b46$2cfd8210$86f88630$@aapt.net.au>
+ <CA107032-5B18-4D4F-9F6F-F7C078FF9449@gmail.com>
+ <03cd01d48b4c$b17c3670$1474a350$@aapt.net.au>
+Message-ID: <2C718645-E80E-4E8E-A00D-44885B26083A@gmail.com>
+
+Thread.interrupt() does not synchronize with arbitrary locks, so you can’t guarantee the order in which interrupt() and notify() are observed by the thread. If you can’t guarantee the order, don’t design a program to rely on it.
+
+(I appreciate there is implementation detail, too, but I don’t think there is a statement anywhere requiring interrupt() to appear in the order of synchronization actions)
+
+Alex
+
+> On 3 Dec 2018, at 21:11, David Holmes <davidcholmes at aapt.net.au> wrote:
+> 
+> If you’re referring to my earlier comment regarding the hotspot implementation, it was by code inspection. If the thread unlinks itself from the wait-set then there should not be any way for it to be “notified”. If the sleep does not force the IE to be thrown then there must be something I’ve overlooked that prevents the thread from being unlinked.
+>  
+> David
+>  
+> From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> On Behalf Of Alex Otenko via Concurrency-interest
+> Sent: Tuesday, December 4, 2018 6:59 AM
+> To: dholmes at ieee.org
+> Cc: concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+>  
+> Is this what you see in the code or what you see the reproducer do?
+>  
+> The reproducer behaves “as expected”, if you insert Thread.sleep(1000) between interrupt and notify, too. (Note, both are inside the same synchronized, so I am not even sure how wait() can choose one over the other - it can’t exit until the notifier exits, and the exit procedure probably differs depending on whether it is a biased lock or a “fat” lock (promoted due to a sleep))
+>  
+>  
+> Alex
+> 
+> 
+>> On 3 Dec 2018, at 20:24, David Holmes <davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au>> wrote:
+>>  
+>> Spurious wakeup is not the issue – that’s documented in Object.wait as well.
+>>  
+>> Condition also has this:
+>> “As interruption generally implies cancellation, and checks for interruption are often infrequent, an implementation can favor responding to an interrupt over normal method return. This is true even if it can be shown that the interrupt occurred after another action that may have unblocked the thread. An implementation should document this behavior.”
+>> which is closer to the current issue, though suggests favoring interruption – which is the opposite of what wait() does.
+>>  
+>> David
+>>  
+>> From: Dr Heinz M. Kabutz <heinz at javaspecialists.eu <mailto:heinz at javaspecialists.eu>> 
+>> Sent: Monday, December 3, 2018 9:45 PM
+>> To: dholmes at ieee.org <mailto:dholmes at ieee.org>
+>> Cc: Alex Otenko <oleksandr.otenko at gmail.com <mailto:oleksandr.otenko at gmail.com>>; Ashutosh Agrawal <webashutosh at gmail.com <mailto:webashutosh at gmail.com>>; David Holmes <davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au>>; concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>
+>> Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+>>  
+>> The spurious wakeup is mentioned in Condition:  
+>> https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html <https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html>
+>>  
+>> On Mon, 03 Dec 2018 at 13:35, David Holmes via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>>> I would have sworn we had some words about this in the Object.wait docs as it’s come up before. ☹
+>>>  
+>>> If the thread is both notified and interrupted around the same time then the implementation has a choice as to which reason to report that the wait() ended – with the caveat that notifications must not be lost.
+>>>  
+>>> In terms of the hotspot implementation, the interrupt unparks the thread and it is then racing with the notify() call. If the notify() is processed before the thread can unlink itself from the wait-queue then it will be seen to be notified. Once it has recorded that it was notified it doesn’t check its interrupt status.
+>>>  
+>>> David
+>>>  
+>>> From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu>> On Behalf Of Alex Otenko via Concurrency-interest
+>>> Sent: Monday, December 3, 2018 9:09 PM
+>>> To: Ashutosh Agrawal <webashutosh at gmail.com <mailto:webashutosh at gmail.com>>
+>>> Cc: concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>
+>>> Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+>>>  
+>>> That’s the correct behaviour, and is not Mac-specific. Since your thread A received both notify and interrupt, it is OK to prefer notify to interrupt.
+>>>  
+>>> If you comment out the resourceA.notify() part, you will see it then has no choice but throw InterruptedException.
+>>>  
+>>> Alex
+>>>  
+>>> 
+>>>> On 3 Dec 2018, at 11:01, Ashutosh Agrawal via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>>>>  
+>>>> Hello,
+>>>>  
+>>>> In the below program, Thread-A enters wait state and gets interrupted by Thread-B before waking up. However, after waking-up, it does NOT throw an InterruptedException (and its interrupted-status is NOT cleared). 
+>>>>  
+>>>> Can anyone please help explain this behaviour?
+>>>> Env : Java-8 on a Mac
+>>>>  
+>>>> public class WaitNotifyAll {
+>>>>  
+>>>>     private static Object resourceA = new Object();
+>>>>  
+>>>>     public static void main(String[] args) throws Exception {
+>>>>  
+>>>>         Thread threadA = new Thread(new Runnable() {
+>>>>             @Override
+>>>>             public void run() {
+>>>>                 synchronized (resourceA) {
+>>>>                     try {
+>>>>                         System.out.println("Thread-A is about to begin waiting");
+>>>>                         resourceA.wait();
+>>>>                         System.out.println("Thread-A came out of waiting state. " +
+>>>>                                 "Its interrupted status is - " + Thread.currentThread().isInterrupted());
+>>>>                     } catch (InterruptedException e) {
+>>>>                         e.printStackTrace();
+>>>>                     }
+>>>>                 }
+>>>>             }
+>>>>         });
+>>>>  
+>>>>         Thread threadB = new Thread(new Runnable() {
+>>>>             @Override
+>>>>             public void run() {
+>>>>                 synchronized (resourceA) {
+>>>>                     System.out.println("Thread-B is about to notify");
+>>>>                     threadA.interrupt();
+>>>>                     resourceA.notify();
+>>>>                 }
+>>>>             }
+>>>>         });
+>>>>  
+>>>>         threadA.start();
+>>>>         Thread.sleep(1000);
+>>>>         threadB.start();
+>>>>  
+>>>>         System.out.println("Program over!");
+>>>>     }
+>>>> }
+>>>>  
+>>>> Output - 
+>>>>  
+>>>> Thread-A is about to begin waiting
+>>>> Program over!
+>>>> Thread-B is about to notify
+>>>> Thread-A came out of waiting state. Its interrupted status is - true
+>>>>  
+>>>>  
+>>>> Originally posted on StackOverflow - https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re <https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re>
+>>>>  
+>>>> Regards,
+>>>> Ashutosh
+>>>>  
+>>>>  
+>>>>  
+>>>>  
+>>>> _______________________________________________
+>>>> Concurrency-interest mailing list
+>>>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>>>  
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>> -- 
+>> Dr Heinz M. Kabutz (PhD CompSci)
+>> Author of "The Java(tm) Specialists' Newsletter"
+>> Sun/Oracle Java Champion
+>> JavaOne Rockstar Speaker
+>> http://www.javaspecialists.eu <http://www.javaspecialists.eu/>
+>> Tel: +30 69 75 595 262
+>> Skype: kabutz
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181203/5bad8049/attachment-0001.html>
+
+From oleksandr.otenko at gmail.com  Mon Dec  3 18:22:30 2018
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 3 Dec 2018 23:22:30 +0000
+Subject: [concurrency-interest] Waiting thread doesn't throw
+ InterruptedException after waking-up
+In-Reply-To: <CA+kOe09i+LM4VvYFMFn1EC50rGDHpx07EiCPrt7Tghx5dan9=g@mail.gmail.com>
+References: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+ <216AE66B-FEE9-427D-996D-FD5605FD852A@gmail.com>
+ <039e01d48afb$d56075c0$80216140$@aapt.net.au>
+ <CACLL95qofAFZR=MwM63cB6aP=BYvOk=qVJFo9R-Lt9rwSH+ZDQ@mail.gmail.com>
+ <03b801d48b46$2cfd8210$86f88630$@aapt.net.au>
+ <CA+kOe09i+LM4VvYFMFn1EC50rGDHpx07EiCPrt7Tghx5dan9=g@mail.gmail.com>
+Message-ID: <0A45D142-E079-44E1-9A69-61250FF3D1AC@gmail.com>
+
+Actually, a better reference:
+
+https://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.2.3 <https://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.2.3> - and 17.2.4 on interactions of notifications and interruptions.
+
+Alex
+
+> On 3 Dec 2018, at 20:38, Martin Buchholz via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+> It's in the spirit of Java to specify whether interruption or notification wins.
+> It would be good for the behaviors of Object.wait and AQS.ConditionObject to be consistent.
+> (but Condition is an interface, and there should be some implementer freedom)
+> (ConditionObject should probably have some more specs to tighten promised behavior)
+> 
+> On Mon, Dec 3, 2018 at 12:26 PM David Holmes via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+> Spurious wakeup is not the issue – that’s documented in Object.wait as well.
+> 
+>  
+> 
+> Condition also has this:
+> 
+> “As interruption generally implies cancellation, and checks for interruption are often infrequent, an implementation can favor responding to an interrupt over normal method return. This is true even if it can be shown that the interrupt occurred after another action that may have unblocked the thread. An implementation should document this behavior.”
+> 
+> which is closer to the current issue, though suggests favoring interruption – which is the opposite of what wait() does.
+> 
+>  
+> 
+> David
+> 
+>  
+> 
+> From: Dr Heinz M. Kabutz <heinz at javaspecialists.eu <mailto:heinz at javaspecialists.eu>> 
+> Sent: Monday, December 3, 2018 9:45 PM
+> To: dholmes at ieee.org <mailto:dholmes at ieee.org>
+> Cc: Alex Otenko <oleksandr.otenko at gmail.com <mailto:oleksandr.otenko at gmail.com>>; Ashutosh Agrawal <webashutosh at gmail.com <mailto:webashutosh at gmail.com>>; David Holmes <davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au>>; concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>
+> Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+> 
+>  
+> 
+> The spurious wakeup is mentioned in Condition:  
+> 
+> https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html <https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html>
+>  
+> 
+> On Mon, 03 Dec 2018 at 13:35, David Holmes via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+> 
+> I would have sworn we had some words about this in the Object.wait docs as it’s come up before. ☹
+> 
+>  
+> 
+> If the thread is both notified and interrupted around the same time then the implementation has a choice as to which reason to report that the wait() ended – with the caveat that notifications must not be lost.
+> 
+>  
+> 
+> In terms of the hotspot implementation, the interrupt unparks the thread and it is then racing with the notify() call. If the notify() is processed before the thread can unlink itself from the wait-queue then it will be seen to be notified. Once it has recorded that it was notified it doesn’t check its interrupt status.
+> 
+>  
+> 
+> David
+> 
+>  
+> 
+> From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu>> On Behalf Of Alex Otenko via Concurrency-interest
+> Sent: Monday, December 3, 2018 9:09 PM
+> To: Ashutosh Agrawal <webashutosh at gmail.com <mailto:webashutosh at gmail.com>>
+> Cc: concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>
+> Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+> 
+>  
+> 
+> That’s the correct behaviour, and is not Mac-specific. Since your thread A received both notify and interrupt, it is OK to prefer notify to interrupt.
+> 
+>  
+> 
+> If you comment out the resourceA.notify() part, you will see it then has no choice but throw InterruptedException.
+> 
+>  
+> 
+> Alex
+> 
+>  
+> 
+> On 3 Dec 2018, at 11:01, Ashutosh Agrawal via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+> 
+>  
+> 
+> Hello,
+> 
+>  
+> 
+> In the below program, Thread-A enters wait state and gets interrupted by Thread-B before waking up. However, after waking-up, it does NOT throw an InterruptedException (and its interrupted-status is NOT cleared). 
+> 
+>  
+> 
+> Can anyone please help explain this behaviour?
+> 
+> Env : Java-8 on a Mac
+> 
+>  
+> 
+> public class WaitNotifyAll {
+> 
+>  
+> 
+>     private static Object resourceA = new Object();
+> 
+>  
+> 
+>     public static void main(String[] args) throws Exception {
+> 
+>  
+> 
+>         Thread threadA = new Thread(new Runnable() {
+> 
+>             @Override
+> 
+>             public void run() {
+> 
+>                 synchronized (resourceA) {
+> 
+>                     try {
+> 
+>                         System.out.println("Thread-A is about to begin waiting");
+> 
+>                         resourceA.wait();
+> 
+>                         System.out.println("Thread-A came out of waiting state. " +
+> 
+>                                 "Its interrupted status is - " + Thread.currentThread().isInterrupted());
+> 
+>                     } catch (InterruptedException e) {
+> 
+>                         e.printStackTrace();
+> 
+>                     }
+> 
+>                 }
+> 
+>             }
+> 
+>         });
+> 
+>  
+> 
+>         Thread threadB = new Thread(new Runnable() {
+> 
+>             @Override
+> 
+>             public void run() {
+> 
+>                 synchronized (resourceA) {
+> 
+>                     System.out.println("Thread-B is about to notify");
+> 
+>                     threadA.interrupt();
+> 
+>                     resourceA.notify();
+> 
+>                 }
+> 
+>             }
+> 
+>         });
+> 
+>  
+> 
+>         threadA.start();
+> 
+>         Thread.sleep(1000);
+> 
+>         threadB.start();
+> 
+>  
+> 
+>         System.out.println("Program over!");
+> 
+>     }
+> 
+> }
+> 
+>  
+> 
+> Output - 
+> 
+>  
+> 
+> Thread-A is about to begin waiting
+> 
+> Program over!
+> 
+> Thread-B is about to notify
+> 
+> Thread-A came out of waiting state. Its interrupted status is - true
+> 
+>  
+> 
+>  
+> 
+> Originally posted on StackOverflow - https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re <https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re>
+>  
+> 
+> Regards,
+> 
+> Ashutosh
+> 
+>  
+> 
+>  
+> 
+>  
+> 
+>  
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>  
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> --
+> 
+> Dr Heinz M. Kabutz (PhD CompSci)
+> Author of "The Java(tm) Specialists' Newsletter"
+> Sun/Oracle Java Champion
+> JavaOne Rockstar Speaker
+> http://www.javaspecialists.eu <http://www.javaspecialists.eu/>
+> Tel: +30 69 75 595 262
+> Skype: kabutz
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181203/c64ca814/attachment-0001.html>
+
+From davidcholmes at aapt.net.au  Mon Dec  3 20:52:46 2018
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Tue, 4 Dec 2018 11:52:46 +1000
+Subject: [concurrency-interest] Waiting thread doesn't throw
+	InterruptedException after waking-up
+In-Reply-To: <0A45D142-E079-44E1-9A69-61250FF3D1AC@gmail.com>
+References: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+ <216AE66B-FEE9-427D-996D-FD5605FD852A@gmail.com>
+ <039e01d48afb$d56075c0$80216140$@aapt.net.au>
+ <CACLL95qofAFZR=MwM63cB6aP=BYvOk=qVJFo9R-Lt9rwSH+ZDQ@mail.gmail.com>
+ <03b801d48b46$2cfd8210$86f88630$@aapt.net.au>
+ <CA+kOe09i+LM4VvYFMFn1EC50rGDHpx07EiCPrt7Tghx5dan9=g@mail.gmail.com>
+ <0A45D142-E079-44E1-9A69-61250FF3D1AC@gmail.com>
+Message-ID: <03f301d48b74$107cab60$31760220$@aapt.net.au>
+
+Ah! That’s where we put it. I knew it was written down somewhere!
+
+ 
+
+Thanks,
+
+David
+
+ 
+
+From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> On Behalf Of Alex Otenko via Concurrency-interest
+Sent: Tuesday, December 4, 2018 9:23 AM
+To: Martin Buchholz <martinrb at google.com>
+Cc: concurrency-interest <concurrency-interest at cs.oswego.edu>; David Holmes <dholmes at ieee.org>
+Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+
+ 
+
+Actually, a better reference:
+
+ 
+
+https://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.2.3 - and 17.2.4 on interactions of notifications and interruptions.
+
+ 
+
+Alex
+
+
+
+
+
+On 3 Dec 2018, at 20:38, Martin Buchholz via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> > wrote:
+
+ 
+
+It's in the spirit of Java to specify whether interruption or notification wins.
+
+It would be good for the behaviors of Object.wait and AQS.ConditionObject to be consistent.
+
+(but Condition is an interface, and there should be some implementer freedom)
+
+(ConditionObject should probably have some more specs to tighten promised behavior)
+
+ 
+
+On Mon, Dec 3, 2018 at 12:26 PM David Holmes via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> > wrote:
+
+Spurious wakeup is not the issue – that’s documented in Object.wait as well.
+
+ 
+
+Condition also has this:
+
+“As interruption generally implies cancellation, and checks for interruption are often infrequent, an implementation can favor responding to an interrupt over normal method return. This is true even if it can be shown that the interrupt occurred after another action that may have unblocked the thread. An implementation should document this behavior.”
+
+which is closer to the current issue, though suggests favoring interruption – which is the opposite of what wait() does.
+
+ 
+
+David
+
+ 
+
+From: Dr Heinz M. Kabutz <heinz at javaspecialists.eu <mailto:heinz at javaspecialists.eu> > 
+Sent: Monday, December 3, 2018 9:45 PM
+To: dholmes at ieee.org <mailto:dholmes at ieee.org> 
+Cc: Alex Otenko <oleksandr.otenko at gmail.com <mailto:oleksandr.otenko at gmail.com> >; Ashutosh Agrawal <webashutosh at gmail.com <mailto:webashutosh at gmail.com> >; David Holmes <davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au> >; concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> 
+Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+
+ 
+
+The spurious wakeup is mentioned in Condition:  
+
+https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html
+
+ 
+
+On Mon, 03 Dec 2018 at 13:35, David Holmes via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> > wrote:
+
+I would have sworn we had some words about this in the Object.wait docs as it’s come up before. ☹
+
+ 
+
+If the thread is both notified and interrupted around the same time then the implementation has a choice as to which reason to report that the wait() ended – with the caveat that notifications must not be lost.
+
+ 
+
+In terms of the hotspot implementation, the interrupt unparks the thread and it is then racing with the notify() call. If the notify() is processed before the thread can unlink itself from the wait-queue then it will be seen to be notified. Once it has recorded that it was notified it doesn’t check its interrupt status.
+
+ 
+
+David
+
+ 
+
+From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu> > On Behalf Of Alex Otenko via Concurrency-interest
+Sent: Monday, December 3, 2018 9:09 PM
+To: Ashutosh Agrawal <webashutosh at gmail.com <mailto:webashutosh at gmail.com> >
+Cc: concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> 
+Subject: Re: [concurrency-interest] Waiting thread doesn't throw InterruptedException after waking-up
+
+ 
+
+That’s the correct behaviour, and is not Mac-specific. Since your thread A received both notify and interrupt, it is OK to prefer notify to interrupt.
+
+ 
+
+If you comment out the resourceA.notify() part, you will see it then has no choice but throw InterruptedException.
+
+ 
+
+Alex
+
+ 
+
+On 3 Dec 2018, at 11:01, Ashutosh Agrawal via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> > wrote:
+
+ 
+
+Hello,
+
+ 
+
+In the below program, Thread-A enters wait state and gets interrupted by Thread-B before waking up. However, after waking-up, it does NOT throw an InterruptedException (and its interrupted-status is NOT cleared). 
+
+ 
+
+Can anyone please help explain this behaviour?
+
+Env : Java-8 on a Mac
+
+ 
+
+public class WaitNotifyAll {
+
+ 
+
+    private static Object resourceA = new Object();
+
+ 
+
+    public static void main(String[] args) throws Exception {
+
+ 
+
+        Thread threadA = new Thread(new Runnable() {
+
+            @Override
+
+            public void run() {
+
+                synchronized (resourceA) {
+
+                    try {
+
+                        System.out.println("Thread-A is about to begin waiting");
+
+                        resourceA.wait();
+
+                        System.out.println("Thread-A came out of waiting state. " +
+
+                                "Its interrupted status is - " + Thread.currentThread().isInterrupted());
+
+                    } catch (InterruptedException e) {
+
+                        e.printStackTrace();
+
+                    }
+
+                }
+
+            }
+
+        });
+
+ 
+
+        Thread threadB = new Thread(new Runnable() {
+
+            @Override
+
+            public void run() {
+
+                synchronized (resourceA) {
+
+                    System.out.println("Thread-B is about to notify");
+
+                    threadA.interrupt();
+
+                    resourceA.notify();
+
+                }
+
+            }
+
+        });
+
+ 
+
+        threadA.start();
+
+        Thread.sleep(1000);
+
+        threadB.start();
+
+ 
+
+        System.out.println("Program over!");
+
+    }
+
+}
+
+ 
+
+Output - 
+
+ 
+
+Thread-A is about to begin waiting
+
+Program over!
+
+Thread-B is about to notify
+
+Thread-A came out of waiting state. Its interrupted status is - true
+
+ 
+
+ 
+
+Originally posted on StackOverflow - https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re
+
+ 
+
+Regards,
+
+Ashutosh
+
+ 
+
+ 
+
+ 
+
+ 
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu> 
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+ 
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu> 
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-- 
+
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java(tm) Specialists' Newsletter"
+Sun/Oracle Java Champion
+JavaOne Rockstar Speaker
+http://www.javaspecialists.eu <http://www.javaspecialists.eu/> 
+Tel: +30 69 75 595 262
+Skype: kabutz
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu> 
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu> 
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181204/2f11d0a1/attachment-0001.html>
+
+From webashutosh at gmail.com  Mon Dec  3 21:23:34 2018
+From: webashutosh at gmail.com (Ashutosh Agrawal)
+Date: Tue, 4 Dec 2018 07:53:34 +0530
+Subject: [concurrency-interest] Waiting thread doesn't throw
+ InterruptedException after waking-up
+In-Reply-To: <03f301d48b74$107cab60$31760220$@aapt.net.au>
+References: <CAP6O=D0aTi1rQUKO73yXSkjY7saENhYJkqnB13zgST7r0nxJVw@mail.gmail.com>
+ <216AE66B-FEE9-427D-996D-FD5605FD852A@gmail.com>
+ <039e01d48afb$d56075c0$80216140$@aapt.net.au>
+ <CACLL95qofAFZR=MwM63cB6aP=BYvOk=qVJFo9R-Lt9rwSH+ZDQ@mail.gmail.com>
+ <03b801d48b46$2cfd8210$86f88630$@aapt.net.au>
+ <CA+kOe09i+LM4VvYFMFn1EC50rGDHpx07EiCPrt7Tghx5dan9=g@mail.gmail.com>
+ <0A45D142-E079-44E1-9A69-61250FF3D1AC@gmail.com>
+ <03f301d48b74$107cab60$31760220$@aapt.net.au>
+Message-ID: <CAP6O=D3p9arddQG_t2qU8WMqJcZYVt7CCgC3+s2njfOgVs5J1Q@mail.gmail.com>
+
+Wow, that just exactly explains the issue at hand. Thanks Alex, everyone!
+
+On Tue, 4 Dec 2018 at 7:24 AM, David Holmes via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Ah! That’s where we put it. I knew it was written down somewhere!
+>
+>
+>
+> Thanks,
+>
+> David
+>
+>
+>
+> *From:* Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> *On
+> Behalf Of *Alex Otenko via Concurrency-interest
+> *Sent:* Tuesday, December 4, 2018 9:23 AM
+> *To:* Martin Buchholz <martinrb at google.com>
+> *Cc:* concurrency-interest <concurrency-interest at cs.oswego.edu>; David
+> Holmes <dholmes at ieee.org>
+>
+>
+> *Subject:* Re: [concurrency-interest] Waiting thread doesn't throw
+> InterruptedException after waking-up
+>
+>
+>
+> Actually, a better reference:
+>
+>
+>
+> https://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.2.3 -
+> and 17.2.4 on interactions of notifications and interruptions.
+>
+>
+>
+> Alex
+>
+>
+>
+> On 3 Dec 2018, at 20:38, Martin Buchholz via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>
+>
+> It's in the spirit of Java to specify whether interruption or notification
+> wins.
+>
+> It would be good for the behaviors of Object.wait and AQS.ConditionObject
+> to be consistent.
+>
+> (but Condition is an interface, and there should be some implementer
+> freedom)
+>
+> (ConditionObject should probably have some more specs to tighten promised
+> behavior)
+>
+>
+>
+> On Mon, Dec 3, 2018 at 12:26 PM David Holmes via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+> Spurious wakeup is not the issue – that’s documented in Object.wait as
+> well.
+>
+>
+>
+> Condition also has this:
+>
+> “As interruption generally implies cancellation, and checks for
+> interruption are often infrequent, an implementation can favor responding
+> to an interrupt over normal method return. This is true even if it can be
+> shown that the interrupt occurred after another action that may have
+> unblocked the thread. An implementation should document this behavior.”
+>
+> which is closer to the current issue, though suggests favoring
+> interruption – which is the opposite of what wait() does.
+>
+>
+>
+> David
+>
+>
+>
+> *From:* Dr Heinz M. Kabutz <heinz at javaspecialists.eu>
+> *Sent:* Monday, December 3, 2018 9:45 PM
+> *To:* dholmes at ieee.org
+> *Cc:* Alex Otenko <oleksandr.otenko at gmail.com>; Ashutosh Agrawal <
+> webashutosh at gmail.com>; David Holmes <davidcholmes at aapt.net.au>;
+> concurrency-interest at cs.oswego.edu
+> *Subject:* Re: [concurrency-interest] Waiting thread doesn't throw
+> InterruptedException after waking-up
+>
+>
+>
+> The spurious wakeup is mentioned in Condition:
+>
+>
+> https://docs.oracle.com/javase/7/docs/api/java/util/concurrent/locks/Condition.html
+>
+>
+>
+> On Mon, 03 Dec 2018 at 13:35, David Holmes via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+> I would have sworn we had some words about this in the Object.wait docs as
+> it’s come up before. ☹
+>
+>
+>
+> If the thread is both notified and interrupted around the same time then
+> the implementation has a choice as to which reason to report that the
+> wait() ended – with the caveat that notifications must not be lost.
+>
+>
+>
+> In terms of the hotspot implementation, the interrupt unparks the thread
+> and it is then racing with the notify() call. If the notify() is processed
+> before the thread can unlink itself from the wait-queue then it will be
+> seen to be notified. Once it has recorded that it was notified it doesn’t
+> check its interrupt status.
+>
+>
+>
+> David
+>
+>
+>
+> *From:* Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> *On
+> Behalf Of *Alex Otenko via Concurrency-interest
+> *Sent:* Monday, December 3, 2018 9:09 PM
+> *To:* Ashutosh Agrawal <webashutosh at gmail.com>
+> *Cc:* concurrency-interest at cs.oswego.edu
+> *Subject:* Re: [concurrency-interest] Waiting thread doesn't throw
+> InterruptedException after waking-up
+>
+>
+>
+> That’s the correct behaviour, and is not Mac-specific. Since your thread A
+> received both notify and interrupt, it is OK to prefer notify to interrupt.
+>
+>
+>
+> If you comment out the resourceA.notify() part, you will see it then has
+> no choice but throw InterruptedException.
+>
+>
+>
+> Alex
+>
+>
+>
+> On 3 Dec 2018, at 11:01, Ashutosh Agrawal via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>
+>
+> Hello,
+>
+>
+>
+> In the below program, Thread-A enters wait state and gets interrupted by
+> Thread-B before waking up. However, after waking-up, it does NOT throw
+> an InterruptedException (and its interrupted-status is NOT cleared).
+>
+>
+>
+> Can anyone please help explain this behaviour?
+>
+> Env : Java-8 on a Mac
+>
+>
+>
+> public class WaitNotifyAll {
+>
+>
+>
+>     private static Object resourceA = new Object();
+>
+>
+>
+>     public static void main(String[] args) throws Exception {
+>
+>
+>
+>         Thread threadA = new Thread(new Runnable() {
+>
+>             @Override
+>
+>             public void run() {
+>
+>                 synchronized (resourceA) {
+>
+>                     try {
+>
+>                         System.out.println("Thread-A is about to begin
+> waiting");
+>
+>                         resourceA.wait();
+>
+>                         System.out.println("Thread-A came out of waiting
+> state. " +
+>
+>                                 "Its interrupted status is - " +
+> Thread.currentThread().isInterrupted());
+>
+>                     } catch (InterruptedException e) {
+>
+>                         e.printStackTrace();
+>
+>                     }
+>
+>                 }
+>
+>             }
+>
+>         });
+>
+>
+>
+>         Thread threadB = new Thread(new Runnable() {
+>
+>             @Override
+>
+>             public void run() {
+>
+>                 synchronized (resourceA) {
+>
+>                     System.out.println("Thread-B is about to notify");
+>
+>                     threadA.interrupt();
+>
+>                     resourceA.notify();
+>
+>                 }
+>
+>             }
+>
+>         });
+>
+>
+>
+>         threadA.start();
+>
+>         Thread.sleep(1000);
+>
+>         threadB.start();
+>
+>
+>
+>         System.out.println("Program over!");
+>
+>     }
+>
+> }
+>
+>
+>
+> *Output - *
+>
+>
+>
+> Thread-A is about to begin waiting
+>
+> Program over!
+>
+> Thread-B is about to notify
+>
+> Thread-A came out of waiting state. Its interrupted status is - true
+>
+>
+>
+>
+>
+> Originally posted on StackOverflow -
+> https://stackoverflow.com/questions/53250167/execute-thread-interrupt-object-notify-at-the-same-time-why-does-has-two-re
+>
+>
+>
+> Regards,
+>
+> Ashutosh
+>
+>
+>
+>
+>
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> --
+>
+> Dr Heinz M. Kabutz (PhD CompSci)
+> Author of "The Java(tm) Specialists' Newsletter"
+> Sun/Oracle Java Champion
+> JavaOne Rockstar Speaker
+> http://www.javaspecialists.eu
+> Tel: +30 69 75 595 262
+> Skype: kabutz
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181204/69645c9f/attachment-0001.html>
+
+From dl at cs.oswego.edu  Wed Dec  5 06:19:09 2018
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 5 Dec 2018 06:19:09 -0500
+Subject: [concurrency-interest] ForkJoinPool with custom number of
+ WorkQueues
+In-Reply-To: <425388c0-8bf3-c43d-e7bb-d3d1205c3b78@cs.oswego.edu>
+References: <CAAcqB+vVBDT5xMgd6Gs1hnG=OSUquTL1Masw5C_XnW-9wAL1Eg@mail.gmail.com>
+ <CAKxGtTWEbPUd6sV5u1V9i_rhXVuAsvws_Xq8152hzBorAis+VQ@mail.gmail.com>
+ <816ed264-6f54-8950-acec-5cc07b7d104d@cs.oswego.edu>
+ <CAAcqB+uwCX2Xu8KH8sg+vYrwKJoX7=iLX8w=+HsqX84byifhgQ@mail.gmail.com>
+ <425388c0-8bf3-c43d-e7bb-d3d1205c3b78@cs.oswego.edu>
+Message-ID: <c39260c2-1627-459c-5a90-651ec995de9e@cs.oswego.edu>
+
+
+I committed minor updates that make ForkJoinPool less prone to flailing
+on non-saturating loads with (usually GC-induced) burstiness, which
+seems to have been the source of these performance problems.
+
+Carl and others, it would be great if you could check if it improves
+performance in your usages. Either use the jsr166.jar with
+--patch-module, or grab source and build from
+http://gee.cs.oswego.edu/dl/concurrency-interest/index.html
+
+
+-Doug
+
+From nigro.fra at gmail.com  Wed Dec  5 08:00:54 2018
+From: nigro.fra at gmail.com (Francesco Nigro)
+Date: Wed, 5 Dec 2018 14:00:54 +0100
+Subject: [concurrency-interest] ForkJoinPool with custom number of
+	WorkQueues
+In-Reply-To: <c39260c2-1627-459c-5a90-651ec995de9e@cs.oswego.edu>
+References: <CAAcqB+vVBDT5xMgd6Gs1hnG=OSUquTL1Masw5C_XnW-9wAL1Eg@mail.gmail.com>
+ <CAKxGtTWEbPUd6sV5u1V9i_rhXVuAsvws_Xq8152hzBorAis+VQ@mail.gmail.com>
+ <816ed264-6f54-8950-acec-5cc07b7d104d@cs.oswego.edu>
+ <CAAcqB+uwCX2Xu8KH8sg+vYrwKJoX7=iLX8w=+HsqX84byifhgQ@mail.gmail.com>
+ <425388c0-8bf3-c43d-e7bb-d3d1205c3b78@cs.oswego.edu>
+ <c39260c2-1627-459c-5a90-651ec995de9e@cs.oswego.edu>
+Message-ID: <CAKxGtTWhYdJvtnpFA-HNjcFdu4XFvv5Jc0G0sz9hz3TNqeFQ5A@mail.gmail.com>
+
+Hi and thanks!
+
+I was looking to the implementation and I hope to not being OT, but
+VarHandle.fullFence(); shouldn't be put before QA.getAcquire(a, m & (s -
+1)) == null && p != null
+on void push(ForkJoinTask<?> task) { to avoid the load acquire to happen
+before the QA.setRelease(a, (m = cap - 1) & s, task) that won't contain any
+full fence?
+
+Thanks,
+Franz
+
+Il giorno mer 5 dic 2018 alle ore 12:21 Doug Lea via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> ha scritto:
+
+>
+> I committed minor updates that make ForkJoinPool less prone to flailing
+> on non-saturating loads with (usually GC-induced) burstiness, which
+> seems to have been the source of these performance problems.
+>
+> Carl and others, it would be great if you could check if it improves
+> performance in your usages. Either use the jsr166.jar with
+> --patch-module, or grab source and build from
+> http://gee.cs.oswego.edu/dl/concurrency-interest/index.html
+>
+>
+> -Doug
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181205/c394f163/attachment.html>
+
+From nigro.fra at gmail.com  Wed Dec  5 08:12:05 2018
+From: nigro.fra at gmail.com (Francesco Nigro)
+Date: Wed, 5 Dec 2018 14:12:05 +0100
+Subject: [concurrency-interest] ForkJoinPool with custom number of
+	WorkQueues
+In-Reply-To: <CAKxGtTWhYdJvtnpFA-HNjcFdu4XFvv5Jc0G0sz9hz3TNqeFQ5A@mail.gmail.com>
+References: <CAAcqB+vVBDT5xMgd6Gs1hnG=OSUquTL1Masw5C_XnW-9wAL1Eg@mail.gmail.com>
+ <CAKxGtTWEbPUd6sV5u1V9i_rhXVuAsvws_Xq8152hzBorAis+VQ@mail.gmail.com>
+ <816ed264-6f54-8950-acec-5cc07b7d104d@cs.oswego.edu>
+ <CAAcqB+uwCX2Xu8KH8sg+vYrwKJoX7=iLX8w=+HsqX84byifhgQ@mail.gmail.com>
+ <425388c0-8bf3-c43d-e7bb-d3d1205c3b78@cs.oswego.edu>
+ <c39260c2-1627-459c-5a90-651ec995de9e@cs.oswego.edu>
+ <CAKxGtTWhYdJvtnpFA-HNjcFdu4XFvv5Jc0G0sz9hz3TNqeFQ5A@mail.gmail.com>
+Message-ID: <CAKxGtTUJfEj0fZ7_UcBdemr6k0N24SnkAOWwxjB_TsG6-8Wtpg@mail.gmail.com>
+
+Uh my bad,
+
+I haven't checked where that version of push was used: just within
+ForkJoinWorkerThreads...
+
+Il giorno mer 5 dic 2018 alle ore 14:00 Francesco Nigro <nigro.fra at gmail.com>
+ha scritto:
+
+> Hi and thanks!
+>
+> I was looking to the implementation and I hope to not being OT, but
+> VarHandle.fullFence(); shouldn't be put before QA.getAcquire(a, m & (s -
+> 1)) == null && p != null
+> on void push(ForkJoinTask<?> task) { to avoid the load acquire to happen
+> before the QA.setRelease(a, (m = cap - 1) & s, task) that won't contain
+> any full fence?
+>
+> Thanks,
+> Franz
+>
+> Il giorno mer 5 dic 2018 alle ore 12:21 Doug Lea via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> ha scritto:
+>
+>>
+>> I committed minor updates that make ForkJoinPool less prone to flailing
+>> on non-saturating loads with (usually GC-induced) burstiness, which
+>> seems to have been the source of these performance problems.
+>>
+>> Carl and others, it would be great if you could check if it improves
+>> performance in your usages. Either use the jsr166.jar with
+>> --patch-module, or grab source and build from
+>> http://gee.cs.oswego.edu/dl/concurrency-interest/index.html
+>>
+>>
+>> -Doug
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181205/4cf39666/attachment.html>
+
+From edd at theunixzoo.co.uk  Thu Dec 13 07:29:39 2018
+From: edd at theunixzoo.co.uk (Edd Barrett)
+Date: Thu, 13 Dec 2018 12:29:39 +0000
+Subject: [concurrency-interest] Call for Abstracts: Modern Language Runtimes,
+ Ecosystems, and VMs (MoreVMs) 2019
+Message-ID: <20181213122939.GB65683@fremen.lan>
+
+============================================================================
+                  Call for Extended Abstracts: MoreVMs'19
+
+                              3rd Workshop on
+                  Modern Language Runtimes, and Ecosystems
+
+                      Co-located with <Programming>'19
+                    April 1st or 2nd, 2019, Genova, Italy
+
+        https://2019.programming-conference.org/track/MoreVMs-2019
+============================================================================
+
+Following two previous successful editions, the MoreVMs'19 workshop aims to
+bring together industrial and academic programmers to discuss the design,
+implementation, and usage of modern languages and runtimes. This includes
+aspects such as reuse of language runtimes, modular implementation, language
+design and compilation strategies. By bringing together both researchers and
+practitioners, the workshop aims to enable a diverse discussion on how
+languages and runtimes are currently being utilized, and where they need to
+improve further.
+
+Relevant topics include, but are definitely not limited to, the following:
+
+ - Extensible VM design (compiler- or interpreter-based VMs)
+ - Reusable components (e.g. interpreters, garbage collectors, ...)
+ - Static and dynamic compilation techniques
+ - Techniques for targeting high-level languages such as JavaScript
+ - Interoperability between languages
+ - Tooling support (e.g. debugging, profiling, etc.)
+ - Programming language development environments
+ - Case studies of existing language implementation approaches
+ - Language implementation challenges and trade-offs
+ - Surveys and usage reports to understand usage in the wild
+ - Ideas for more predictable performance
+ - Ideas for how VMs could take advantage of new hardware features
+ - Ideas for how we should build languages in the future
+
+Workshop Format and Submissions
+-------------------------------
+
+We welcome presentation proposals in the form of extended abstracts (1 to 2
+pages long) discussing experiences, work-in-progress, as well as future
+visions, from either an academic or industrial perspective.
+
+The extended abstracts, and if the speakers wish, their slides, will be
+published on the workshop's web site. Alternatively, the abstracts can be
+published as part of the companion of <Programming>'19 in the ACM DL.
+Publication in the ACM DL is conditional on the acceptance by the program
+committee.
+
+Please note that MoreVMs'19 is organized as an academic workshop, and as such,
+speakers will be required to register for the workshop.
+
+Author Instructions
+-------------------
+
+Submissions should use the ACM Conference 'acmart' Format with the 'sigconf'
+option and with a font size of 9 point and the font family Libertine/Biolinum.
+All submissions should be in PDF format. If you use LaTeX or Word, please use
+the provided ACM acmart templates. Otherwise, please follow the ACM author
+instructions.
+
+If you are formatting your paper using Word, you may wish to use the provided
+Word template that supports this font size. Please include page numbers in your
+submission for review using the LaTeX command '\settopmatter{printfolios=true}'
+(see examples in template).
+
+Please also ensure that your submission is legible when printed on a black and
+white printer. In particular, please check that colors remain distinct and font
+sizes are legible.
+
+Submission Site: https://easychair.org/conferences/?conf=morevms19
+
+Important Dates
+---------------
+
+Extended abstract submissions:  2019-01-11
+Author notification:            2019-02-10
+Camera Ready:                   2019-02-22
+Workshop:                       2019-04-01 or 2019-04-02
+
+All deadlines are Anywhere on Earth (AoE), i.e. GMT/UTC-12:00 hour.
+
+Program Committee
+-----------------
+
+Nicolas B. Pierron, Mozilla, France
+Walter Binder, University of Lugano, Switzerland
+Eduard-Mihai Burtescu, Lyken Software Solutions
+Vyacheslav Egorov, Google, Denmark
+Tony Hosking, Australian National University / Data61, Australia
+Christoph Kirsch, University of Salzburg, Austria
+Lun Liu, University of California at Los Angeles, USA
+Fabio Niephaus, Hasso Plattner Institute, Germany
+Luís Pina, George Mason University, USA
+Manuel Rigger, Johannes Kepler University Linz, Austria
+Jennifer B. Sartor, Ghent University, Belgium
+Andy Wingo, Igalia, S.L., France
+
+Organizers
+----------
+
+Edd Barrett, King's College London, UK
+Stefan Marr, University of Kent, UK
+Adam Welc, Uber Technologies, USA
+
+From leventov.ru at gmail.com  Thu Dec 13 14:20:21 2018
+From: leventov.ru at gmail.com (Roman Leventov)
+Date: Thu, 13 Dec 2018 20:20:21 +0100
+Subject: [concurrency-interest] HashMap.modCount accesses should be opaque?
+Message-ID: <CAAMLo=bXfskg7Ka+U_D8KGUGxkksYA4B4ko6mbkx4AHZSmCk3w@mail.gmail.com>
+
+Probably HashMap.modCount reads and writes should use VarHandle's Opaque
+mode, to increase chances of catching concurrent modifications in some
+cases.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181213/f1a9801d/attachment.html>
+
+From nigro.fra at gmail.com  Thu Dec 13 14:49:32 2018
+From: nigro.fra at gmail.com (Francesco Nigro)
+Date: Thu, 13 Dec 2018 20:49:32 +0100
+Subject: [concurrency-interest] HashMap.modCount accesses should be
+	opaque?
+In-Reply-To: <CAAMLo=bXfskg7Ka+U_D8KGUGxkksYA4B4ko6mbkx4AHZSmCk3w@mail.gmail.com>
+References: <CAAMLo=bXfskg7Ka+U_D8KGUGxkksYA4B4ko6mbkx4AHZSmCk3w@mail.gmail.com>
+Message-ID: <CAKxGtTUptNMby=Sgmnqqr=t01p9xcdeKWivGSRL1K29U6iUboQ@mail.gmail.com>
+
+Hi Roman,
+
+It is a nice idea from the functionality point of view.
+Just thinking loud (ie to be verified): using VarHandle's Opaque mode I'm
+expecting that would introduce some compiler barriers (depends on the CPU
+architecture) preventing some useful compiler optimizations (eg hoisting of
+range checks of arrays while loop unrolling).
+In addition, I have always thought that modCount was designed to be used in
+a concurrent (but not parallel) scenario, but I could be wrong!
+
+Cheers,
+Franz
+
+Il giorno gio 13 dic 2018, 20:22 Roman Leventov via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> ha scritto:
+
+> Probably HashMap.modCount reads and writes should use VarHandle's Opaque
+> mode, to increase chances of catching concurrent modifications in some
+> cases.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181213/ab43ef43/attachment.html>
+
+From dl at cs.oswego.edu  Sat Dec 15 09:24:09 2018
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sat, 15 Dec 2018 09:24:09 -0500
+Subject: [concurrency-interest] HashMap.modCount accesses should be
+ opaque?
+In-Reply-To: <CAAMLo=bXfskg7Ka+U_D8KGUGxkksYA4B4ko6mbkx4AHZSmCk3w@mail.gmail.com>
+References: <CAAMLo=bXfskg7Ka+U_D8KGUGxkksYA4B4ko6mbkx4AHZSmCk3w@mail.gmail.com>
+Message-ID: <18ee9a2a-30c7-e23b-390a-2095ef357498@cs.oswego.edu>
+
+On 12/13/18 2:20 PM, Roman Leventov via Concurrency-interest wrote:
+> Probably HashMap.modCount reads and writes should use VarHandle's Opaque
+> mode, to increase chances of catching concurrent modifications in some
+> cases.
+
+I don't think anyone would thank us for doing this. It would slightly
+improve detection at the cost of slightly reducing optimizability
+(performance).
+
+And in any case, race detector tools are becoming usable enough to make
+them routinely useful during development, making jdk heuristic detection
+less of a priority.
+
+
+-Doug
+
+
+From leventov.ru at gmail.com  Sat Dec 15 10:28:02 2018
+From: leventov.ru at gmail.com (Roman Leventov)
+Date: Sat, 15 Dec 2018 16:28:02 +0100
+Subject: [concurrency-interest] Why CHM.remove(key,
+ value) returns false if the value is null rather than throws NPE?
+Message-ID: <CAAMLo=aaQ1Yj0JJ3p5PRb82NxPrDmgneC0NaBaxvbb2vVbagEA@mail.gmail.com>
+
+It seems that ConcurrentHashMap.remove(key, value) is a unique method with
+such tolerance for null. Here is the change:
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ConcurrentHashMap.java?r1=1.68&r2=1.69.
+Why it was decided to do this?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181215/47e99d75/attachment.html>
+
+From dl at cs.oswego.edu  Sat Dec 15 12:59:30 2018
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sat, 15 Dec 2018 12:59:30 -0500
+Subject: [concurrency-interest] Why CHM.remove(key,
+ value) returns false if the value is null rather than throws NPE?
+In-Reply-To: <CAAMLo=aaQ1Yj0JJ3p5PRb82NxPrDmgneC0NaBaxvbb2vVbagEA@mail.gmail.com>
+References: <CAAMLo=aaQ1Yj0JJ3p5PRb82NxPrDmgneC0NaBaxvbb2vVbagEA@mail.gmail.com>
+Message-ID: <aed4acc9-bfe6-34e5-1f96-5fecc1884b01@cs.oswego.edu>
+
+On 12/15/18 10:28 AM, Roman Leventov via Concurrency-interest wrote:
+> It seems that ConcurrentHashMap.remove(key, value) is a unique method
+> with such tolerance for null. Here is the
+> change: http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ConcurrentHashMap.java?r1=1.68&r2=1.69.
+> Why it was decided to do this?
+
+That diff is from 2005, so probably no one remembers why this was
+transiently done, but the current version throws NPE on null.
+
+-Doug
+
+
+From me at yawk.at  Sat Dec 15 13:09:35 2018
+From: me at yawk.at (Jonas Konrad)
+Date: Sat, 15 Dec 2018 19:09:35 +0100
+Subject: [concurrency-interest] Why CHM.remove(key,
+ value) returns false if the value is null rather than throws NPE?
+In-Reply-To: <aed4acc9-bfe6-34e5-1f96-5fecc1884b01@cs.oswego.edu>
+References: <CAAMLo=aaQ1Yj0JJ3p5PRb82NxPrDmgneC0NaBaxvbb2vVbagEA@mail.gmail.com>
+ <aed4acc9-bfe6-34e5-1f96-5fecc1884b01@cs.oswego.edu>
+Message-ID: <7ff2fee4-c20e-74f7-ddc8-dc7b61d4f9cf@yawk.at>
+
+The current version only throws NPE on null *key*:
+
+https://java-browser.yawk.at/java/11/java.base/java/util/concurrent/ConcurrentHashMap.java#1544
+
+- Jonas
+
+On 2018-12-15 18:59, Doug Lea via Concurrency-interest wrote:
+> On 12/15/18 10:28 AM, Roman Leventov via Concurrency-interest wrote:
+>> It seems that ConcurrentHashMap.remove(key, value) is a unique method
+>> with such tolerance for null. Here is the
+>> change: http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ConcurrentHashMap.java?r1=1.68&r2=1.69.
+>> Why it was decided to do this?
+> 
+> That diff is from 2005, so probably no one remembers why this was
+> transiently done, but the current version throws NPE on null.
+> 
+> -Doug
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+From joe.bowbeer at gmail.com  Sat Dec 15 15:47:30 2018
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Sat, 15 Dec 2018 12:47:30 -0800
+Subject: [concurrency-interest] Why CHM.remove(key,
+ value) returns false if the value is null rather than throws NPE?
+In-Reply-To: <7ff2fee4-c20e-74f7-ddc8-dc7b61d4f9cf@yawk.at>
+References: <CAAMLo=aaQ1Yj0JJ3p5PRb82NxPrDmgneC0NaBaxvbb2vVbagEA@mail.gmail.com>
+ <aed4acc9-bfe6-34e5-1f96-5fecc1884b01@cs.oswego.edu>
+ <7ff2fee4-c20e-74f7-ddc8-dc7b61d4f9cf@yawk.at>
+Message-ID: <CAHzJPEoQeiFHDZqLM5q6M44m5gJ6UvwYRe4LGx0jBr0T6CU4_Q@mail.gmail.com>
+
+The Map interface permits null values, so (by LSP) CHM can't penalize if
+someone probes for one.
+
+However, looking at the archives there was a period of several months in
+which a CHM iterator might return null:
+
+https://bugs.java.com/bugdatabase/view_bug.do?bug_id=6312056
+
+But this was fixed in the Mustang release. (Does anyone still remember
+Mustang?)
+
+On Sat, Dec 15, 2018 at 10:10 AM Jonas Konrad via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> The current version only throws NPE on null *key*:
+>
+>
+> https://java-browser.yawk.at/java/11/java.base/java/util/concurrent/ConcurrentHashMap.java#1544
+>
+> - Jonas
+>
+> On 2018-12-15 18:59, Doug Lea via Concurrency-interest wrote:
+> > On 12/15/18 10:28 AM, Roman Leventov via Concurrency-interest wrote:
+> >> It seems that ConcurrentHashMap.remove(key, value) is a unique method
+> >> with such tolerance for null. Here is the
+> >> change:
+> http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ConcurrentHashMap.java?r1=1.68&r2=1.69
+> .
+> >> Why it was decided to do this?
+> >
+> > That diff is from 2005, so probably no one remembers why this was
+> > transiently done, but the current version throws NPE on null.
+> >
+> > -Doug
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181215/0a8f7378/attachment.html>
+
+From me at yawk.at  Sun Dec 16 03:45:35 2018
+From: me at yawk.at (Jonas Konrad)
+Date: Sun, 16 Dec 2018 09:45:35 +0100
+Subject: [concurrency-interest] Why CHM.remove(key,
+ value) returns false if the value is null rather than throws NPE?
+In-Reply-To: <CAHzJPEoQeiFHDZqLM5q6M44m5gJ6UvwYRe4LGx0jBr0T6CU4_Q@mail.gmail.com>
+References: <CAAMLo=aaQ1Yj0JJ3p5PRb82NxPrDmgneC0NaBaxvbb2vVbagEA@mail.gmail.com>
+ <aed4acc9-bfe6-34e5-1f96-5fecc1884b01@cs.oswego.edu>
+ <7ff2fee4-c20e-74f7-ddc8-dc7b61d4f9cf@yawk.at>
+ <CAHzJPEoQeiFHDZqLM5q6M44m5gJ6UvwYRe4LGx0jBr0T6CU4_Q@mail.gmail.com>
+Message-ID: <11c17c76-00fd-ad2c-de27-1b10a0066ab4@yawk.at>
+
+Map has provisions in its javadoc for maps that do not support null 
+values. Map.remove and ConcurrentMap.remove explicitly allow throwing 
+NPE if the map does not support null keys / values. Also note that this 
+is the same for null *keys* (Maps can support them optionally), but CHM 
+throws an NPE for those even though you could argue that it should just 
+return false for the same reason.
+
+On the other hand the current behavior (NPE on key but not value) is the 
+most in-line with the pseudocode spec in Map.remove(O,O) - 
+CHM.containsKey would throw NPE with a null key, but the pseudocode will 
+not throw NPE with a null value.
+
+- Jonas
+
+On 2018-12-15 21:47, Joe Bowbeer wrote:
+> The Map interface permits null values, so (by LSP) CHM can't penalize if 
+> someone probes for one.
+> 
+> However, looking at the archives there was a period of several months in 
+> which a CHM iterator might return null:
+> 
+> https://bugs.java.com/bugdatabase/view_bug.do?bug_id=6312056
+> 
+> But this was fixed in the Mustang release. (Does anyone still remember 
+> Mustang?)
+> 
+> On Sat, Dec 15, 2018 at 10:10 AM Jonas Konrad via Concurrency-interest 
+> <concurrency-interest at cs.oswego.edu 
+> <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+> 
+>     The current version only throws NPE on null *key*:
+> 
+>     https://java-browser.yawk.at/java/11/java.base/java/util/concurrent/ConcurrentHashMap.java#1544
+> 
+>     - Jonas
+> 
+>     On 2018-12-15 18:59, Doug Lea via Concurrency-interest wrote:
+>      > On 12/15/18 10:28 AM, Roman Leventov via Concurrency-interest wrote:
+>      >> It seems that ConcurrentHashMap.remove(key, value) is a unique
+>     method
+>      >> with such tolerance for null. Here is the
+>      >> change:
+>     http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ConcurrentHashMap.java?r1=1.68&r2=1.69.
+>      >> Why it was decided to do this?
+>      >
+>      > That diff is from 2005, so probably no one remembers why this was
+>      > transiently done, but the current version throws NPE on null.
+>      >
+>      > -Doug
+>      >
+>      > _______________________________________________
+>      > Concurrency-interest mailing list
+>      > Concurrency-interest at cs.oswego.edu
+>     <mailto:Concurrency-interest at cs.oswego.edu>
+>      > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>      >
+>     _______________________________________________
+>     Concurrency-interest mailing list
+>     Concurrency-interest at cs.oswego.edu
+>     <mailto:Concurrency-interest at cs.oswego.edu>
+>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+From leventov.ru at gmail.com  Sun Dec 16 07:36:33 2018
+From: leventov.ru at gmail.com (Roman Leventov)
+Date: Sun, 16 Dec 2018 13:36:33 +0100
+Subject: [concurrency-interest] Why CHM.remove(key,
+ value) returns false if the value is null rather than throws NPE?
+In-Reply-To: <11c17c76-00fd-ad2c-de27-1b10a0066ab4@yawk.at>
+References: <CAAMLo=aaQ1Yj0JJ3p5PRb82NxPrDmgneC0NaBaxvbb2vVbagEA@mail.gmail.com>
+ <aed4acc9-bfe6-34e5-1f96-5fecc1884b01@cs.oswego.edu>
+ <7ff2fee4-c20e-74f7-ddc8-dc7b61d4f9cf@yawk.at>
+ <CAHzJPEoQeiFHDZqLM5q6M44m5gJ6UvwYRe4LGx0jBr0T6CU4_Q@mail.gmail.com>
+ <11c17c76-00fd-ad2c-de27-1b10a0066ab4@yawk.at>
+Message-ID: <CAAMLo=aaDRq+ZF=TzaycN6TXvZ6mA8quGZOf-_+stDPFCM_Qdw@mail.gmail.com>
+
+However, the pseudocode spec of replace(K, V, V) is similar (
+https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/ConcurrentMap.html#replace-K-V-V-)
+and would also imply that false should be returned if the second argument
+is null. But CHM throws NPE if the second argument of replace(K, V, V) is
+null.
+
+On Sun, 16 Dec 2018 at 09:48, Jonas Konrad via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Map has provisions in its javadoc for maps that do not support null
+> values. Map.remove and ConcurrentMap.remove explicitly allow throwing
+> NPE if the map does not support null keys / values. Also note that this
+> is the same for null *keys* (Maps can support them optionally), but CHM
+> throws an NPE for those even though you could argue that it should just
+> return false for the same reason.
+>
+> On the other hand the current behavior (NPE on key but not value) is the
+> most in-line with the pseudocode spec in Map.remove(O,O) -
+> CHM.containsKey would throw NPE with a null key, but the pseudocode will
+> not throw NPE with a null value.
+>
+> - Jonas
+>
+> On 2018-12-15 21:47, Joe Bowbeer wrote:
+> > The Map interface permits null values, so (by LSP) CHM can't penalize if
+> > someone probes for one.
+> >
+> > However, looking at the archives there was a period of several months in
+> > which a CHM iterator might return null:
+> >
+> > https://bugs.java.com/bugdatabase/view_bug.do?bug_id=6312056
+> >
+> > But this was fixed in the Mustang release. (Does anyone still remember
+> > Mustang?)
+> >
+> > On Sat, Dec 15, 2018 at 10:10 AM Jonas Konrad via Concurrency-interest
+> > <concurrency-interest at cs.oswego.edu
+> > <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+> >
+> >     The current version only throws NPE on null *key*:
+> >
+> >
+> https://java-browser.yawk.at/java/11/java.base/java/util/concurrent/ConcurrentHashMap.java#1544
+> >
+> >     - Jonas
+> >
+> >     On 2018-12-15 18:59, Doug Lea via Concurrency-interest wrote:
+> >      > On 12/15/18 10:28 AM, Roman Leventov via Concurrency-interest
+> wrote:
+> >      >> It seems that ConcurrentHashMap.remove(key, value) is a unique
+> >     method
+> >      >> with such tolerance for null. Here is the
+> >      >> change:
+> >
+> http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ConcurrentHashMap.java?r1=1.68&r2=1.69
+> .
+> >      >> Why it was decided to do this?
+> >      >
+> >      > That diff is from 2005, so probably no one remembers why this was
+> >      > transiently done, but the current version throws NPE on null.
+> >      >
+> >      > -Doug
+> >      >
+> >      > _______________________________________________
+> >      > Concurrency-interest mailing list
+> >      > Concurrency-interest at cs.oswego.edu
+> >     <mailto:Concurrency-interest at cs.oswego.edu>
+> >      > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >      >
+> >     _______________________________________________
+> >     Concurrency-interest mailing list
+> >     Concurrency-interest at cs.oswego.edu
+> >     <mailto:Concurrency-interest at cs.oswego.edu>
+> >     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181216/6fbcec9f/attachment-0001.html>
+
+From mydevgroup at gmail.com  Tue Dec 18 17:37:59 2018
+From: mydevgroup at gmail.com (George Monet)
+Date: Tue, 18 Dec 2018 22:37:59 +0000
+Subject: [concurrency-interest] Runnable Thread State when making blocking
+ system calls
+Message-ID: <CA+kOh44FQsmmAteXWG=AE=hQ6Myg66Gr0_1UFcRE-SgSruHxPA@mail.gmail.com>
+
+I would like to know why the thread state is shown as Runnable when making
+a blocking system call such as readByte();  which in turn calls read() on a
+Linux system.
+Does a Runnable state consume cpu cycles while blocking on system call?
+
+
+"pool-9-thread-1" - Thread t at 49
+   java.lang.Thread.State: RUNNABLE
+        at java.io.FileInputStream.readBytes(Native Method)
+        at java.io.FileInputStream.read(FileInputStream.java:255)
+        at java.io.BufferedInputStream.fill(BufferedInputStream.java:246)
+        at java.io.BufferedInputStream.read1(BufferedInputStream.java:286)
+        at java.io.BufferedInputStream.read(BufferedInputStream.java:345)
+        at java.io.FilterInputStream.read(FilterInputStream.java:107)
+          ...
+          ....
+        at
+java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+        at
+java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+        at java.lang.Thread.run(Thread.java:748)
+
+   Locked ownable synchronizers:
+        - None
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181218/088e57dc/attachment.html>
+
+From davidcholmes at aapt.net.au  Tue Dec 18 18:06:41 2018
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 19 Dec 2018 09:06:41 +1000
+Subject: [concurrency-interest] Runnable Thread State when making
+	blocking system calls
+In-Reply-To: <CA+kOh44FQsmmAteXWG=AE=hQ6Myg66Gr0_1UFcRE-SgSruHxPA@mail.gmail.com>
+References: <CA+kOh44FQsmmAteXWG=AE=hQ6Myg66Gr0_1UFcRE-SgSruHxPA@mail.gmail.com>
+Message-ID: <023301d49726$56bd1250$043736f0$@aapt.net.au>
+
+Hi George,
+
+ 
+
+The Java Thread state does not track arbitrary blocking operations, only those related to monitors and sleep (and related j.u.c utilities). Blocking I/O is not covered.
+
+ 
+
+If the thread is blocked on a system call it is blocked – it uses as much CPU as the system call logic dictates.
+
+ 
+
+David
+
+ 
+
+From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> On Behalf Of George Monet via Concurrency-interest
+Sent: Wednesday, December 19, 2018 8:38 AM
+To: Concurrency-interest at cs.oswego.edu
+Subject: [concurrency-interest] Runnable Thread State when making blocking system calls
+
+ 
+
+ 
+
+I would like to know why the thread state is shown as Runnable when making a blocking system call such as readByte();  which in turn calls read() on a Linux system. 
+
+Does a Runnable state consume cpu cycles while blocking on system call?
+
+ 
+
+ 
+
+"pool-9-thread-1" - Thread t at 49
+
+   java.lang.Thread.State: RUNNABLE
+
+        at java.io.FileInputStream.readBytes(Native Method)
+
+        at java.io.FileInputStream.read(FileInputStream.java:255)
+
+        at java.io.BufferedInputStream.fill(BufferedInputStream.java:246)
+
+        at java.io.BufferedInputStream.read1(BufferedInputStream.java:286)
+
+        at java.io.BufferedInputStream.read(BufferedInputStream.java:345)
+
+        at java.io.FilterInputStream.read(FilterInputStream.java:107)
+
+          ...
+
+          ....
+
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+
+        at java.lang.Thread.run(Thread.java:748)
+
+ 
+
+   Locked ownable synchronizers:
+
+        - None
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20181219/32b6a3f5/attachment.html>
+

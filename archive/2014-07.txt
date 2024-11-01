@@ -1,0 +1,3928 @@
+From dt at flyingtroika.com  Tue Jul  1 00:23:16 2014
+From: dt at flyingtroika.com (DT)
+Date: Mon, 30 Jun 2014 21:23:16 -0700
+Subject: [concurrency-interest] Custom ThreadPoolExecutor implementation
+ to handle priority based Callable tasks
+In-Reply-To: <53B09C0C.8020105@gmail.com>
+References: <NFBBKALFDCPFIDBNKAPCEEGPKHAA.davidcholmes@aapt.net.au>	<53ADDC49.9060403@flyingtroika.com>
+	<53ADF08A.1070600@oracle.com> <53AE3B53.9000600@flyingtroika.com>
+	<53B09C0C.8020105@gmail.com>
+Message-ID: <53B237B4.2080801@flyingtroika.com>
+
+Peter,
+
+Is this code (ExpirableFutureTask ) based on java 7 or it requires 8? I 
+need to perform some experiments with CompletableFutures, its for sure. 
+We are using java 7 and moving to 8 can take some time. I am a slightly 
+conservative in terms of moving to the next version.
+
+DT
+
+On 6/29/2014 4:06 PM, Peter Levart wrote:
+>
+> On 06/28/2014 05:49 AM, DT wrote:
+>> I believe that
+>> 1 -  should be ok to accomplish
+>> 2 -  ok to satisfy or at least get very close to it as we know all 
+>> dependencies at the beginning
+>> 3 -  I like idea with counters: simple, straight and easy to follow
+>>
+>> However, the issue is that all the tasks (with dependency, etc) have 
+>> to finish execution within the same time slot as a whole. We have to 
+>> enforce some sort of timing constraint. Same task can take different 
+>> time to execute (we can apply some statistical methods to get the 
+>> average for all the tasks based on the historical execution time).
+>>
+>> Would it be better to apply some sort of cyclic barriers or counters?
+>>
+>> Thanks,
+>> DT
+>
+> Do you know the time slot in advance, when you submit the 1st task in 
+> a group of dependent tasks? If so, you could combine the Oleksandr's 
+> suggestion (which is how JDK8 CompletableFuture works) with the notion 
+> of "deadline" that you assign to a group. Deadline can serve two purposes:
+> - expires the tree of unfinished dependent tasks in a group when 
+> deadline is reached, skipping their execution
+> - can be used to prioritize de-queueing of tasks by TPE that will 
+> expire earlier (using PriorityBlockingQueue)
+>
+> See here:
+>
+> https://github.com/plevart/concurrent-utils/blob/master/src/si/pele/concurrent/ExpirableFutureTask.java
+>
+> And an example here:
+>
+> https://github.com/plevart/concurrent-utils/blob/master/src/si/pele/concurrent/test/EFTTest.java
+>
+>
+> Regards, Peter
+>
+>> On 6/27/2014 3:30 PM, Oleksandr Otenko wrote:
+>>> 1. Each task must know how many dependencies it has.
+>>>
+>>> 2. Each task knows which other tasks depend on it.
+>>>
+>>> 3. Upon finishing a task, decrement the counters of all dependent 
+>>> tasks. Those that reach zero, get scheduled with the TPE.
+>>>
+>>>
+>>> If you don't know which tasks depend on which before executing them 
+>>> (ie you don't have answer for (2)), there is no efficient way of 
+>>> planning their execution.
+>>>
+>>> Alex
+>>>
+>>>
+>>> On 27/06/2014 22:04, DT wrote:
+>>>> if we dispatch tasks based on queuing we would not get guarantees 
+>>>> that the tasks first in line will finish execution first and 
+>>>> futures are done to return results (in general none of the 
+>>>> dispatching mechanism will give me such behavior, can be wrong of 
+>>>> course, sorry if I am mangled callable priorities which I wanted to 
+>>>> use to control execution of the tasks in some order with overall 
+>>>> thread priorities)
+>>>> I think that I need some sort of scheduling constraints what task 
+>>>> should be done first so I can use futures results for dispatching 
+>>>> next set of tasks. I am not sure if for example CompletableFuture 
+>>>> in java 8 meant to be used for such problems. Namely tasks have to 
+>>>> be executed in certain order/deliver results and they can have 
+>>>> dependency/relationships between each other.
+>>>>
+>>>> By the way in what circumstances would you recommend to use TPE 
+>>>> constructor with own ThreadFactory implementation and not to relly 
+>>>> on the default one?
+>>>>
+>>>> DT
+>>>>
+>>>> On 6/27/2014 1:09 PM, David Holmes wrote:
+>>>>> Priority can only really be used for the dispatching/queueing 
+>>>>> mechanism. Once tasks are executing priority is essentially 
+>>>>> meaningless. Thread priorities have no significance in general.
+>>>>> David
+>>>>>
+>>>>>     -----Original Message-----
+>>>>>     *From:* concurrency-interest-bounces at cs.oswego.edu
+>>>>>     [mailto:concurrency-interest-bounces at cs.oswego.edu]*On Behalf
+>>>>>     Of *DT
+>>>>>     *Sent:* Saturday, 28 June 2014 1:42 AM
+>>>>>     *To:* viktor ?lang; dholmes at ieee.org
+>>>>>     *Cc:* concurrency-interest
+>>>>>     *Subject:* Re: [concurrency-interest] Custom
+>>>>>     ThreadPoolExecutor implementation to handle priority based
+>>>>>     Callable tasks
+>>>>>
+>>>>>                     We see several scenarios how to approach:
+>>>>>
+>>>>>     1-st approach is to use a PriorityBlockingQueue, provide
+>>>>>     Comparator for Callable tasks to change the order based on the
+>>>>>     Callable priority. Then when we call invokeAll( Collections of
+>>>>>     Callable tasks) on TPE to execute tasks from queue based on
+>>>>>     the priority, 1-st, 2-d, n which means that tasks will be
+>>>>>     executed based on abstract groups (for instance1-st group --
+>>>>>     all tasks with high priority go first according to TPE
+>>>>>     scheduling. tpe.execute(thread) will be called and tasks will
+>>>>>     be assigned to available tpe worker threads.
+>>>>>
+>>>>>     Following this logic tpe does not guarantee for sure that all
+>>>>>     high priority tasks will be executed first. Or this guarantee
+>>>>>     is not enough enforced (maybe there are some policy to enforce
+>>>>>     this)
+>>>>>
+>>>>>     2-d approach is to modify invokeAll() to handle priority
+>>>>>     explicitly which does not look like a clean solution.
+>>>>>
+>>>>>     3-d approach is to have multiple TPEs and each of these tpe
+>>>>>     will handle only one type of priority without mix, for example
+>>>>>     tpe1 will invokeAll(tasks priority 1 only) , tpe2 will
+>>>>>     invokeAll(tasks priority 2 only). Which tpe should be
+>>>>>     instantiated -1^st should follow business logic.
+>>>>>
+>>>>>     Here is an example what we trying to implement. Assuming we
+>>>>>     have different types of tasks which are bounded to get some
+>>>>>     resources using udp/tcp/http/sql. Something like
+>>>>>
+>>>>>     sqlWorker needs to execute SQLs and return results, httpWorker
+>>>>>     type has to handle http calls and return some results, etc.
+>>>>>     the issue is that even if we assign some priorities to these
+>>>>>     workers to perform similar tasks following some business logic
+>>>>>     what data needs to get first within our workflow we would have
+>>>>>     to change priorities dynamically just because same type of
+>>>>>     workers mightfinish execution within different timeslot. So we
+>>>>>     have to wait until all workers are executed (practically tune
+>>>>>     timeslot based on the longest execution time) or drop some
+>>>>>     tasks due to the timing limits. If we follow 3-d approach it
+>>>>>     would be hard to manage TPEs. If we follow 2-d approach it
+>>>>>     would be hard to maintain tasks and guarantee execution group
+>>>>>     by group.And 1-st approach seems does not completely satisfy
+>>>>>     the problem concurrency execution logic.
+>>>>>
+>>>>>     On 6/27/2014 3:12 AM, ?iktor ?lang wrote:
+>>>>>>     "  public abstract void setPriority(int priority);" ?
+>>>>>>     Changing priority on an already submitted task seems strange.
+>>>>>>
+>>>>>>     I agree with David, just use a PriorityBlockingQueue
+>>>>>>     [http://docs.oracle.com/javase/7/docs/api/java/util/concurrent/PriorityBlockingQueue.html]
+>>>>>>     for the submission queue of the TPE and provide a Comparator
+>>>>>>     that checks for your PriorityCallable and puts
+>>>>>>     non-PriorityCallable-Callables at an appropriate default
+>>>>>>     priority.
+>>>>>>
+>>>>>>
+>>>>>>     On Fri, Jun 27, 2014 at 6:16 AM, David Holmes
+>>>>>>     <davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au>>
+>>>>>>     wrote:
+>>>>>>
+>>>>>>         Can't you just use your PriorityCallable with a custom
+>>>>>>         PriorityQueue and
+>>>>>>         standard ThreadPoolExecutor?
+>>>>>>
+>>>>>>         David
+>>>>>>
+>>>>>>         > -----Original Message-----
+>>>>>>         > From: concurrency-interest-bounces at cs.oswego.edu
+>>>>>>         <mailto:concurrency-interest-bounces at cs.oswego.edu>
+>>>>>>         > [mailto:concurrency-interest-bounces at cs.oswego.edu
+>>>>>>         <mailto:concurrency-interest-bounces at cs.oswego.edu>]On
+>>>>>>         Behalf Of DT
+>>>>>>         > Sent: Friday, 27 June 2014 2:08 PM
+>>>>>>         > To: concurrency-interest at cs.oswego.edu
+>>>>>>         <mailto:concurrency-interest at cs.oswego.edu>
+>>>>>>         > Subject: [concurrency-interest] Custom
+>>>>>>         ThreadPoolExecutor implementation
+>>>>>>         > to handle priority based Callable tasks
+>>>>>>         >
+>>>>>>         >
+>>>>>>         > If we were to control Callable Tasks with Priorities
+>>>>>>         and to manage
+>>>>>>         > execution of those callable tasks through
+>>>>>>         ThreadPoolExecutor we would
+>>>>>>         > have to implement custom ThreadPoolExecutor and
+>>>>>>         PriorityCallable (see a
+>>>>>>         > suggestion below). What other ways to accomplish this
+>>>>>>         do you see ?
+>>>>>>         >
+>>>>>>         > public interface PriorityCallable extends
+>>>>>>         Callable<Object> {
+>>>>>>         >      public abstract void setPriority(int priority);
+>>>>>>         >      ...
+>>>>>>         > }
+>>>>>>         >
+>>>>>>         > public class CustomThreadPoolExecutor  extends
+>>>>>>         ThreadPoolExecutor {
+>>>>>>         > ...
+>>>>>>         > ...
+>>>>>>         > public <T> List<Future<T>> customInvokeAll(
+>>>>>>         >                  Collection<? extends Callable<T>>
+>>>>>>         tasks, long timeout,
+>>>>>>         > TimeUnit unit) // pass PriorityCallable
+>>>>>>         >                  throws InterruptedException {
+>>>>>>         >              if (tasks == null || unit == null)
+>>>>>>         >                  throw new NullPointerException();
+>>>>>>         >              long nanos = unit.toNanos(timeout);
+>>>>>>         >  List<Future<T>> futures = new
+>>>>>>         > ArrayList<Future<T>>(tasks.size());
+>>>>>>         >              boolean done = false;
+>>>>>>         >              try {
+>>>>>>         >                  // handle Priority based Callable
+>>>>>>         tasks here, though
+>>>>>>         > can expect timing issues
+>>>>>>         >                  // custom logic to group Callable
+>>>>>>         tasks , if (priority
+>>>>>>         > == 1, 2, 3 create group of callables, etc )
+>>>>>>         >                  for (Callable<T> t : tasks)
+>>>>>>         >  futures.add(newTaskFor(t));
+>>>>>>         >
+>>>>>>         >                  long lastTime = System.nanoTime();
+>>>>>>         >
+>>>>>>         >                  // Interleave time checks and calls to
+>>>>>>         execute in case
+>>>>>>         >                  // executor doesn't have any/much
+>>>>>>         parallelism.
+>>>>>>         >  Iterator<Future<T>> it = futures.iterator();
+>>>>>>         >                  while (it.hasNext()) {
+>>>>>>         >  execute((Runnable)(it.next())); // should we expect
+>>>>>>         > futures get executed within the same timeframe for
+>>>>>>         Callables with
+>>>>>>         > different priorities
+>>>>>>         >                      long now = System.nanoTime();
+>>>>>>         >                      nanos -= now - lastTime;
+>>>>>>         >                      lastTime = now;
+>>>>>>         >                      if (nanos <= 0)
+>>>>>>         >                          return futures;
+>>>>>>         >                  }
+>>>>>>         >
+>>>>>>         >                  for (Future<T> f : futures) {
+>>>>>>         >                      if (!f.isDone()) {
+>>>>>>         >                          if (nanos <= 0)
+>>>>>>         >                              return futures;
+>>>>>>         >                          try {
+>>>>>>         >  f.get(nanos, TimeUnit.NANOSECONDS);
+>>>>>>         >                          } catch (CancellationException
+>>>>>>         ignore) {
+>>>>>>         >                          } catch (ExecutionException
+>>>>>>         ignore) { // Should
+>>>>>>         > we cancel tasks based on the priority as well?
+>>>>>>         >                          } catch (TimeoutException toe) {
+>>>>>>         >                              return futures;
+>>>>>>         >                          }
+>>>>>>         >                          long now = System.nanoTime();
+>>>>>>         >                          nanos -= now - lastTime;
+>>>>>>         >                          lastTime = now;
+>>>>>>         >                      }
+>>>>>>         >                  }
+>>>>>>         >                  done = true;
+>>>>>>         >                  return futures;
+>>>>>>         >              } finally {
+>>>>>>         >                  if (!done)
+>>>>>>         >                      for (Future<T> f : futures)
+>>>>>>         >  f.cancel(true);
+>>>>>>         >              }
+>>>>>>         >          }
+>>>>>>         > ...
+>>>>>>         > }
+>>>>>>         >
+>>>>>>         > Thank you,
+>>>>>>         > dt
+>>>>>>         > http://www.flyingtroika.com/
+>>>>>>         >
+>>>>>>         > _______________________________________________
+>>>>>>         > Concurrency-interest mailing list
+>>>>>>         > Concurrency-interest at cs.oswego.edu
+>>>>>>         <mailto:Concurrency-interest at cs.oswego.edu>
+>>>>>>         > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>>
+>>>>>>         _______________________________________________
+>>>>>>         Concurrency-interest mailing list
+>>>>>>         Concurrency-interest at cs.oswego.edu
+>>>>>>         <mailto:Concurrency-interest at cs.oswego.edu>
+>>>>>>         http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>>
+>>>>>>
+>>>>>>
+>>>>>>
+>>>>>>     -- 
+>>>>>>     Cheers,
+>>>>>>     ?
+>>>>>
+>>>>
+>>>>
+>>>>
+>>>> _______________________________________________
+>>>> Concurrency-interest mailing list
+>>>> Concurrency-interest at cs.oswego.edu
+>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>>
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140630/4dc15d1d/attachment-0001.html>
+
+From peter.levart at gmail.com  Tue Jul  1 09:45:58 2014
+From: peter.levart at gmail.com (Peter Levart)
+Date: Tue, 01 Jul 2014 15:45:58 +0200
+Subject: [concurrency-interest] Custom ThreadPoolExecutor implementation
+ to handle priority based Callable tasks
+In-Reply-To: <53B237B4.2080801@flyingtroika.com>
+References: <NFBBKALFDCPFIDBNKAPCEEGPKHAA.davidcholmes@aapt.net.au>	<53ADDC49.9060403@flyingtroika.com>
+	<53ADF08A.1070600@oracle.com> <53AE3B53.9000600@flyingtroika.com>
+	<53B09C0C.8020105@gmail.com> <53B237B4.2080801@flyingtroika.com>
+Message-ID: <53B2BB96.2060509@gmail.com>
+
+On 07/01/2014 06:23 AM, DT wrote:
+> Peter,
+>
+> Is this code (ExpirableFutureTask ) based on java 7 or it requires 8? 
+> I need to perform some experiments with CompletableFutures, its for 
+> sure. We are using java 7 and moving to 8 can take some time. I am a 
+> slightly conservative in terms of moving to the next version.
+
+I used lambdas in the EFTTest example, but ExpirableFutureTask should 
+compile in JDK7 too - it's based on FutureTask and you can always use 
+anonymous inner classes instead of lambdas.
+
+Regards, Peter
+
+>
+> DT
+>
+> On 6/29/2014 4:06 PM, Peter Levart wrote:
+>>
+>> On 06/28/2014 05:49 AM, DT wrote:
+>>> I believe that
+>>> 1 -  should be ok to accomplish
+>>> 2 -  ok to satisfy or at least get very close to it as we know all 
+>>> dependencies at the beginning
+>>> 3 -  I like idea with counters: simple, straight and easy to follow
+>>>
+>>> However, the issue is that all the tasks (with dependency, etc) have 
+>>> to finish execution within the same time slot as a whole. We have to 
+>>> enforce some sort of timing constraint. Same task can take different 
+>>> time to execute (we can apply some statistical methods to get the 
+>>> average for all the tasks based on the historical execution time).
+>>>
+>>> Would it be better to apply some sort of cyclic barriers or counters?
+>>>
+>>> Thanks,
+>>> DT
+>>
+>> Do you know the time slot in advance, when you submit the 1st task in 
+>> a group of dependent tasks? If so, you could combine the Oleksandr's 
+>> suggestion (which is how JDK8 CompletableFuture works) with the 
+>> notion of "deadline" that you assign to a group. Deadline can serve 
+>> two purposes:
+>> - expires the tree of unfinished dependent tasks in a group when 
+>> deadline is reached, skipping their execution
+>> - can be used to prioritize de-queueing of tasks by TPE that will 
+>> expire earlier (using PriorityBlockingQueue)
+>>
+>> See here:
+>>
+>> https://github.com/plevart/concurrent-utils/blob/master/src/si/pele/concurrent/ExpirableFutureTask.java 
+>>
+>>
+>> And an example here:
+>>
+>> https://github.com/plevart/concurrent-utils/blob/master/src/si/pele/concurrent/test/EFTTest.java 
+>>
+>>
+>>
+>> Regards, Peter
+>>
+>>> On 6/27/2014 3:30 PM, Oleksandr Otenko wrote:
+>>>> 1. Each task must know how many dependencies it has.
+>>>>
+>>>> 2. Each task knows which other tasks depend on it.
+>>>>
+>>>> 3. Upon finishing a task, decrement the counters of all dependent 
+>>>> tasks. Those that reach zero, get scheduled with the TPE.
+>>>>
+>>>>
+>>>> If you don't know which tasks depend on which before executing them 
+>>>> (ie you don't have answer for (2)), there is no efficient way of 
+>>>> planning their execution.
+>>>>
+>>>> Alex
+>>>>
+>>>>
+>>>> On 27/06/2014 22:04, DT wrote:
+>>>>> if we dispatch tasks based on queuing we would not get guarantees 
+>>>>> that the tasks first in line will finish execution first and 
+>>>>> futures are done to return results (in general none of the 
+>>>>> dispatching mechanism will give me such behavior, can be wrong of 
+>>>>> course, sorry if I am mangled callable priorities which I wanted 
+>>>>> to use to control execution of the tasks in some order with 
+>>>>> overall thread priorities)
+>>>>> I think that I need some sort of scheduling constraints what task 
+>>>>> should be done first so I can use futures results for dispatching 
+>>>>> next set of tasks. I am not sure if for example CompletableFuture 
+>>>>> in java 8 meant to be used for such problems. Namely tasks have to 
+>>>>> be executed in certain order/deliver results and they can have 
+>>>>> dependency/relationships between each other.
+>>>>>
+>>>>> By the way in what circumstances would you recommend to use TPE 
+>>>>> constructor with own ThreadFactory implementation and not to relly 
+>>>>> on the default one?
+>>>>>
+>>>>> DT
+>>>>>
+>>>>> On 6/27/2014 1:09 PM, David Holmes wrote:
+>>>>>> Priority can only really be used for the dispatching/queueing 
+>>>>>> mechanism. Once tasks are executing priority is essentially 
+>>>>>> meaningless. Thread priorities have no significance in general.
+>>>>>> David
+>>>>>>
+>>>>>>     -----Original Message-----
+>>>>>>     *From:* concurrency-interest-bounces at cs.oswego.edu
+>>>>>> [mailto:concurrency-interest-bounces at cs.oswego.edu]*On Behalf
+>>>>>>     Of *DT
+>>>>>>     *Sent:* Saturday, 28 June 2014 1:42 AM
+>>>>>>     *To:* viktor ?lang; dholmes at ieee.org
+>>>>>>     *Cc:* concurrency-interest
+>>>>>>     *Subject:* Re: [concurrency-interest] Custom
+>>>>>>     ThreadPoolExecutor implementation to handle priority based
+>>>>>>     Callable tasks
+>>>>>>
+>>>>>>                     We see several scenarios how to approach:
+>>>>>>
+>>>>>>     1-st approach is to use a PriorityBlockingQueue, provide
+>>>>>>     Comparator for Callable tasks to change the order based on the
+>>>>>>     Callable priority. Then when we call invokeAll( Collections of
+>>>>>>     Callable tasks) on TPE to execute tasks from queue based on
+>>>>>>     the priority, 1-st, 2-d, n which means that tasks will be
+>>>>>>     executed based on abstract groups (for instance1-st group --
+>>>>>>     all tasks with high priority go first according to TPE
+>>>>>>     scheduling. tpe.execute(thread) will be called and tasks will
+>>>>>>     be assigned to available tpe worker threads.
+>>>>>>
+>>>>>>     Following this logic tpe does not guarantee for sure that all
+>>>>>>     high priority tasks will be executed first. Or this guarantee
+>>>>>>     is not enough enforced (maybe there are some policy to enforce
+>>>>>>     this)
+>>>>>>
+>>>>>>     2-d approach is to modify invokeAll() to handle priority
+>>>>>>     explicitly which does not look like a clean solution.
+>>>>>>
+>>>>>>     3-d approach is to have multiple TPEs and each of these tpe
+>>>>>>     will handle only one type of priority without mix, for example
+>>>>>>     tpe1 will invokeAll(tasks priority 1 only) , tpe2 will
+>>>>>>     invokeAll(tasks priority 2 only). Which tpe should be
+>>>>>>     instantiated -1^st should follow business logic.
+>>>>>>
+>>>>>>     Here is an example what we trying to implement. Assuming we
+>>>>>>     have different types of tasks which are bounded to get some
+>>>>>>     resources using udp/tcp/http/sql. Something like
+>>>>>>
+>>>>>>     sqlWorker needs to execute SQLs and return results, httpWorker
+>>>>>>     type has to handle http calls and return some results, etc.
+>>>>>>     the issue is that even if we assign some priorities to these
+>>>>>>     workers to perform similar tasks following some business logic
+>>>>>>     what data needs to get first within our workflow we would have
+>>>>>>     to change priorities dynamically just because same type of
+>>>>>>     workers mightfinish execution within different timeslot. So we
+>>>>>>     have to wait until all workers are executed (practically tune
+>>>>>>     timeslot based on the longest execution time) or drop some
+>>>>>>     tasks due to the timing limits. If we follow 3-d approach it
+>>>>>>     would be hard to manage TPEs. If we follow 2-d approach it
+>>>>>>     would be hard to maintain tasks and guarantee execution group
+>>>>>>     by group.And 1-st approach seems does not completely satisfy
+>>>>>>     the problem concurrency execution logic.
+>>>>>>
+>>>>>>     On 6/27/2014 3:12 AM, ?iktor ?lang wrote:
+>>>>>>>     "  public abstract void setPriority(int priority);" ?
+>>>>>>>     Changing priority on an already submitted task seems strange.
+>>>>>>>
+>>>>>>>     I agree with David, just use a PriorityBlockingQueue
+>>>>>>> [http://docs.oracle.com/javase/7/docs/api/java/util/concurrent/PriorityBlockingQueue.html]
+>>>>>>>     for the submission queue of the TPE and provide a Comparator
+>>>>>>>     that checks for your PriorityCallable and puts
+>>>>>>>     non-PriorityCallable-Callables at an appropriate default
+>>>>>>>     priority.
+>>>>>>>
+>>>>>>>
+>>>>>>>     On Fri, Jun 27, 2014 at 6:16 AM, David Holmes
+>>>>>>>     <davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au>>
+>>>>>>>     wrote:
+>>>>>>>
+>>>>>>>         Can't you just use your PriorityCallable with a custom
+>>>>>>>         PriorityQueue and
+>>>>>>>         standard ThreadPoolExecutor?
+>>>>>>>
+>>>>>>>         David
+>>>>>>>
+>>>>>>>         > -----Original Message-----
+>>>>>>>         > From: concurrency-interest-bounces at cs.oswego.edu
+>>>>>>> <mailto:concurrency-interest-bounces at cs.oswego.edu>
+>>>>>>>         > [mailto:concurrency-interest-bounces at cs.oswego.edu
+>>>>>>> <mailto:concurrency-interest-bounces at cs.oswego.edu>]On
+>>>>>>>         Behalf Of DT
+>>>>>>>         > Sent: Friday, 27 June 2014 2:08 PM
+>>>>>>>         > To: concurrency-interest at cs.oswego.edu
+>>>>>>> <mailto:concurrency-interest at cs.oswego.edu>
+>>>>>>>         > Subject: [concurrency-interest] Custom
+>>>>>>>         ThreadPoolExecutor implementation
+>>>>>>>         > to handle priority based Callable tasks
+>>>>>>>         >
+>>>>>>>         >
+>>>>>>>         > If we were to control Callable Tasks with Priorities
+>>>>>>>         and to manage
+>>>>>>>         > execution of those callable tasks through
+>>>>>>>         ThreadPoolExecutor we would
+>>>>>>>         > have to implement custom ThreadPoolExecutor and
+>>>>>>>         PriorityCallable (see a
+>>>>>>>         > suggestion below). What other ways to accomplish this
+>>>>>>>         do you see ?
+>>>>>>>         >
+>>>>>>>         > public interface PriorityCallable extends
+>>>>>>>         Callable<Object> {
+>>>>>>>         >      public abstract void setPriority(int priority);
+>>>>>>>         >      ...
+>>>>>>>         > }
+>>>>>>>         >
+>>>>>>>         > public class CustomThreadPoolExecutor extends
+>>>>>>>         ThreadPoolExecutor {
+>>>>>>>         > ...
+>>>>>>>         > ...
+>>>>>>>         > public <T> List<Future<T>> customInvokeAll(
+>>>>>>>         >                  Collection<? extends Callable<T>>
+>>>>>>>         tasks, long timeout,
+>>>>>>>         > TimeUnit unit) // pass PriorityCallable
+>>>>>>>         >                  throws InterruptedException {
+>>>>>>>         >              if (tasks == null || unit == null)
+>>>>>>>         >                  throw new NullPointerException();
+>>>>>>>         >              long nanos = unit.toNanos(timeout);
+>>>>>>>         >  List<Future<T>> futures = new
+>>>>>>>         > ArrayList<Future<T>>(tasks.size());
+>>>>>>>         >              boolean done = false;
+>>>>>>>         >              try {
+>>>>>>>         >                  // handle Priority based Callable
+>>>>>>>         tasks here, though
+>>>>>>>         > can expect timing issues
+>>>>>>>         >                  // custom logic to group Callable
+>>>>>>>         tasks , if (priority
+>>>>>>>         > == 1, 2, 3 create group of callables, etc )
+>>>>>>>         >                  for (Callable<T> t : tasks)
+>>>>>>>         >  futures.add(newTaskFor(t));
+>>>>>>>         >
+>>>>>>>         >                  long lastTime = System.nanoTime();
+>>>>>>>         >
+>>>>>>>         >                  // Interleave time checks and calls to
+>>>>>>>         execute in case
+>>>>>>>         >                  // executor doesn't have any/much
+>>>>>>>         parallelism.
+>>>>>>>         >  Iterator<Future<T>> it = futures.iterator();
+>>>>>>>         >                  while (it.hasNext()) {
+>>>>>>>         >  execute((Runnable)(it.next())); // should we expect
+>>>>>>>         > futures get executed within the same timeframe for
+>>>>>>>         Callables with
+>>>>>>>         > different priorities
+>>>>>>>         >                      long now = System.nanoTime();
+>>>>>>>         >                      nanos -= now - lastTime;
+>>>>>>>         >                      lastTime = now;
+>>>>>>>         >                      if (nanos <= 0)
+>>>>>>>         >                          return futures;
+>>>>>>>         >                  }
+>>>>>>>         >
+>>>>>>>         >                  for (Future<T> f : futures) {
+>>>>>>>         >                      if (!f.isDone()) {
+>>>>>>>         >                          if (nanos <= 0)
+>>>>>>>         >                              return futures;
+>>>>>>>         >                          try {
+>>>>>>>         >  f.get(nanos, TimeUnit.NANOSECONDS);
+>>>>>>>         >                          } catch (CancellationException
+>>>>>>>         ignore) {
+>>>>>>>         >                          } catch (ExecutionException
+>>>>>>>         ignore) { // Should
+>>>>>>>         > we cancel tasks based on the priority as well?
+>>>>>>>         >                          } catch (TimeoutException toe) {
+>>>>>>>         >                              return futures;
+>>>>>>>         >                          }
+>>>>>>>         >                          long now = System.nanoTime();
+>>>>>>>         >                          nanos -= now - lastTime;
+>>>>>>>         >                          lastTime = now;
+>>>>>>>         >                      }
+>>>>>>>         >                  }
+>>>>>>>         >                  done = true;
+>>>>>>>         >                  return futures;
+>>>>>>>         >              } finally {
+>>>>>>>         >                  if (!done)
+>>>>>>>         >                      for (Future<T> f : futures)
+>>>>>>>         >  f.cancel(true);
+>>>>>>>         >              }
+>>>>>>>         >          }
+>>>>>>>         > ...
+>>>>>>>         > }
+>>>>>>>         >
+>>>>>>>         > Thank you,
+>>>>>>>         > dt
+>>>>>>>         > http://www.flyingtroika.com/
+>>>>>>>         >
+>>>>>>>         > _______________________________________________
+>>>>>>>         > Concurrency-interest mailing list
+>>>>>>>         > Concurrency-interest at cs.oswego.edu
+>>>>>>> <mailto:Concurrency-interest at cs.oswego.edu>
+>>>>>>>         > 
+>>>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>>>
+>>>>>>> _______________________________________________
+>>>>>>>         Concurrency-interest mailing list
+>>>>>>>         Concurrency-interest at cs.oswego.edu
+>>>>>>> <mailto:Concurrency-interest at cs.oswego.edu>
+>>>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>>>
+>>>>>>>
+>>>>>>>
+>>>>>>>
+>>>>>>>     --     Cheers,
+>>>>>>>     ?
+>>>>>>
+>>>>>
+>>>>>
+>>>>>
+>>>>> _______________________________________________
+>>>>> Concurrency-interest mailing list
+>>>>> Concurrency-interest at cs.oswego.edu
+>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>
+>>>
+>>>
+>>>
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+>
+
+
+From peter.firmstone at zeus.net.au  Wed Jul  2 03:10:42 2014
+From: peter.firmstone at zeus.net.au (Peter Firmstone)
+Date: Wed, 02 Jul 2014 17:10:42 +1000
+Subject: [concurrency-interest] ThreadLocalRandom clinit troubles
+In-Reply-To: <53B15DD2.8020200@oracle.com>
+References: <mailman.132.1403863934.24967.concurrency-interest@cs.oswego.edu>	<1404006830.14661.4.camel@Nokia-N900>
+	<53AFDC5E.5070702@gmail.com> <53B135B6.1030105@zeus.net.au>
+	<53B15DD2.8020200@oracle.com>
+Message-ID: <53B3B072.6030406@zeus.net.au>
+
+On 30/06/2014 10:53 PM, Alan Bateman wrote:
+> On 30/06/2014 11:02, Peter Firmstone wrote:
+>> Hi Peter,
+>>
+>> There are a number of bottlenecks throughout the security 
+>> infrastructure, we have reimplemented it as follows to avoid them and 
+>> have also addressed some long standing issues:
+>>
+>>
+>> If this code was in the JVM libraries, we wouldn't need it in our 
+>> project.
+>>
+> Have you considered bring some of these patches to OpenJDK?
+
+How does one go about it? I'm not on any lists or part of the project.
+
+Perhaps someone could save me some time and review the code first, to 
+see if it's suitable?
+
+>
+> On RFC 3986 (you mentioned this a number of times) then there were 
+> previous attempts bring URI up to this, unfortunately had to be backed 
+> out due to compatibility issues and other breakage. It's definitely 
+> something that needs to be looked at again.
+
+Yes turns out RFC 3986 is very useful.  Our implementation is strictly 
+compliant, with the exception of making upper case path comparisons for 
+file URI's on certain platforms, it's based on Harmony's URI, but has 
+been refactored with immutability; final class, final fields, isn't 
+serializable etc.  The parser is called during construction using static 
+methods.  Exceptions thrown by constructors are thrown by static methods 
+prior to Object's default constructor being called, to avoid creating 
+partially constructed objects.
+
+These considerations were important for security.
+
+Regards,
+
+Peter.
+
+
+From Alan.Bateman at oracle.com  Wed Jul  2 06:44:47 2014
+From: Alan.Bateman at oracle.com (Alan Bateman)
+Date: Wed, 02 Jul 2014 11:44:47 +0100
+Subject: [concurrency-interest] ThreadLocalRandom clinit troubles
+In-Reply-To: <53B3B072.6030406@zeus.net.au>
+References: <mailman.132.1403863934.24967.concurrency-interest@cs.oswego.edu>	<1404006830.14661.4.camel@Nokia-N900>
+	<53AFDC5E.5070702@gmail.com> <53B135B6.1030105@zeus.net.au>
+	<53B15DD2.8020200@oracle.com> <53B3B072.6030406@zeus.net.au>
+Message-ID: <53B3E29F.9010901@oracle.com>
+
+On 02/07/2014 08:10, Peter Firmstone wrote:
+>
+> How does one go about it? I'm not on any lists or part of the project.
+This is the best place to start:
+   http://openjdk.java.net/contribute/
+
+At a high-level then the types of improvements that you listed in your 
+summary seem to be very good. It's probably best to start out small and 
+propose one or two small changes first to get used to contributing and 
+also because some of the changes are likely to require detailed review 
+and discussion.
+
+
+> :
+>
+>>
+>> On RFC 3986 (you mentioned this a number of times) then there were 
+>> previous attempts bring URI up to this, unfortunately had to be 
+>> backed out due to compatibility issues and other breakage. It's 
+>> definitely something that needs to be looked at again.
+>
+> Yes turns out RFC 3986 is very useful.  Our implementation is strictly 
+> compliant, with the exception of making upper case path comparisons 
+> for file URI's on certain platforms, it's based on Harmony's URI, but 
+> has been refactored with immutability; final class, final fields, 
+> isn't serializable etc.  The parser is called during construction 
+> using static methods.  Exceptions thrown by constructors are thrown by 
+> static methods prior to Object's default constructor being called, to 
+> avoid creating partially constructed objects.
+java.net.URI is based on the older RFC 2396 and 2732. I think bringing 
+it up to RFC 3986 while maintaining compatible could be a major project 
+(previously attempts to do this back in JDK 6 were backed out due to the 
+breakage that it caused). It's a good topic to bring up on the OpenJDK 
+net-dev list where URI is maintained, it's definitely something that 
+needs to happen at some point.
+
+-Alan
+
+From vikas.vksingh at gmail.com  Wed Jul  2 19:03:53 2014
+From: vikas.vksingh at gmail.com (vikas)
+Date: Wed, 2 Jul 2014 16:03:53 -0700 (PDT)
+Subject: [concurrency-interest] ArrayBlockingQueue: concurrent put and
+	take
+In-Reply-To: <4452683E.406@quiotix.com>
+References: <4371C55AE7D7624EBB6D0C5A4DB585A40A392576@RED-MSG-50.redmond.corp.microsoft.com>
+	<4452683E.406@quiotix.com>
+Message-ID: <1404342233309-11143.post@n7.nabble.com>
+
+It may be a naive question,  But i have the same question on why ABQ cant use
+two-lock algorithm. 
+It would be a great help if somebody can point out to me, why two-lock
+algorithm wouldn't work in ABQ. Which scenario or race condition makes
+two-lock algo infeasible in ABQ.  A simple example of that race conditon
+would help a lot.
+
+Thanks for having such a great mailing a list. I have learned a lot and
+still learning.
+vikas
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/ArrayBlockingQueue-concurrent-put-and-take-tp1306p11143.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From martinrb at google.com  Wed Jul  2 19:37:20 2014
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 2 Jul 2014 16:37:20 -0700
+Subject: [concurrency-interest] ArrayBlockingQueue: concurrent put and
+	take
+In-Reply-To: <1404342233309-11143.post@n7.nabble.com>
+References: <4371C55AE7D7624EBB6D0C5A4DB585A40A392576@RED-MSG-50.redmond.corp.microsoft.com>
+	<4452683E.406@quiotix.com> <1404342233309-11143.post@n7.nabble.com>
+Message-ID: <CA+kOe097+BLxPq7_3+FT0r0Ac+QiFCWvO_qDbr9PRw+6d-q-zQ@mail.gmail.com>
+
+LinkedBlockingQueue has a two-lock strategy, but ArrayBlockingQueue does
+not.  It took us years to figure out how to get the iterator to behave
+perfectly in ABQ, and I'm afraid of touching it again or introducing
+additional complexity.  Using a backing array instead of a linked list has
+some advantages, but it is hostile to concurrent collection implementers
+... yes, even when everything is guarded by a single lock.
+
+
+On Wed, Jul 2, 2014 at 4:03 PM, vikas <vikas.vksingh at gmail.com> wrote:
+
+> It may be a naive question,  But i have the same question on why ABQ cant
+> use
+> two-lock algorithm.
+> It would be a great help if somebody can point out to me, why two-lock
+> algorithm wouldn't work in ABQ. Which scenario or race condition makes
+> two-lock algo infeasible in ABQ.  A simple example of that race conditon
+> would help a lot.
+>
+> Thanks for having such a great mailing a list. I have learned a lot and
+> still learning.
+> vikas
+>
+>
+>
+> --
+> View this message in context:
+> http://jsr166-concurrency.10961.n7.nabble.com/ArrayBlockingQueue-concurrent-put-and-take-tp1306p11143.html
+> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140702/7b1af450/attachment.html>
+
+From vikas.vksingh at gmail.com  Wed Jul  2 21:07:07 2014
+From: vikas.vksingh at gmail.com (vikas)
+Date: Wed, 2 Jul 2014 18:07:07 -0700 (PDT)
+Subject: [concurrency-interest] ArrayBlockingQueue: concurrent put and
+	take
+In-Reply-To: <CA+kOe097+BLxPq7_3+FT0r0Ac+QiFCWvO_qDbr9PRw+6d-q-zQ@mail.gmail.com>
+References: <4371C55AE7D7624EBB6D0C5A4DB585A40A392576@RED-MSG-50.redmond.corp.microsoft.com>
+	<4452683E.406@quiotix.com> <1404342233309-11143.post@n7.nabble.com>
+	<CA+kOe097+BLxPq7_3+FT0r0Ac+QiFCWvO_qDbr9PRw+6d-q-zQ@mail.gmail.com>
+Message-ID: <1404349627259-11145.post@n7.nabble.com>
+
+Thanks Martin,  
+    I agree with functionality like iterator etc, implementations becomes
+more difficult. 
+But if narrow down the scope of ABQ to only put and take. Then i think it
+would be possible to have 
+concurrent put and take with a single contention point on the AtomicCounter
+
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/ArrayBlockingQueue-concurrent-put-and-take-tp1306p11145.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From martinrb at google.com  Wed Jul  2 22:51:36 2014
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 2 Jul 2014 19:51:36 -0700
+Subject: [concurrency-interest] ArrayBlockingQueue: concurrent put and
+	take
+In-Reply-To: <1404349627259-11145.post@n7.nabble.com>
+References: <4371C55AE7D7624EBB6D0C5A4DB585A40A392576@RED-MSG-50.redmond.corp.microsoft.com>
+	<4452683E.406@quiotix.com> <1404342233309-11143.post@n7.nabble.com>
+	<CA+kOe097+BLxPq7_3+FT0r0Ac+QiFCWvO_qDbr9PRw+6d-q-zQ@mail.gmail.com>
+	<1404349627259-11145.post@n7.nabble.com>
+Message-ID: <CA+kOe08t_fGeyr4sbf6-jS3w0NyePZ9AZNQ1Qa_qOs3Rc-oJZw@mail.gmail.com>
+
+But what are you trying to achieve?  If you have perfect timing, and a put
+and take are always concurrent, and the queue is always half-full, then you
+might be able to get (only!) a 2x speedup.  But you're not going to get
+those perfect conditions.
+
+Anyways, go ahead and implement it and see what happens.
+
+
+On Wed, Jul 2, 2014 at 6:07 PM, vikas <vikas.vksingh at gmail.com> wrote:
+
+> Thanks Martin,
+>     I agree with functionality like iterator etc, implementations becomes
+> more difficult.
+> But if narrow down the scope of ABQ to only put and take. Then i think it
+> would be possible to have
+> concurrent put and take with a single contention point on the AtomicCounter
+>
+>
+>
+>
+> --
+> View this message in context:
+> http://jsr166-concurrency.10961.n7.nabble.com/ArrayBlockingQueue-concurrent-put-and-take-tp1306p11145.html
+> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140702/3a2fb923/attachment.html>
+
+From vikas.vksingh at gmail.com  Wed Jul  2 23:07:42 2014
+From: vikas.vksingh at gmail.com (vikas)
+Date: Wed, 2 Jul 2014 20:07:42 -0700 (PDT)
+Subject: [concurrency-interest] ArrayBlockingQueue: concurrent put and
+	take
+In-Reply-To: <CA+kOe08t_fGeyr4sbf6-jS3w0NyePZ9AZNQ1Qa_qOs3Rc-oJZw@mail.gmail.com>
+References: <4371C55AE7D7624EBB6D0C5A4DB585A40A392576@RED-MSG-50.redmond.corp.microsoft.com>
+	<4452683E.406@quiotix.com> <1404342233309-11143.post@n7.nabble.com>
+	<CA+kOe097+BLxPq7_3+FT0r0Ac+QiFCWvO_qDbr9PRw+6d-q-zQ@mail.gmail.com>
+	<1404349627259-11145.post@n7.nabble.com>
+	<CA+kOe08t_fGeyr4sbf6-jS3w0NyePZ9AZNQ1Qa_qOs3Rc-oJZw@mail.gmail.com>
+Message-ID: <1404356862600-11147.post@n7.nabble.com>
+
+i am just trying to understand the rationale behind juc implementations of
+these Two BQ implementations.
+Moreover i have pasted a small snippet on of ABQ using LBQ idea. only PUT
+and Take are implemented.
+If somebody can point me any possible race condition in the code, my problem
+would be solved.
+
+thanks
+vikas
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/ArrayBlockingQueue-concurrent-put-and-take-tp1306p11147.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From vikas.vksingh at gmail.com  Wed Jul  2 23:23:25 2014
+From: vikas.vksingh at gmail.com (vikas)
+Date: Wed, 2 Jul 2014 20:23:25 -0700 (PDT)
+Subject: [concurrency-interest] ArrayBlockingQueue: concurrent put and
+	take
+In-Reply-To: <1404356862600-11147.post@n7.nabble.com>
+References: <4371C55AE7D7624EBB6D0C5A4DB585A40A392576@RED-MSG-50.redmond.corp.microsoft.com>
+	<4452683E.406@quiotix.com> <1404342233309-11143.post@n7.nabble.com>
+	<CA+kOe097+BLxPq7_3+FT0r0Ac+QiFCWvO_qDbr9PRw+6d-q-zQ@mail.gmail.com>
+	<1404349627259-11145.post@n7.nabble.com>
+	<CA+kOe08t_fGeyr4sbf6-jS3w0NyePZ9AZNQ1Qa_qOs3Rc-oJZw@mail.gmail.com>
+	<1404356862600-11147.post@n7.nabble.com>
+Message-ID: <1404357805992-11148.post@n7.nabble.com>
+
+Ohh i forgot the link
+http://pastebin.com/ZD1uFy7S
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/ArrayBlockingQueue-concurrent-put-and-take-tp1306p11148.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From viktor.klang at gmail.com  Thu Jul  3 05:35:51 2014
+From: viktor.klang at gmail.com (=?UTF-8?B?4oiaaWt0b3Ig0qBsYW5n?=)
+Date: Thu, 3 Jul 2014 11:35:51 +0200
+Subject: [concurrency-interest] ArrayBlockingQueue: concurrent put and
+	take
+In-Reply-To: <CA+kOe097+BLxPq7_3+FT0r0Ac+QiFCWvO_qDbr9PRw+6d-q-zQ@mail.gmail.com>
+References: <4371C55AE7D7624EBB6D0C5A4DB585A40A392576@RED-MSG-50.redmond.corp.microsoft.com>
+	<4452683E.406@quiotix.com> <1404342233309-11143.post@n7.nabble.com>
+	<CA+kOe097+BLxPq7_3+FT0r0Ac+QiFCWvO_qDbr9PRw+6d-q-zQ@mail.gmail.com>
+Message-ID: <CANPzfU_sqXESCq+DL2VuBwsH=wuX4Rywp=pL04bvc_rauWTnxQ@mail.gmail.com>
+
+I think it was a mistake to have the BlockingQueue interface too broad. (A
+general issue with the JDK collections)
+(There's also a lack of non-blocking SPSC, MPSC and SPMC queues in the JDK.)
+
+
+On Thu, Jul 3, 2014 at 1:37 AM, Martin Buchholz <martinrb at google.com> wrote:
+
+> LinkedBlockingQueue has a two-lock strategy, but ArrayBlockingQueue does
+> not.  It took us years to figure out how to get the iterator to behave
+> perfectly in ABQ, and I'm afraid of touching it again or introducing
+> additional complexity.  Using a backing array instead of a linked list has
+> some advantages, but it is hostile to concurrent collection implementers
+> ... yes, even when everything is guarded by a single lock.
+>
+>
+> On Wed, Jul 2, 2014 at 4:03 PM, vikas <vikas.vksingh at gmail.com> wrote:
+>
+>> It may be a naive question,  But i have the same question on why ABQ cant
+>> use
+>> two-lock algorithm.
+>> It would be a great help if somebody can point out to me, why two-lock
+>> algorithm wouldn't work in ABQ. Which scenario or race condition makes
+>> two-lock algo infeasible in ABQ.  A simple example of that race conditon
+>> would help a lot.
+>>
+>> Thanks for having such a great mailing a list. I have learned a lot and
+>> still learning.
+>> vikas
+>>
+>>
+>>
+>> --
+>> View this message in context:
+>> http://jsr166-concurrency.10961.n7.nabble.com/ArrayBlockingQueue-concurrent-put-and-take-tp1306p11143.html
+>> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+
+-- 
+Cheers,
+?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140703/b0aa4e75/attachment-0001.html>
+
+From kasperni at gmail.com  Thu Jul  3 07:17:41 2014
+From: kasperni at gmail.com (Kasper Nielsen)
+Date: Thu, 3 Jul 2014 13:17:41 +0200
+Subject: [concurrency-interest] ArrayBlockingQueue: concurrent put and
+	take
+In-Reply-To: <CANPzfU_sqXESCq+DL2VuBwsH=wuX4Rywp=pL04bvc_rauWTnxQ@mail.gmail.com>
+References: <4371C55AE7D7624EBB6D0C5A4DB585A40A392576@RED-MSG-50.redmond.corp.microsoft.com>
+	<4452683E.406@quiotix.com> <1404342233309-11143.post@n7.nabble.com>
+	<CA+kOe097+BLxPq7_3+FT0r0Ac+QiFCWvO_qDbr9PRw+6d-q-zQ@mail.gmail.com>
+	<CANPzfU_sqXESCq+DL2VuBwsH=wuX4Rywp=pL04bvc_rauWTnxQ@mail.gmail.com>
+Message-ID: <CAPs6153paAp+_2zWMUHNHwcbQeL701ztTNV__4GbdaM75tFNMw@mail.gmail.com>
+
+On Thu, Jul 3, 2014 at 11:35 AM, ?iktor ?lang <viktor.klang at gmail.com>
+wrote:
+
+> I think it was a mistake to have the BlockingQueue interface too broad. (A
+> general issue with the JDK collections)
+>
+
+I think that is a matter of personal preference. I prefer the simple interface
+hierarchy of JDK collections over something more complex with separate
+ modifiable/immutable
+interfaces.
+
+- Kasper
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140703/81ffcfd8/attachment.html>
+
+From viktor.klang at gmail.com  Thu Jul  3 07:37:22 2014
+From: viktor.klang at gmail.com (=?UTF-8?B?4oiaaWt0b3Ig0qBsYW5n?=)
+Date: Thu, 3 Jul 2014 13:37:22 +0200
+Subject: [concurrency-interest] ArrayBlockingQueue: concurrent put and
+	take
+In-Reply-To: <CAPs6153paAp+_2zWMUHNHwcbQeL701ztTNV__4GbdaM75tFNMw@mail.gmail.com>
+References: <4371C55AE7D7624EBB6D0C5A4DB585A40A392576@RED-MSG-50.redmond.corp.microsoft.com>
+	<4452683E.406@quiotix.com> <1404342233309-11143.post@n7.nabble.com>
+	<CA+kOe097+BLxPq7_3+FT0r0Ac+QiFCWvO_qDbr9PRw+6d-q-zQ@mail.gmail.com>
+	<CANPzfU_sqXESCq+DL2VuBwsH=wuX4Rywp=pL04bvc_rauWTnxQ@mail.gmail.com>
+	<CAPs6153paAp+_2zWMUHNHwcbQeL701ztTNV__4GbdaM75tFNMw@mail.gmail.com>
+Message-ID: <CANPzfU8y6ePpDfzW__EW_b2fp6TZL9fxZPqX4yqzExDW5Q_04g@mail.gmail.com>
+
+On Thu, Jul 3, 2014 at 1:17 PM, Kasper Nielsen <kasperni at gmail.com> wrote:
+
+> On Thu, Jul 3, 2014 at 11:35 AM, ?iktor ?lang <viktor.klang at gmail.com>
+> wrote:
+>
+>> I think it was a mistake to have the BlockingQueue interface too broad.
+>> (A general issue with the JDK collections)
+>>
+>
+> I think that is a matter of personal preference. I prefer the simple interface
+> hierarchy of JDK collections over something more complex with separate  modifiable/immutable
+> interfaces.
+>
+
+It's not about preference, it's about implementablilty.
+
+
+>
+> - Kasper
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+
+-- 
+Cheers,
+?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140703/2edeeda3/attachment.html>
+
+From andrew_nuss at yahoo.com  Thu Jul  3 10:03:34 2014
+From: andrew_nuss at yahoo.com (Andy Nuss)
+Date: Thu, 3 Jul 2014 07:03:34 -0700
+Subject: [concurrency-interest] lockfree programming and threads of
+	different priorities
+Message-ID: <1404396214.59099.YahooMailNeo@web160706.mail.bf1.yahoo.com>
+
+Hi,
+
+I am using a class that I wrote called SimpleLock.? It holds one AtomicBoolean and a public lock() and unlock() method as would make sense.
+
+All my datastructures that have unthreadsafe members that are modified and/or read together (often both) use the model:
+
+myprivatelock.lock();
+try {
+??? ... do some work on unthread safe private members
+} finally {
+???? myprivatelock.unlock();
+
+}
+
+I am seeing some deadlocks in the SimpleLock.lock() function in my various pools of threads.? My model is to use threadpools, all threads within each running at the same priority.? However, the various threadpools run at different priorities.
+
+Currently, it is possible in a class:
+
+class MyDeadLockingClass {
+
+????? public add ()
+????? {
+??? ??? ...use SimpleLock's lock and unlock
+
+????? }
+
+????? private remove ()
+????? {
+??? ??? ...use SimpleLock's lock and unlock???? 
+????? }
+}
+
+For the add() and remove() functions to be called within different threadpool threads, and thus at different thread priority.? Could this be a big problem, or is it still safe?? My guess is that it is safe, and I have to look for the cause of deadlocking elsewhere.
+
+
+Andy
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140703/3d39af51/attachment.html>
+
+From nathan.reynolds at oracle.com  Thu Jul  3 12:26:26 2014
+From: nathan.reynolds at oracle.com (Nathan Reynolds)
+Date: Thu, 03 Jul 2014 09:26:26 -0700
+Subject: [concurrency-interest] lockfree programming and threads of
+ different priorities
+In-Reply-To: <1404396214.59099.YahooMailNeo@web160706.mail.bf1.yahoo.com>
+References: <1404396214.59099.YahooMailNeo@web160706.mail.bf1.yahoo.com>
+Message-ID: <53B58432.5000901@oracle.com>
+
+A true deadlock requires a circular wait, no preemption, resource 
+holding and mutual exclusion.  Your lock satisfies the last 3 
+requirements.  So, you simply need to find a circular wait.  This would 
+mean 2 locks and 2 threads which each thread holding a lock and waiting 
+on a lock.  This is easily revealed by taking a stack trace of all of 
+the threads once the deadlock happens.  You then have figure out the N 
+locks and N threads that are in a circular wait.
+
+When implementing locks, threads will park and unpark.  This means a 
+queue of blockers for the lock.  If there is a slight mistake, then 
+threads could end up stuck in the queue because they missed being woken 
+up.  Depending upon the queue implementation, then threads could think 
+they are in the queue but end up being overwritten.  I find that dealing 
+with blocking to be the most tricky part of implementing a lock.
+
+-Nathan
+
+On 7/3/2014 7:03 AM, Andy Nuss wrote:
+> Hi,
+>
+> I am using a class that I wrote called SimpleLock.  It holds one 
+> AtomicBoolean and a public lock() and unlock() method as would make sense.
+>
+> All my datastructures that have unthreadsafe members that are modified 
+> and/or read together (often both) use the model:
+>
+> myprivatelock.lock();
+> try {
+>     ... do some work on unthread safe private members
+> } finally {
+>      myprivatelock.unlock();
+> }
+>
+> I am seeing some deadlocks in the SimpleLock.lock() function in my 
+> various pools of threads. My model is to use threadpools, all threads 
+> within each running at the same priority.  However, the various 
+> threadpools run at different priorities.
+>
+> Currently, it is possible in a class:
+>
+> class MyDeadLockingClass {
+>
+>       public add ()
+>       {
+>     ...use SimpleLock's lock and unlock
+>       }
+>
+>       private remove ()
+>       {
+>     ...use SimpleLock's lock and unlock
+>       }
+> }
+>
+> For the add() and remove() functions to be called within different 
+> threadpool threads, and thus at different thread priority.  Could this 
+> be a big problem, or is it still safe?  My guess is that it is safe, 
+> and I have to look for the cause of deadlocking elsewhere.
+>
+> Andy
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140703/3a598b6c/attachment.html>
+
+From martinrb at google.com  Thu Jul  3 13:34:04 2014
+From: martinrb at google.com (Martin Buchholz)
+Date: Thu, 3 Jul 2014 10:34:04 -0700
+Subject: [concurrency-interest] ArrayBlockingQueue: concurrent put and
+	take
+In-Reply-To: <CANPzfU_sqXESCq+DL2VuBwsH=wuX4Rywp=pL04bvc_rauWTnxQ@mail.gmail.com>
+References: <4371C55AE7D7624EBB6D0C5A4DB585A40A392576@RED-MSG-50.redmond.corp.microsoft.com>
+	<4452683E.406@quiotix.com> <1404342233309-11143.post@n7.nabble.com>
+	<CA+kOe097+BLxPq7_3+FT0r0Ac+QiFCWvO_qDbr9PRw+6d-q-zQ@mail.gmail.com>
+	<CANPzfU_sqXESCq+DL2VuBwsH=wuX4Rywp=pL04bvc_rauWTnxQ@mail.gmail.com>
+Message-ID: <CA+kOe0-4bt2g7hgMmOd=VJjTvcqZmfGEo21HQ7Waf8uEK0CVsQ@mail.gmail.com>
+
+On Thu, Jul 3, 2014 at 2:35 AM, ?iktor ?lang <viktor.klang at gmail.com> wrote:
+
+> I think it was a mistake to have the BlockingQueue interface too broad. (A
+> general issue with the JDK collections)
+>
+
+It was certainly very natural to have BlockingQueue extend Collection.  And
+then it was natural to try to properly implement all the Collection methods
+if it was not too onerous.  An alternative would have been to throw UOE on
+"interior" methods like remove(Object).  In the case of ArrayBlockingQueue,
+we eventually succeeded in implementing all the Collection methods without
+performance penalty to ordinary intended usage, but there is definitely
+implementation complexity penalty.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140703/8cc2540f/attachment.html>
+
+From andrew_nuss at yahoo.com  Thu Jul  3 13:39:20 2014
+From: andrew_nuss at yahoo.com (Andy Nuss)
+Date: Thu, 3 Jul 2014 10:39:20 -0700
+Subject: [concurrency-interest] lockfree programming and threads of
+	different priorities
+In-Reply-To: <53B58432.5000901@oracle.com>
+References: <1404396214.59099.YahooMailNeo@web160706.mail.bf1.yahoo.com>
+	<53B58432.5000901@oracle.com>
+Message-ID: <1404409160.78136.YahooMailNeo@web160704.mail.bf1.yahoo.com>
+
+None of the code in any of the critical sections of my type of lock (which does not use parking) tries to ever acquire other locks.? Still:
+
+what if a thread at priority 4 calling my remove() method of an object enters the lock() function for the lock owned by the instance implementing remove().? That critical section starts calling a HashMap.remove(...).? At some instant before unlock() is called (while remove()) is in the critical section, a thread of priority 5 wakes up and begins calling the add() method for that same object.? It tries to enter the critical section for the lock being held by the thread of priority 4 (my guess is that that should be suspended now in some multicpu scenarios due to the thread of priority 5), and because the thread of priority 5 is trying to enter this unparking lock, thread 4 never leaves its critical section.
+
+If this is all true, then how are lockfree queues implemented in the first place, as they seem to be the basic of a proper parking lock?
+
+
+
+On Thursday, July 3, 2014 9:26 AM, Nathan Reynolds <nathan.reynolds at oracle.com> wrote:
+ 
+
+
+A true deadlock requires a circular wait, no preemption, resource holding and mutual exclusion.? Your lock satisfies the last 3 requirements.? So, you simply need to find a circular wait.? This would mean 2 locks and 2 threads which each thread holding a lock and waiting on a lock.? This is easily revealed by taking a stack trace of all of the threads once the deadlock happens.? You then have figure out the N locks and N threads that are in a circular wait.
+
+When implementing locks, threads will park and unpark.? This means
+      a queue of blockers for the lock.? If there is a slight mistake,
+      then threads could end up stuck in the queue because they missed
+      being woken up.? Depending upon the queue implementation, then
+      threads could think they are in the queue but end up being
+      overwritten.? I find that dealing with blocking to be the most
+      tricky part of implementing a lock.
+
+-Nathan
+On 7/3/2014 7:03 AM, Andy Nuss wrote:
+
+Hi,
+>
+>
+>I am using a class that I wrote called SimpleLock.? It holds one AtomicBoolean and a public lock() and unlock() method as would make sense.
+>
+>
+>All my datastructures that have unthreadsafe members that are modified and/or read together (often both) use the model:
+>
+>
+>myprivatelock.lock();
+>try {
+>??? ... do some work on unthread safe private members
+>} finally {
+>???? myprivatelock.unlock();
+>
+>}
+>
+>
+>I am seeing some deadlocks in the SimpleLock.lock() function in my various pools of threads.? My model is to use threadpools, all threads within each running at the same priority.? However, the various threadpools run at different priorities.
+>
+>
+>Currently, it is possible in a class:
+>
+>
+>class MyDeadLockingClass {
+>
+>
+>????? public add ()
+>????? {
+>??? ??? ...use SimpleLock's lock and unlock
+>
+>????? }
+>
+>
+>????? private remove ()
+>????? {
+>??? ??? ...use SimpleLock's lock and unlock????  
+>????? }
+>}
+>
+>
+>For the add() and remove() functions to be called within different threadpool threads, and thus at different thread priority.? Could this be a big problem, or is it still safe?? My guess is that it is safe, and I have to look for the cause of deadlocking elsewhere.
+>
+>
+>
+>Andy
+>
+>
+>
+>_______________________________________________
+Concurrency-interest mailing list Concurrency-interest at cs.oswego.edu http://cs.oswego.edu/mailman/listinfo/concurrency-interest 
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140703/2d82bdb3/attachment-0001.html>
+
+From oleksandr.otenko at oracle.com  Thu Jul  3 14:17:27 2014
+From: oleksandr.otenko at oracle.com (Oleksandr Otenko)
+Date: Thu, 03 Jul 2014 19:17:27 +0100
+Subject: [concurrency-interest] lockfree programming and threads of
+ different priorities
+In-Reply-To: <1404409160.78136.YahooMailNeo@web160704.mail.bf1.yahoo.com>
+References: <1404396214.59099.YahooMailNeo@web160706.mail.bf1.yahoo.com>	<53B58432.5000901@oracle.com>
+	<1404409160.78136.YahooMailNeo@web160704.mail.bf1.yahoo.com>
+Message-ID: <53B59E37.4060700@oracle.com>
+
+On 03/07/2014 18:39, Andy Nuss wrote:
+> None of the code in any of the critical sections of my type of lock 
+> (which does not use parking) tries to ever acquire other locks.
+
+Then it isn't really */a deadlock/*.
+
+What you describe below seems feasible. But then thread 5 need to keep 
+making progress on some other task. If it keeps spinning indefinitely, 
+waiting for the lock to be released, then it isn't really lock-free. 
+(the definition of the latter is: suspend any one thread - some other 
+thread makes progress; here we have thread 4 suspended, no thread making 
+progress)
+
+An example of a lock-free scenario would be: all threads computing a 
+value and attempt to CAS. Then suspending any thread doesn't preclude 
+some other thread succeeding to CAS. (then wait-free is: all threads 
+either succeed to CAS, or don't need to recompute the value)
+
+Alex
+
+
+> Still:
+>
+> what if a thread at priority 4 calling my remove() method of an object 
+> enters the lock() function for the lock owned by the instance 
+> implementing remove().  That critical section starts calling a 
+> HashMap.remove(...).  At some instant before unlock() is called (while 
+> remove()) is in the critical section, a thread of priority 5 wakes up 
+> and begins calling the add() method for that same object.  It tries to 
+> enter the critical section for the lock being held by the thread of 
+> priority 4 (my guess is that that should be suspended now in some 
+> multicpu scenarios due to the thread of priority 5), and because the 
+> thread of priority 5 is trying to enter this unparking lock, thread 4 
+> never leaves its critical section.
+>
+> If this is all true, then how are lockfree queues implemented in the 
+> first place, as they seem to be the basic of a proper parking lock?
+>
+>
+> On Thursday, July 3, 2014 9:26 AM, Nathan Reynolds 
+> <nathan.reynolds at oracle.com> wrote:
+>
+>
+> A true deadlock requires a circular wait, no preemption, resource 
+> holding and mutual exclusion.  Your lock satisfies the last 3 
+> requirements.  So, you simply need to find a circular wait.  This 
+> would mean 2 locks and 2 threads which each thread holding a lock and 
+> waiting on a lock.  This is easily revealed by taking a stack trace of 
+> all of the threads once the deadlock happens.  You then have figure 
+> out the N locks and N threads that are in a circular wait.
+>
+> When implementing locks, threads will park and unpark.  This means a 
+> queue of blockers for the lock.  If there is a slight mistake, then 
+> threads could end up stuck in the queue because they missed being 
+> woken up.  Depending upon the queue implementation, then threads could 
+> think they are in the queue but end up being overwritten.  I find that 
+> dealing with blocking to be the most tricky part of implementing a lock.
+> -Nathan
+> On 7/3/2014 7:03 AM, Andy Nuss wrote:
+>> Hi,
+>>
+>> I am using a class that I wrote called SimpleLock.  It holds one 
+>> AtomicBoolean and a public lock() and unlock() method as would make 
+>> sense.
+>>
+>> All my datastructures that have unthreadsafe members that are 
+>> modified and/or read together (often both) use the model:
+>>
+>> myprivatelock.lock();
+>> try {
+>>     ... do some work on unthread safe private members
+>> } finally {
+>> myprivatelock.unlock();
+>> }
+>>
+>> I am seeing some deadlocks in the SimpleLock.lock() function in my 
+>> various pools of threads. My model is to use threadpools, all threads 
+>> within each running at the same priority.  However, the various 
+>> threadpools run at different priorities.
+>>
+>> Currently, it is possible in a class:
+>>
+>> class MyDeadLockingClass {
+>>
+>> public add ()
+>>       {
+>> ...use SimpleLock's lock and unlock
+>>       }
+>>
+>> private remove ()
+>>       {
+>> ...use SimpleLock's lock and unlock
+>>       }
+>> }
+>>
+>> For the add() and remove() functions to be called within different 
+>> threadpool threads, and thus at different thread priority.  Could 
+>> this be a big problem, or is it still safe?  My guess is that it is 
+>> safe, and I have to look for the cause of deadlocking elsewhere.
+>>
+>> Andy
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu  <mailto:Concurrency-interest at cs.oswego.edu>
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu 
+> <mailto:Concurrency-interest at cs.oswego.edu>
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140703/9ce43303/attachment-0001.html>
+
+From nathan.reynolds at oracle.com  Thu Jul  3 14:30:27 2014
+From: nathan.reynolds at oracle.com (Nathan Reynolds)
+Date: Thu, 03 Jul 2014 11:30:27 -0700
+Subject: [concurrency-interest] lockfree programming and threads of
+ different priorities
+In-Reply-To: <1404409160.78136.YahooMailNeo@web160704.mail.bf1.yahoo.com>
+References: <1404396214.59099.YahooMailNeo@web160706.mail.bf1.yahoo.com>	<53B58432.5000901@oracle.com>
+	<1404409160.78136.YahooMailNeo@web160704.mail.bf1.yahoo.com>
+Message-ID: <53B5A143.9010301@oracle.com>
+
+On a uniprocessor machine, when a priority 5 thread is unblocked, then 
+all priority 4 threads are not allowed to run until thread 5 blocks.  
+So, if your lock simply has the priority 5 thread spin, then the thread 
+of priority 4 will never be able to run and unlock.
+
+One could think that calling Thread.yield() will let the priority 4 
+threads run.  Unfortunately, this simply puts the priority 5 thread at 
+the end of the run queue with respect to other priority 5 threads.  The 
+priority 4 threads won't be allowed to run.
+
+The only way to get priority 5 threads to give up the CPU is to have 
+them block (e.g. park, wait for I/O, etc).
+
+Let's say a multi-core machine has N cores.  If N priority 5 threads are 
+running, then all priority 4 threads won't be allowed to run until one 
+of the priority 5 threads block.
+
+ > If this is all true, then how are lockfree queues implemented in the 
+first place, as they seem to be the basic of a proper parking lock?
+
+A simple approach is to use ConcurrentLinkedList.  This uses atomic 
+operations to push and pop data into the collection.
+
+A simple lock will have the thread use an atomic to acquire the lock.  
+If that fails, it then pushes its Thread into a lock-free queue and 
+tries to acquire the lock again.  If that fails a second time, it then 
+calls Thread.park().
+
+-Nathan
+
+On 7/3/2014 10:39 AM, Andy Nuss wrote:
+> None of the code in any of the critical sections of my type of lock 
+> (which does not use parking) tries to ever acquire other locks.  Still:
+>
+> what if a thread at priority 4 calling my remove() method of an object 
+> enters the lock() function for the lock owned by the instance 
+> implementing remove().  That critical section starts calling a 
+> HashMap.remove(...).  At some instant before unlock() is called (while 
+> remove()) is in the critical section, a thread of priority 5 wakes up 
+> and begins calling the add() method for that same object.  It tries to 
+> enter the critical section for the lock being held by the thread of 
+> priority 4 (my guess is that that should be suspended now in some 
+> multicpu scenarios due to the thread of priority 5), and because the 
+> thread of priority 5 is trying to enter this unparking lock, thread 4 
+> never leaves its critical section.
+>
+> If this is all true, then how are lockfree queues implemented in the 
+> first place, as they seem to be the basic of a proper parking lock?
+>
+>
+> On Thursday, July 3, 2014 9:26 AM, Nathan Reynolds 
+> <nathan.reynolds at oracle.com> wrote:
+>
+>
+> A true deadlock requires a circular wait, no preemption, resource 
+> holding and mutual exclusion.  Your lock satisfies the last 3 
+> requirements.  So, you simply need to find a circular wait.  This 
+> would mean 2 locks and 2 threads which each thread holding a lock and 
+> waiting on a lock.  This is easily revealed by taking a stack trace of 
+> all of the threads once the deadlock happens.  You then have figure 
+> out the N locks and N threads that are in a circular wait.
+>
+> When implementing locks, threads will park and unpark.  This means a 
+> queue of blockers for the lock.  If there is a slight mistake, then 
+> threads could end up stuck in the queue because they missed being 
+> woken up.  Depending upon the queue implementation, then threads could 
+> think they are in the queue but end up being overwritten.  I find that 
+> dealing with blocking to be the most tricky part of implementing a lock.
+> -Nathan
+> On 7/3/2014 7:03 AM, Andy Nuss wrote:
+>> Hi,
+>>
+>> I am using a class that I wrote called SimpleLock.  It holds one 
+>> AtomicBoolean and a public lock() and unlock() method as would make 
+>> sense.
+>>
+>> All my datastructures that have unthreadsafe members that are 
+>> modified and/or read together (often both) use the model:
+>>
+>> myprivatelock.lock();
+>> try {
+>>     ... do some work on unthread safe private members
+>> } finally {
+>> myprivatelock.unlock();
+>> }
+>>
+>> I am seeing some deadlocks in the SimpleLock.lock() function in my 
+>> various pools of threads. My model is to use threadpools, all threads 
+>> within each running at the same priority.  However, the various 
+>> threadpools run at different priorities.
+>>
+>> Currently, it is possible in a class:
+>>
+>> class MyDeadLockingClass {
+>>
+>> public add ()
+>>       {
+>> ...use SimpleLock's lock and unlock
+>>       }
+>>
+>> private remove ()
+>>       {
+>> ...use SimpleLock's lock and unlock
+>>       }
+>> }
+>>
+>> For the add() and remove() functions to be called within different 
+>> threadpool threads, and thus at different thread priority.  Could 
+>> this be a big problem, or is it still safe?  My guess is that it is 
+>> safe, and I have to look for the cause of deadlocking elsewhere.
+>>
+>> Andy
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu  <mailto:Concurrency-interest at cs.oswego.edu>
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu 
+> <mailto:Concurrency-interest at cs.oswego.edu>
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140703/9f414f27/attachment-0001.html>
+
+From davidcholmes at aapt.net.au  Thu Jul  3 19:00:28 2014
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Fri, 4 Jul 2014 09:00:28 +1000
+Subject: [concurrency-interest] lockfree programming and threads
+	ofdifferent priorities
+In-Reply-To: <1404396214.59099.YahooMailNeo@web160706.mail.bf1.yahoo.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEIFKHAA.davidcholmes@aapt.net.au>
+
+Andy,
+
+As others have alluded if your "lock-free" is really a spin-lock with no
+suspension, and you have a uniprocessor and are on a system where thread
+priorities actually means something, then you can easily live-lock. Even on
+a multi-processor you could get in the same state if multiple threads try to
+acquire busy locks at the same time. Strict priority scheduling and
+lock-free (busy-wait) programming do not mix very well. There is a mountain
+of literature on this in the real-time world.
+
+David
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Andy Nuss
+  Sent: Friday, 4 July 2014 12:04 AM
+  To: concurrency-interest at cs.oswego.edu
+  Subject: [concurrency-interest] lockfree programming and threads
+ofdifferent priorities
+
+
+  Hi,
+
+
+  I am using a class that I wrote called SimpleLock.  It holds one
+AtomicBoolean and a public lock() and unlock() method as would make sense.
+
+
+  All my datastructures that have unthreadsafe members that are modified
+and/or read together (often both) use the model:
+
+
+  myprivatelock.lock();
+  try {
+      ... do some work on unthread safe private members
+  } finally {
+       myprivatelock.unlock();
+
+  }
+
+
+  I am seeing some deadlocks in the SimpleLock.lock() function in my various
+pools of threads.  My model is to use threadpools, all threads within each
+running at the same priority.  However, the various threadpools run at
+different priorities.
+
+
+  Currently, it is possible in a class:
+
+
+  class MyDeadLockingClass {
+
+
+        public add ()
+        {
+          ...use SimpleLock's lock and unlock
+
+        }
+
+
+        private remove ()
+        {
+          ...use SimpleLock's lock and unlock
+        }
+  }
+
+
+  For the add() and remove() functions to be called within different
+threadpool threads, and thus at different thread priority.  Could this be a
+big problem, or is it still safe?  My guess is that it is safe, and I have
+to look for the cause of deadlocking elsewhere.
+
+
+
+  Andy
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140704/8e7489f4/attachment.html>
+
+From william.louth at jinspired.com  Sat Jul  5 03:01:53 2014
+From: william.louth at jinspired.com (William Louth (JINSPIRED.COM))
+Date: Sat, 05 Jul 2014 09:01:53 +0200
+Subject: [concurrency-interest] lockfree programming and threads of
+ different priorities
+In-Reply-To: <1404396214.59099.YahooMailNeo@web160706.mail.bf1.yahoo.com>
+References: <1404396214.59099.YahooMailNeo@web160706.mail.bf1.yahoo.com>
+Message-ID: <53B7A2E1.1040204@jinspired.com>
+
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140705/ea64465a/attachment.html>
+
+From andrew_nuss at yahoo.com  Tue Jul  8 11:35:41 2014
+From: andrew_nuss at yahoo.com (Andy Nuss)
+Date: Tue, 8 Jul 2014 08:35:41 -0700
+Subject: [concurrency-interest] changing thread priority on the fly to
+	deschedule zombie thread stuck in socketWrite0
+Message-ID: <1404833741.19097.YahooMailNeo@web160703.mail.bf1.yahoo.com>
+
+Hi,
+
+I'm in the early stage of figuring out why my massive parallelization of S3 SDK usage for storing blobs causes a small percent of my amazon blob puts to loop forever in socketWrite0 without completing due to packet flow control problems with amazon server in the native socket write (sometimes read as well).? Stopping in eclipse debugger and suspending and reactivating such a thread proved to me it is looping in the native call, eating cpu and never finishing.
+
+Though I haven't figured out yet why I'm the only one with this problem with S3 and java, I was wondering if given that interrupting the thread does not abort the native call at all, perhaps I could set the thread to the minimum java thread priority, effectively causing it to starve relative to all other threads in my program, and of course I would replace that zombie thread in the pool.? Deploying on Linux.? Using JDK7.
+
+
+Andy
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140708/e82db049/attachment.html>
+
+From dl at cs.oswego.edu  Tue Jul  8 13:00:38 2014
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 08 Jul 2014 13:00:38 -0400
+Subject: [concurrency-interest] Improved FJ thread throttling
+Message-ID: <53BC23B6.1050107@cs.oswego.edu>
+
+ForkJoin extensions and adaptations for JDK8 (streams etc) included
+overly course-grained thread throttling. This was on the to-do-list
+for a while. A new update addresses this.
+
+Context: By design, ForkJoinPool relies on only a single parameter,
+target parallelism. It takes all responsibility for ensuring that the
+"right" number of threads are running at any given time for
+data-parallel and async applications.  It is impossible to even define
+what the "right number" is, so it is impossible for us or anyone else
+to get this exactly right.  (This is different than for example
+setting up N services using a newFixedThreadPool(N), where the only
+right answer is N.)  One approach to dealing with this would be to
+introduce a zillion controls that would be even harder to use and
+prone to even more policy inconsistency and context-dependence
+problems than seen with ThreadPoolExecutor. This would be a throwback
+to the days when every efficient parallel program had to be custom
+built. Some people think that people should still write parallel
+programs this way (please feel free to do so.)  FJ instead implements
+portable algorithms and internal policies that are rarely optimal for
+any given platform and application but often close to optimal.  As FJ
+is used for increasingly diverse purposes, getting thread throttling
+approximately "right" in all cases gets more challenging. But we like
+challenges.
+
+Aside: The situation is very similar to that for ConcurrentHashMap,
+that also only accepts only one optional parameter (capacity). If you
+have special requirements, you may be able to create a custom map that
+outperforms CHM. But over time, CHM evolves to benefit from diverse
+usage experiences, so customization becomes less likely to be
+worthwhile.
+
+More background: Any given parallel computation (including one just
+using FJ for asyncs) might, for good performance, need fewer than the
+target threads, the same number, or, if some dependent computations
+block waiting for others, possibly more threads to compensate for the
+blocked ones. (See below about blocking for other reasons.)  The
+"more" case is now less common than before, but you can't ignore it
+without risk of locking up computations.  And in some cases of mixed
+parallel/clustered systems, this could lead to distributed deadlock.
+(Note: The number of spare threads needed has little to do with the
+target parallelism level, but instead the form of the parallel
+computation dag.)  So, even though creating more than a dozen spare
+threads is rare, FJ itself imposed only a ceiling (32K threads) that
+is so high that programs typically die for other reasons before
+reaching it; and documents only an intentionally vague implementation
+note that "This implementation rejects submitted tasks (that is, by
+throwing RejectedExecutionException) only when the pool is shut down
+or internal resources have been exhausted."
+
+One disadvantage of this policy is that the ceiling is so high that
+programming mistakes (for example those with infinitely nested joins)
+or intentional abuses are usually not caught in a very nice way. For
+example, on Unix-based systems, people might encounter "No more
+processes" just trying to kill the program.  Especially when
+implementing the JDK8 Common Pool, we should have dropped this limit
+from being a thousand times larger than expected under normal use down
+to a value that far exceeds that needed in any practical program, but
+still gives JVMs a chance to recover. So the update includes an
+absolute ceiling of 256 more threads than the target parallelism (or
+the original total of 32K, whichever is lower.)  This will not impact
+any current practical programs except those that by chance never ran
+long enough to hit higher limits.  The value 256 is somewhat
+arbitrary. It's the highest value for which any multicore JVM is
+expected to always have enough resources to recover from.  By choosing
+a conservatively high value, there is good justification for including
+this in a JDK8 update and additionally being more aggressive about
+killing off spare threads.  To further limit behavior, we still also
+allow users to supply ThreadFactories that throw exceptions after
+hitting some maximum, but still don't particularly recommend use. Most
+implementations of external limits are arbitrarily imprecise in part
+because they cannot tell when threads are really gone: decrementing a
+count does not necessarily mean that the thread has stopped or its
+resources have been recovered.  (The internal bounds have some of the
+same problems, but handle them conservatively.)
+
+But the main story with this update is improved internal tracking that
+is usually much closer to running the right number of threads than
+before.  (This version also includes more and better internal
+documentation and refactorings that take advantage of JVM improvements
+that have occurred since JDK6, for example being much better than
+before at compiling 64bit logical operations without needing to code
+by splitting into 32bit parts.)
+
+The only version available is in our jsr166 main (JDK8/JDK9 only)
+repository, with the aim of having some of you try it out before
+considering integration into OpenJDK.  To use it, you can either use
+the jar at http://gee.cs.oswego.edu/dl/concurrent/dist/jsr166.jar and
+run with -Xbootclasspath/p:jsr166.jar; or copy into an OpenJDK and
+build files:
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinPool.java?view=log
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinTask.java?view=log
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinWorkerThread.java?view=log
+
+...
+
+Also, a few notes about blocking threads in any context (in FJ, other
+Executors, even the JVM itself).  Whenever there is some bound on
+thread construction, and threads start blocking, eventually programs
+will freeze or throw exceptions.  We can't/won't forbid all blocking
+because it is often harmlessly transient.  On the other hand, most
+programs deal with saturation effects of long-term blocking about as
+well as they deal with other resource failures (out of memory etc),
+which is not very well. But coping mechanisms do always exist.  FJ
+provides a thread-vs-memory tradeoff hook via ManagedBlocker: If a
+task blocks but you want to ensure liveness for processing other tasks
+use a ManagedBlocker. If you are content to let other work pile up
+unless/until blocked threads resume, don't use it.  This is not always
+an easy decision to make, but cannot be automated because the number
+of ways/reasons that tasks may block is unbounded.  Note:
+ThreadPoolExecutor cannot use this approach, so instead supports
+RejectedExecutionHandlers for use in similar situations.
+
+
+-Doug
+
+
+From viktor.klang at gmail.com  Tue Jul  8 13:16:31 2014
+From: viktor.klang at gmail.com (=?UTF-8?B?4oiaaWt0b3Ig0qBsYW5n?=)
+Date: Tue, 8 Jul 2014 19:16:31 +0200
+Subject: [concurrency-interest] Improved FJ thread throttling
+In-Reply-To: <53BC23B6.1050107@cs.oswego.edu>
+References: <53BC23B6.1050107@cs.oswego.edu>
+Message-ID: <CANPzfU8er9RcEv+R9B_n1S7GoYhKexSZzBUmWUNTJQEUD=_1oA@mail.gmail.com>
+
+Hi Doug,
+
+How about allowing a System Property to set the number of spares, with the
+default being 256 so one does not have to implement a ThreadFactory to cap
+it to something different? (Given that there are System Properties for most
+of the other setting for the common pool)
+
+
+
+On Tue, Jul 8, 2014 at 7:00 PM, Doug Lea <dl at cs.oswego.edu> wrote:
+
+> ForkJoin extensions and adaptations for JDK8 (streams etc) included
+> overly course-grained thread throttling. This was on the to-do-list
+> for a while. A new update addresses this.
+>
+> Context: By design, ForkJoinPool relies on only a single parameter,
+> target parallelism. It takes all responsibility for ensuring that the
+> "right" number of threads are running at any given time for
+> data-parallel and async applications.  It is impossible to even define
+> what the "right number" is, so it is impossible for us or anyone else
+> to get this exactly right.  (This is different than for example
+> setting up N services using a newFixedThreadPool(N), where the only
+> right answer is N.)  One approach to dealing with this would be to
+> introduce a zillion controls that would be even harder to use and
+> prone to even more policy inconsistency and context-dependence
+> problems than seen with ThreadPoolExecutor. This would be a throwback
+> to the days when every efficient parallel program had to be custom
+> built. Some people think that people should still write parallel
+> programs this way (please feel free to do so.)  FJ instead implements
+> portable algorithms and internal policies that are rarely optimal for
+> any given platform and application but often close to optimal.  As FJ
+> is used for increasingly diverse purposes, getting thread throttling
+> approximately "right" in all cases gets more challenging. But we like
+> challenges.
+>
+> Aside: The situation is very similar to that for ConcurrentHashMap,
+> that also only accepts only one optional parameter (capacity). If you
+> have special requirements, you may be able to create a custom map that
+> outperforms CHM. But over time, CHM evolves to benefit from diverse
+> usage experiences, so customization becomes less likely to be
+> worthwhile.
+>
+> More background: Any given parallel computation (including one just
+> using FJ for asyncs) might, for good performance, need fewer than the
+> target threads, the same number, or, if some dependent computations
+> block waiting for others, possibly more threads to compensate for the
+> blocked ones. (See below about blocking for other reasons.)  The
+> "more" case is now less common than before, but you can't ignore it
+> without risk of locking up computations.  And in some cases of mixed
+> parallel/clustered systems, this could lead to distributed deadlock.
+> (Note: The number of spare threads needed has little to do with the
+> target parallelism level, but instead the form of the parallel
+> computation dag.)  So, even though creating more than a dozen spare
+> threads is rare, FJ itself imposed only a ceiling (32K threads) that
+> is so high that programs typically die for other reasons before
+> reaching it; and documents only an intentionally vague implementation
+> note that "This implementation rejects submitted tasks (that is, by
+> throwing RejectedExecutionException) only when the pool is shut down
+> or internal resources have been exhausted."
+>
+> One disadvantage of this policy is that the ceiling is so high that
+> programming mistakes (for example those with infinitely nested joins)
+> or intentional abuses are usually not caught in a very nice way. For
+> example, on Unix-based systems, people might encounter "No more
+> processes" just trying to kill the program.  Especially when
+> implementing the JDK8 Common Pool, we should have dropped this limit
+> from being a thousand times larger than expected under normal use down
+> to a value that far exceeds that needed in any practical program, but
+> still gives JVMs a chance to recover. So the update includes an
+> absolute ceiling of 256 more threads than the target parallelism (or
+> the original total of 32K, whichever is lower.)  This will not impact
+> any current practical programs except those that by chance never ran
+> long enough to hit higher limits.  The value 256 is somewhat
+> arbitrary. It's the highest value for which any multicore JVM is
+> expected to always have enough resources to recover from.  By choosing
+> a conservatively high value, there is good justification for including
+> this in a JDK8 update and additionally being more aggressive about
+> killing off spare threads.  To further limit behavior, we still also
+> allow users to supply ThreadFactories that throw exceptions after
+> hitting some maximum, but still don't particularly recommend use. Most
+> implementations of external limits are arbitrarily imprecise in part
+> because they cannot tell when threads are really gone: decrementing a
+> count does not necessarily mean that the thread has stopped or its
+> resources have been recovered.  (The internal bounds have some of the
+> same problems, but handle them conservatively.)
+>
+> But the main story with this update is improved internal tracking that
+> is usually much closer to running the right number of threads than
+> before.  (This version also includes more and better internal
+> documentation and refactorings that take advantage of JVM improvements
+> that have occurred since JDK6, for example being much better than
+> before at compiling 64bit logical operations without needing to code
+> by splitting into 32bit parts.)
+>
+> The only version available is in our jsr166 main (JDK8/JDK9 only)
+> repository, with the aim of having some of you try it out before
+> considering integration into OpenJDK.  To use it, you can either use
+> the jar at http://gee.cs.oswego.edu/dl/concurrent/dist/jsr166.jar and
+> run with -Xbootclasspath/p:jsr166.jar; or copy into an OpenJDK and
+> build files:
+> http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/
+> main/java/util/concurrent/ForkJoinPool.java?view=log
+> http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/
+> main/java/util/concurrent/ForkJoinTask.java?view=log
+> http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/
+> main/java/util/concurrent/ForkJoinWorkerThread.java?view=log
+>
+> ...
+>
+> Also, a few notes about blocking threads in any context (in FJ, other
+> Executors, even the JVM itself).  Whenever there is some bound on
+> thread construction, and threads start blocking, eventually programs
+> will freeze or throw exceptions.  We can't/won't forbid all blocking
+> because it is often harmlessly transient.  On the other hand, most
+> programs deal with saturation effects of long-term blocking about as
+> well as they deal with other resource failures (out of memory etc),
+> which is not very well. But coping mechanisms do always exist.  FJ
+> provides a thread-vs-memory tradeoff hook via ManagedBlocker: If a
+> task blocks but you want to ensure liveness for processing other tasks
+> use a ManagedBlocker. If you are content to let other work pile up
+> unless/until blocked threads resume, don't use it.  This is not always
+> an easy decision to make, but cannot be automated because the number
+> of ways/reasons that tasks may block is unbounded.  Note:
+> ThreadPoolExecutor cannot use this approach, so instead supports
+> RejectedExecutionHandlers for use in similar situations.
+>
+>
+> -Doug
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+-- 
+Cheers,
+?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140708/1b37b1e5/attachment.html>
+
+From dl at cs.oswego.edu  Tue Jul  8 13:39:30 2014
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 08 Jul 2014 13:39:30 -0400
+Subject: [concurrency-interest] Improved FJ thread throttling
+In-Reply-To: <CANPzfU8er9RcEv+R9B_n1S7GoYhKexSZzBUmWUNTJQEUD=_1oA@mail.gmail.com>
+References: <53BC23B6.1050107@cs.oswego.edu>
+	<CANPzfU8er9RcEv+R9B_n1S7GoYhKexSZzBUmWUNTJQEUD=_1oA@mail.gmail.com>
+Message-ID: <53BC2CD2.3080707@cs.oswego.edu>
+
+On 07/08/2014 01:16 PM, ?iktor ?lang wrote:
+> Hi Doug,
+>
+> How about allowing a System Property to set the number of spares, with the
+> default being 256 so one does not have to implement a ThreadFactory to cap it to
+> something different? (Given that there are System Properties for most of the
+> other setting for the common pool)
+
+Sorry, I knew that question was coming so should have addressed it
+in first post! We need to be confident that the JVM can respond
+to errors/problems, so the limit is mostly a JVM property.
+If you want to set it higher, then JVMs might not comply.
+On the other side, if you want to set it significantly lower,
+then chances of a false-alarm exception because counters don't match
+underlying resources becomes very high. So all together the
+plausible range is around 32-256 spares. It's a little scary
+to just attach these considerations to a System  property,
+but I'm not otherwise against it.
+
+-Doug
+
+>
+>
+>
+> On Tue, Jul 8, 2014 at 7:00 PM, Doug Lea <dl at cs.oswego.edu
+> <mailto:dl at cs.oswego.edu>> wrote:
+>
+>     ForkJoin extensions and adaptations for JDK8 (streams etc) included
+>     overly course-grained thread throttling. This was on the to-do-list
+>     for a while. A new update addresses this.
+>
+>     Context: By design, ForkJoinPool relies on only a single parameter,
+>     target parallelism. It takes all responsibility for ensuring that the
+>     "right" number of threads are running at any given time for
+>     data-parallel and async applications.  It is impossible to even define
+>     what the "right number" is, so it is impossible for us or anyone else
+>     to get this exactly right.  (This is different than for example
+>     setting up N services using a newFixedThreadPool(N), where the only
+>     right answer is N.)  One approach to dealing with this would be to
+>     introduce a zillion controls that would be even harder to use and
+>     prone to even more policy inconsistency and context-dependence
+>     problems than seen with ThreadPoolExecutor. This would be a throwback
+>     to the days when every efficient parallel program had to be custom
+>     built. Some people think that people should still write parallel
+>     programs this way (please feel free to do so.)  FJ instead implements
+>     portable algorithms and internal policies that are rarely optimal for
+>     any given platform and application but often close to optimal.  As FJ
+>     is used for increasingly diverse purposes, getting thread throttling
+>     approximately "right" in all cases gets more challenging. But we like
+>     challenges.
+>
+>     Aside: The situation is very similar to that for ConcurrentHashMap,
+>     that also only accepts only one optional parameter (capacity). If you
+>     have special requirements, you may be able to create a custom map that
+>     outperforms CHM. But over time, CHM evolves to benefit from diverse
+>     usage experiences, so customization becomes less likely to be
+>     worthwhile.
+>
+>     More background: Any given parallel computation (including one just
+>     using FJ for asyncs) might, for good performance, need fewer than the
+>     target threads, the same number, or, if some dependent computations
+>     block waiting for others, possibly more threads to compensate for the
+>     blocked ones. (See below about blocking for other reasons.)  The
+>     "more" case is now less common than before, but you can't ignore it
+>     without risk of locking up computations.  And in some cases of mixed
+>     parallel/clustered systems, this could lead to distributed deadlock.
+>     (Note: The number of spare threads needed has little to do with the
+>     target parallelism level, but instead the form of the parallel
+>     computation dag.)  So, even though creating more than a dozen spare
+>     threads is rare, FJ itself imposed only a ceiling (32K threads) that
+>     is so high that programs typically die for other reasons before
+>     reaching it; and documents only an intentionally vague implementation
+>     note that "This implementation rejects submitted tasks (that is, by
+>     throwing RejectedExecutionException) only when the pool is shut down
+>     or internal resources have been exhausted."
+>
+>     One disadvantage of this policy is that the ceiling is so high that
+>     programming mistakes (for example those with infinitely nested joins)
+>     or intentional abuses are usually not caught in a very nice way. For
+>     example, on Unix-based systems, people might encounter "No more
+>     processes" just trying to kill the program.  Especially when
+>     implementing the JDK8 Common Pool, we should have dropped this limit
+>     from being a thousand times larger than expected under normal use down
+>     to a value that far exceeds that needed in any practical program, but
+>     still gives JVMs a chance to recover. So the update includes an
+>     absolute ceiling of 256 more threads than the target parallelism (or
+>     the original total of 32K, whichever is lower.)  This will not impact
+>     any current practical programs except those that by chance never ran
+>     long enough to hit higher limits.  The value 256 is somewhat
+>     arbitrary. It's the highest value for which any multicore JVM is
+>     expected to always have enough resources to recover from.  By choosing
+>     a conservatively high value, there is good justification for including
+>     this in a JDK8 update and additionally being more aggressive about
+>     killing off spare threads.  To further limit behavior, we still also
+>     allow users to supply ThreadFactories that throw exceptions after
+>     hitting some maximum, but still don't particularly recommend use. Most
+>     implementations of external limits are arbitrarily imprecise in part
+>     because they cannot tell when threads are really gone: decrementing a
+>     count does not necessarily mean that the thread has stopped or its
+>     resources have been recovered.  (The internal bounds have some of the
+>     same problems, but handle them conservatively.)
+>
+>     But the main story with this update is improved internal tracking that
+>     is usually much closer to running the right number of threads than
+>     before.  (This version also includes more and better internal
+>     documentation and refactorings that take advantage of JVM improvements
+>     that have occurred since JDK6, for example being much better than
+>     before at compiling 64bit logical operations without needing to code
+>     by splitting into 32bit parts.)
+>
+>     The only version available is in our jsr166 main (JDK8/JDK9 only)
+>     repository, with the aim of having some of you try it out before
+>     considering integration into OpenJDK.  To use it, you can either use
+>     the jar at http://gee.cs.oswego.edu/dl/__concurrent/dist/jsr166.jar
+>     <http://gee.cs.oswego.edu/dl/concurrent/dist/jsr166.jar> and
+>     run with -Xbootclasspath/p:jsr166.jar; or copy into an OpenJDK and
+>     build files:
+>     http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__main/java/util/concurrent/__ForkJoinPool.java?view=log
+>     <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinPool.java?view=log>
+>     http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__main/java/util/concurrent/__ForkJoinTask.java?view=log
+>     <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinTask.java?view=log>
+>     http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__main/java/util/concurrent/__ForkJoinWorkerThread.java?__view=log
+>     <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinWorkerThread.java?view=log>
+>
+>     ...
+>
+>     Also, a few notes about blocking threads in any context (in FJ, other
+>     Executors, even the JVM itself).  Whenever there is some bound on
+>     thread construction, and threads start blocking, eventually programs
+>     will freeze or throw exceptions.  We can't/won't forbid all blocking
+>     because it is often harmlessly transient.  On the other hand, most
+>     programs deal with saturation effects of long-term blocking about as
+>     well as they deal with other resource failures (out of memory etc),
+>     which is not very well. But coping mechanisms do always exist.  FJ
+>     provides a thread-vs-memory tradeoff hook via ManagedBlocker: If a
+>     task blocks but you want to ensure liveness for processing other tasks
+>     use a ManagedBlocker. If you are content to let other work pile up
+>     unless/until blocked threads resume, don't use it.  This is not always
+>     an easy decision to make, but cannot be automated because the number
+>     of ways/reasons that tasks may block is unbounded.  Note:
+>     ThreadPoolExecutor cannot use this approach, so instead supports
+>     RejectedExecutionHandlers for use in similar situations.
+>
+>
+>     -Doug
+>
+>     _________________________________________________
+>     Concurrency-interest mailing list
+>     Concurrency-interest at cs.__oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>     http://cs.oswego.edu/mailman/__listinfo/concurrency-interest
+>     <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>
+>
+>
+>
+> --
+> Cheers,
+> ?
+
+
+
+
+From joe.bowbeer at gmail.com  Tue Jul  8 15:13:55 2014
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Tue, 8 Jul 2014 12:13:55 -0700
+Subject: [concurrency-interest] Improved FJ thread throttling
+In-Reply-To: <53BC2CD2.3080707@cs.oswego.edu>
+References: <53BC23B6.1050107@cs.oswego.edu>
+	<CANPzfU8er9RcEv+R9B_n1S7GoYhKexSZzBUmWUNTJQEUD=_1oA@mail.gmail.com>
+	<53BC2CD2.3080707@cs.oswego.edu>
+Message-ID: <CAHzJPEoJmZsHnBbKpsLnK2-2N=LtZg7O5RN-M-+1WgEVnkwFZw@mail.gmail.com>
+
+Adding a -X command line option seems like a good step, and consistent with
+some other resource limits that can be tweaked on the command line (in a
+non-standard way).
+On Jul 8, 2014 10:41 AM, "Doug Lea" <dl at cs.oswego.edu> wrote:
+
+> On 07/08/2014 01:16 PM, ?iktor ?lang wrote:
+>
+>> Hi Doug,
+>>
+>> How about allowing a System Property to set the number of spares, with the
+>> default being 256 so one does not have to implement a ThreadFactory to
+>> cap it to
+>> something different? (Given that there are System Properties for most of
+>> the
+>> other setting for the common pool)
+>>
+>
+> Sorry, I knew that question was coming so should have addressed it
+> in first post! We need to be confident that the JVM can respond
+> to errors/problems, so the limit is mostly a JVM property.
+> If you want to set it higher, then JVMs might not comply.
+> On the other side, if you want to set it significantly lower,
+> then chances of a false-alarm exception because counters don't match
+> underlying resources becomes very high. So all together the
+> plausible range is around 32-256 spares. It's a little scary
+> to just attach these considerations to a System  property,
+> but I'm not otherwise against it.
+>
+> -Doug
+>
+>
+>>
+>>
+>> On Tue, Jul 8, 2014 at 7:00 PM, Doug Lea <dl at cs.oswego.edu
+>> <mailto:dl at cs.oswego.edu>> wrote:
+>>
+>>     ForkJoin extensions and adaptations for JDK8 (streams etc) included
+>>     overly course-grained thread throttling. This was on the to-do-list
+>>     for a while. A new update addresses this.
+>>
+>>     Context: By design, ForkJoinPool relies on only a single parameter,
+>>     target parallelism. It takes all responsibility for ensuring that the
+>>     "right" number of threads are running at any given time for
+>>     data-parallel and async applications.  It is impossible to even define
+>>     what the "right number" is, so it is impossible for us or anyone else
+>>     to get this exactly right.  (This is different than for example
+>>     setting up N services using a newFixedThreadPool(N), where the only
+>>     right answer is N.)  One approach to dealing with this would be to
+>>     introduce a zillion controls that would be even harder to use and
+>>     prone to even more policy inconsistency and context-dependence
+>>     problems than seen with ThreadPoolExecutor. This would be a throwback
+>>     to the days when every efficient parallel program had to be custom
+>>     built. Some people think that people should still write parallel
+>>     programs this way (please feel free to do so.)  FJ instead implements
+>>     portable algorithms and internal policies that are rarely optimal for
+>>     any given platform and application but often close to optimal.  As FJ
+>>     is used for increasingly diverse purposes, getting thread throttling
+>>     approximately "right" in all cases gets more challenging. But we like
+>>     challenges.
+>>
+>>     Aside: The situation is very similar to that for ConcurrentHashMap,
+>>     that also only accepts only one optional parameter (capacity). If you
+>>     have special requirements, you may be able to create a custom map that
+>>     outperforms CHM. But over time, CHM evolves to benefit from diverse
+>>     usage experiences, so customization becomes less likely to be
+>>     worthwhile.
+>>
+>>     More background: Any given parallel computation (including one just
+>>     using FJ for asyncs) might, for good performance, need fewer than the
+>>     target threads, the same number, or, if some dependent computations
+>>     block waiting for others, possibly more threads to compensate for the
+>>     blocked ones. (See below about blocking for other reasons.)  The
+>>     "more" case is now less common than before, but you can't ignore it
+>>     without risk of locking up computations.  And in some cases of mixed
+>>     parallel/clustered systems, this could lead to distributed deadlock.
+>>     (Note: The number of spare threads needed has little to do with the
+>>     target parallelism level, but instead the form of the parallel
+>>     computation dag.)  So, even though creating more than a dozen spare
+>>     threads is rare, FJ itself imposed only a ceiling (32K threads) that
+>>     is so high that programs typically die for other reasons before
+>>     reaching it; and documents only an intentionally vague implementation
+>>     note that "This implementation rejects submitted tasks (that is, by
+>>     throwing RejectedExecutionException) only when the pool is shut down
+>>     or internal resources have been exhausted."
+>>
+>>     One disadvantage of this policy is that the ceiling is so high that
+>>     programming mistakes (for example those with infinitely nested joins)
+>>     or intentional abuses are usually not caught in a very nice way. For
+>>     example, on Unix-based systems, people might encounter "No more
+>>     processes" just trying to kill the program.  Especially when
+>>     implementing the JDK8 Common Pool, we should have dropped this limit
+>>     from being a thousand times larger than expected under normal use down
+>>     to a value that far exceeds that needed in any practical program, but
+>>     still gives JVMs a chance to recover. So the update includes an
+>>     absolute ceiling of 256 more threads than the target parallelism (or
+>>     the original total of 32K, whichever is lower.)  This will not impact
+>>     any current practical programs except those that by chance never ran
+>>     long enough to hit higher limits.  The value 256 is somewhat
+>>     arbitrary. It's the highest value for which any multicore JVM is
+>>     expected to always have enough resources to recover from.  By choosing
+>>     a conservatively high value, there is good justification for including
+>>     this in a JDK8 update and additionally being more aggressive about
+>>     killing off spare threads.  To further limit behavior, we still also
+>>     allow users to supply ThreadFactories that throw exceptions after
+>>     hitting some maximum, but still don't particularly recommend use. Most
+>>     implementations of external limits are arbitrarily imprecise in part
+>>     because they cannot tell when threads are really gone: decrementing a
+>>     count does not necessarily mean that the thread has stopped or its
+>>     resources have been recovered.  (The internal bounds have some of the
+>>     same problems, but handle them conservatively.)
+>>
+>>     But the main story with this update is improved internal tracking that
+>>     is usually much closer to running the right number of threads than
+>>     before.  (This version also includes more and better internal
+>>     documentation and refactorings that take advantage of JVM improvements
+>>     that have occurred since JDK6, for example being much better than
+>>     before at compiling 64bit logical operations without needing to code
+>>     by splitting into 32bit parts.)
+>>
+>>     The only version available is in our jsr166 main (JDK8/JDK9 only)
+>>     repository, with the aim of having some of you try it out before
+>>     considering integration into OpenJDK.  To use it, you can either use
+>>     the jar at http://gee.cs.oswego.edu/dl/__concurrent/dist/jsr166.jar
+>>     <http://gee.cs.oswego.edu/dl/concurrent/dist/jsr166.jar> and
+>>     run with -Xbootclasspath/p:jsr166.jar; or copy into an OpenJDK and
+>>     build files:
+>>     http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__
+>> main/java/util/concurrent/__ForkJoinPool.java?view=log
+>>     <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/
+>> main/java/util/concurrent/ForkJoinPool.java?view=log>
+>>     http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__
+>> main/java/util/concurrent/__ForkJoinTask.java?view=log
+>>     <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/
+>> main/java/util/concurrent/ForkJoinTask.java?view=log>
+>>     http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__
+>> main/java/util/concurrent/__ForkJoinWorkerThread.java?__view=log
+>>     <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/
+>> main/java/util/concurrent/ForkJoinWorkerThread.java?view=log>
+>>
+>>     ...
+>>
+>>     Also, a few notes about blocking threads in any context (in FJ, other
+>>     Executors, even the JVM itself).  Whenever there is some bound on
+>>     thread construction, and threads start blocking, eventually programs
+>>     will freeze or throw exceptions.  We can't/won't forbid all blocking
+>>     because it is often harmlessly transient.  On the other hand, most
+>>     programs deal with saturation effects of long-term blocking about as
+>>     well as they deal with other resource failures (out of memory etc),
+>>     which is not very well. But coping mechanisms do always exist.  FJ
+>>     provides a thread-vs-memory tradeoff hook via ManagedBlocker: If a
+>>     task blocks but you want to ensure liveness for processing other tasks
+>>     use a ManagedBlocker. If you are content to let other work pile up
+>>     unless/until blocked threads resume, don't use it.  This is not always
+>>     an easy decision to make, but cannot be automated because the number
+>>     of ways/reasons that tasks may block is unbounded.  Note:
+>>     ThreadPoolExecutor cannot use this approach, so instead supports
+>>     RejectedExecutionHandlers for use in similar situations.
+>>
+>>
+>>     -Doug
+>>
+>>     _________________________________________________
+>>     Concurrency-interest mailing list
+>>     Concurrency-interest at cs.__oswego.edu <mailto:Concurrency-interest@
+>> cs.oswego.edu>
+>>     http://cs.oswego.edu/mailman/__listinfo/concurrency-interest
+>>     <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>>
+>>
+>>
+>>
+>> --
+>> Cheers,
+>> ?
+>>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140708/3c18dc58/attachment.html>
+
+From davidcholmes at aapt.net.au  Tue Jul  8 17:36:03 2014
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 9 Jul 2014 07:36:03 +1000
+Subject: [concurrency-interest] Improved FJ thread throttling
+In-Reply-To: <CAHzJPEoJmZsHnBbKpsLnK2-2N=LtZg7O5RN-M-+1WgEVnkwFZw@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEJHKHAA.davidcholmes@aapt.net.au>
+
+I'd prefer a system property rather than having to make VM changes (-XX) that then have to be communicated back to the Java code via a system property anyway.
+
+David
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Joe Bowbeer
+  Sent: Wednesday, 9 July 2014 5:14 AM
+  To: Doug Lea
+  Cc: concurrency-interest
+  Subject: Re: [concurrency-interest] Improved FJ thread throttling
+
+
+  Adding a -X command line option seems like a good step, and consistent with some other resource limits that can be tweaked on the command line (in a non-standard way).
+
+  On Jul 8, 2014 10:41 AM, "Doug Lea" <dl at cs.oswego.edu> wrote:
+
+    On 07/08/2014 01:16 PM, ?iktor ?lang wrote:
+
+      Hi Doug,
+
+      How about allowing a System Property to set the number of spares, with the
+      default being 256 so one does not have to implement a ThreadFactory to cap it to
+      something different? (Given that there are System Properties for most of the
+      other setting for the common pool)
+
+
+    Sorry, I knew that question was coming so should have addressed it
+    in first post! We need to be confident that the JVM can respond
+    to errors/problems, so the limit is mostly a JVM property.
+    If you want to set it higher, then JVMs might not comply.
+    On the other side, if you want to set it significantly lower,
+    then chances of a false-alarm exception because counters don't match
+    underlying resources becomes very high. So all together the
+    plausible range is around 32-256 spares. It's a little scary
+    to just attach these considerations to a System  property,
+    but I'm not otherwise against it.
+
+    -Doug
+
+
+
+
+
+      On Tue, Jul 8, 2014 at 7:00 PM, Doug Lea <dl at cs.oswego.edu
+      <mailto:dl at cs.oswego.edu>> wrote:
+
+          ForkJoin extensions and adaptations for JDK8 (streams etc) included
+          overly course-grained thread throttling. This was on the to-do-list
+          for a while. A new update addresses this.
+
+          Context: By design, ForkJoinPool relies on only a single parameter,
+          target parallelism. It takes all responsibility for ensuring that the
+          "right" number of threads are running at any given time for
+          data-parallel and async applications.  It is impossible to even define
+          what the "right number" is, so it is impossible for us or anyone else
+          to get this exactly right.  (This is different than for example
+          setting up N services using a newFixedThreadPool(N), where the only
+          right answer is N.)  One approach to dealing with this would be to
+          introduce a zillion controls that would be even harder to use and
+          prone to even more policy inconsistency and context-dependence
+          problems than seen with ThreadPoolExecutor. This would be a throwback
+          to the days when every efficient parallel program had to be custom
+          built. Some people think that people should still write parallel
+          programs this way (please feel free to do so.)  FJ instead implements
+          portable algorithms and internal policies that are rarely optimal for
+          any given platform and application but often close to optimal.  As FJ
+          is used for increasingly diverse purposes, getting thread throttling
+          approximately "right" in all cases gets more challenging. But we like
+          challenges.
+
+          Aside: The situation is very similar to that for ConcurrentHashMap,
+          that also only accepts only one optional parameter (capacity). If you
+          have special requirements, you may be able to create a custom map that
+          outperforms CHM. But over time, CHM evolves to benefit from diverse
+          usage experiences, so customization becomes less likely to be
+          worthwhile.
+
+          More background: Any given parallel computation (including one just
+          using FJ for asyncs) might, for good performance, need fewer than the
+          target threads, the same number, or, if some dependent computations
+          block waiting for others, possibly more threads to compensate for the
+          blocked ones. (See below about blocking for other reasons.)  The
+          "more" case is now less common than before, but you can't ignore it
+          without risk of locking up computations.  And in some cases of mixed
+          parallel/clustered systems, this could lead to distributed deadlock.
+          (Note: The number of spare threads needed has little to do with the
+          target parallelism level, but instead the form of the parallel
+          computation dag.)  So, even though creating more than a dozen spare
+          threads is rare, FJ itself imposed only a ceiling (32K threads) that
+          is so high that programs typically die for other reasons before
+          reaching it; and documents only an intentionally vague implementation
+          note that "This implementation rejects submitted tasks (that is, by
+          throwing RejectedExecutionException) only when the pool is shut down
+          or internal resources have been exhausted."
+
+          One disadvantage of this policy is that the ceiling is so high that
+          programming mistakes (for example those with infinitely nested joins)
+          or intentional abuses are usually not caught in a very nice way. For
+          example, on Unix-based systems, people might encounter "No more
+          processes" just trying to kill the program.  Especially when
+          implementing the JDK8 Common Pool, we should have dropped this limit
+          from being a thousand times larger than expected under normal use down
+          to a value that far exceeds that needed in any practical program, but
+          still gives JVMs a chance to recover. So the update includes an
+          absolute ceiling of 256 more threads than the target parallelism (or
+          the original total of 32K, whichever is lower.)  This will not impact
+          any current practical programs except those that by chance never ran
+          long enough to hit higher limits.  The value 256 is somewhat
+          arbitrary. It's the highest value for which any multicore JVM is
+          expected to always have enough resources to recover from.  By choosing
+          a conservatively high value, there is good justification for including
+          this in a JDK8 update and additionally being more aggressive about
+          killing off spare threads.  To further limit behavior, we still also
+          allow users to supply ThreadFactories that throw exceptions after
+          hitting some maximum, but still don't particularly recommend use. Most
+          implementations of external limits are arbitrarily imprecise in part
+          because they cannot tell when threads are really gone: decrementing a
+          count does not necessarily mean that the thread has stopped or its
+          resources have been recovered.  (The internal bounds have some of the
+          same problems, but handle them conservatively.)
+
+          But the main story with this update is improved internal tracking that
+          is usually much closer to running the right number of threads than
+          before.  (This version also includes more and better internal
+          documentation and refactorings that take advantage of JVM improvements
+          that have occurred since JDK6, for example being much better than
+          before at compiling 64bit logical operations without needing to code
+          by splitting into 32bit parts.)
+
+          The only version available is in our jsr166 main (JDK8/JDK9 only)
+          repository, with the aim of having some of you try it out before
+          considering integration into OpenJDK.  To use it, you can either use
+          the jar at http://gee.cs.oswego.edu/dl/__concurrent/dist/jsr166.jar
+          <http://gee.cs.oswego.edu/dl/concurrent/dist/jsr166.jar> and
+          run with -Xbootclasspath/p:jsr166.jar; or copy into an OpenJDK and
+          build files:
+          http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__main/java/util/concurrent/__ForkJoinPool.java?view=log
+          <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinPool.java?view=log>
+          http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__main/java/util/concurrent/__ForkJoinTask.java?view=log
+          <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinTask.java?view=log>
+          http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__main/java/util/concurrent/__ForkJoinWorkerThread.java?__view=log
+          <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinWorkerThread.java?view=log>
+
+          ...
+
+          Also, a few notes about blocking threads in any context (in FJ, other
+          Executors, even the JVM itself).  Whenever there is some bound on
+          thread construction, and threads start blocking, eventually programs
+          will freeze or throw exceptions.  We can't/won't forbid all blocking
+          because it is often harmlessly transient.  On the other hand, most
+          programs deal with saturation effects of long-term blocking about as
+          well as they deal with other resource failures (out of memory etc),
+          which is not very well. But coping mechanisms do always exist.  FJ
+          provides a thread-vs-memory tradeoff hook via ManagedBlocker: If a
+          task blocks but you want to ensure liveness for processing other tasks
+          use a ManagedBlocker. If you are content to let other work pile up
+          unless/until blocked threads resume, don't use it.  This is not always
+          an easy decision to make, but cannot be automated because the number
+          of ways/reasons that tasks may block is unbounded.  Note:
+          ThreadPoolExecutor cannot use this approach, so instead supports
+          RejectedExecutionHandlers for use in similar situations.
+
+
+          -Doug
+
+          _________________________________________________
+          Concurrency-interest mailing list
+          Concurrency-interest at cs.__oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+          http://cs.oswego.edu/mailman/__listinfo/concurrency-interest
+          <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+
+
+
+
+      --
+      Cheers,
+      ?
+
+
+
+
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest at cs.oswego.edu
+    http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140709/911eb926/attachment-0001.html>
+
+From davidcholmes at aapt.net.au  Wed Jul  9 05:01:23 2014
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 9 Jul 2014 19:01:23 +1000
+Subject: [concurrency-interest] changing thread priority on the fly
+	todeschedule zombie thread stuck in socketWrite0
+In-Reply-To: <1404833741.19097.YahooMailNeo@web160703.mail.bf1.yahoo.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOEJJKHAA.davidcholmes@aapt.net.au>
+
+Andy,
+
+Java thread priorities have almost no meaning under normal scheduling
+semantics. And on Linux (and elsewhere) changing Java Thread priority has no
+affect on the native thread priority, by default.
+
+David
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Andy Nuss
+  Sent: Wednesday, 9 July 2014 1:36 AM
+  To: concurrency-interest at cs.oswego.edu
+  Subject: [concurrency-interest] changing thread priority on the fly
+todeschedule zombie thread stuck in socketWrite0
+
+
+  Hi,
+
+
+  I'm in the early stage of figuring out why my massive parallelization of
+S3 SDK usage for storing blobs causes a small percent of my amazon blob puts
+to loop forever in socketWrite0 without completing due to packet flow
+control problems with amazon server in the native socket write (sometimes
+read as well).  Stopping in eclipse debugger and suspending and reactivating
+such a thread proved to me it is looping in the native call, eating cpu and
+never finishing.
+
+
+  Though I haven't figured out yet why I'm the only one with this problem
+with S3 and java, I was wondering if given that interrupting the thread does
+not abort the native call at all, perhaps I could set the thread to the
+minimum java thread priority, effectively causing it to starve relative to
+all other threads in my program, and of course I would replace that zombie
+thread in the pool.  Deploying on Linux.  Using JDK7.
+
+
+
+  Andy
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140709/38cb8298/attachment.html>
+
+From viktor.klang at gmail.com  Wed Jul  9 05:18:06 2014
+From: viktor.klang at gmail.com (=?UTF-8?B?4oiaaWt0b3Ig0qBsYW5n?=)
+Date: Wed, 9 Jul 2014 11:18:06 +0200
+Subject: [concurrency-interest] Improved FJ thread throttling
+In-Reply-To: <53BC2CD2.3080707@cs.oswego.edu>
+References: <53BC23B6.1050107@cs.oswego.edu>
+	<CANPzfU8er9RcEv+R9B_n1S7GoYhKexSZzBUmWUNTJQEUD=_1oA@mail.gmail.com>
+	<53BC2CD2.3080707@cs.oswego.edu>
+Message-ID: <CANPzfU8FcQ3=TJzkA8eneaSgOprbfwW8rDGn0007X2hfFNrUPQ@mail.gmail.com>
+
+A System Property bounded between 32-256 would be fine for me.
+
+
+On Tue, Jul 8, 2014 at 7:39 PM, Doug Lea <dl at cs.oswego.edu> wrote:
+
+> On 07/08/2014 01:16 PM, ?iktor ?lang wrote:
+>
+>> Hi Doug,
+>>
+>> How about allowing a System Property to set the number of spares, with the
+>> default being 256 so one does not have to implement a ThreadFactory to
+>> cap it to
+>> something different? (Given that there are System Properties for most of
+>> the
+>> other setting for the common pool)
+>>
+>
+> Sorry, I knew that question was coming so should have addressed it
+> in first post! We need to be confident that the JVM can respond
+> to errors/problems, so the limit is mostly a JVM property.
+> If you want to set it higher, then JVMs might not comply.
+> On the other side, if you want to set it significantly lower,
+> then chances of a false-alarm exception because counters don't match
+> underlying resources becomes very high. So all together the
+> plausible range is around 32-256 spares. It's a little scary
+> to just attach these considerations to a System  property,
+> but I'm not otherwise against it.
+>
+> -Doug
+>
+>
+>>
+>>
+>> On Tue, Jul 8, 2014 at 7:00 PM, Doug Lea <dl at cs.oswego.edu
+>> <mailto:dl at cs.oswego.edu>> wrote:
+>>
+>>     ForkJoin extensions and adaptations for JDK8 (streams etc) included
+>>     overly course-grained thread throttling. This was on the to-do-list
+>>     for a while. A new update addresses this.
+>>
+>>     Context: By design, ForkJoinPool relies on only a single parameter,
+>>     target parallelism. It takes all responsibility for ensuring that the
+>>     "right" number of threads are running at any given time for
+>>     data-parallel and async applications.  It is impossible to even define
+>>     what the "right number" is, so it is impossible for us or anyone else
+>>     to get this exactly right.  (This is different than for example
+>>     setting up N services using a newFixedThreadPool(N), where the only
+>>     right answer is N.)  One approach to dealing with this would be to
+>>     introduce a zillion controls that would be even harder to use and
+>>     prone to even more policy inconsistency and context-dependence
+>>     problems than seen with ThreadPoolExecutor. This would be a throwback
+>>     to the days when every efficient parallel program had to be custom
+>>     built. Some people think that people should still write parallel
+>>     programs this way (please feel free to do so.)  FJ instead implements
+>>     portable algorithms and internal policies that are rarely optimal for
+>>     any given platform and application but often close to optimal.  As FJ
+>>     is used for increasingly diverse purposes, getting thread throttling
+>>     approximately "right" in all cases gets more challenging. But we like
+>>     challenges.
+>>
+>>     Aside: The situation is very similar to that for ConcurrentHashMap,
+>>     that also only accepts only one optional parameter (capacity). If you
+>>     have special requirements, you may be able to create a custom map that
+>>     outperforms CHM. But over time, CHM evolves to benefit from diverse
+>>     usage experiences, so customization becomes less likely to be
+>>     worthwhile.
+>>
+>>     More background: Any given parallel computation (including one just
+>>     using FJ for asyncs) might, for good performance, need fewer than the
+>>     target threads, the same number, or, if some dependent computations
+>>     block waiting for others, possibly more threads to compensate for the
+>>     blocked ones. (See below about blocking for other reasons.)  The
+>>     "more" case is now less common than before, but you can't ignore it
+>>     without risk of locking up computations.  And in some cases of mixed
+>>     parallel/clustered systems, this could lead to distributed deadlock.
+>>     (Note: The number of spare threads needed has little to do with the
+>>     target parallelism level, but instead the form of the parallel
+>>     computation dag.)  So, even though creating more than a dozen spare
+>>     threads is rare, FJ itself imposed only a ceiling (32K threads) that
+>>     is so high that programs typically die for other reasons before
+>>     reaching it; and documents only an intentionally vague implementation
+>>     note that "This implementation rejects submitted tasks (that is, by
+>>     throwing RejectedExecutionException) only when the pool is shut down
+>>     or internal resources have been exhausted."
+>>
+>>     One disadvantage of this policy is that the ceiling is so high that
+>>     programming mistakes (for example those with infinitely nested joins)
+>>     or intentional abuses are usually not caught in a very nice way. For
+>>     example, on Unix-based systems, people might encounter "No more
+>>     processes" just trying to kill the program.  Especially when
+>>     implementing the JDK8 Common Pool, we should have dropped this limit
+>>     from being a thousand times larger than expected under normal use down
+>>     to a value that far exceeds that needed in any practical program, but
+>>     still gives JVMs a chance to recover. So the update includes an
+>>     absolute ceiling of 256 more threads than the target parallelism (or
+>>     the original total of 32K, whichever is lower.)  This will not impact
+>>     any current practical programs except those that by chance never ran
+>>     long enough to hit higher limits.  The value 256 is somewhat
+>>     arbitrary. It's the highest value for which any multicore JVM is
+>>     expected to always have enough resources to recover from.  By choosing
+>>     a conservatively high value, there is good justification for including
+>>     this in a JDK8 update and additionally being more aggressive about
+>>     killing off spare threads.  To further limit behavior, we still also
+>>     allow users to supply ThreadFactories that throw exceptions after
+>>     hitting some maximum, but still don't particularly recommend use. Most
+>>     implementations of external limits are arbitrarily imprecise in part
+>>     because they cannot tell when threads are really gone: decrementing a
+>>     count does not necessarily mean that the thread has stopped or its
+>>     resources have been recovered.  (The internal bounds have some of the
+>>     same problems, but handle them conservatively.)
+>>
+>>     But the main story with this update is improved internal tracking that
+>>     is usually much closer to running the right number of threads than
+>>     before.  (This version also includes more and better internal
+>>     documentation and refactorings that take advantage of JVM improvements
+>>     that have occurred since JDK6, for example being much better than
+>>     before at compiling 64bit logical operations without needing to code
+>>     by splitting into 32bit parts.)
+>>
+>>     The only version available is in our jsr166 main (JDK8/JDK9 only)
+>>     repository, with the aim of having some of you try it out before
+>>     considering integration into OpenJDK.  To use it, you can either use
+>>     the jar at http://gee.cs.oswego.edu/dl/__concurrent/dist/jsr166.jar
+>>
+>>     <http://gee.cs.oswego.edu/dl/concurrent/dist/jsr166.jar> and
+>>     run with -Xbootclasspath/p:jsr166.jar; or copy into an OpenJDK and
+>>     build files:
+>>     http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__
+>> main/java/util/concurrent/__ForkJoinPool.java?view=log
+>>     <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/
+>> main/java/util/concurrent/ForkJoinPool.java?view=log>
+>>     http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__
+>> main/java/util/concurrent/__ForkJoinTask.java?view=log
+>>     <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/
+>> main/java/util/concurrent/ForkJoinTask.java?view=log>
+>>     http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__
+>> main/java/util/concurrent/__ForkJoinWorkerThread.java?__view=log
+>>
+>>     <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/
+>> main/java/util/concurrent/ForkJoinWorkerThread.java?view=log>
+>>
+>>     ...
+>>
+>>     Also, a few notes about blocking threads in any context (in FJ, other
+>>     Executors, even the JVM itself).  Whenever there is some bound on
+>>     thread construction, and threads start blocking, eventually programs
+>>     will freeze or throw exceptions.  We can't/won't forbid all blocking
+>>     because it is often harmlessly transient.  On the other hand, most
+>>     programs deal with saturation effects of long-term blocking about as
+>>     well as they deal with other resource failures (out of memory etc),
+>>     which is not very well. But coping mechanisms do always exist.  FJ
+>>     provides a thread-vs-memory tradeoff hook via ManagedBlocker: If a
+>>     task blocks but you want to ensure liveness for processing other tasks
+>>     use a ManagedBlocker. If you are content to let other work pile up
+>>     unless/until blocked threads resume, don't use it.  This is not always
+>>     an easy decision to make, but cannot be automated because the number
+>>     of ways/reasons that tasks may block is unbounded.  Note:
+>>     ThreadPoolExecutor cannot use this approach, so instead supports
+>>     RejectedExecutionHandlers for use in similar situations.
+>>
+>>
+>>     -Doug
+>>
+>>     _________________________________________________
+>>     Concurrency-interest mailing list
+>>     Concurrency-interest at cs.__oswego.edu <mailto:Concurrency-interest@
+>> cs.oswego.edu>
+>>     http://cs.oswego.edu/mailman/__listinfo/concurrency-interest
+>>     <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>>
+>>
+>>
+>>
+>> --
+>> Cheers,
+>> ?
+>>
+>
+>
+>
+
+
+-- 
+Cheers,
+?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140709/9e046c28/attachment-0001.html>
+
+From andrew_nuss at yahoo.com  Wed Jul  9 05:34:57 2014
+From: andrew_nuss at yahoo.com (Andy Nuss)
+Date: Wed, 9 Jul 2014 02:34:57 -0700
+Subject: [concurrency-interest] changing thread priority on the fly
+	todeschedule zombie thread stuck in socketWrite0
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCOEJJKHAA.davidcholmes@aapt.net.au>
+References: <1404833741.19097.YahooMailNeo@web160703.mail.bf1.yahoo.com>
+	<NFBBKALFDCPFIDBNKAPCOEJJKHAA.davidcholmes@aapt.net.au>
+Message-ID: <1404898497.30679.YahooMailNeo@web160704.mail.bf1.yahoo.com>
+
+David,
+
+Aside from my lack of knowledge on the mapping and scheduling of java threads to native threads on linux, I already know that a java thread on linux with lower priority before you start it, will starve relative to one with higher priority that is eating cpu, based on both expectation and testing.
+
+For the purposes of this question, I was wondering what happens if on linux, a thread is stuck (looping without exit) in a native socketRead0 or socketWrite0 call (its happening to me and googling indicates its happened to others going back many years).? If from a monitoring thread I lower this "stuck" thread's priority, will it immediately start starving relative to the other functioning threads in the original pool of threads doing the socket calls?
+
+Andy
+
+
+
+On Wednesday, July 9, 2014 2:01 AM, David Holmes <davidcholmes at aapt.net.au> wrote:
+ 
+
+
+Andy,
+?
+Java 
+thread priorities have almost no meaning under normal scheduling semantics. And 
+on Linux (and elsewhere) changing Java Thread priority has no affect on the 
+native thread priority, by default.
+?
+David
+-----Original Message-----
+>From: concurrency-interest-bounces at cs.oswego.edu  [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Andy  Nuss
+>Sent: Wednesday, 9 July 2014 1:36 AM
+>To: concurrency-interest at cs.oswego.edu
+>Subject: [concurrency-interest]  changing thread priority on the fly todeschedule zombie thread stuck in  socketWrite0
+>
+>
+>Hi,
+>
+>
+>I'm  in the early stage of figuring out why my massive parallelization of S3 SDK  usage for storing blobs causes a small percent of my amazon blob puts to loop  forever in socketWrite0 without completing due to packet flow control problems  with amazon server in the native socket write (sometimes read as well).?  Stopping in eclipse debugger and suspending and reactivating such a thread  proved to me it is looping in the native call, eating cpu and never  finishing.
+>
+>
+>Though  I haven't figured out yet why I'm the only one with this problem with S3 and  java, I was wondering if given that interrupting the thread does not abort the  native call at all, perhaps I could set the thread to the minimum java thread  priority, effectively causing it to starve relative to all other threads in my  program, and of course I would replace that zombie thread in the pool.?  Deploying on Linux.? Using JDK7.
+>
+>
+>
+>Andy
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140709/afa1393b/attachment.html>
+
+From peter.firmstone at zeus.net.au  Wed Jul  9 06:38:56 2014
+From: peter.firmstone at zeus.net.au (Peter Firmstone)
+Date: Wed, 09 Jul 2014 20:38:56 +1000
+Subject: [concurrency-interest] URI + RFC3986 compliance
+In-Reply-To: <53B3E29F.9010901@oracle.com>
+References: <mailman.132.1403863934.24967.concurrency-interest@cs.oswego.edu>	<1404006830.14661.4.camel@Nokia-N900>
+	<53AFDC5E.5070702@gmail.com> <53B135B6.1030105@zeus.net.au>
+	<53B15DD2.8020200@oracle.com> <53B3B072.6030406@zeus.net.au>
+	<53B3E29F.9010901@oracle.com>
+Message-ID: <53BD1BC0.4070109@zeus.net.au>
+
+I've had some time to think about how to make java.net.URI comply with 
+RFC3986 as well as retain the existing implementation for backward 
+compatibility:
+
+   1. Strip out the existing URI class and Parser, create an abstract
+      private delegate, move URI's implementation into a concrete
+      delegate.  Create a new delgate for RFC3986.
+   2. Use a system property to determine whether URI uses the existing
+      implementation or RFC3986.
+   3. Retain existing Serial form, represented by a String.
+   4. Use one transient volatile field to refer to the delgate, remove
+      all other fields from the encapsulating URI class, the delegates
+      are not Serializable. Alternatively we may make all fields final
+      by reworking Serializable code to ensure only the String field is
+      written and read from the stream and by updating the delegate
+      final field reference during deserialization.
+   5. Make the delegate implementations final and immutable, don't
+      lazily initialize.
+   6. All methods refer to the delegate, the implementation of which is
+      determined by the system property and instantiated at construction
+      and during deserialization.
+
+
+I've also attached copies of our Uri implementation and included 
+RFC3986URLClassLoader.
+
+Regards,
+
+Peter.
+
+
+
+
+On 2/07/2014 8:44 PM, Alan Bateman wrote:
+> On 02/07/2014 08:10, Peter Firmstone wrote:
+>>
+>> How does one go about it? I'm not on any lists or part of the project.
+> This is the best place to start:
+>   http://openjdk.java.net/contribute/
+>
+> At a high-level then the types of improvements that you listed in your 
+> summary seem to be very good. It's probably best to start out small 
+> and propose one or two small changes first to get used to contributing 
+> and also because some of the changes are likely to require detailed 
+> review and discussion.
+>
+>
+>> :
+>>
+>>>
+>>> On RFC 3986 (you mentioned this a number of times) then there were 
+>>> previous attempts bring URI up to this, unfortunately had to be 
+>>> backed out due to compatibility issues and other breakage. It's 
+>>> definitely something that needs to be looked at again.
+>>
+>> Yes turns out RFC 3986 is very useful.  Our implementation is 
+>> strictly compliant, with the exception of making upper case path 
+>> comparisons for file URI's on certain platforms, it's based on 
+>> Harmony's URI, but has been refactored with immutability; final 
+>> class, final fields, isn't serializable etc.  The parser is called 
+>> during construction using static methods.  Exceptions thrown by 
+>> constructors are thrown by static methods prior to Object's default 
+>> constructor being called, to avoid creating partially constructed 
+>> objects.
+> java.net.URI is based on the older RFC 2396 and 2732. I think bringing 
+> it up to RFC 3986 while maintaining compatible could be a major 
+> project (previously attempts to do this back in JDK 6 were backed out 
+> due to the breakage that it caused). It's a good topic to bring up on 
+> the OpenJDK net-dev list where URI is maintained, it's definitely 
+> something that needs to happen at some point.
+>
+> -Alan
+
+-------------- next part --------------
+An embedded and charset-unspecified text was scrubbed...
+Name: RFC3986URLClassLoader.java
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140709/a55d1250/attachment-0004.ksh>
+-------------- next part --------------
+An embedded and charset-unspecified text was scrubbed...
+Name: Uri.java
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140709/a55d1250/attachment-0005.ksh>
+-------------- next part --------------
+An embedded and charset-unspecified text was scrubbed...
+Name: URIEncoderDecoder.java
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140709/a55d1250/attachment-0006.ksh>
+-------------- next part --------------
+An embedded and charset-unspecified text was scrubbed...
+Name: UriParser.java
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140709/a55d1250/attachment-0007.ksh>
+
+From Alan.Bateman at oracle.com  Wed Jul  9 07:10:13 2014
+From: Alan.Bateman at oracle.com (Alan Bateman)
+Date: Wed, 09 Jul 2014 12:10:13 +0100
+Subject: [concurrency-interest] URI + RFC3986 compliance
+In-Reply-To: <53BD1BC0.4070109@zeus.net.au>
+References: <mailman.132.1403863934.24967.concurrency-interest@cs.oswego.edu>	<1404006830.14661.4.camel@Nokia-N900>
+	<53AFDC5E.5070702@gmail.com> <53B135B6.1030105@zeus.net.au>
+	<53B15DD2.8020200@oracle.com> <53B3B072.6030406@zeus.net.au>
+	<53B3E29F.9010901@oracle.com> <53BD1BC0.4070109@zeus.net.au>
+Message-ID: <53BD2315.4080300@oracle.com>
+
+On 09/07/2014 11:38, Peter Firmstone wrote:
+> I've had some time to think about how to make java.net.URI comply with 
+> RFC3986 as well as retain the existing implementation for backward 
+> compatibility:
+>
+>   1. Strip out the existing URI class and Parser, create an abstract
+>      private delegate, move URI's implementation into a concrete
+>      delegate.  Create a new delgate for RFC3986.
+>   2. Use a system property to determine whether URI uses the existing
+>      implementation or RFC3986.
+>   3. Retain existing Serial form, represented by a String.
+>   4. Use one transient volatile field to refer to the delgate, remove
+>      all other fields from the encapsulating URI class, the delegates
+>      are not Serializable. Alternatively we may make all fields final
+>      by reworking Serializable code to ensure only the String field is
+>      written and read from the stream and by updating the delegate
+>      final field reference during deserialization.
+>   5. Make the delegate implementations final and immutable, don't
+>      lazily initialize.
+>   6. All methods refer to the delegate, the implementation of which is
+>      determined by the system property and instantiated at construction
+>      and during deserialization.
+The OpenJDK net-dev list would be the best to start a new thread on this.
+
+At a high-level then I don't think system-wide configuration (#2) to 
+toggle between RFC 2396 and 3986 is really feasible, particularly when 
+you have an application that is built from libraries coming from many 
+places. Also what would this mean for specification, particularly opaque 
+URIs and specification dealing with the scheme specific part. Also think 
+testing, is an implementation required to support both and does it mean 
+running tests with both settings?
+
+For the discussion on net-dev then I think it would be good to get into 
+the major differences between the two RFCs and also the history and the 
+previous attempt to rev java.net.URI. There have been a number of 
+suggestions since then on what APIs might need to be added. My gut feel 
+is that the overall effort is not going to be trivial and will likely 
+need a JEP.
+
+-Alan
+
+
+From davidcholmes at aapt.net.au  Wed Jul  9 08:44:02 2014
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 9 Jul 2014 22:44:02 +1000
+Subject: [concurrency-interest] changing thread priority on the
+	flytodeschedule zombie thread stuck in socketWrite0
+In-Reply-To: <1404898497.30679.YahooMailNeo@web160704.mail.bf1.yahoo.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEJLKHAA.davidcholmes@aapt.net.au>
+
+Andy,
+
+By default on Linux all native threads will have the same priority
+regardless of the Java Thread priority. It is generally true that starting a
+new thread doesnt cause a switch to the new thread in preference to the one
+doing the starting but that is just an artifact of the scheduler.
+
+David
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Andy Nuss
+  Sent: Wednesday, 9 July 2014 7:35 PM
+  To: dholmes at ieee.org; concurrency-interest at cs.oswego.edu
+  Subject: Re: [concurrency-interest] changing thread priority on the
+flytodeschedule zombie thread stuck in socketWrite0
+
+
+  David,
+
+
+  Aside from my lack of knowledge on the mapping and scheduling of java
+threads to native threads on linux, I already know that a java thread on
+linux with lower priority before you start it, will starve relative to one
+with higher priority that is eating cpu, based on both expectation and
+testing.
+
+
+  For the purposes of this question, I was wondering what happens if on
+linux, a thread is stuck (looping without exit) in a native socketRead0 or
+socketWrite0 call (its happening to me and googling indicates its happened
+to others going back many years).  If from a monitoring thread I lower this
+"stuck" thread's priority, will it immediately start starving relative to
+the other functioning threads in the original pool of threads doing the
+socket calls?
+
+
+  Andy
+
+
+
+
+  On Wednesday, July 9, 2014 2:01 AM, David Holmes
+<davidcholmes at aapt.net.au> wrote:
+
+
+
+
+  Andy,
+
+  Java thread priorities have almost no meaning under normal scheduling
+semantics. And on Linux (and elsewhere) changing Java Thread priority has no
+affect on the native thread priority, by default.
+
+  David
+    -----Original Message-----
+    From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Andy Nuss
+    Sent: Wednesday, 9 July 2014 1:36 AM
+    To: concurrency-interest at cs.oswego.edu
+    Subject: [concurrency-interest] changing thread priority on the fly
+todeschedule zombie thread stuck in socketWrite0
+
+
+    Hi,
+
+
+    I'm in the early stage of figuring out why my massive parallelization of
+S3 SDK usage for storing blobs causes a small percent of my amazon blob puts
+to loop forever in socketWrite0 without completing due to packet flow
+control problems with amazon server in the native socket write (sometimes
+read as well).  Stopping in eclipse debugger and suspending and reactivating
+such a thread proved to me it is looping in the native call, eating cpu and
+never finishing.
+
+
+    Though I haven't figured out yet why I'm the only one with this problem
+with S3 and java, I was wondering if given that interrupting the thread does
+not abort the native call at all, perhaps I could set the thread to the
+minimum java thread priority, effectively causing it to starve relative to
+all other threads in my program, and of course I would replace that zombie
+thread in the pool.  Deploying on Linux.  Using JDK7.
+
+
+
+    Andy
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140709/092ae70e/attachment.html>
+
+From dl at cs.oswego.edu  Thu Jul 10 12:25:56 2014
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Thu, 10 Jul 2014 12:25:56 -0400
+Subject: [concurrency-interest] Improved FJ thread throttling
+In-Reply-To: <53BC2CD2.3080707@cs.oswego.edu>
+References: <53BC23B6.1050107@cs.oswego.edu>	<CANPzfU8er9RcEv+R9B_n1S7GoYhKexSZzBUmWUNTJQEUD=_1oA@mail.gmail.com>
+	<53BC2CD2.3080707@cs.oswego.edu>
+Message-ID: <53BEBE94.4080703@cs.oswego.edu>
+
+On 07/08/2014 01:39 PM, Doug Lea wrote:
+> On 07/08/2014 01:16 PM, ?iktor ?lang wrote:
+>> How about allowing a System Property to set the number of spares, with the
+>> default being 256 so one does not have to implement a ThreadFactory to cap
+>> it
+>
+> ... It's a little scary to just attach these considerations to a System
+> property, but I'm not otherwise against it.
+
+After sitting on this for a few days, I implemented as
+overridable system property with default 256,
+(java.util.concurrent.ForkJoinPool.common.maximumSpares)
+without any further constraints on value. If people
+want to set to ill-advised values, there's no compelling
+reason top stop them.
+
+Doing this as an added System property might be slightly
+tricky for JDK8 updates: Unless approved otherwise, the
+property will exist but the documentation will not
+be changed to mention it.
+
+Experience reports on this update would still be very welcome.
+We have a bunch of internal tests, but we don't routinely
+run any for layered frameworks like Akka and Quasar.
+
+
+>>
+>> The only version available is in our jsr166 main (JDK8/JDK9 only)
+>> repository, with the aim of having some of you try it out before
+>> considering integration into OpenJDK.  To use it, you can either use the
+>> jar at http://gee.cs.oswego.edu/dl/__concurrent/dist/jsr166.jar
+>> <http://gee.cs.oswego.edu/dl/concurrent/dist/jsr166.jar> and run with
+>> -Xbootclasspath/p:jsr166.jar; or copy into an OpenJDK and build files:
+>>
+>> http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__main/java/util/concurrent/__ForkJoinPool.java?view=log
+>>
+>>
+>>
+>> <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinPool.java?view=log>
+>>
+>>
+>>
+>> http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__main/java/util/concurrent/__ForkJoinTask.java?view=log
+>>
+>>
+>>
+>> <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinTask.java?view=log>
+>>
+>>
+>>
+>> http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__main/java/util/concurrent/__ForkJoinWorkerThread.java?__view=log
+>>
+>>
+>>
+>> <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinWorkerThread.java?view=log>
+>>
+>>
+>>
+
+
+
+From viktor.klang at gmail.com  Thu Jul 10 12:42:41 2014
+From: viktor.klang at gmail.com (=?UTF-8?B?4oiaaWt0b3Ig0qBsYW5n?=)
+Date: Thu, 10 Jul 2014 18:42:41 +0200
+Subject: [concurrency-interest] Improved FJ thread throttling
+In-Reply-To: <53BEBE94.4080703@cs.oswego.edu>
+References: <53BC23B6.1050107@cs.oswego.edu>
+	<CANPzfU8er9RcEv+R9B_n1S7GoYhKexSZzBUmWUNTJQEUD=_1oA@mail.gmail.com>
+	<53BC2CD2.3080707@cs.oswego.edu> <53BEBE94.4080703@cs.oswego.edu>
+Message-ID: <CANPzfU8yRLPLtJkw4QxSwwdkX9L+9sUOhx43dZSqskgAF1bRHA@mail.gmail.com>
+
+I'll add it to my dire list of todos :)
+On Jul 10, 2014 6:30 PM, "Doug Lea" <dl at cs.oswego.edu> wrote:
+
+> On 07/08/2014 01:39 PM, Doug Lea wrote:
+>
+>> On 07/08/2014 01:16 PM, ?iktor ?lang wrote:
+>>
+>>> How about allowing a System Property to set the number of spares, with
+>>> the
+>>> default being 256 so one does not have to implement a ThreadFactory to
+>>> cap
+>>> it
+>>>
+>>
+>> ... It's a little scary to just attach these considerations to a System
+>> property, but I'm not otherwise against it.
+>>
+>
+> After sitting on this for a few days, I implemented as
+> overridable system property with default 256,
+> (java.util.concurrent.ForkJoinPool.common.maximumSpares)
+> without any further constraints on value. If people
+> want to set to ill-advised values, there's no compelling
+> reason top stop them.
+>
+> Doing this as an added System property might be slightly
+> tricky for JDK8 updates: Unless approved otherwise, the
+> property will exist but the documentation will not
+> be changed to mention it.
+>
+> Experience reports on this update would still be very welcome.
+> We have a bunch of internal tests, but we don't routinely
+> run any for layered frameworks like Akka and Quasar.
+>
+>
+>
+>>> The only version available is in our jsr166 main (JDK8/JDK9 only)
+>>> repository, with the aim of having some of you try it out before
+>>> considering integration into OpenJDK.  To use it, you can either use the
+>>> jar at http://gee.cs.oswego.edu/dl/__concurrent/dist/jsr166.jar
+>>> <http://gee.cs.oswego.edu/dl/concurrent/dist/jsr166.jar> and run with
+>>> -Xbootclasspath/p:jsr166.jar; or copy into an OpenJDK and build files:
+>>>
+>>> http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__
+>>> main/java/util/concurrent/__ForkJoinPool.java?view=log
+>>>
+>>>
+>>>
+>>> <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/
+>>> main/java/util/concurrent/ForkJoinPool.java?view=log>
+>>>
+>>>
+>>>
+>>> http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__
+>>> main/java/util/concurrent/__ForkJoinTask.java?view=log
+>>>
+>>>
+>>>
+>>> <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/
+>>> main/java/util/concurrent/ForkJoinTask.java?view=log>
+>>>
+>>>
+>>>
+>>> http://gee.cs.oswego.edu/cgi-__bin/viewcvs.cgi/jsr166/src/__
+>>> main/java/util/concurrent/__ForkJoinWorkerThread.java?__view=log
+>>>
+>>>
+>>>
+>>> <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/
+>>> main/java/util/concurrent/ForkJoinWorkerThread.java?view=log>
+>>>
+>>>
+>>>
+>>>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140710/358b57c0/attachment.html>
+
+From martinrb at google.com  Fri Jul 11 19:33:37 2014
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 11 Jul 2014 16:33:37 -0700
+Subject: [concurrency-interest] ThreadLocalRandom clinit troubles
+In-Reply-To: <53AB09E5.9070303@gmail.com>
+References: <CA+kOe0_L6Yka6jc00ja3LM3Kk2PHMkXnDtpAns=TZMsjgWF_+A@mail.gmail.com>
+	<53A29DC5.1030605@oracle.com>
+	<CA+kOe0-FUP_yB8wCh6xTZXmsWnGqbZngJJuOj4vGSqd4YZGZFQ@mail.gmail.com>
+	<53A3FA72.3060706@gmail.com> <53A418F2.3080201@gmail.com>
+	<53A43055.5070803@oracle.com> <53A43EF3.8000206@gmail.com>
+	<53A44C3A.6000607@oracle.com>
+	<CA+kOe0_P9H0bKcfsCdzwrPRcohFPhwguS=oUm1JQgrStM0UTLw@mail.gmail.com>
+	<CA+kOe08DZN01JLyVGjWrqNRLkbr92f6AA4EVOZh2jxaaBmCp_w@mail.gmail.com>
+	<53A98525.9080908@gmail.com>
+	<CA+kOe0-Ke7JF+HimqL2M8Dr=0c4-ux8YCOMRAZi_3k_su8F8Pw@mail.gmail.com>
+	<53A9EF29.7030208@gmail.com> <53AB09E5.9070303@gmail.com>
+Message-ID: <CA+kOe09ZJiZ9u4SnDkcoAiFGi2Roa3sOMtR+FEXkWhUAwvEwjg@mail.gmail.com>
+
+Thanks to Peter for digging into the secure seed generator classes and
+coming up with a patch.  Openjdk security folks, please review.  I confess
+to getting lost whenever I try to orient myself in the twisty maze of seed
+generator implementation files.
+
+Anyways, it seems important to have prngs like ThreadLocalRandom be able to
+get a few bits of seed entropy without loading hundreds of classes and
+without occupying any file descriptors permanently.  Perhaps at Google we
+will go back to writing some simple non-portable startup code to read
+/dev/urandom until openjdk security team comes up with a more principled
+solution (but one that doesn't drag in too much machinery).
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140711/39444a6c/attachment.html>
+
+From oleksandr.otenko at oracle.com  Mon Jul 14 11:18:40 2014
+From: oleksandr.otenko at oracle.com (Oleksandr Otenko)
+Date: Mon, 14 Jul 2014 16:18:40 +0100
+Subject: [concurrency-interest] ThreadLocalRandom clinit troubles
+In-Reply-To: <CA+kOe09ZJiZ9u4SnDkcoAiFGi2Roa3sOMtR+FEXkWhUAwvEwjg@mail.gmail.com>
+References: <CA+kOe0_L6Yka6jc00ja3LM3Kk2PHMkXnDtpAns=TZMsjgWF_+A@mail.gmail.com>	<53A29DC5.1030605@oracle.com>	<CA+kOe0-FUP_yB8wCh6xTZXmsWnGqbZngJJuOj4vGSqd4YZGZFQ@mail.gmail.com>	<53A3FA72.3060706@gmail.com>
+	<53A418F2.3080201@gmail.com>	<53A43055.5070803@oracle.com>
+	<53A43EF3.8000206@gmail.com>	<53A44C3A.6000607@oracle.com>	<CA+kOe0_P9H0bKcfsCdzwrPRcohFPhwguS=oUm1JQgrStM0UTLw@mail.gmail.com>	<CA+kOe08DZN01JLyVGjWrqNRLkbr92f6AA4EVOZh2jxaaBmCp_w@mail.gmail.com>	<53A98525.9080908@gmail.com>	<CA+kOe0-Ke7JF+HimqL2M8Dr=0c4-ux8YCOMRAZi_3k_su8F8Pw@mail.gmail.com>	<53A9EF29.7030208@gmail.com>
+	<53AB09E5.9070303@gmail.com>
+	<CA+kOe09ZJiZ9u4SnDkcoAiFGi2Roa3sOMtR+FEXkWhUAwvEwjg@mail.gmail.com>
+Message-ID: <53C3F4D0.5090407@oracle.com>
+
+Can someone summarize what happened?
+
+SecureRandom used to get entropy from /dev/random, which is configurable 
+through a policy file to /dev/urandom. Has this changed?
+
+Alex
+
+On 12/07/2014 00:33, Martin Buchholz wrote:
+> Thanks to Peter for digging into the secure seed generator classes and 
+> coming up with a patch.  Openjdk security folks, please review.  I 
+> confess to getting lost whenever I try to orient myself in the twisty 
+> maze of seed generator implementation files.
+>
+> Anyways, it seems important to have prngs like ThreadLocalRandom be 
+> able to get a few bits of seed entropy without loading hundreds of 
+> classes and without occupying any file descriptors permanently. 
+>  Perhaps at Google we will go back to writing some simple non-portable 
+> startup code to read /dev/urandom until openjdk security team comes up 
+> with a more principled solution (but one that doesn't drag in too much 
+> machinery).
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140714/de7b81e0/attachment.html>
+
+From peter.levart at gmail.com  Mon Jul 14 12:59:03 2014
+From: peter.levart at gmail.com (Peter Levart)
+Date: Mon, 14 Jul 2014 18:59:03 +0200
+Subject: [concurrency-interest] ThreadLocalRandom clinit troubles
+In-Reply-To: <53C3ECC2.8040202@oracle.com>
+References: <CA+kOe0_L6Yka6jc00ja3LM3Kk2PHMkXnDtpAns=TZMsjgWF_+A@mail.gmail.com>	<53A29DC5.1030605@oracle.com>	<CA+kOe0-FUP_yB8wCh6xTZXmsWnGqbZngJJuOj4vGSqd4YZGZFQ@mail.gmail.com>	<53A3FA72.3060706@gmail.com>
+	<53A418F2.3080201@gmail.com>	<53A43055.5070803@oracle.com>
+	<53A43EF3.8000206@gmail.com>	<53A44C3A.6000607@oracle.com>	<CA+kOe0_P9H0bKcfsCdzwrPRcohFPhwguS=oUm1JQgrStM0UTLw@mail.gmail.com>	<CA+kOe08DZN01JLyVGjWrqNRLkbr92f6AA4EVOZh2jxaaBmCp_w@mail.gmail.com>	<53A98525.9080908@gmail.com>	<CA+kOe0-Ke7JF+HimqL2M8Dr=0c4-ux8YCOMRAZi_3k_su8F8Pw@mail.gmail.com>	<53A9EF29.7030208@gmail.com>
+	<53AB09E5.9070303@gmail.com>
+	<CA+kOe09ZJiZ9u4SnDkcoAiFGi2Roa3sOMtR+FEXkWhUAwvEwjg@mail.gmail.com>
+	<53C3ECC2.8040202@oracle.com>
+Message-ID: <53C40C57.2000606@gmail.com>
+
+Hi Sean, Alex
+
+Here's a sum-up post:
+
+http://mail.openjdk.java.net/pipermail/security-dev/2014-June/010700.html
+
+Regards, Peter
+
+
+On 07/14/2014 04:44 PM, Sean Mullan wrote:
+> I don't see a pointer to the webrev/patch -- did you forget to include 
+> it?
+>
+> --Sean
+>
+> On 07/11/2014 07:33 PM, Martin Buchholz wrote:
+>> Thanks to Peter for digging into the secure seed generator classes and
+>> coming up with a patch.  Openjdk security folks, please review. I 
+>> confess
+>> to getting lost whenever I try to orient myself in the twisty maze of 
+>> seed
+>> generator implementation files.
+>>
+>> Anyways, it seems important to have prngs like ThreadLocalRandom be 
+>> able to
+>> get a few bits of seed entropy without loading hundreds of classes and
+>> without occupying any file descriptors permanently.  Perhaps at 
+>> Google we
+>> will go back to writing some simple non-portable startup code to read
+>> /dev/urandom until openjdk security team comes up with a more principled
+>> solution (but one that doesn't drag in too much machinery).
+>>
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140714/3321ac59/attachment.html>
+
+From martinrb at google.com  Fri Jul 18 15:35:01 2014
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 18 Jul 2014 12:35:01 -0700
+Subject: [concurrency-interest] ThreadLocalRandom clinit troubles
+In-Reply-To: <CABOR3+yhBUZ72isV4H7r97eshyQmaYbN8s06WmkufJLjbM+4Zg@mail.gmail.com>
+References: <CA+kOe0_L6Yka6jc00ja3LM3Kk2PHMkXnDtpAns=TZMsjgWF_+A@mail.gmail.com>
+	<53A29DC5.1030605@oracle.com>
+	<CA+kOe0-FUP_yB8wCh6xTZXmsWnGqbZngJJuOj4vGSqd4YZGZFQ@mail.gmail.com>
+	<53A3FA72.3060706@gmail.com> <53A418F2.3080201@gmail.com>
+	<53A43055.5070803@oracle.com> <53A43EF3.8000206@gmail.com>
+	<53A44C3A.6000607@oracle.com>
+	<CA+kOe0_P9H0bKcfsCdzwrPRcohFPhwguS=oUm1JQgrStM0UTLw@mail.gmail.com>
+	<CA+kOe08DZN01JLyVGjWrqNRLkbr92f6AA4EVOZh2jxaaBmCp_w@mail.gmail.com>
+	<53A98525.9080908@gmail.com>
+	<CA+kOe0-Ke7JF+HimqL2M8Dr=0c4-ux8YCOMRAZi_3k_su8F8Pw@mail.gmail.com>
+	<53A9EF29.7030208@gmail.com> <53AB09E5.9070303@gmail.com>
+	<CA+kOe09ZJiZ9u4SnDkcoAiFGi2Roa3sOMtR+FEXkWhUAwvEwjg@mail.gmail.com>
+	<53C3F4D0.5090407@oracle.com>
+	<CABOR3+yhBUZ72isV4H7r97eshyQmaYbN8s06WmkufJLjbM+4Zg@mail.gmail.com>
+Message-ID: <CA+kOe09t4F-C0u5x9XLrQg6wZ3Ly6707inDmbLjcrV__VWUSGg@mail.gmail.com>
+
+I support Peter at al's plan to add an API that ThreadLocalRandom et al can
+use to get some system entropy without unbounded class dependency loading.
+
+It should not surprise anyone that at Google, we are most interested in
+running on Linux, so while we're waiting for a proper fix to happen we are
+locally applying a simpler patch that tries explicitly /dev/urandom,
+falling back to SecureRandom if necessary:
+
+http://cr.openjdk.java.net/~martin/webrevs/openjdk9/ThreadLocalRandom-system-entropy/
+
+
+On Mon, Jul 14, 2014 at 1:54 PM, Bernd <ecki at zusammenkunft.net> wrote:
+
+> SecureRandom is unfortunatelly pretty  complex. It is interpreting the
+> seed url in some way (the configuration you mentioned behave very special
+> since Java 6) , it is mixing seed and continues data and it reorders the
+> implementations used.
+>
+> JEP 123 intended to clear things, but getInstanceStrong() (which nobody
+> uses?!) did not improve things IMHO.
+>
+> Bernd
+>
+> PS: I think the webrev changed since then, but the mail from Brad
+> describes the problem well:
+> http://mail.openjdk.java.net/pipermail/security-dev/2013-January/006288.html
+> Am 14.07.2014 21:05 schrieb "Oleksandr Otenko" <
+> oleksandr.otenko at oracle.com>:
+>
+>  Can someone summarize what happened?
+>>
+>> SecureRandom used to get entropy from /dev/random, which is configurable
+>> through a policy file to /dev/urandom. Has this changed?
+>>
+>> Alex
+>>
+>> On 12/07/2014 00:33, Martin Buchholz wrote:
+>>
+>>  Thanks to Peter for digging into the secure seed generator classes and
+>> coming up with a patch.  Openjdk security folks, please review.  I confess
+>> to getting lost whenever I try to orient myself in the twisty maze of seed
+>> generator implementation files.
+>>
+>>  Anyways, it seems important to have prngs like ThreadLocalRandom be
+>> able to get a few bits of seed entropy without loading hundreds of classes
+>> and without occupying any file descriptors permanently.  Perhaps at Google
+>> we will go back to writing some simple non-portable startup code to read
+>> /dev/urandom until openjdk security team comes up with a more principled
+>> solution (but one that doesn't drag in too much machinery).
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing listConcurrency-interest at cs.oswego.eduhttp://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+>>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140718/7522a9d6/attachment.html>
+
+From mr.chrisvest at gmail.com  Sun Jul 20 06:48:09 2014
+From: mr.chrisvest at gmail.com (Chris Vest)
+Date: Sun, 20 Jul 2014 12:48:09 +0200
+Subject: [concurrency-interest] Measuring and expressing contention
+Message-ID: <C380B799-E2FB-4414-BC77-86EE7163FA3C@gmail.com>
+
+Hi fellas,
+
+I?m building an object pool (for fun, mostly) that one configures with an upper bound of how many objects it may contain, which means it can become a source of contention when the demand for the pooled objects is greater than the supply. In my implementation, this will effectively boil down to threads waiting on BlockingQueue.poll(timeout, unit) calls.
+
+I?m trying to come up with a good way to express the ?current level of contention? to the outside world, whatever that means. Basically, I want to be able to tell an ops person that maybe the pool size has been configured too small, but I?m coming up short with ideas of how to do that without significant overhead. As for overhead, adding a CAS in the fast-path would reduce the throughput by about 30%, which is too much, but a CAS in the slowest-path case where the thread is going to block anyway would be perfectly fine.
+
+So, do you have any experience with solving something like this, or ideas for how to approach it?
+
+Cheers,
+Chris
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140720/a7589084/attachment.html>
+
+From gregg at wonderly.org  Sun Jul 20 20:26:09 2014
+From: gregg at wonderly.org (Gregg Wonderly)
+Date: Sun, 20 Jul 2014 19:26:09 -0500
+Subject: [concurrency-interest] Measuring and expressing contention
+In-Reply-To: <C380B799-E2FB-4414-BC77-86EE7163FA3C@gmail.com>
+References: <C380B799-E2FB-4414-BC77-86EE7163FA3C@gmail.com>
+Message-ID: <B3DBA75F-9B72-4CE3-AD75-69A110C631D2@wonderly.org>
+
+You could average the waiting time using a per thread wait time.  Something like this, with the appropriate locking that you need for latency management.
+
+	// number of samples to average over to diminish brief swells in wait time or brief, small waits.
+	// declare this at class level, and lock it appropriately
+	int averageOver = 100; 
+
+	long startWait = System.currentTimeMillis();
+
+	?whatever you will do until there is an item for this thread
+
+	long waited = System.currentTimeMillis() - startWait;
+	synchronized( queue ) {
+		average = ( ( average * (averageOver-1) ) + waited ) / averageOver;
+	}
+
+Average then becomes a representation of the average waiting that is occurring, smoothed by averageOver.
+
+Gregg Wonderly
+		
+
+On Jul 20, 2014, at 5:48 AM, Chris Vest <mr.chrisvest at gmail.com> wrote:
+
+> Hi fellas,
+> 
+> I?m building an object pool (for fun, mostly) that one configures with an upper bound of how many objects it may contain, which means it can become a source of contention when the demand for the pooled objects is greater than the supply. In my implementation, this will effectively boil down to threads waiting on BlockingQueue.poll(timeout, unit) calls.
+> 
+> I?m trying to come up with a good way to express the ?current level of contention? to the outside world, whatever that means. Basically, I want to be able to tell an ops person that maybe the pool size has been configured too small, but I?m coming up short with ideas of how to do that without significant overhead. As for overhead, adding a CAS in the fast-path would reduce the throughput by about 30%, which is too much, but a CAS in the slowest-path case where the thread is going to block anyway would be perfectly fine.
+> 
+> So, do you have any experience with solving something like this, or ideas for how to approach it?
+> 
+> Cheers,
+> Chris
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140720/2f8970cd/attachment.html>
+
+From aaron.grunthal at infinite-source.de  Sun Jul 20 22:15:10 2014
+From: aaron.grunthal at infinite-source.de (Aaron Grunthal)
+Date: Mon, 21 Jul 2014 04:15:10 +0200
+Subject: [concurrency-interest] Measuring and expressing contention
+In-Reply-To: <C380B799-E2FB-4414-BC77-86EE7163FA3C@gmail.com>
+References: <C380B799-E2FB-4414-BC77-86EE7163FA3C@gmail.com>
+Message-ID: <53CC77AE.5090703@infinite-source.de>
+
+Have you tried the java.util.concurrent.atomic.LongAdder? It's designed 
+for statistics-keeping in situations where CAS on a single shared 
+cache-line causes too much contention.
+
+And you should make sure your benchmarking is realistic, the CAS may be 
+expensive when it dominates your benchmark but could become 
+significantly less contended when some actual work is performed between 
+checking out objects from the pool and returning them.
+
+On 20.07.2014 12:48, Chris Vest wrote:
+> Hi fellas,
+>
+> I?m building an object pool (for fun, mostly) that one configures with
+> an upper bound of how many objects it may contain, which means it can
+> become a source of contention when the demand for the pooled objects is
+> greater than the supply. In my implementation, this will effectively
+> boil down to threads waiting on BlockingQueue.poll(timeout, unit) calls.
+>
+> I?m trying to come up with a good way to express the ?current level of
+> contention? to the outside world, whatever that means. Basically, I want
+> to be able to tell an ops person that maybe the pool size has been
+> configured too small, but I?m coming up short with ideas of how to do
+> that without significant overhead. As for overhead, adding a CAS in the
+> fast-path would reduce the throughput by about 30%, which is too much,
+> but a CAS in the slowest-path case where the thread is going to block
+> anyway would be perfectly fine.
+>
+> So, do you have any experience with solving something like this, or
+> ideas for how to approach it?
+>
+> Cheers,
+> Chris
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From mr.chrisvest at gmail.com  Mon Jul 21 03:51:50 2014
+From: mr.chrisvest at gmail.com (Chris Vest)
+Date: Mon, 21 Jul 2014 09:51:50 +0200
+Subject: [concurrency-interest] Measuring and expressing contention
+In-Reply-To: <53CC77AE.5090703@infinite-source.de>
+References: <C380B799-E2FB-4414-BC77-86EE7163FA3C@gmail.com>
+	<53CC77AE.5090703@infinite-source.de>
+Message-ID: <AF34F208-8E70-44EA-BF3A-678B7A839EFF@gmail.com>
+
+What I forgot to mention was, that I have a background thread that continuously do odd jobs, such as allocation objects for the pool. I could use use LongAdders to submit wait times, and the number of waits, to this background thread. If this thread keeps fields that trail the sums of the LongAdders, I?ll be able to get deltas of how they grow over time:
+
+long waitTimeSum = waitTimeSumAdder.sum();
+long waitersSum = waitersSumAdder.sum();
+long waitTimeForThisIteration = waitTimeSum - waitTimeSumField;
+long waitersForThisIteration = waitersSum - waitersSumField;
+waitTimeSumField = waitTimeSum;
+waitersSumField = waitersSum;
+
+This is racy, but that?s fine, since we?re only going to compute a rough indicator value anyway. I?m not quite sure in what way, but it seems important to distinguish between 10 waits of 100 ms each, and one wait of one second. In the latter case, a larger pause is caused by the contention on the pool, though I cannot know if the 10 waits of 100 ms were all part of the same web request, for instance. Computing the ?rough average? (because race) would give me that, but then I wouldn?t be able to distinguish between one wait of 100 ms and 10 waits of 100 ms, which sounds like a reasonable thing to do. In any case, this background thread got more time to think about this, and could take note of how long ago it last checked those LongAdder sums, and then compute the decay based on time.
+
+In the end, a number will be computed, but I?m still not sure what number would be meaningful to compute.
+
+Cheers,
+Chris
+
+On 21 Jul 2014, at 04:15, Aaron Grunthal <aaron.grunthal at infinite-source.de> wrote:
+
+> Have you tried the java.util.concurrent.atomic.LongAdder? It's designed for statistics-keeping in situations where CAS on a single shared cache-line causes too much contention.
+> 
+> And you should make sure your benchmarking is realistic, the CAS may be expensive when it dominates your benchmark but could become significantly less contended when some actual work is performed between checking out objects from the pool and returning them.
+> 
+> On 20.07.2014 12:48, Chris Vest wrote:
+>> Hi fellas,
+>> 
+>> I?m building an object pool (for fun, mostly) that one configures with
+>> an upper bound of how many objects it may contain, which means it can
+>> become a source of contention when the demand for the pooled objects is
+>> greater than the supply. In my implementation, this will effectively
+>> boil down to threads waiting on BlockingQueue.poll(timeout, unit) calls.
+>> 
+>> I?m trying to come up with a good way to express the ?current level of
+>> contention? to the outside world, whatever that means. Basically, I want
+>> to be able to tell an ops person that maybe the pool size has been
+>> configured too small, but I?m coming up short with ideas of how to do
+>> that without significant overhead. As for overhead, adding a CAS in the
+>> fast-path would reduce the throughput by about 30%, which is too much,
+>> but a CAS in the slowest-path case where the thread is going to block
+>> anyway would be perfectly fine.
+>> 
+>> So, do you have any experience with solving something like this, or
+>> ideas for how to approach it?
+>> 
+>> Cheers,
+>> Chris
+>> 
+>> 
+>> 
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140721/ce95f36d/attachment.html>
+
+From aaron.grunthal at infinite-source.de  Mon Jul 21 04:56:50 2014
+From: aaron.grunthal at infinite-source.de (Aaron Grunthal)
+Date: Mon, 21 Jul 2014 10:56:50 +0200
+Subject: [concurrency-interest] Measuring and expressing contention
+In-Reply-To: <AF34F208-8E70-44EA-BF3A-678B7A839EFF@gmail.com>
+References: <C380B799-E2FB-4414-BC77-86EE7163FA3C@gmail.com>
+	<53CC77AE.5090703@infinite-source.de>
+	<AF34F208-8E70-44EA-BF3A-678B7A839EFF@gmail.com>
+Message-ID: <53CCD5D2.4080900@infinite-source.de>
+
+You could simply try polling from the queue (without timeout) and record 
+wait-times on a waiting poll if that fails.
+
+Personally I would simply use a Profiler and check whether threads get 
+blocked waiting for the Queue.
+
+Or just print out the queue size. If it's empty there most likely is 
+contention (or it's sized exactly right). If it's empty for extended 
+amounts of time it can probably be bumped to a larger size.
+
+On 21.07.2014 09:51, Chris Vest wrote:
+> What I forgot to mention was, that I have a background thread that
+> continuously do odd jobs, such as allocation objects for the pool. I
+> could use use LongAdders to submit wait times, and the number of waits,
+> to this background thread. If this thread keeps fields that trail the
+> sums of the LongAdders, I?ll be able to get deltas of how they grow over
+> time:
+>
+> long waitTimeSum = waitTimeSumAdder.sum();
+> long waitersSum = waitersSumAdder.sum();
+> long waitTimeForThisIteration = waitTimeSum - waitTimeSumField;
+> long waitersForThisIteration = waitersSum - waitersSumField;
+> waitTimeSumField = waitTimeSum;
+> waitersSumField = waitersSum;
+>
+> This is racy, but that?s fine, since we?re only going to compute a rough
+> indicator value anyway. I?m not quite sure in what way, but it seems
+> important to distinguish between 10 waits of 100 ms each, and one wait
+> of one second. In the latter case, a larger pause is caused by the
+> contention on the pool, though I cannot know if the 10 waits of 100 ms
+> were all part of the same web request, for instance. Computing the
+> ?rough average? (because race) would give me that, but then I wouldn?t
+> be able to distinguish between one wait of 100 ms and 10 waits of 100
+> ms, which sounds like a reasonable thing to do. In any case, this
+> background thread got more time to think about this, and could take note
+> of how long ago it last checked those LongAdder sums, and then compute
+> the decay based on time.
+>
+> In the end, a number will be computed, but I?m still not sure what
+> number would be meaningful to compute.
+>
+> Cheers,
+> Chris
+>
+> On 21 Jul 2014, at 04:15, Aaron Grunthal
+> <aaron.grunthal at infinite-source.de
+> <mailto:aaron.grunthal at infinite-source.de>> wrote:
+>
+>> Have you tried the java.util.concurrent.atomic.LongAdder? It's
+>> designed for statistics-keeping in situations where CAS on a single
+>> shared cache-line causes too much contention.
+>>
+>> And you should make sure your benchmarking is realistic, the CAS may
+>> be expensive when it dominates your benchmark but could become
+>> significantly less contended when some actual work is performed
+>> between checking out objects from the pool and returning them.
+>>
+>> On 20.07.2014 12:48, Chris Vest wrote:
+>>> Hi fellas,
+>>>
+>>> I?m building an object pool (for fun, mostly) that one configures with
+>>> an upper bound of how many objects it may contain, which means it can
+>>> become a source of contention when the demand for the pooled objects is
+>>> greater than the supply. In my implementation, this will effectively
+>>> boil down to threads waiting on BlockingQueue.poll(timeout, unit) calls.
+>>>
+>>> I?m trying to come up with a good way to express the ?current level of
+>>> contention? to the outside world, whatever that means. Basically, I want
+>>> to be able to tell an ops person that maybe the pool size has been
+>>> configured too small, but I?m coming up short with ideas of how to do
+>>> that without significant overhead. As for overhead, adding a CAS in the
+>>> fast-path would reduce the throughput by about 30%, which is too much,
+>>> but a CAS in the slowest-path case where the thread is going to block
+>>> anyway would be perfectly fine.
+>>>
+>>> So, do you have any experience with solving something like this, or
+>>> ideas for how to approach it?
+>>>
+>>> Cheers,
+>>> Chris
+>>>
+>>>
+>>>
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> <mailto:Concurrency-interest at cs.oswego.edu>
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> <mailto:Concurrency-interest at cs.oswego.edu>
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From jeffhain at rocketmail.com  Mon Jul 21 18:31:57 2014
+From: jeffhain at rocketmail.com (Jeff Hain)
+Date: Mon, 21 Jul 2014 23:31:57 +0100
+Subject: [concurrency-interest] Measuring and expressing contention
+In-Reply-To: <C380B799-E2FB-4414-BC77-86EE7163FA3C@gmail.com>
+References: <C380B799-E2FB-4414-BC77-86EE7163FA3C@gmail.com>
+Message-ID: <1405981917.4458.YahooMailNeo@web172402.mail.ir2.yahoo.com>
+
+
+
+Hi Chris.
+
+>So, do you have any experience with solving something like this, or ideas for how to approach it?
+
+For the pure "contention" part (not starvation or measurement),
+if you are ok with some spare instances that would not be counted
+in your shared pool, what you can do is have thread-local buffers
+of instances as proxies (threads would only see the pool through them),
+and give them a max size of 100 or 1000 for example.
+
+When a proxy gets empty, you half-fill it (in one shot of synchronization or alike),
+and when it gets full you half-empty it ("half-" to reduce risk of flip-flop between full
+and empty).
+
+It can greatly reduce contention on the shared pool, and helps with thread
+locality (when you put an instance in thread-local proxy, and then retrieves
+the same instance from it).
+
+If you use smart policies like timing etc. in your pools, make sure your pooling
+still helps - I found it hard enough to beat GC throughput with pooling
+even without this overhead.
+
+
+-Jeff
+
+PS : In my experience the most vicious bugs come from either threading or pooling,
+so having a way to easily deactivate all your pools (i.e. use pools that actually don't pool)
+can help a lot.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140721/748d9304/attachment.html>
+
+From mr.chrisvest at gmail.com  Tue Jul 22 03:08:32 2014
+From: mr.chrisvest at gmail.com (Chris Vest)
+Date: Tue, 22 Jul 2014 09:08:32 +0200
+Subject: [concurrency-interest] Measuring and expressing contention
+In-Reply-To: <1405981917.4458.YahooMailNeo@web172402.mail.ir2.yahoo.com>
+References: <C380B799-E2FB-4414-BC77-86EE7163FA3C@gmail.com>
+	<1405981917.4458.YahooMailNeo@web172402.mail.ir2.yahoo.com>
+Message-ID: <A8CFEF3C-48B5-44F4-BC48-374A572DF2A6@gmail.com>
+
+Hi Jeff,
+
+I already use ThreadLocals to reduce contention, though it does something simpler than what you describe, and does not require threads to each grab their own client/proxy/facade:
+https://github.com/chrisvest/stormpot/blob/6d45381bfc899f93eb912b0cec86bf425a62d57f/src/main/java/stormpot/BlazePool.java#L89
+
+The pool is designed for relatively expensive-to-allocate objects, such as network connections, so I assume that normal allocation will always be slower in the use cases the pool is applied to.
+
+Alex,
+
+I know about HdrHistogram, but I think it ought to be possible to do something simpler than that, when the goal is answering the question ?Is the pool big enough?"
+
+Cheers,
+Chris
+
+On 22 Jul 2014, at 00:31, Jeff Hain <jeffhain at rocketmail.com> wrote:
+
+> 
+> Hi Chris.
+> 
+> >So, do you have any experience with solving something like this, or ideas for how to approach it?
+> 
+> For the pure "contention" part (not starvation or measurement),
+> if you are ok with some spare instances that would not be counted
+> in your shared pool, what you can do is have thread-local buffers
+> of instances as proxies (threads would only see the pool through them),
+> and give them a max size of 100 or 1000 for example.
+> 
+> When a proxy gets empty, you half-fill it (in one shot of synchronization or alike),
+> and when it gets full you half-empty it ("half-" to reduce risk of flip-flop between full
+> and empty).
+> 
+> It can greatly reduce contention on the shared pool, and helps with thread
+> locality (when you put an instance in thread-local proxy, and then retrieves
+> the same instance from it).
+> 
+> If you use smart policies like timing etc. in your pools, make sure your pooling
+> still helps - I found it hard enough to beat GC throughput with pooling
+> even without this overhead.
+> 
+> 
+> -Jeff
+> 
+> PS : In my experience the most vicious bugs come from either threading or pooling,
+> so having a way to easily deactivate all your pools (i.e. use pools that actually don't pool)
+> can help a lot.
+> 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20140722/fe7829f4/attachment.html>
+

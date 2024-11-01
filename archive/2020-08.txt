@@ -1,0 +1,3257 @@
+From forax at univ-mlv.fr  Sat Aug  1 08:24:17 2020
+From: forax at univ-mlv.fr (Remi Forax)
+Date: Sat, 1 Aug 2020 14:24:17 +0200 (CEST)
+Subject: [concurrency-interest] Lazy,
+ cached supplier: most performant mutex mechanism?
+In-Reply-To: <CAO3q7t-8vw=dd+H0kCpJMMJ65z4+cxnqm-+kePV7rJ0raCa-Mw@mail.gmail.com>
+References: <CAO3q7t9XOZbBr=Mp_z5FmVX7ff4=2J6yAevVat-iiFW6Kji4Eg@mail.gmail.com>
+ <CAGu0=MNHGmwZENn7Ez0vO2to=_xp1yhMYfq3xABHD8z_RAX=Nw@mail.gmail.com>
+ <CANPzfU9aOnYP06s4UurBM7mjZXzvRRcxo2wTPLSRWEStSPAMCw@mail.gmail.com>
+ <CAO3q7t-8vw=dd+H0kCpJMMJ65z4+cxnqm-+kePV7rJ0raCa-Mw@mail.gmail.com>
+Message-ID: <1697307039.497966.1596284657005.JavaMail.zimbra@u-pem.fr>
+
+> De: "concurrency-interest" <concurrency-interest at cs.oswego.edu>
+> Cc: "concurrency-interest at cs.oswego.edu"
+> <concurrency-interest at altair.cs.oswego.edu>
+> Envoyé: Vendredi 31 Juillet 2020 20:56:10
+> Objet: Re: [concurrency-interest] Lazy, cached supplier: most performant mutex
+> mechanism?
+
+> Thanks everyone, I'll check these things out.
+> Seems like the user-space dual of a condy instruction, except run max once. I
+> was hoping to try an approach that wasn't based on synchronized, though
+> synchronized saves you the allocation of a lock.
+
+There is already a proposal for a JLS dual of condy 
+[ https://bugs.openjdk.java.net/browse/JDK-8209964 | https://bugs.openjdk.java.net/browse/JDK-8209964 ] 
+
+but as you said, condy semantics allows the bootstrap method to be run more than once. 
+
+> Ron Pressler had another interesting suggestion to try:
+
+> Read val; if it's null, CAS fn to null.
+
+> If you win, allocate a lock and do an ordered set (with a VarHandle) to the lock
+> field, lock it, invoke fn, do an ordered write (with a VarHandle) to val, and
+> unlock, then do another ordered write to null out the lock.
+> If you lose the CAS, spin with an ordered read on the lock field and the val.
+> This will be a short spin, because all you're waiting for is the allocation of
+> the lock. If you see a non-null val, you're done. If you see a non-null lock,
+> lock on it, and then a normal read from val should be non-null.
+
+> This requires a bit of care in terms of memory ordering, and will probably
+> require testing on non-Intel platforms, as those have weaker memory ordering
+> than Intel, and many concurrency bugs don't manifest on x86. But the code will
+> still be small, and it's an important method, so a relatively elaborate
+> mechanism there might be worth it.
+> </suggestion>
+
+Here is a version that has the nice property to not have a volatile read in the fast-path (and the not so nice property of being very slow if the code is not JITed by c2) 
+
+This is how yo use it, here ONCE.get() should always return 0 
+
+private static int COUNTER = 0 ; 
+private static final Once<Integer> ONCE = Once. of (() -> COUNTER ++) ; 
+
+and the trick is to use a MutableCallSite 
+
+import java.lang.invoke.MethodHandle ; 
+import java.lang.invoke.MethodHandles ; 
+import java.lang.invoke.MethodType ; 
+import java.lang.invoke.MutableCallSite ; 
+import java.lang.reflect.UndeclaredThrowableException ; 
+import java.util.Objects ; 
+import java.util.concurrent.locks.ReentrantLock ; 
+import java.util.function.Supplier ; 
+
+public interface Once< T > extends Supplier< T > { 
+@SuppressWarnings ( "unchecked" ) 
+static < T > Once< T > of (Supplier<? extends T > supplier) { 
+var mh = new OnceCallSite(supplier).dynamicInvoker() ; 
+return () -> { 
+try { 
+return ( T ) mh .invokeExact() ; 
+} catch (RuntimeException | Error e) { 
+throw e ; 
+} catch (Throwable t) { 
+throw new UndeclaredThrowableException(t) ; 
+} 
+} ; 
+} 
+
+class OnceCallSite extends MutableCallSite { 
+private static final MethodHandle SLOW_PATH ; 
+static { 
+var lookup = MethodHandles. lookup () ; 
+try { 
+SLOW_PATH = lookup.findVirtual(OnceCallSite. class, "slowPath" , MethodType. methodType (Object. class )) ; 
+} catch (NoSuchMethodException | IllegalAccessException e) { 
+throw new AssertionError(e) ; 
+} 
+} 
+
+private Object value ; 
+private final Supplier<?> supplier ; 
+private final ReentrantLock lock = new ReentrantLock() ; 
+
+private OnceCallSite (Supplier<?> supplier) { 
+super (MethodType. methodType (Object. class )) ; 
+this . supplier = supplier ; 
+setTarget( SLOW_PATH .bindTo( this )) ; 
+} 
+
+private Object slowPath () { 
+lock .lock() ; 
+try { 
+Object value = this . value ; 
+if (value != null ) { 
+return value ; 
+} 
+value = Objects. requireNonNull ( supplier .get()) ; 
+this . value = value ; 
+setTarget(MethodHandles. constant (Object. class, value)) ; 
+return value ; 
+} finally { 
+lock .unlock() ; 
+} 
+} 
+} 
+} 
+
+> On Fri, Jul 31, 2020 at 2:33 PM Viktor Klang < [ mailto:viktor.klang at gmail.com |
+> viktor.klang at gmail.com ] > wrote:
+
+>> We spent quite some time on this, you can read all about it here:
+>> [ https://docs.scala-lang.org/sips/improved-lazy-val-initialization.html |
+>> https://docs.scala-lang.org/sips/improved-lazy-val-initialization.html ]
+
+>> On Fri, 31 Jul 2020 at 20:02, Benjamin Manes via Concurrency-interest < [
+>> mailto:concurrency-interest at cs.oswego.edu | concurrency-interest at cs.oswego.edu
+>> ] > wrote:
+
+>>> I believe double-checked locking, such as Martin's version in Guava [
+>>> https://github.com/google/guava/blob/master/guava/src/com/google/common/base/Suppliers.java#L124-L137
+>>> | Suppliers#memoize ] , is the best approach on the JVM for instance-level
+>>> memoization.
+
+>>> On Fri, Jul 31, 2020 at 10:42 AM Ghadi Shayban via Concurrency-interest < [
+>>> mailto:concurrency-interest at cs.oswego.edu | concurrency-interest at cs.oswego.edu
+>>> ] > wrote:
+
+>>>> This seems like it would be a common stdlib ask, but what is the most performant
+>>>> way to protect the code inside a supplier from being concurrently realized more
+>>>> than once? Contention would be rare, and the losing threads need to wait on the
+>>>> value being computed by the winning thread.
+
+>>>> The most straightforward thing to do is a synchronized block, but this currently
+>>>> pins a carrier thread in Project Loom.
+
+>>>> The Supplier needs to keep track of:
+>>>> 1) the thunk, if unrealized
+>>>> 2) a value, if realized
+
+>>>> Golang's sync.Once does this [1] (CAS, fallback to mutex. Doesn't remember
+>>>> value)
+>>>> Clojure's lazy sequences use synchronized [2]
+
+>>>> Is there a better way to approach this on the JVM?
+
+>>>> Thanks!
+
+>>>> [1] [ https://golang.org/src/sync/once.go | https://golang.org/src/sync/once.go
+>>>> ]
+>>>> [2] [
+>>>> https://github.com/clojure/clojure/blob/30a36cbe0ef936e57ddba238b7fa6d58ee1cbdce/src/jvm/clojure/lang/LazySeq.java#L39-L46
+>>>> |
+>>>> https://github.com/clojure/clojure/blob/30a36cbe0ef936e57ddba238b7fa6d58ee1cbdce/src/jvm/clojure/lang/LazySeq.java#L39-L46
+>>>> ]
+
+>>>> _______________________________________________
+>>>> Concurrency-interest mailing list
+>>>> [ mailto:Concurrency-interest at cs.oswego.edu | Concurrency-interest at cs.oswego.edu
+>>>> ]
+>>>> [ http://cs.oswego.edu/mailman/listinfo/concurrency-interest |
+>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest ]
+
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> [ mailto:Concurrency-interest at cs.oswego.edu | Concurrency-interest at cs.oswego.edu
+>>> ]
+>>> [ http://cs.oswego.edu/mailman/listinfo/concurrency-interest |
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest ]
+
+>> --
+>> Cheers,
+>> √
+
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200801/5cf9753d/attachment-0001.htm>
+
+From ron.pressler at oracle.com  Sun Aug  2 13:59:26 2020
+From: ron.pressler at oracle.com (Ron Pressler)
+Date: Sun, 2 Aug 2020 18:59:26 +0100
+Subject: [concurrency-interest] Lazy,
+ cached supplier: most performant mutex mechanism?
+In-Reply-To: <1697307039.497966.1596284657005.JavaMail.zimbra@u-pem.fr>
+References: <CAO3q7t9XOZbBr=Mp_z5FmVX7ff4=2J6yAevVat-iiFW6Kji4Eg@mail.gmail.com>
+ <CAGu0=MNHGmwZENn7Ez0vO2to=_xp1yhMYfq3xABHD8z_RAX=Nw@mail.gmail.com>
+ <CANPzfU9aOnYP06s4UurBM7mjZXzvRRcxo2wTPLSRWEStSPAMCw@mail.gmail.com>
+ <CAO3q7t-8vw=dd+H0kCpJMMJ65z4+cxnqm-+kePV7rJ0raCa-Mw@mail.gmail.com>
+ <1697307039.497966.1596284657005.JavaMail.zimbra@u-pem.fr>
+Message-ID: <etPan.5f26ff03.3217ecc.200@oracle.com>
+
+Ghadi’s use-case is not a lazy constant but a lazy cons-cell, i.e., a dynamic construct with lots of instances.
+
+— Ron
+
+
+On 1 August 2020 at 13:25:44, Remi Forax via Concurrency-interest (concurrency-interest at cs.oswego.edu) wrote:
+
+
+
+De: "concurrency-interest" <concurrency-interest at cs.oswego.edu>
+Cc: "concurrency-interest at cs.oswego.edu" <concurrency-interest at altair.cs.oswego.edu>
+Envoyé: Vendredi 31 Juillet 2020 20:56:10
+Objet: Re: [concurrency-interest] Lazy, cached supplier: most performant mutex mechanism?
+Thanks everyone, I'll check these things out.
+Seems like the user-space dual of a condy instruction, except run max once. I was hoping to try an approach that wasn't based on synchronized, though synchronized saves you the allocation of a lock.
+
+There is already a proposal for a JLS dual of condy
+https://bugs.openjdk.java.net/browse/JDK-8209964
+
+but as you said, condy semantics allows the bootstrap method to be run more than once.
+
+
+
+Ron Pressler had another interesting suggestion to try:
+
+Read val; if it's null, CAS fn to null.
+
+If you win, allocate a lock and do an ordered set (with a VarHandle) to the lock field, lock it, invoke fn, do an ordered write (with a VarHandle) to val, and unlock, then do another ordered write to null out the lock.
+If you lose the CAS, spin with an ordered read on the lock field and the val. This will be a short spin, because all you're waiting for is the allocation of the lock. If you see a non-null val, you're done. If you see a non-null lock, lock on it, and then a normal read from val should be non-null.
+
+This requires a bit of care in terms of memory ordering, and will probably require testing on non-Intel platforms, as those have weaker memory ordering than Intel, and many concurrency bugs don't manifest on x86. But the code will still be small, and it's an important method, so a relatively elaborate mechanism there might be worth it.
+</suggestion>
+
+
+Here is a version that has the nice property to not have a volatile read in the fast-path (and the not so nice property of being very slow if the code is not JITed by c2)
+
+This is how yo use it, here ONCE.get() should always return 0
+
+private static int COUNTER = 0;
+private static final Once<Integer> ONCE = Once.of(() -> COUNTER++);
+
+and the trick is to use a MutableCallSite
+
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
+import java.lang.invoke.MutableCallSite;
+import java.lang.reflect.UndeclaredThrowableException;
+import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
+
+public interface Once<T> extends Supplier<T> {
+  @SuppressWarnings("unchecked")
+  static <T> Once<T> of(Supplier<? extends T> supplier) {
+    var mh = new OnceCallSite(supplier).dynamicInvoker();
+    return () -> {
+      try {
+        return (T) mh.invokeExact();
+      } catch (RuntimeException | Error e) {
+        throw e;
+      } catch(Throwable t) {
+        throw new UndeclaredThrowableException(t);
+      }
+    };
+  }
+
+  class OnceCallSite extends MutableCallSite {
+    private static final MethodHandle SLOW_PATH;
+    static {
+      var lookup = MethodHandles.lookup();
+      try {
+        SLOW_PATH = lookup.findVirtual(OnceCallSite.class, "slowPath", MethodType.methodType(Object.class));
+      } catch (NoSuchMethodException | IllegalAccessException e) {
+        throw new AssertionError(e);
+      }
+    }
+
+    private Object value;
+    private final Supplier<?> supplier;
+    private final ReentrantLock lock = new ReentrantLock();
+
+    private OnceCallSite(Supplier<?> supplier) {
+      super(MethodType.methodType(Object.class));
+      this.supplier = supplier;
+      setTarget(SLOW_PATH.bindTo(this));
+    }
+
+    private Object slowPath() {
+      lock.lock();
+      try {
+        Object value = this.value;
+        if (value != null) {
+          return value;
+        }
+        value = Objects.requireNonNull(supplier.get());
+        this.value = value;
+        setTarget(MethodHandles.constant(Object.class, value));
+        return value;
+      } finally {
+        lock.unlock();
+      }
+    }
+  }
+}
+
+
+On Fri, Jul 31, 2020 at 2:33 PM Viktor Klang <viktor.klang at gmail.com> wrote:
+We spent quite some time on this, you can read all about it here: 
+https://docs.scala-lang.org/sips/improved-lazy-val-initialization.html
+
+On Fri, 31 Jul 2020 at 20:02, Benjamin Manes via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+I believe double-checked locking, such as Martin's version in Guava Suppliers#memoize, is the best approach on the JVM for instance-level memoization.
+
+On Fri, Jul 31, 2020 at 10:42 AM Ghadi Shayban via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+This seems like it would be a common stdlib ask, but what is the most performant way to protect the code inside a supplier from being concurrently realized more than once? Contention would be rare, and the losing threads need to wait on the value being computed by the winning thread.
+
+The most straightforward thing to do is a synchronized block, but this currently pins a carrier thread in Project Loom.
+
+The Supplier needs to keep track of:
+1) the thunk, if unrealized
+2) a value, if realized
+
+Golang's sync.Once does this [1] (CAS, fallback to mutex. Doesn't remember value)
+Clojure's lazy sequences use synchronized [2]
+
+Is there a better way to approach this on the JVM?
+
+Thanks!
+
+[1] https://golang.org/src/sync/once.go
+[2] https://github.com/clojure/clojure/blob/30a36cbe0ef936e57ddba238b7fa6d58ee1cbdce/src/jvm/clojure/lang/LazySeq.java#L39-L46
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+--  
+Cheers,
+√
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200802/47612b40/attachment-0002.htm>
+
+From ron.pressler at oracle.com  Sun Aug  2 13:59:26 2020
+From: ron.pressler at oracle.com (Ron Pressler)
+Date: Sun, 2 Aug 2020 18:59:26 +0100
+Subject: [concurrency-interest] Lazy,
+ cached supplier: most performant mutex mechanism?
+In-Reply-To: <1697307039.497966.1596284657005.JavaMail.zimbra@u-pem.fr>
+References: <CAO3q7t9XOZbBr=Mp_z5FmVX7ff4=2J6yAevVat-iiFW6Kji4Eg@mail.gmail.com>
+ <CAGu0=MNHGmwZENn7Ez0vO2to=_xp1yhMYfq3xABHD8z_RAX=Nw@mail.gmail.com>
+ <CANPzfU9aOnYP06s4UurBM7mjZXzvRRcxo2wTPLSRWEStSPAMCw@mail.gmail.com>
+ <CAO3q7t-8vw=dd+H0kCpJMMJ65z4+cxnqm-+kePV7rJ0raCa-Mw@mail.gmail.com>
+ <1697307039.497966.1596284657005.JavaMail.zimbra@u-pem.fr>
+Message-ID: <etPan.5f26ff03.3217ecc.200@oracle.com>
+
+Ghadi’s use-case is not a lazy constant but a lazy cons-cell, i.e., a dynamic construct with lots of instances.
+
+— Ron
+
+
+On 1 August 2020 at 13:25:44, Remi Forax via Concurrency-interest (concurrency-interest at cs.oswego.edu) wrote:
+
+
+
+De: "concurrency-interest" <concurrency-interest at cs.oswego.edu>
+Cc: "concurrency-interest at cs.oswego.edu" <concurrency-interest at altair.cs.oswego.edu>
+Envoyé: Vendredi 31 Juillet 2020 20:56:10
+Objet: Re: [concurrency-interest] Lazy, cached supplier: most performant mutex mechanism?
+Thanks everyone, I'll check these things out.
+Seems like the user-space dual of a condy instruction, except run max once. I was hoping to try an approach that wasn't based on synchronized, though synchronized saves you the allocation of a lock.
+
+There is already a proposal for a JLS dual of condy
+https://bugs.openjdk.java.net/browse/JDK-8209964
+
+but as you said, condy semantics allows the bootstrap method to be run more than once.
+
+
+
+Ron Pressler had another interesting suggestion to try:
+
+Read val; if it's null, CAS fn to null.
+
+If you win, allocate a lock and do an ordered set (with a VarHandle) to the lock field, lock it, invoke fn, do an ordered write (with a VarHandle) to val, and unlock, then do another ordered write to null out the lock.
+If you lose the CAS, spin with an ordered read on the lock field and the val. This will be a short spin, because all you're waiting for is the allocation of the lock. If you see a non-null val, you're done. If you see a non-null lock, lock on it, and then a normal read from val should be non-null.
+
+This requires a bit of care in terms of memory ordering, and will probably require testing on non-Intel platforms, as those have weaker memory ordering than Intel, and many concurrency bugs don't manifest on x86. But the code will still be small, and it's an important method, so a relatively elaborate mechanism there might be worth it.
+</suggestion>
+
+
+Here is a version that has the nice property to not have a volatile read in the fast-path (and the not so nice property of being very slow if the code is not JITed by c2)
+
+This is how yo use it, here ONCE.get() should always return 0
+
+private static int COUNTER = 0;
+private static final Once<Integer> ONCE = Once.of(() -> COUNTER++);
+
+and the trick is to use a MutableCallSite
+
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
+import java.lang.invoke.MutableCallSite;
+import java.lang.reflect.UndeclaredThrowableException;
+import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
+
+public interface Once<T> extends Supplier<T> {
+  @SuppressWarnings("unchecked")
+  static <T> Once<T> of(Supplier<? extends T> supplier) {
+    var mh = new OnceCallSite(supplier).dynamicInvoker();
+    return () -> {
+      try {
+        return (T) mh.invokeExact();
+      } catch (RuntimeException | Error e) {
+        throw e;
+      } catch(Throwable t) {
+        throw new UndeclaredThrowableException(t);
+      }
+    };
+  }
+
+  class OnceCallSite extends MutableCallSite {
+    private static final MethodHandle SLOW_PATH;
+    static {
+      var lookup = MethodHandles.lookup();
+      try {
+        SLOW_PATH = lookup.findVirtual(OnceCallSite.class, "slowPath", MethodType.methodType(Object.class));
+      } catch (NoSuchMethodException | IllegalAccessException e) {
+        throw new AssertionError(e);
+      }
+    }
+
+    private Object value;
+    private final Supplier<?> supplier;
+    private final ReentrantLock lock = new ReentrantLock();
+
+    private OnceCallSite(Supplier<?> supplier) {
+      super(MethodType.methodType(Object.class));
+      this.supplier = supplier;
+      setTarget(SLOW_PATH.bindTo(this));
+    }
+
+    private Object slowPath() {
+      lock.lock();
+      try {
+        Object value = this.value;
+        if (value != null) {
+          return value;
+        }
+        value = Objects.requireNonNull(supplier.get());
+        this.value = value;
+        setTarget(MethodHandles.constant(Object.class, value));
+        return value;
+      } finally {
+        lock.unlock();
+      }
+    }
+  }
+}
+
+
+On Fri, Jul 31, 2020 at 2:33 PM Viktor Klang <viktor.klang at gmail.com> wrote:
+We spent quite some time on this, you can read all about it here: 
+https://docs.scala-lang.org/sips/improved-lazy-val-initialization.html
+
+On Fri, 31 Jul 2020 at 20:02, Benjamin Manes via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+I believe double-checked locking, such as Martin's version in Guava Suppliers#memoize, is the best approach on the JVM for instance-level memoization.
+
+On Fri, Jul 31, 2020 at 10:42 AM Ghadi Shayban via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+This seems like it would be a common stdlib ask, but what is the most performant way to protect the code inside a supplier from being concurrently realized more than once? Contention would be rare, and the losing threads need to wait on the value being computed by the winning thread.
+
+The most straightforward thing to do is a synchronized block, but this currently pins a carrier thread in Project Loom.
+
+The Supplier needs to keep track of:
+1) the thunk, if unrealized
+2) a value, if realized
+
+Golang's sync.Once does this [1] (CAS, fallback to mutex. Doesn't remember value)
+Clojure's lazy sequences use synchronized [2]
+
+Is there a better way to approach this on the JVM?
+
+Thanks!
+
+[1] https://golang.org/src/sync/once.go
+[2] https://github.com/clojure/clojure/blob/30a36cbe0ef936e57ddba238b7fa6d58ee1cbdce/src/jvm/clojure/lang/LazySeq.java#L39-L46
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+--  
+Cheers,
+√
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200802/47612b40/attachment-0003.htm>
+
+From allmaymight at 163.com  Tue Aug  4 08:10:23 2020
+From: allmaymight at 163.com (Liu)
+Date: Tue, 4 Aug 2020 20:10:23 +0800 (GMT+08:00)
+Subject: [concurrency-interest] Somewhere in this constructor of
+ PriorityBlockingQueue is hard to understand
+Message-ID: <412f4b90.4914.173b9613936.Coremail.allmaymight@163.com>
+
+In this constructor of PriorityBlockingQueue, some codes are hard to understand.
+
+
+    public PriorityBlockingQueue(Collection<? extends E> c) {
+        this.lock = new ReentrantLock();
+        this.notEmpty = lock.newCondition();
+        boolean heapify = true; // true if not known to be in heap order
+        boolean screen = true;  // true if must screen for nulls
+        if (c instanceof SortedSet<?>) {
+            SortedSet<? extends E> ss = (SortedSet<? extends E>) c;
+            this.comparator = (Comparator<? super E>) ss.comparator();
+            heapify = false;
+        }
+        else if (c instanceof PriorityBlockingQueue<?>) {
+            PriorityBlockingQueue<? extends E> pq =
+                (PriorityBlockingQueue<? extends E>) c;
+            this.comparator = (Comparator<? super E>) pq.comparator();
+            screen = false;
+            if (pq.getClass() == PriorityBlockingQueue.class) // first one
+                heapify = false;
+        }
+        Object[] a = c.toArray();
+        int n = a.length;
+       
+        if (a.getClass() != Object[].class)  // second one
+            a = Arrays.copyOf(a, n, Object[].class);
+        if (screen && (n == 1 || this.comparator != null)) {  //third one
+            for (int i = 0; i < n; ++i)
+                if (a[i] == null)
+                    throw new NullPointerException();
+        }
+        this.queue = a;
+        this.size = n;
+        if (heapify)
+            heapify();
+    }
+
+
+1. When "pq.getClass() == PriorityBlockingQueue.class" Expression holds, 
+    Then heapify operation is not need to do. Isn't "c instanceof PriorityBlockingQueue<?>" 
+    enough to decide?
+
+
+2. Why must make the actual type of array is Object[].class?
+
+
+3. I just don't understand  this "&& (n == 1 || this.comparator != null)". Why is it written like this?
+
+
+In newest JDK, http://hg.openjdk.java.net/jdk/jdk15/file/d2c6eb3b2c8d/src/java.base/share/classes/java/util/concurrent/PriorityBlockingQueue.java#l242 ,
+this constructor of PriorityBlockingQueue is same.
+
+
+
+
+
+
+--------------------------------------------------------------------------------
+Regards
+Liu
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200804/578bde13/attachment.htm>
+
+From jason_mehrens at hotmail.com  Tue Aug  4 10:13:17 2020
+From: jason_mehrens at hotmail.com (Jason Mehrens)
+Date: Tue, 4 Aug 2020 14:13:17 +0000
+Subject: [concurrency-interest] Somewhere in this constructor of
+ PriorityBlockingQueue is hard to understand
+In-Reply-To: <412f4b90.4914.173b9613936.Coremail.allmaymight@163.com>
+References: <412f4b90.4914.173b9613936.Coremail.allmaymight@163.com>
+Message-ID: <DM5PR1801MB20741DA92E1844AE4792A709834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>
+
+Liu,
+
+1. Instanceof allows subclasses which could be coded to break the assumptions.  GetClass means this exact implementation for which the source code is known.
+2. Collection.toArray() requires type Object[] but sometimes implementations are broken.  See: https://bugs.openjdk.java.net/browse/JDK-6260652 and https://bugs.openjdk.java.net/browse/JDK-8160406
+3. PQ must not contain nulls.  If there is a comparator and the collection was not exactly of type PQ then that collection may contain null which needs to be screened.  If the size is one then the collection may contain null because it may not have been checked against another element (including itself). See: https://bugs.openjdk.java.net/browse/JDK-5045147  If the size is greater than one and there is no comparator heapify() will catch the null element.
+
+Jason
+
+
+________________________________________
+From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> on behalf of Liu via Concurrency-interest <concurrency-interest at cs.oswego.edu>
+Sent: Tuesday, August 4, 2020 7:10 AM
+To: Concurrency-interest
+Subject: [concurrency-interest] Somewhere in this constructor of PriorityBlockingQueue is hard to understand
+
+In this constructor of PriorityBlockingQueue, some codes are hard to understand.
+
+    public PriorityBlockingQueue(Collection<? extends E> c) {
+        this.lock = new ReentrantLock();
+        this.notEmpty = lock.newCondition();
+        boolean heapify = true; // true if not known to be in heap order
+        boolean screen = true;  // true if must screen for nulls
+        if (c instanceof SortedSet<?>) {
+            SortedSet<? extends E> ss = (SortedSet<? extends E>) c;
+            this.comparator = (Comparator<? super E>) ss.comparator();
+            heapify = false;
+        }
+        else if (c instanceof PriorityBlockingQueue<?>) {
+            PriorityBlockingQueue<? extends E> pq =
+                (PriorityBlockingQueue<? extends E>) c;
+            this.comparator = (Comparator<? super E>) pq.comparator();
+            screen = false;
+            if (pq.getClass() == PriorityBlockingQueue.class) // first one
+                heapify = false;
+        }
+        Object[] a = c.toArray();
+        int n = a.length;
+
+        if (a.getClass() != Object[].class)  // second one
+            a = Arrays.copyOf(a, n, Object[].class);
+        if (screen && (n == 1 || this.comparator != null)) {  //third one
+            for (int i = 0; i < n; ++i)
+                if (a[i] == null)
+                    throw new NullPointerException();
+        }
+        this.queue = a;
+        this.size = n;
+        if (heapify)
+            heapify();
+    }
+
+1. When "pq.getClass() == PriorityBlockingQueue.class" Expression holds,
+    Then heapify operation is not need to do. Isn't "c instanceof PriorityBlockingQueue<?>"
+    enough to decide?
+
+2. Why must make the actual type of array is Object[].class?
+
+3. I just don't understand  this "&& (n == 1 || this.comparator != null)". Why is it written like this?
+
+In newest JDK, http://hg.openjdk.java.net/jdk/jdk15/file/d2c6eb3b2c8d/src/java.base/share/classes/java/util/concurrent/PriorityBlockingQueue.java#l242 ,
+this constructor of PriorityBlockingQueue is same.
+
+
+
+--------------------------------------------------------------------------------
+Regards
+Liu
+
+From allmaymight at 163.com  Tue Aug  4 11:55:55 2020
+From: allmaymight at 163.com (Liu)
+Date: Tue, 4 Aug 2020 23:55:55 +0800 (GMT+08:00)
+Subject: [concurrency-interest] Somewhere in this constructor of
+ PriorityBlockingQueue is hard to understand
+In-Reply-To: <DM5PR1801MB20741DA92E1844AE4792A709834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>
+References: <412f4b90.4914.173b9613936.Coremail.allmaymight@163.com>
+ <DM5PR1801MB20741DA92E1844AE4792A709834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>
+Message-ID: <46222d46.514d.173ba2fb4e7.Coremail.allmaymight@163.com>
+
+Thanks for your answer!
+
+
+About first question, if you say so, then maybe Instanceof allows subclasses which could be coded to break the assumption that items are not null.
+I mean, only when "pq.getClass() == PriorityBlockingQueue.class" Expression holds, then you could do "screen = false".
+Am i wrong?
+
+
+> If the size is greater than one and there is no comparator heapify() will catch the null element.
+
+
+About Third question, I think heapify() could not catch the null element that is at the back of array.
+Because heapify() from last-non-leaf-node index to zero to invoke siftDownComparable(), 
+so heapify() couldn't Traverse every node.
+And siftDownComparable() has a "while (k < half)", which half means first-leaf-node index,
+so when k become a leaf-node index, the siftDown will stop too.
+To sum up, heapify() could not catch the null element that is at the back of array.
+
+
+--------------------------------------------------------------------------------
+Regards
+Liu
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200804/e7bd358f/attachment-0001.htm>
+
+From jason_mehrens at hotmail.com  Tue Aug  4 15:02:01 2020
+From: jason_mehrens at hotmail.com (Jason Mehrens)
+Date: Tue, 4 Aug 2020 19:02:01 +0000
+Subject: [concurrency-interest] Somewhere in this constructor of
+ PriorityBlockingQueue is hard to understand
+In-Reply-To: <46222d46.514d.173ba2fb4e7.Coremail.allmaymight@163.com>
+References: <412f4b90.4914.173b9613936.Coremail.allmaymight@163.com>
+ <DM5PR1801MB20741DA92E1844AE4792A709834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>,
+ <46222d46.514d.173ba2fb4e7.Coremail.allmaymight@163.com>
+Message-ID: <DM5PR1801MB2074859A23B800B4DA2C12DF834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>
+
+Liu,
+
+Do you have a test case to show the behavior where null slips by and is allowed?  I think my test case here captures your intent but perhaps I'm missing a specific detail as I'm unable to make the test fail.
+
+====
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Objects;
+import java.util.PriorityQueue;
+import java.util.concurrent.PriorityBlockingQueue;
+
+public class HeapifyTest {
+	
+	private static final int SIZE = 16;
+	
+	public static void main(String[] args) {
+		for (int i=1; i<SIZE; i++) {
+			testArrayList(i);
+		}
+	}
+	
+	private static void testArrayList(int size) {
+		for (int i=0; i<size; i++) {
+			ArrayList<Integer> al = new ArrayList<>(size);
+			for (int j=0; j<size; j++) {
+				if (i != j) {
+					al.add(j);
+				} else {
+					al.add(null);
+				}
+			}
+			
+			testNull(al);
+			
+			Collections.reverse(al);
+			testNull(al);
+			
+			Collections.shuffle(al);
+			testNull(al);
+			
+			Collections.reverse(al);
+			testNull(al);
+		}
+	}
+	
+	private static void testNull(Collection<Integer> c) {
+		Objects.requireNonNull(c);
+		try {
+			new PriorityQueue<>(c);
+			System.err.println("PQ FAIL contans null: " + c);
+		} catch(NullPointerException expected) {
+			System.err.println("PASS: " + c);
+		}
+		
+		try {
+			new PriorityBlockingQueue<>(c);
+			System.err.println("PBQ FAIL contains null: " + c);
+		} catch(NullPointerException expected) {
+			System.err.println("PASS: " + c);
+		}
+	}
+}
+===
+
+Jason
+
+________________________________________
+From: Liu <allmaymight at 163.com>
+Sent: Tuesday, August 4, 2020 10:55 AM
+To: jason_mehrens at hotmail.com
+Cc: Concurrency-interest
+Subject: Re:  [concurrency-interest] Somewhere in this constructor of PriorityBlockingQueue is hard to understand
+
+Thanks for your answer!
+
+About first question, if you say so, then maybe Instanceof allows subclasses which could be coded to break the assumption that items are not null.
+I mean, only when "pq.getClass() == PriorityBlockingQueue.class" Expression holds, then you could do "screen = false".
+Am i wrong?
+
+> If the size is greater than one and there is no comparator heapify() will catch the null element.
+
+About Third question, I think heapify() could not catch the null element that is at the back of array.
+Because heapify() from last-non-leaf-node index to zero to invoke siftDownComparable(),
+so heapify() couldn't Traverse every node.
+And siftDownComparable() has a "while (k < half)", which half means first-leaf-node index,
+so when k become a leaf-node index, the siftDown will stop too.
+To sum up, heapify() could not catch the null element that is at the back of array.
+
+--------------------------------------------------------------------------------
+Regards
+Liu
+
+From allmaymight at 163.com  Tue Aug  4 22:07:29 2020
+From: allmaymight at 163.com (Liu)
+Date: Wed, 5 Aug 2020 10:07:29 +0800 (CST)
+Subject: [concurrency-interest] Somewhere in this constructor of
+ PriorityBlockingQueue is hard to understand
+In-Reply-To: <DM5PR1801MB2074859A23B800B4DA2C12DF834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>
+References: <412f4b90.4914.173b9613936.Coremail.allmaymight@163.com>
+ <DM5PR1801MB20741DA92E1844AE4792A709834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>,
+ <46222d46.514d.173ba2fb4e7.Coremail.allmaymight@163.com>
+ <DM5PR1801MB2074859A23B800B4DA2C12DF834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>
+Message-ID: <56049330.1f84.173bc5f9bf8.Coremail.allmaymight@163.com>
+
+import java.util.ArrayList;
+
+import java.util.Queue;
+
+import java.util.concurrent.PriorityBlockingQueue;
+
+
+
+
+public class test16 {
+
+    static class Holder implements Comparable<Holder> {
+
+        int i;
+
+        Holder(int i) {
+
+            this.i = i;
+
+        }
+
+        public int compareTo(Holder h) {
+
+            if(h == null)
+
+                return  -1;
+
+            return this.i - h.i;
+
+        }
+
+    }
+
+
+
+
+    public static void main(String[] args) {
+
+        ArrayList<Holder> al = new ArrayList<>(2);
+
+        al.add(new Holder(1));
+
+        al.add(new Holder(2));
+
+        al.add(null);
+
+        Queue a = new PriorityBlockingQueue<>(al);
+
+    }
+
+}
+
+
+
+In this case, heapify() cound not find null item.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200805/1d9cf2c9/attachment.htm>
+
+From allmaymight at 163.com  Tue Aug  4 22:12:14 2020
+From: allmaymight at 163.com (Liu)
+Date: Wed, 5 Aug 2020 10:12:14 +0800 (CST)
+Subject: [concurrency-interest] Somewhere in this constructor of
+ PriorityBlockingQueue is hard to understand
+In-Reply-To: <56049330.1f84.173bc5f9bf8.Coremail.allmaymight@163.com>
+References: <412f4b90.4914.173b9613936.Coremail.allmaymight@163.com>
+ <DM5PR1801MB20741DA92E1844AE4792A709834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>,
+ <46222d46.514d.173ba2fb4e7.Coremail.allmaymight@163.com>
+ <DM5PR1801MB2074859A23B800B4DA2C12DF834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>
+ <56049330.1f84.173bc5f9bf8.Coremail.allmaymight@163.com>
+Message-ID: <2fa001dd.20a0.173bc63f762.Coremail.allmaymight@163.com>
+
+"ArrayList<Holder> al = new ArrayList<>(2);" should be "ArrayList<Holder> al = new ArrayList<>();", be the way.
+
+
+
+
+At 2020-08-05 10:07:29, "Liu" <allmaymight at 163.com> wrote:
+
+import java.util.ArrayList;
+
+import java.util.Queue;
+
+import java.util.concurrent.PriorityBlockingQueue;
+
+
+
+
+public class test16 {
+
+    static class Holder implements Comparable<Holder> {
+
+        int i;
+
+        Holder(int i) {
+
+            this.i = i;
+
+        }
+
+        public int compareTo(Holder h) {
+
+            if(h == null)
+
+                return  -1;
+
+            return this.i - h.i;
+
+        }
+
+    }
+
+
+
+
+    public static void main(String[] args) {
+
+        ArrayList<Holder> al = new ArrayList<>(2);
+
+        al.add(new Holder(1));
+
+        al.add(new Holder(2));
+
+        al.add(null);
+
+        Queue a = new PriorityBlockingQueue<>(al);
+
+    }
+
+}
+
+
+
+In this case, heapify() cound not find null item.
+
+
+
+
+ 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200805/c518687a/attachment.htm>
+
+From jason_mehrens at hotmail.com  Wed Aug  5 00:04:12 2020
+From: jason_mehrens at hotmail.com (Jason Mehrens)
+Date: Wed, 5 Aug 2020 04:04:12 +0000
+Subject: [concurrency-interest] Somewhere in this constructor of
+ PriorityBlockingQueue is hard to understand
+In-Reply-To: <56049330.1f84.173bc5f9bf8.Coremail.allmaymight@163.com>
+References: <412f4b90.4914.173b9613936.Coremail.allmaymight@163.com>
+ <DM5PR1801MB20741DA92E1844AE4792A709834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>,
+ <46222d46.514d.173ba2fb4e7.Coremail.allmaymight@163.com>
+ <DM5PR1801MB2074859A23B800B4DA2C12DF834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>,
+ <56049330.1f84.173bc5f9bf8.Coremail.allmaymight@163.com>
+Message-ID: <DM5PR1801MB20749544C3ED11E920D13F82834B0@DM5PR1801MB2074.namprd18.prod.outlook.com>
+
+Holder violates the spec of https://docs.oracle.com/en/java/javase/11/docs/api/java.base/java/lang/Comparable.html.  Per the docs:
+"Note that null is not an instance of any class, and e.compareTo(null) should throw a NullPointerException even though e.equals(null) returns false"
+
+The bug is not in PQ it is in the 3rd party Holder implementation.
+
+Jason
+
+________________________________________
+From: Liu <allmaymight at 163.com>
+Sent: Tuesday, August 4, 2020 9:07 PM
+To: Jason Mehrens
+Cc: Concurrency-interest
+Subject: Re:Re:  [concurrency-interest] Somewhere in this constructor of PriorityBlockingQueue is hard to understand
+
+import java.util.ArrayList;
+
+import java.util.Queue;
+
+import java.util.concurrent.PriorityBlockingQueue;
+
+
+public class test16 {
+
+    static class Holder implements Comparable<Holder> {
+
+        int i;
+
+        Holder(int i) {
+
+            this.i = i;
+
+        }
+
+        public int compareTo(Holder h) {
+
+            if(h == null)
+
+                return  -1;
+
+            return this.i - h.i;
+
+        }
+
+    }
+
+
+    public static void main(String[] args) {
+
+        ArrayList<Holder> al = new ArrayList<>(2);
+
+        al.add(new Holder(1));
+
+        al.add(new Holder(2));
+
+        al.add(null);
+
+        Queue a = new PriorityBlockingQueue<>(al);
+
+    }
+
+}
+
+In this case, heapify() cound not find null item.
+
+
+
+
+
+From allmaymight at 163.com  Wed Aug  5 01:42:16 2020
+From: allmaymight at 163.com (Liu)
+Date: Wed, 5 Aug 2020 13:42:16 +0800 (CST)
+Subject: [concurrency-interest] Somewhere in this constructor of
+ PriorityBlockingQueue is hard to understand
+In-Reply-To: <DM5PR1801MB20749544C3ED11E920D13F82834B0@DM5PR1801MB2074.namprd18.prod.outlook.com>
+References: <412f4b90.4914.173b9613936.Coremail.allmaymight@163.com>
+ <DM5PR1801MB20741DA92E1844AE4792A709834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>,
+ <46222d46.514d.173ba2fb4e7.Coremail.allmaymight@163.com>
+ <DM5PR1801MB2074859A23B800B4DA2C12DF834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>,
+ <56049330.1f84.173bc5f9bf8.Coremail.allmaymight@163.com>
+ <DM5PR1801MB20749544C3ED11E920D13F82834B0@DM5PR1801MB2074.namprd18.prod.outlook.com>
+Message-ID: <48b79a87.33bd.173bd244105.Coremail.allmaymight@163.com>
+
+i see, in this point, heapify() can find any null item.
+
+
+But about first question, as I says,
+only when "pq.getClass() == PriorityBlockingQueue.class" Expression holds, then you can do "screen = false".
+Is this opinion wrong?
+
+Maybe Instanceof allows subclasses which could be coded to allow null items.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200805/fa299263/attachment.htm>
+
+From allmaymight at 163.com  Wed Aug  5 01:53:36 2020
+From: allmaymight at 163.com (Liu)
+Date: Wed, 5 Aug 2020 13:53:36 +0800 (CST)
+Subject: [concurrency-interest] Somewhere in this constructor of
+ PriorityBlockingQueue is hard to understand
+In-Reply-To: <48b79a87.33bd.173bd244105.Coremail.allmaymight@163.com>
+References: <412f4b90.4914.173b9613936.Coremail.allmaymight@163.com>
+ <DM5PR1801MB20741DA92E1844AE4792A709834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>,
+ <46222d46.514d.173ba2fb4e7.Coremail.allmaymight@163.com>
+ <DM5PR1801MB2074859A23B800B4DA2C12DF834A0@DM5PR1801MB2074.namprd18.prod.outlook.com>,
+ <56049330.1f84.173bc5f9bf8.Coremail.allmaymight@163.com>
+ <DM5PR1801MB20749544C3ED11E920D13F82834B0@DM5PR1801MB2074.namprd18.prod.outlook.com>
+ <48b79a87.33bd.173bd244105.Coremail.allmaymight@163.com>
+Message-ID: <6eb17ae5.34d8.173bd2e9f84.Coremail.allmaymight@163.com>
+
+Of course, even subclasses are coded to allow null items, heapify() can find the null item.
+
+
+
+
+At 2020-08-05 13:42:16, "Liu via Concurrency-interest" <concurrency-interest at cs.oswego.edu> wrote:
+
+i see, in this point, heapify() can find any null item.
+
+
+But about first question, as I says,
+only when "pq.getClass() == PriorityBlockingQueue.class" Expression holds, then you can do "screen = false".
+Is this opinion wrong?
+
+Maybe Instanceof allows subclasses which could be coded to allow null items.
+
+
+
+
+ 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200805/0080e52c/attachment.htm>
+
+From allmaymight at 163.com  Fri Aug 14 23:12:48 2020
+From: allmaymight at 163.com (Liu)
+Date: Sat, 15 Aug 2020 11:12:48 +0800 (GMT+08:00)
+Subject: [concurrency-interest] Why SynchronousQueue.TransferQueue#clean()
+ not clean the last node
+Message-ID: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+
+        void clean(QNode pred, QNode s) {
+            s.waiter = null; // forget thread
+            while (pred.next == s) { 
+                QNode h = head;
+                QNode hn = h.next;   
+                if (hn != null && hn.isCancelled()) {
+                    advanceHead(h, hn);
+                    continue;
+                }
+                QNode t = tail;      
+                if (t == h)
+                    return;
+                QNode tn = t.next;
+                if (t != tail)
+                    continue;
+                if (tn != null) {
+                    advanceTail(t, tn);
+                    continue;
+                }
+                if (s != t) {        // If not tail, try to unsplice
+                    QNode sn = s.next;
+                    if (sn == s || pred.casNext(s, sn))
+                        return;
+                }
+                QNode dp = cleanMe;
+                if (dp != null) {    
+                    QNode d = dp.next;
+                    QNode dn;
+                    if (d == null ||               // d is gone or
+                        d == dp ||                 // d is off list or
+                        !d.isCancelled() ||        // d not cancelled or
+                        (d != t &&                 // d not tail and
+                         (dn = d.next) != null &&  //   has successor
+                         dn != d &&                //   that is on list
+                         dp.casNext(d, dn)))       // d unspliced
+                        casCleanMe(dp, null);
+                    if (dp == pred)
+                        return;      
+                } else if (casCleanMe(null, pred))
+                    return;         
+            }
+        }
+
+
+From above code, we can see that only if s is not tail, s will be cleaned in this invocation.
+If s is tail, s will NOT be cleaned in this invocation.
+Why to do this? Is there a situation we must avoid.
+
+
+--------------------------------------------------------------------------------
+Regards
+Liu
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200815/c1c1f77d/attachment.htm>
+
+From martinrb at google.com  Sat Aug 15 00:41:00 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 14 Aug 2020 21:41:00 -0700
+Subject: [concurrency-interest] Why
+ SynchronousQueue.TransferQueue#clean() not clean the last node
+In-Reply-To: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+References: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+Message-ID: <CA+kOe096Yyq25mR7-4FQHv2Fi0m8Aa21XntqYKYY5VVRTB0Zdw@mail.gmail.com>
+
+Probably no one has carefully looked at that code in a decade.
+
+Usually unsplicing nodes from linked lists helps reclaim resources,
+but is not necessary for algorithm correctness.
+
+On Fri, Aug 14, 2020 at 8:15 PM Liu via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+>
+>         void clean(QNode pred, QNode s) {
+>             s.waiter = null; // forget thread
+>             while (pred.next == s) {
+>                 QNode h = head;
+>                 QNode hn = h.next;
+>                 if (hn != null && hn.isCancelled()) {
+>                     advanceHead(h, hn);
+>                     continue;
+>                 }
+>                 QNode t = tail;
+>                 if (t == h)
+>                     return;
+>                 QNode tn = t.next;
+>                 if (t != tail)
+>                     continue;
+>                 if (tn != null) {
+>                     advanceTail(t, tn);
+>                     continue;
+>                 }
+>                 if (s != t) {        // If not tail, try to unsplice
+>                     QNode sn = s.next;
+>                     if (sn == s || pred.casNext(s, sn))
+>                         return;
+>                 }
+>                 QNode dp = cleanMe;
+>                 if (dp != null) {
+>                     QNode d = dp.next;
+>                     QNode dn;
+>                     if (d == null ||               // d is gone or
+>                         d == dp ||                 // d is off list or
+>                         !d.isCancelled() ||        // d not cancelled or
+>                         (d != t &&                 // d not tail and
+>                          (dn = d.next) != null &&  //   has successor
+>                          dn != d &&                //   that is on list
+>                          dp.casNext(d, dn)))       // d unspliced
+>                         casCleanMe(dp, null);
+>                     if (dp == pred)
+>                         return;
+>                 } else if (casCleanMe(null, pred))
+>                     return;
+>             }
+>         }
+>
+> From above code, we can see that only if s is not tail, s will be cleaned in this invocation.
+> If s is tail, s will NOT be cleaned in this invocation.
+> Why to do this? Is there a situation we must avoid.
+>
+> --------------------------------------------------------------------------------
+> Regards
+> Liu
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From oleksandr.otenko at gmail.com  Sat Aug 15 02:03:09 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sat, 15 Aug 2020 07:03:09 +0100
+Subject: [concurrency-interest] Why
+ SynchronousQueue.TransferQueue#clean() not clean the last node
+In-Reply-To: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+References: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+Message-ID: <CANkgWKj-d8tk-DDPZ6W6SV9-JSekDEK9h7Tyj_RdLAuXiELh8g@mail.gmail.com>
+
+If you formulate the correct state of the list after s == tail removed, you
+may be able to see the difficulty with removing it.
+
+
+Alex
+
+On Sat, 15 Aug 2020, 04:15 Liu via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+>         void clean(QNode pred, QNode s) {
+>             s.waiter = null; // forget thread
+>             while (pred.next == s) {
+>                 QNode h = head;
+>                 QNode hn = h.next;
+>                 if (hn != null && hn.isCancelled()) {
+>                     advanceHead(h, hn);
+>                     continue;
+>                 }
+>                 QNode t = tail;
+>                 if (t == h)
+>                     return;
+>                 QNode tn = t.next;
+>                 if (t != tail)
+>                     continue;
+>                 if (tn != null) {
+>                     advanceTail(t, tn);
+>                     continue;
+>                 }
+>                 if (s != t) {        // If not tail, try to unsplice
+>                     QNode sn = s.next;
+>                     if (sn == s || pred.casNext(s, sn))
+>                         return;
+>                 }
+>                 QNode dp = cleanMe;
+>                 if (dp != null) {
+>                     QNode d = dp.next;
+>                     QNode dn;
+>                     if (d == null ||               // d is gone or
+>                         d == dp ||                 // d is off list or
+>                         !d.isCancelled() ||        // d not cancelled or
+>                         (d != t &&                 // d not tail and
+>                          (dn = d.next) != null &&  //   has successor
+>                          dn != d &&                //   that is on list
+>                          dp.casNext(d, dn)))       // d unspliced
+>                         casCleanMe(dp, null);
+>                     if (dp == pred)
+>                         return;
+>                 } else if (casCleanMe(null, pred))
+>                     return;
+>             }
+>         }
+>
+> From above code, we can see that only if s is not tail, s will be cleaned
+> in this invocation.
+> If s is tail, s will NOT be cleaned in this invocation.
+> Why to do this? Is there a situation we must avoid.
+>
+>
+> --------------------------------------------------------------------------------
+> Regards
+> Liu
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200815/b5c020fc/attachment-0001.htm>
+
+From allmaymight at 163.com  Sat Aug 15 02:18:17 2020
+From: allmaymight at 163.com (Liu)
+Date: Sat, 15 Aug 2020 14:18:17 +0800 (GMT+08:00)
+Subject: [concurrency-interest] Why
+ SynchronousQueue.TransferQueue#clean() not clean the last node
+In-Reply-To: <CANkgWKj-d8tk-DDPZ6W6SV9-JSekDEK9h7Tyj_RdLAuXiELh8g@mail.gmail.com>
+References: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+ <CANkgWKj-d8tk-DDPZ6W6SV9-JSekDEK9h7Tyj_RdLAuXiELh8g@mail.gmail.com>
+Message-ID: <5ace7dbd.abad.173f0c4d279.Coremail.allmaymight@163.com>
+
+Thanks. I just think about it, it is kind of difficult to keep the correctness of tail.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200815/0e801aa3/attachment.htm>
+
+From oleksandr.otenko at gmail.com  Sat Aug 15 02:22:46 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sat, 15 Aug 2020 07:22:46 +0100
+Subject: [concurrency-interest] Why
+ SynchronousQueue.TransferQueue#clean() not clean the last node
+In-Reply-To: <5ace7dbd.abad.173f0c4d279.Coremail.allmaymight@163.com>
+References: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+ <CANkgWKj-d8tk-DDPZ6W6SV9-JSekDEK9h7Tyj_RdLAuXiELh8g@mail.gmail.com>
+ <5ace7dbd.abad.173f0c4d279.Coremail.allmaymight@163.com>
+Message-ID: <CANkgWKi+vWQyGbiEbyAmD3GAgL0F1025n0dYxS=KXGOxV0rnoQ@mail.gmail.com>
+
+Yes. There is an unspoken invariant that head and tail make progress in one
+direction. That is pretty much the only way to make sure the head never
+passes the tail. Then deleting tail cannot be done without moving the tail
+backwards to pred. This breaks the unspoken invariant in the presence of
+concurrent modifications of head.
+
+Alex
+
+On Sat, 15 Aug 2020, 07:18 Liu, <allmaymight at 163.com> wrote:
+
+> Thanks. I just think about it, it is kind of difficult to keep the
+> correctness of tail.
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200815/31fe6d46/attachment.htm>
+
+From martinrb at google.com  Sat Aug 15 03:02:20 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Sat, 15 Aug 2020 00:02:20 -0700
+Subject: [concurrency-interest] Why
+ SynchronousQueue.TransferQueue#clean() not clean the last node
+In-Reply-To: <CANkgWKi+vWQyGbiEbyAmD3GAgL0F1025n0dYxS=KXGOxV0rnoQ@mail.gmail.com>
+References: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+ <CANkgWKj-d8tk-DDPZ6W6SV9-JSekDEK9h7Tyj_RdLAuXiELh8g@mail.gmail.com>
+ <5ace7dbd.abad.173f0c4d279.Coremail.allmaymight@163.com>
+ <CANkgWKi+vWQyGbiEbyAmD3GAgL0F1025n0dYxS=KXGOxV0rnoQ@mail.gmail.com>
+Message-ID: <CA+kOe0_GJ+T1XGpSY0o62K3c-K4UEt5psL2_cR90_90yVDmsfg@mail.gmail.com>
+
+I did more work on ConcurrentLinkedQueue, including recording the
+invariants, notably:
+
+     * Invariants:
+     * - all live nodes are reachable from head via succ()
+     * - head != null
+     * - (tmp = head).next != tmp || tmp != head
+     * Non-invariants:
+     * - head.item may or may not be null.
+     * - it is permitted for tail to lag behind head, that is, for tail
+     *   to not be reachable from head!
+
+On Fri, Aug 14, 2020 at 11:23 PM Alex Otenko via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+>
+> Yes. There is an unspoken invariant that head and tail make progress in one direction. That is pretty much the only way to make sure the head never passes the tail. Then deleting tail cannot be done without moving the tail backwards to pred. This breaks the unspoken invariant in the presence of concurrent modifications of head.
+>
+> Alex
+>
+> On Sat, 15 Aug 2020, 07:18 Liu, <allmaymight at 163.com> wrote:
+>>
+>> Thanks. I just think about it, it is kind of difficult to keep the correctness of tail.
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From oleksandr.otenko at gmail.com  Sat Aug 15 04:24:36 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sat, 15 Aug 2020 09:24:36 +0100
+Subject: [concurrency-interest] Why
+ SynchronousQueue.TransferQueue#clean() not clean the last node
+In-Reply-To: <CA+kOe0_GJ+T1XGpSY0o62K3c-K4UEt5psL2_cR90_90yVDmsfg@mail.gmail.com>
+References: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+ <CANkgWKj-d8tk-DDPZ6W6SV9-JSekDEK9h7Tyj_RdLAuXiELh8g@mail.gmail.com>
+ <5ace7dbd.abad.173f0c4d279.Coremail.allmaymight@163.com>
+ <CANkgWKi+vWQyGbiEbyAmD3GAgL0F1025n0dYxS=KXGOxV0rnoQ@mail.gmail.com>
+ <CA+kOe0_GJ+T1XGpSY0o62K3c-K4UEt5psL2_cR90_90yVDmsfg@mail.gmail.com>
+Message-ID: <CANkgWKjxNZSqSOJhcz9odcY9DuDDuU1tOL4jkgPr_PPgxk+29g@mail.gmail.com>
+
+Great. But still head and tail point to nodes in the same chain, right?
+
+Alex
+
+On Sat, 15 Aug 2020, 08:02 Martin Buchholz, <martinrb at google.com> wrote:
+
+> I did more work on ConcurrentLinkedQueue, including recording the
+> invariants, notably:
+>
+>      * Invariants:
+>      * - all live nodes are reachable from head via succ()
+>      * - head != null
+>      * - (tmp = head).next != tmp || tmp != head
+>      * Non-invariants:
+>      * - head.item may or may not be null.
+>      * - it is permitted for tail to lag behind head, that is, for tail
+>      *   to not be reachable from head!
+>
+> On Fri, Aug 14, 2020 at 11:23 PM Alex Otenko via Concurrency-interest
+> <concurrency-interest at cs.oswego.edu> wrote:
+> >
+> > Yes. There is an unspoken invariant that head and tail make progress in
+> one direction. That is pretty much the only way to make sure the head never
+> passes the tail. Then deleting tail cannot be done without moving the tail
+> backwards to pred. This breaks the unspoken invariant in the presence of
+> concurrent modifications of head.
+> >
+> > Alex
+> >
+> > On Sat, 15 Aug 2020, 07:18 Liu, <allmaymight at 163.com> wrote:
+> >>
+> >> Thanks. I just think about it, it is kind of difficult to keep the
+> correctness of tail.
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200815/39141305/attachment.htm>
+
+From martinrb at google.com  Sun Aug 16 15:55:24 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Sun, 16 Aug 2020 12:55:24 -0700
+Subject: [concurrency-interest] Why
+ SynchronousQueue.TransferQueue#clean() not clean the last node
+In-Reply-To: <CANkgWKjxNZSqSOJhcz9odcY9DuDDuU1tOL4jkgPr_PPgxk+29g@mail.gmail.com>
+References: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+ <CANkgWKj-d8tk-DDPZ6W6SV9-JSekDEK9h7Tyj_RdLAuXiELh8g@mail.gmail.com>
+ <5ace7dbd.abad.173f0c4d279.Coremail.allmaymight@163.com>
+ <CANkgWKi+vWQyGbiEbyAmD3GAgL0F1025n0dYxS=KXGOxV0rnoQ@mail.gmail.com>
+ <CA+kOe0_GJ+T1XGpSY0o62K3c-K4UEt5psL2_cR90_90yVDmsfg@mail.gmail.com>
+ <CANkgWKjxNZSqSOJhcz9odcY9DuDDuU1tOL4jkgPr_PPgxk+29g@mail.gmail.com>
+Message-ID: <CA+kOe09yRQ1+yCwRRNpq3BLK_94kQhuqQO9z5hxRekMBZ6zsaQ@mail.gmail.com>
+
+On Sat, Aug 15, 2020 at 1:24 AM Alex Otenko <oleksandr.otenko at gmail.com> wrote:
+>
+> Great. But still head and tail point to nodes in the same chain, right?
+
+java.util.concurrent is where data structure intuition goes to die.
+
+    /**
+     * A node from which the last node on list (that is, the unique
+     * node with node.next == null) can be reached in O(1) time.
+     * Invariants:
+     * - the last node is always reachable from tail via succ()
+     * - tail != null
+     * Non-invariants:
+     * - tail.item may or may not be null.
+     * - it is permitted for tail to lag behind head, that is, for tail
+     *   to not be reachable from head!
+     * - tail.next may or may not be self-linked.
+     */
+    private transient volatile Node<E> tail;
+
+
+>
+> Alex
+>
+> On Sat, 15 Aug 2020, 08:02 Martin Buchholz, <martinrb at google.com> wrote:
+>>
+>> I did more work on ConcurrentLinkedQueue, including recording the
+>> invariants, notably:
+>>
+>>      * Invariants:
+>>      * - all live nodes are reachable from head via succ()
+>>      * - head != null
+>>      * - (tmp = head).next != tmp || tmp != head
+>>      * Non-invariants:
+>>      * - head.item may or may not be null.
+>>      * - it is permitted for tail to lag behind head, that is, for tail
+>>      *   to not be reachable from head!
+>>
+>> On Fri, Aug 14, 2020 at 11:23 PM Alex Otenko via Concurrency-interest
+>> <concurrency-interest at cs.oswego.edu> wrote:
+>> >
+>> > Yes. There is an unspoken invariant that head and tail make progress in one direction. That is pretty much the only way to make sure the head never passes the tail. Then deleting tail cannot be done without moving the tail backwards to pred. This breaks the unspoken invariant in the presence of concurrent modifications of head.
+>> >
+>> > Alex
+>> >
+>> > On Sat, 15 Aug 2020, 07:18 Liu, <allmaymight at 163.com> wrote:
+>> >>
+>> >> Thanks. I just think about it, it is kind of difficult to keep the correctness of tail.
+>> >
+>> > _______________________________________________
+>> > Concurrency-interest mailing list
+>> > Concurrency-interest at cs.oswego.edu
+>> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From oleksandr.otenko at gmail.com  Sun Aug 16 19:13:39 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 17 Aug 2020 00:13:39 +0100
+Subject: [concurrency-interest] Why
+ SynchronousQueue.TransferQueue#clean() not clean the last node
+In-Reply-To: <CA+kOe09yRQ1+yCwRRNpq3BLK_94kQhuqQO9z5hxRekMBZ6zsaQ@mail.gmail.com>
+References: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+ <CANkgWKj-d8tk-DDPZ6W6SV9-JSekDEK9h7Tyj_RdLAuXiELh8g@mail.gmail.com>
+ <5ace7dbd.abad.173f0c4d279.Coremail.allmaymight@163.com>
+ <CANkgWKi+vWQyGbiEbyAmD3GAgL0F1025n0dYxS=KXGOxV0rnoQ@mail.gmail.com>
+ <CA+kOe0_GJ+T1XGpSY0o62K3c-K4UEt5psL2_cR90_90yVDmsfg@mail.gmail.com>
+ <CANkgWKjxNZSqSOJhcz9odcY9DuDDuU1tOL4jkgPr_PPgxk+29g@mail.gmail.com>
+ <CA+kOe09yRQ1+yCwRRNpq3BLK_94kQhuqQO9z5hxRekMBZ6zsaQ@mail.gmail.com>
+Message-ID: <CANkgWKhyU6ZXc7=tC=_M4fZmq1a3k93jFkw9Ut6Sb3unqv61DQ@mail.gmail.com>
+
+Thanks. I realize that. I was merely trying to come up with a
+bullet-point-like explanation of what is wrong with unlinking the last
+element of the queue.
+
+So moving tail "up" to point to prev atomically with the unlinking of the
+last node is one - without atomicity of such update can't ensure the actual
+last element of the queue remains reachable from the tail.
+
+And even in "tailless" designs there is a problem: last node remains
+attachable even after unlinking - concurrent attempts to add elements to
+the queue can be modifying next after the node is unlinked.
+
+Alex
+
+On Sun, 16 Aug 2020, 20:55 Martin Buchholz, <martinrb at google.com> wrote:
+
+> On Sat, Aug 15, 2020 at 1:24 AM Alex Otenko <oleksandr.otenko at gmail.com>
+> wrote:
+> >
+> > Great. But still head and tail point to nodes in the same chain, right?
+>
+> java.util.concurrent is where data structure intuition goes to die.
+>
+>     /**
+>      * A node from which the last node on list (that is, the unique
+>      * node with node.next == null) can be reached in O(1) time.
+>      * Invariants:
+>      * - the last node is always reachable from tail via succ()
+>      * - tail != null
+>      * Non-invariants:
+>      * - tail.item may or may not be null.
+>      * - it is permitted for tail to lag behind head, that is, for tail
+>      *   to not be reachable from head!
+>      * - tail.next may or may not be self-linked.
+>      */
+>     private transient volatile Node<E> tail;
+>
+>
+> >
+> > Alex
+> >
+> > On Sat, 15 Aug 2020, 08:02 Martin Buchholz, <martinrb at google.com> wrote:
+> >>
+> >> I did more work on ConcurrentLinkedQueue, including recording the
+> >> invariants, notably:
+> >>
+> >>      * Invariants:
+> >>      * - all live nodes are reachable from head via succ()
+> >>      * - head != null
+> >>      * - (tmp = head).next != tmp || tmp != head
+> >>      * Non-invariants:
+> >>      * - head.item may or may not be null.
+> >>      * - it is permitted for tail to lag behind head, that is, for tail
+> >>      *   to not be reachable from head!
+> >>
+> >> On Fri, Aug 14, 2020 at 11:23 PM Alex Otenko via Concurrency-interest
+> >> <concurrency-interest at cs.oswego.edu> wrote:
+> >> >
+> >> > Yes. There is an unspoken invariant that head and tail make progress
+> in one direction. That is pretty much the only way to make sure the head
+> never passes the tail. Then deleting tail cannot be done without moving the
+> tail backwards to pred. This breaks the unspoken invariant in the presence
+> of concurrent modifications of head.
+> >> >
+> >> > Alex
+> >> >
+> >> > On Sat, 15 Aug 2020, 07:18 Liu, <allmaymight at 163.com> wrote:
+> >> >>
+> >> >> Thanks. I just think about it, it is kind of difficult to keep the
+> correctness of tail.
+> >> >
+> >> > _______________________________________________
+> >> > Concurrency-interest mailing list
+> >> > Concurrency-interest at cs.oswego.edu
+> >> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200817/224f490c/attachment.htm>
+
+From martinrb at google.com  Sun Aug 16 20:52:48 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Sun, 16 Aug 2020 17:52:48 -0700
+Subject: [concurrency-interest] Why
+ SynchronousQueue.TransferQueue#clean() not clean the last node
+In-Reply-To: <CANkgWKhyU6ZXc7=tC=_M4fZmq1a3k93jFkw9Ut6Sb3unqv61DQ@mail.gmail.com>
+References: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+ <CANkgWKj-d8tk-DDPZ6W6SV9-JSekDEK9h7Tyj_RdLAuXiELh8g@mail.gmail.com>
+ <5ace7dbd.abad.173f0c4d279.Coremail.allmaymight@163.com>
+ <CANkgWKi+vWQyGbiEbyAmD3GAgL0F1025n0dYxS=KXGOxV0rnoQ@mail.gmail.com>
+ <CA+kOe0_GJ+T1XGpSY0o62K3c-K4UEt5psL2_cR90_90yVDmsfg@mail.gmail.com>
+ <CANkgWKjxNZSqSOJhcz9odcY9DuDDuU1tOL4jkgPr_PPgxk+29g@mail.gmail.com>
+ <CA+kOe09yRQ1+yCwRRNpq3BLK_94kQhuqQO9z5hxRekMBZ6zsaQ@mail.gmail.com>
+ <CANkgWKhyU6ZXc7=tC=_M4fZmq1a3k93jFkw9Ut6Sb3unqv61DQ@mail.gmail.com>
+Message-ID: <CA+kOe0-02c34hSPDAcMBaxdmc98jS8NRWgfv-rik4jBUbPZdBQ@mail.gmail.com>
+
+I realize now that "tail" is ambiguous, and can also refer to what I
+called trailing node.
+
+            // Never unlink trailing node.
+
+On Sun, Aug 16, 2020 at 4:13 PM Alex Otenko <oleksandr.otenko at gmail.com> wrote:
+>
+> Thanks. I realize that. I was merely trying to come up with a bullet-point-like explanation of what is wrong with unlinking the last element of the queue.
+>
+> So moving tail "up" to point to prev atomically with the unlinking of the last node is one - without atomicity of such update can't ensure the actual last element of the queue remains reachable from the tail.
+>
+> And even in "tailless" designs there is a problem: last node remains attachable even after unlinking - concurrent attempts to add elements to the queue can be modifying next after the node is unlinked.
+>
+> Alex
+>
+> On Sun, 16 Aug 2020, 20:55 Martin Buchholz, <martinrb at google.com> wrote:
+>>
+>> On Sat, Aug 15, 2020 at 1:24 AM Alex Otenko <oleksandr.otenko at gmail.com> wrote:
+>> >
+>> > Great. But still head and tail point to nodes in the same chain, right?
+>>
+>> java.util.concurrent is where data structure intuition goes to die.
+>>
+>>     /**
+>>      * A node from which the last node on list (that is, the unique
+>>      * node with node.next == null) can be reached in O(1) time.
+>>      * Invariants:
+>>      * - the last node is always reachable from tail via succ()
+>>      * - tail != null
+>>      * Non-invariants:
+>>      * - tail.item may or may not be null.
+>>      * - it is permitted for tail to lag behind head, that is, for tail
+>>      *   to not be reachable from head!
+>>      * - tail.next may or may not be self-linked.
+>>      */
+>>     private transient volatile Node<E> tail;
+>>
+>>
+>> >
+>> > Alex
+>> >
+>> > On Sat, 15 Aug 2020, 08:02 Martin Buchholz, <martinrb at google.com> wrote:
+>> >>
+>> >> I did more work on ConcurrentLinkedQueue, including recording the
+>> >> invariants, notably:
+>> >>
+>> >>      * Invariants:
+>> >>      * - all live nodes are reachable from head via succ()
+>> >>      * - head != null
+>> >>      * - (tmp = head).next != tmp || tmp != head
+>> >>      * Non-invariants:
+>> >>      * - head.item may or may not be null.
+>> >>      * - it is permitted for tail to lag behind head, that is, for tail
+>> >>      *   to not be reachable from head!
+>> >>
+>> >> On Fri, Aug 14, 2020 at 11:23 PM Alex Otenko via Concurrency-interest
+>> >> <concurrency-interest at cs.oswego.edu> wrote:
+>> >> >
+>> >> > Yes. There is an unspoken invariant that head and tail make progress in one direction. That is pretty much the only way to make sure the head never passes the tail. Then deleting tail cannot be done without moving the tail backwards to pred. This breaks the unspoken invariant in the presence of concurrent modifications of head.
+>> >> >
+>> >> > Alex
+>> >> >
+>> >> > On Sat, 15 Aug 2020, 07:18 Liu, <allmaymight at 163.com> wrote:
+>> >> >>
+>> >> >> Thanks. I just think about it, it is kind of difficult to keep the correctness of tail.
+>> >> >
+>> >> > _______________________________________________
+>> >> > Concurrency-interest mailing list
+>> >> > Concurrency-interest at cs.oswego.edu
+>> >> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From allmaymight at 163.com  Sun Aug 16 22:13:33 2020
+From: allmaymight at 163.com (Liu)
+Date: Mon, 17 Aug 2020 10:13:33 +0800 (CST)
+Subject: [concurrency-interest] Why
+ SynchronousQueue.TransferQueue#clean() not clean the last node
+In-Reply-To: <CA+kOe0-02c34hSPDAcMBaxdmc98jS8NRWgfv-rik4jBUbPZdBQ@mail.gmail.com>
+References: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+ <CANkgWKj-d8tk-DDPZ6W6SV9-JSekDEK9h7Tyj_RdLAuXiELh8g@mail.gmail.com>
+ <5ace7dbd.abad.173f0c4d279.Coremail.allmaymight@163.com>
+ <CANkgWKi+vWQyGbiEbyAmD3GAgL0F1025n0dYxS=KXGOxV0rnoQ@mail.gmail.com>
+ <CA+kOe0_GJ+T1XGpSY0o62K3c-K4UEt5psL2_cR90_90yVDmsfg@mail.gmail.com>
+ <CANkgWKjxNZSqSOJhcz9odcY9DuDDuU1tOL4jkgPr_PPgxk+29g@mail.gmail.com>
+ <CA+kOe09yRQ1+yCwRRNpq3BLK_94kQhuqQO9z5hxRekMBZ6zsaQ@mail.gmail.com>
+ <CANkgWKhyU6ZXc7=tC=_M4fZmq1a3k93jFkw9Ut6Sb3unqv61DQ@mail.gmail.com>
+ <CA+kOe0-02c34hSPDAcMBaxdmc98jS8NRWgfv-rik4jBUbPZdBQ@mail.gmail.com>
+Message-ID: <549d8898.267e.173fa3179db.Coremail.allmaymight@163.com>
+
+
+
+
+I try to understand what you guys are saying.
+
+
+Firstly,    A -> B -> C(tail) -> null, and if C should be cleaned,
+ it should become A -> B(tail)  -> null. but there is No such atomic operation.
+
+
+Secondly, some threads may see A -> B  -> null and C(tail), and may append node
+after C which is wrong.
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200817/779f92af/attachment.htm>
+
+From martinrb at google.com  Sun Aug 16 22:23:29 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Sun, 16 Aug 2020 19:23:29 -0700
+Subject: [concurrency-interest] Why
+ SynchronousQueue.TransferQueue#clean() not clean the last node
+In-Reply-To: <549d8898.267e.173fa3179db.Coremail.allmaymight@163.com>
+References: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+ <CANkgWKj-d8tk-DDPZ6W6SV9-JSekDEK9h7Tyj_RdLAuXiELh8g@mail.gmail.com>
+ <5ace7dbd.abad.173f0c4d279.Coremail.allmaymight@163.com>
+ <CANkgWKi+vWQyGbiEbyAmD3GAgL0F1025n0dYxS=KXGOxV0rnoQ@mail.gmail.com>
+ <CA+kOe0_GJ+T1XGpSY0o62K3c-K4UEt5psL2_cR90_90yVDmsfg@mail.gmail.com>
+ <CANkgWKjxNZSqSOJhcz9odcY9DuDDuU1tOL4jkgPr_PPgxk+29g@mail.gmail.com>
+ <CA+kOe09yRQ1+yCwRRNpq3BLK_94kQhuqQO9z5hxRekMBZ6zsaQ@mail.gmail.com>
+ <CANkgWKhyU6ZXc7=tC=_M4fZmq1a3k93jFkw9Ut6Sb3unqv61DQ@mail.gmail.com>
+ <CA+kOe0-02c34hSPDAcMBaxdmc98jS8NRWgfv-rik4jBUbPZdBQ@mail.gmail.com>
+ <549d8898.267e.173fa3179db.Coremail.allmaymight@163.com>
+Message-ID: <CA+kOe09n+8apcz=zsMJMkCxzhf_Ftx2i=v8uWpuGAc5iLdB9eg@mail.gmail.com>
+
+When a thread wants to enqueue a new element at the end, it finds the
+last Node (the unique one whose next is null) and tries to CAS next to
+a new Node containing the new element.  If the CAS succeeds, it must
+have atomically enqueued the new element.
+
+On Sun, Aug 16, 2020 at 7:14 PM Liu <allmaymight at 163.com> wrote:
+>
+>
+> I try to understand what you guys are saying.
+>
+> Firstly,    A -> B -> C(tail) -> null, and if C should be cleaned,
+>  it should become A -> B(tail)  -> null. but there is No such atomic operation.
+>
+> Secondly, some threads may see A -> B  -> null and C(tail), and may append node
+> after C which is wrong.
+>
+>
+>
+>
+>
+
+From oleksandr.otenko at gmail.com  Mon Aug 17 02:17:52 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 17 Aug 2020 07:17:52 +0100
+Subject: [concurrency-interest] Why
+ SynchronousQueue.TransferQueue#clean() not clean the last node
+In-Reply-To: <549d8898.267e.173fa3179db.Coremail.allmaymight@163.com>
+References: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+ <CANkgWKj-d8tk-DDPZ6W6SV9-JSekDEK9h7Tyj_RdLAuXiELh8g@mail.gmail.com>
+ <5ace7dbd.abad.173f0c4d279.Coremail.allmaymight@163.com>
+ <CANkgWKi+vWQyGbiEbyAmD3GAgL0F1025n0dYxS=KXGOxV0rnoQ@mail.gmail.com>
+ <CA+kOe0_GJ+T1XGpSY0o62K3c-K4UEt5psL2_cR90_90yVDmsfg@mail.gmail.com>
+ <CANkgWKjxNZSqSOJhcz9odcY9DuDDuU1tOL4jkgPr_PPgxk+29g@mail.gmail.com>
+ <CA+kOe09yRQ1+yCwRRNpq3BLK_94kQhuqQO9z5hxRekMBZ6zsaQ@mail.gmail.com>
+ <CANkgWKhyU6ZXc7=tC=_M4fZmq1a3k93jFkw9Ut6Sb3unqv61DQ@mail.gmail.com>
+ <CA+kOe0-02c34hSPDAcMBaxdmc98jS8NRWgfv-rik4jBUbPZdBQ@mail.gmail.com>
+ <549d8898.267e.173fa3179db.Coremail.allmaymight@163.com>
+Message-ID: <CANkgWKgrkn2Eac9Q3W-W5MLizgYQmiKYwgo5Kc0kLD0XDaiZAw@mail.gmail.com>
+
+Correct. In addition, notice that updating tail to point to B can't be done
+atomically with unlinking of C. Then it's possible for head and tail to
+point to chains with no common nodes.
+
+Alex
+
+On Mon, 17 Aug 2020, 03:14 Liu, <allmaymight at 163.com> wrote:
+
+>
+> I try to understand what you guys are saying.
+>
+> Firstly,    A -> B -> C(tail) -> null, and if C should be cleaned,
+>  it should become A -> B(tail)  -> null. but there is No such atomic
+> operation.
+>
+> Secondly, some threads may see A -> B  -> null and C(tail), and may append
+> node
+> after C which is wrong.
+>
+>
+>
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200817/1a76414b/attachment.htm>
+
+From oleksandr.otenko at gmail.com  Mon Aug 17 05:55:53 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 17 Aug 2020 10:55:53 +0100
+Subject: [concurrency-interest] Why
+ SynchronousQueue.TransferQueue#clean() not clean the last node
+In-Reply-To: <CANkgWKgrkn2Eac9Q3W-W5MLizgYQmiKYwgo5Kc0kLD0XDaiZAw@mail.gmail.com>
+References: <6b5a4bde.a53e.173f01affc0.Coremail.allmaymight@163.com>
+ <CANkgWKj-d8tk-DDPZ6W6SV9-JSekDEK9h7Tyj_RdLAuXiELh8g@mail.gmail.com>
+ <5ace7dbd.abad.173f0c4d279.Coremail.allmaymight@163.com>
+ <CANkgWKi+vWQyGbiEbyAmD3GAgL0F1025n0dYxS=KXGOxV0rnoQ@mail.gmail.com>
+ <CA+kOe0_GJ+T1XGpSY0o62K3c-K4UEt5psL2_cR90_90yVDmsfg@mail.gmail.com>
+ <CANkgWKjxNZSqSOJhcz9odcY9DuDDuU1tOL4jkgPr_PPgxk+29g@mail.gmail.com>
+ <CA+kOe09yRQ1+yCwRRNpq3BLK_94kQhuqQO9z5hxRekMBZ6zsaQ@mail.gmail.com>
+ <CANkgWKhyU6ZXc7=tC=_M4fZmq1a3k93jFkw9Ut6Sb3unqv61DQ@mail.gmail.com>
+ <CA+kOe0-02c34hSPDAcMBaxdmc98jS8NRWgfv-rik4jBUbPZdBQ@mail.gmail.com>
+ <549d8898.267e.173fa3179db.Coremail.allmaymight@163.com>
+ <CANkgWKgrkn2Eac9Q3W-W5MLizgYQmiKYwgo5Kc0kLD0XDaiZAw@mail.gmail.com>
+Message-ID: <CANkgWKjA90DxDsTryr3udb=prgHd7GTrsGWA3Xjxy6DSP6xbQA@mail.gmail.com>
+
+What I meant to point out, was the subtle difference between the two cases.
+Your second picture makes it look like the first case.
+
+The first way for this to go wrong. No atomic update of tail - cannot
+guarantee it may not guarantee tail may not refer to a chain with some
+nodes reachable from head. Reasoning locally (an important tool in
+analyzing algorithms) - that is, considering the unlinking logic alone - we
+can prove that updating tail cannot be done safely, if it is not atomic
+with unlinking. A breaking case is unlinking B and C concurrently.
+
+The second way for this to go wrong assumes we solve the atomicity of tail
+update in some way. (For the sake of argument, assume tail always points to
+one or two nodes before last; appending is still O(1)) Even in this case
+removing the last node is not correct, because updating B.next (unlinking
+C) and C.next (enqueue D) is concurrent. But this seems to require
+reasoning about other methods (not local).
+
+Alex
+
+On Mon, 17 Aug 2020, 07:17 Alex Otenko, <oleksandr.otenko at gmail.com> wrote:
+
+> Correct. In addition, notice that updating tail to point to B can't be
+> done atomically with unlinking of C. Then it's possible for head and tail
+> to point to chains with no common nodes.
+>
+> Alex
+>
+> On Mon, 17 Aug 2020, 03:14 Liu, <allmaymight at 163.com> wrote:
+>
+>>
+>> I try to understand what you guys are saying.
+>>
+>> Firstly,    A -> B -> C(tail) -> null, and if C should be cleaned,
+>>  it should become A -> B(tail)  -> null. but there is No such atomic
+>> operation.
+>>
+>> Secondly, some threads may see A -> B  -> null and C(tail), and may
+>> append node
+>> after C which is wrong.
+>>
+>>
+>>
+>>
+>>
+>>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200817/196977d6/attachment.htm>
+
+From sergi.vladykin at gmail.com  Thu Aug 20 04:11:28 2020
+From: sergi.vladykin at gmail.com (Sergi Vladykin)
+Date: Thu, 20 Aug 2020 11:11:28 +0300
+Subject: [concurrency-interest] CompletableFuture.cancel vs Future.cancel
+ bug?
+Message-ID: <CA+eZwrE8hACJmh3y3NDc_+Gyw7KOEmb7E0gzFTAGWLWzJnbzEg@mail.gmail.com>
+
+Hi,
+
+I noticed that the CompletableFuture.cancel method breaks the contract for
+Future.cancel.
+The spec says "This attempt will fail if the task ... has already been
+cancelled..." but at the same time CompletableFuture will return true even
+if someone else has cancelled the future.
+
+I see that it can be workarounded by completeExceptionally(new
+CancellationException()) but this inconsistency is neither obvious nor even
+documented and IMO should be fixed.
+
+To be clear I'm extending CompletableFuture.cancel with my own cancellation
+logic and obviously I want this logic to be executed only once thus using
+super.cancel() would be wrong. On another hand I want my future to behave
+consistently with the original CompletableFuture and of course I can
+emulate that but this all gets ugly...
+
+Please advise.
+
+Sergi
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200820/e2432c07/attachment.htm>
+
+From sergi.vladykin at gmail.com  Thu Aug 20 12:25:51 2020
+From: sergi.vladykin at gmail.com (Sergi Vladykin)
+Date: Thu, 20 Aug 2020 19:25:51 +0300
+Subject: [concurrency-interest] CompletableFuture.cancel vs
+ Future.cancel bug?
+In-Reply-To: <CA+eZwrE8hACJmh3y3NDc_+Gyw7KOEmb7E0gzFTAGWLWzJnbzEg@mail.gmail.com>
+References: <CA+eZwrE8hACJmh3y3NDc_+Gyw7KOEmb7E0gzFTAGWLWzJnbzEg@mail.gmail.com>
+Message-ID: <CA+eZwrHceG0eM6wKbKV6W0v6kOyJ57qKVXmL4z6FRWE_0BspgA@mail.gmail.com>
+
+Investigated further: FutureTask respects the Future.cancel contract,
+ForkJoinTask does not.
+Also Guava AbstractFuture implements cancel correctly.
+
+Practically this means that users can not rely on the Future.cancel()
+correctness.
+
+
+On Thu, Aug 20, 2020 at 11:11 AM Sergi Vladykin <sergi.vladykin at gmail.com>
+wrote:
+
+> Hi,
+>
+> I noticed that the CompletableFuture.cancel method breaks the contract for
+> Future.cancel.
+> The spec says "This attempt will fail if the task ... has already been
+> cancelled..." but at the same time CompletableFuture will return true even
+> if someone else has cancelled the future.
+>
+> I see that it can be workarounded by completeExceptionally(new
+> CancellationException()) but this inconsistency is neither obvious nor even
+> documented and IMO should be fixed.
+>
+> To be clear I'm extending CompletableFuture.cancel with my own
+> cancellation logic and obviously I want this logic to be executed only once
+> thus using super.cancel() would be wrong. On another hand I want my future
+> to behave consistently with the original CompletableFuture and of course I
+> can emulate that but this all gets ugly...
+>
+> Please advise.
+>
+> Sergi
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200820/f9967f1e/attachment.htm>
+
+From martinrb at google.com  Thu Aug 20 13:48:22 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Thu, 20 Aug 2020 10:48:22 -0700
+Subject: [concurrency-interest] CompletableFuture.cancel vs
+ Future.cancel bug?
+In-Reply-To: <CA+eZwrHceG0eM6wKbKV6W0v6kOyJ57qKVXmL4z6FRWE_0BspgA@mail.gmail.com>
+References: <CA+eZwrE8hACJmh3y3NDc_+Gyw7KOEmb7E0gzFTAGWLWzJnbzEg@mail.gmail.com>
+ <CA+eZwrHceG0eM6wKbKV6W0v6kOyJ57qKVXmL4z6FRWE_0BspgA@mail.gmail.com>
+Message-ID: <CA+kOe0_w1AFsBNO+DourmDgpdj+t1LK3DUih5JzL2Yk2w2ndgA@mail.gmail.com>
+
+You didn't make it completely clear - I think you're saying that the
+meaning of the return value from FutureTask.cancel() and
+CompletableFuture.cancel() are inconsistent.  I agree, and this
+bothers me a little as well.  The spec for Future.cancel() includes
+the word "typically" so arguably there's enough wiggle room.
+
+As usual, trying to fix this now will likely cause more trouble than
+living with it.
+
+On Thu, Aug 20, 2020 at 9:28 AM Sergi Vladykin via
+Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>
+> Investigated further: FutureTask respects the Future.cancel contract, ForkJoinTask does not.
+> Also Guava AbstractFuture implements cancel correctly.
+>
+> Practically this means that users can not rely on the Future.cancel() correctness.
+>
+>
+> On Thu, Aug 20, 2020 at 11:11 AM Sergi Vladykin <sergi.vladykin at gmail.com> wrote:
+>>
+>> Hi,
+>>
+>> I noticed that the CompletableFuture.cancel method breaks the contract for Future.cancel.
+>> The spec says "This attempt will fail if the task ... has already been cancelled..." but at the same time CompletableFuture will return true even if someone else has cancelled the future.
+>>
+>> I see that it can be workarounded by completeExceptionally(new CancellationException()) but this inconsistency is neither obvious nor even documented and IMO should be fixed.
+>>
+>> To be clear I'm extending CompletableFuture.cancel with my own cancellation logic and obviously I want this logic to be executed only once thus using super.cancel() would be wrong. On another hand I want my future to behave consistently with the original CompletableFuture and of course I can emulate that but this all gets ugly...
+>>
+>> Please advise.
+>>
+>> Sergi
+>>
+>>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From sergi.vladykin at gmail.com  Thu Aug 20 15:06:05 2020
+From: sergi.vladykin at gmail.com (Sergi Vladykin)
+Date: Thu, 20 Aug 2020 22:06:05 +0300
+Subject: [concurrency-interest] CompletableFuture.cancel vs
+ Future.cancel bug?
+In-Reply-To: <CA+kOe0_w1AFsBNO+DourmDgpdj+t1LK3DUih5JzL2Yk2w2ndgA@mail.gmail.com>
+References: <CA+eZwrE8hACJmh3y3NDc_+Gyw7KOEmb7E0gzFTAGWLWzJnbzEg@mail.gmail.com>
+ <CA+eZwrHceG0eM6wKbKV6W0v6kOyJ57qKVXmL4z6FRWE_0BspgA@mail.gmail.com>
+ <CA+kOe0_w1AFsBNO+DourmDgpdj+t1LK3DUih5JzL2Yk2w2ndgA@mail.gmail.com>
+Message-ID: <CA+eZwrGh+zzWcY3Cg-OpFzjOCko3_ebvryjPX58aqgYMCa6JYw@mail.gmail.com>
+
+On Thu, Aug 20, 2020 at 8:48 PM Martin Buchholz <martinrb at google.com> wrote:
+
+> You didn't make it completely clear - I think you're saying that the
+> meaning of the return value from FutureTask.cancel() and
+> CompletableFuture.cancel() are inconsistent.
+
+
+I'm saying that CompletableFuture.cancel() is inconsistent with what I see
+in Future.cancel() javadoc.
+
+So I looked at other Future implementations and see that:
+  - FutureTask, Guava AbstractFuture - correct implementation of the spec;
+  - CompletableFuture, ForkJoinTask - incorrect implementation
+
+
+> I agree, and this
+> bothers me a little as well.  The spec for Future.cancel() includes
+> the word "typically" so arguably there's enough wiggle room.
+>
+
+Here is the part with "typically":
+
+     * @return {@code false} if the task could not be cancelled,
+     * typically because it has already completed normally;
+     * {@code true} otherwise
+
+I read it as "usually it is impossible to cancel the task because it has
+already been completed normally, but there are other reasons: for example
+it has already been completed exceptionally or cancelled".
+
+And I've already cited the beginning of that javadoc which explicitly
+states that the attempt WILL fail if the task has been cancelled:
+
+     * Attempts to cancel execution of this task.  This attempt will
+     * fail if the task has already completed, has already been cancelled,
+     * or could not be cancelled for some other reason.
+
+I see no room for wiggling here.
+
+
+>
+> As usual, trying to fix this now will likely cause more trouble than
+> living with it.
+>
+
+Not sure in what situation the current behavior of CompletableFuture would
+be beneficial, but I definitely agree that fixing this may be risky now.
+Still, if we accept this de facto state of things at the very least we
+should update the Future.cancel() spec to reflect that and let users know
+that they should not rely on "This attempt will fail if the task has
+already been cancelled".
+
+
+>
+> On Thu, Aug 20, 2020 at 9:28 AM Sergi Vladykin via
+> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> >
+> > Investigated further: FutureTask respects the Future.cancel contract,
+> ForkJoinTask does not.
+> > Also Guava AbstractFuture implements cancel correctly.
+> >
+> > Practically this means that users can not rely on the Future.cancel()
+> correctness.
+> >
+> >
+> > On Thu, Aug 20, 2020 at 11:11 AM Sergi Vladykin <
+> sergi.vladykin at gmail.com> wrote:
+> >>
+> >> Hi,
+> >>
+> >> I noticed that the CompletableFuture.cancel method breaks the contract
+> for Future.cancel.
+> >> The spec says "This attempt will fail if the task ... has already been
+> cancelled..." but at the same time CompletableFuture will return true even
+> if someone else has cancelled the future.
+> >>
+> >> I see that it can be workarounded by completeExceptionally(new
+> CancellationException()) but this inconsistency is neither obvious nor even
+> documented and IMO should be fixed.
+> >>
+> >> To be clear I'm extending CompletableFuture.cancel with my own
+> cancellation logic and obviously I want this logic to be executed only once
+> thus using super.cancel() would be wrong. On another hand I want my future
+> to behave consistently with the original CompletableFuture and of course I
+> can emulate that but this all gets ugly...
+> >>
+> >> Please advise.
+> >>
+> >> Sergi
+> >>
+> >>
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200820/b701e7db/attachment.htm>
+
+From allmaymight at 163.com  Sat Aug 22 11:16:52 2020
+From: allmaymight at 163.com (Liu)
+Date: Sat, 22 Aug 2020 23:16:52 +0800 (GMT+08:00)
+Subject: [concurrency-interest] CompletableFuture#postComplete() can be
+ invoked concurrently?
+Message-ID: <2af9b7e.24c7.17416be6aa4.Coremail.allmaymight@163.com>
+
+In CompletableFuture, when I invoke the thenApply() on a CompletableFuture Object, 
+There is a subtle point in time, and it will make CompletableFuture#postComplete()
+invoked concurrently.
+
+
+    private <V> CompletableFuture<V> uniApplyStage(
+        Executor e, Function<? super T,? extends V> f) {
+        if (f == null) throw new NullPointerException();
+        CompletableFuture<V> d =  new CompletableFuture<V>();
+        if (e != null || !d.uniApply(this, f, null)) {
+            UniApply<T,V> c = new UniApply<T,V>(e, d, this, f);
+            push(c);
+            // at this point, this CompletableFuture Object just invoke the completeThrowable(),
+            // because the process to execute Supplier throw a exception.
+            c.tryFire(SYNC);
+        }
+        return d;
+    }
+
+
+The thread that invoke c.tryFire(SYNC) and the thread that iovoke completeThrowable() will invoke 
+c.tryFire(NESTED) soonly in postComplete() . The important thing is the two "c"  is same Object.
+
+
+So the two threads can invoke c.tryFire() concurrently, and in some special
+timing, the (d = dep) == null check can't work out.
+
+
+1. The thread that invoke c.tryFire(SYNC) will invoke a.postComplete() in postFire() directly.
+2. The thread that iovoke completeThrowable() will not invoke a.postComplete() in postFire(),
+    but it will return to the postComplete().
+
+
+Above two sentence, the two threads will invoke postComplete() on same CompletableFuture object.
+
+
+I'm afraid I didn't express it clearly. If you don't understand my opinion, just tell me if 
+CompletableFuture#postComplete() is designed to invoked concurrently or not?
+
+
+PS: above code from JDK8, and I think this problem will happen too in newest JDK, if I am right about my opinion.
+
+
+--------------------------------------------------------------------------------
+Regards
+Liu
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200822/1cc1e24a/attachment.htm>
+
+From martinrb at google.com  Sat Aug 22 14:07:21 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Sat, 22 Aug 2020 11:07:21 -0700
+Subject: [concurrency-interest] CompletableFuture#postComplete() can be
+ invoked concurrently?
+In-Reply-To: <2af9b7e.24c7.17416be6aa4.Coremail.allmaymight@163.com>
+References: <2af9b7e.24c7.17416be6aa4.Coremail.allmaymight@163.com>
+Message-ID: <CA+kOe08J5eEFx9Kgv83yfroSeR5zZ7y9N6xZcccptOMT2JyZZg@mail.gmail.com>
+
+This code is very tricky and hard to understand.
+When studying this, I would only look at latest version of the code.
+
+If you think you've found a bug, you should try to create a repro,
+preferably in jsr166 CVS.
+You can see some stress tests in the tests e.g look at expensiveTests in
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/test/tck/CompletableFutureTest.java?view=markup
+
+On Sat, Aug 22, 2020 at 8:19 AM Liu via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+>
+> In CompletableFuture, when I invoke the thenApply() on a CompletableFuture Object,
+> There is a subtle point in time, and it will make CompletableFuture#postComplete()
+> invoked concurrently.
+>
+>     private <V> CompletableFuture<V> uniApplyStage(
+>         Executor e, Function<? super T,? extends V> f) {
+>         if (f == null) throw new NullPointerException();
+>         CompletableFuture<V> d =  new CompletableFuture<V>();
+>         if (e != null || !d.uniApply(this, f, null)) {
+>             UniApply<T,V> c = new UniApply<T,V>(e, d, this, f);
+>             push(c);
+>             // at this point, this CompletableFuture Object just invoke the completeThrowable(),
+>             // because the process to execute Supplier throw a exception.
+>             c.tryFire(SYNC);
+>         }
+>         return d;
+>     }
+>
+> The thread that invoke c.tryFire(SYNC) and the thread that iovoke completeThrowable() will invoke
+> c.tryFire(NESTED) soonly in postComplete() . The important thing is the two "c"  is same Object.
+>
+> So the two threads can invoke c.tryFire() concurrently, and in some special
+> timing, the (d = dep) == null check can't work out.
+>
+> 1. The thread that invoke c.tryFire(SYNC) will invoke a.postComplete() in postFire() directly.
+> 2. The thread that iovoke completeThrowable() will not invoke a.postComplete() in postFire(),
+>     but it will return to the postComplete().
+>
+> Above two sentence, the two threads will invoke postComplete() on same CompletableFuture object.
+>
+> I'm afraid I didn't express it clearly. If you don't understand my opinion, just tell me if
+> CompletableFuture#postComplete() is designed to invoked concurrently or not?
+>
+> PS: above code from JDK8, and I think this problem will happen too in newest JDK, if I am right about my opinion.
+>
+> --------------------------------------------------------------------------------
+> Regards
+> Liu
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From allmaymight at 163.com  Sat Aug 22 23:42:43 2020
+From: allmaymight at 163.com (Liu)
+Date: Sun, 23 Aug 2020 11:42:43 +0800 (GMT+08:00)
+Subject: [concurrency-interest] CompletableFuture#postComplete() can be
+ invoked concurrently?
+In-Reply-To: <CA+kOe08J5eEFx9Kgv83yfroSeR5zZ7y9N6xZcccptOMT2JyZZg@mail.gmail.com>
+References: <2af9b7e.24c7.17416be6aa4.Coremail.allmaymight@163.com>
+ <CA+kOe08J5eEFx9Kgv83yfroSeR5zZ7y9N6xZcccptOMT2JyZZg@mail.gmail.com>
+Message-ID: <4c19c04.3134.174196945ea.Coremail.allmaymight@163.com>
+
+It is kind of difficult to test it, because it all depend on special Thread execution order.
+I can't think of the test case temporarily.
+
+
+Let my opinion simpler.
+
+
+http://hg.openjdk.java.net/jdk/jdk15/file/d2c6eb3b2c8d/src/java.base/share/classes/java/util/concurrent/CompletableFuture.java#l615
+
+
+In JDK15, CompletableFuture.UniApply#tryFire(), I think 
+it should be like this:
+
+
+    @SuppressWarnings("serial")
+    static final class UniApply<T,V> extends UniCompletion<T,V> {
+        Function<? super T,? extends V> fn;
+        UniApply(Executor executor, CompletableFuture<V> dep,
+                 CompletableFuture<T> src,
+                 Function<? super T,? extends V> fn) {
+            super(executor, dep, src); this.fn = fn;
+        }
+        final CompletableFuture<V> tryFire(int mode) {
+            CompletableFuture<V> d; CompletableFuture<T> a;
+            Object r; Throwable x; Function<? super T,? extends V> f;
+            if ((a = src) == null || (r = a.result) == null
+                || (d = dep) == null || (f = fn) == null)
+                return null;
+            tryComplete: if (d.result == null) {
+                if (r instanceof AltResult) {
+                    if ((x = ((AltResult)r).ex) != null) {
+                        if (!claim())         //before completeThrowable, it should be claimed (this two lines is added by me)
+                            return null;
+                        d.completeThrowable(x, r);
+                        break tryComplete;
+                    }
+                    r = null;
+                }
+                try {
+                    if (mode <= 0 && !claim())
+                        return null;
+                    else {
+                        @SuppressWarnings("unchecked") T t = (T) r;
+                        d.completeValue(f.apply(t));
+                    }
+                } catch (Throwable ex) {
+                    d.completeThrowable(ex);
+                }
+            }
+            src = null; dep = null; fn = null;
+            return d.postFire(a, mode);
+        }
+    }
+
+
+before completeThrowable, it should be claimed just like following code.
+This is mean to avoid two diffrent threads can invoke tryFire on same Object,
+and to avoid it will both do the d.completeThrowable(x, r) successfully and do
+d.postFire(a, mode) both.
+
+
+Or you can tell me, Why not need to claim() before d.completeThrowable(x, r).
+I suppose it is necessary.
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200823/02d1b411/attachment.htm>
+
+From martinrb at google.com  Sun Aug 23 02:25:07 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Sat, 22 Aug 2020 23:25:07 -0700
+Subject: [concurrency-interest] CompletableFuture#postComplete() can be
+ invoked concurrently?
+In-Reply-To: <4c19c04.3134.174196945ea.Coremail.allmaymight@163.com>
+References: <2af9b7e.24c7.17416be6aa4.Coremail.allmaymight@163.com>
+ <CA+kOe08J5eEFx9Kgv83yfroSeR5zZ7y9N6xZcccptOMT2JyZZg@mail.gmail.com>
+ <4c19c04.3134.174196945ea.Coremail.allmaymight@163.com>
+Message-ID: <CA+kOe0_ELO2oLGvOnietFWHGqaHf6tWZhar-hYPojdhhf+8_dQ@mail.gmail.com>
+
+You may be right, but ... I recall when working on this code myself I
+ended up asking the same sorts of questions, and later realizing the
+code was correct, but as usual I forget the details.
+
+Current CompletableFuture has no known correctness bugs, so we'd be
+reluctant to fix anything here without a repro.
+You only need the repro to fail once in a million tries.
+
+You might try changing the code in jsr166 CVS and running the tests,
+perhaps repeatedly, perhaps with expensiveTests turned on.
+
+     *   forms.)  The claim() callback suppresses function invocation
+     *   if already claimed by another thread.
+
+Looks like claim() is only intended to suppress duplicate runs of a
+completion function, which normally only happens on successful
+completion of a source future.
+
+On Sat, Aug 22, 2020 at 8:42 PM Liu <allmaymight at 163.com> wrote:
+>
+> It is kind of difficult to test it, because it all depend on special Thread execution order.
+> I can't think of the test case temporarily.
+>
+> Let my opinion simpler.
+>
+> http://hg.openjdk.java.net/jdk/jdk15/file/d2c6eb3b2c8d/src/java.base/share/classes/java/util/concurrent/CompletableFuture.java#l615
+>
+> In JDK15, CompletableFuture.UniApply#tryFire(), I think
+> it should be like this:
+>
+>     @SuppressWarnings("serial")
+>     static final class UniApply<T,V> extends UniCompletion<T,V> {
+>         Function<? super T,? extends V> fn;
+>         UniApply(Executor executor, CompletableFuture<V> dep,
+>                  CompletableFuture<T> src,
+>                  Function<? super T,? extends V> fn) {
+>             super(executor, dep, src); this.fn = fn;
+>         }
+>         final CompletableFuture<V> tryFire(int mode) {
+>             CompletableFuture<V> d; CompletableFuture<T> a;
+>             Object r; Throwable x; Function<? super T,? extends V> f;
+>             if ((a = src) == null || (r = a.result) == null
+>                 || (d = dep) == null || (f = fn) == null)
+>                 return null;
+>             tryComplete: if (d.result == null) {
+>                 if (r instanceof AltResult) {
+>                     if ((x = ((AltResult)r).ex) != null) {
+>                         if (!claim())         //before completeThrowable, it should be claimed (this two lines is added by me)
+>                             return null;
+>                         d.completeThrowable(x, r);
+>                         break tryComplete;
+>                     }
+>                     r = null;
+>                 }
+>                 try {
+>                     if (mode <= 0 && !claim())
+>                         return null;
+>                     else {
+>                         @SuppressWarnings("unchecked") T t = (T) r;
+>                         d.completeValue(f.apply(t));
+>                     }
+>                 } catch (Throwable ex) {
+>                     d.completeThrowable(ex);
+>                 }
+>             }
+>             src = null; dep = null; fn = null;
+>             return d.postFire(a, mode);
+>         }
+>     }
+>
+> before completeThrowable, it should be claimed just like following code.
+> This is mean to avoid two diffrent threads can invoke tryFire on same Object,
+> and to avoid it will both do the d.completeThrowable(x, r) successfully and do
+> d.postFire(a, mode) both.
+>
+> Or you can tell me, Why not need to claim() before d.completeThrowable(x, r).
+> I suppose it is necessary.
+>
+
+From oleksandr.otenko at gmail.com  Sun Aug 23 02:36:57 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sun, 23 Aug 2020 07:36:57 +0100
+Subject: [concurrency-interest] CompletableFuture#postComplete() can be
+ invoked concurrently?
+In-Reply-To: <4c19c04.3134.174196945ea.Coremail.allmaymight@163.com>
+References: <2af9b7e.24c7.17416be6aa4.Coremail.allmaymight@163.com>
+ <CA+kOe08J5eEFx9Kgv83yfroSeR5zZ7y9N6xZcccptOMT2JyZZg@mail.gmail.com>
+ <4c19c04.3134.174196945ea.Coremail.allmaymight@163.com>
+Message-ID: <CANkgWKh5DJ7q6SHN6ke6EwcxoaMqeKutwARCD6omU8wq7f4kJA@mail.gmail.com>
+
+Can you outline a high level outcome of the race vs expected outcome?
+
+Alex
+
+On Sun, 23 Aug 2020, 04:44 Liu via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> It is kind of difficult to test it, because it all depend on
+> special Thread execution order.
+> I can't think of the test case temporarily.
+>
+> Let my opinion simpler.
+>
+>
+> http://hg.openjdk.java.net/jdk/jdk15/file/d2c6eb3b2c8d/src/java.base/share/classes/java/util/concurrent/CompletableFuture.java#l615
+>
+> In JDK15, CompletableFuture.UniApply#tryFire(), I think
+> it should be like this:
+>
+>     @SuppressWarnings("serial")
+>     static final class UniApply<T,V> extends UniCompletion<T,V> {
+>         Function<? super T,? extends V> fn;
+>         UniApply(Executor executor, CompletableFuture<V> dep,
+>                  CompletableFuture<T> src,
+>                  Function<? super T,? extends V> fn) {
+>             super(executor, dep, src); this.fn = fn;
+>         }
+>         final CompletableFuture<V> tryFire(int mode) {
+>             CompletableFuture<V> d; CompletableFuture<T> a;
+>             Object r; Throwable x; Function<? super T,? extends V> f;
+>             if ((a = src) == null || (r = a.result) == null
+>                 || (d = dep) == null || (f = fn) == null)
+>                 return null;
+>             tryComplete: if (d.result == null) {
+>                 if (r instanceof AltResult) {
+>                     if ((x = ((AltResult)r).ex) != null) {
+>                         if (!claim())         //before completeThrowable,
+> it should be claimed (this two lines is added by me)
+>                             return null;
+>                         d.completeThrowable(x, r);
+>                         break tryComplete;
+>                     }
+>                     r = null;
+>                 }
+>                 try {
+>                     if (mode <= 0 && !claim())
+>                         return null;
+>                     else {
+>                         @SuppressWarnings("unchecked") T t = (T) r;
+>                         d.completeValue(f.apply(t));
+>                     }
+>                 } catch (Throwable ex) {
+>                     d.completeThrowable(ex);
+>                 }
+>             }
+>             src = null; dep = null; fn = null;
+>             return d.postFire(a, mode);
+>         }
+>     }
+>
+> before completeThrowable, it should be claimed just like following code.
+> This is mean to avoid two diffrent threads can invoke tryFire on same
+> Object,
+> and to avoid it will both do the d.completeThrowable(x, r) successfully
+> and do
+> d.postFire(a, mode) both.
+>
+> Or you can tell me, Why not need to claim() before d.completeThrowable(x,
+> r).
+> I suppose it is necessary.
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200823/03618030/attachment-0001.htm>
+
+From allmaymight at 163.com  Sun Aug 23 02:53:22 2020
+From: allmaymight at 163.com (Liu)
+Date: Sun, 23 Aug 2020 14:53:22 +0800 (GMT+08:00)
+Subject: [concurrency-interest] CompletableFuture#postComplete() can be
+ invoked concurrently?
+In-Reply-To: <CANkgWKh5DJ7q6SHN6ke6EwcxoaMqeKutwARCD6omU8wq7f4kJA@mail.gmail.com>
+References: <2af9b7e.24c7.17416be6aa4.Coremail.allmaymight@163.com>
+ <CA+kOe08J5eEFx9Kgv83yfroSeR5zZ7y9N6xZcccptOMT2JyZZg@mail.gmail.com>
+ <4c19c04.3134.174196945ea.Coremail.allmaymight@163.com>
+ <CANkgWKh5DJ7q6SHN6ke6EwcxoaMqeKutwARCD6omU8wq7f4kJA@mail.gmail.com>
+Message-ID: <102e209c.3582.1741a17d1eb.Coremail.allmaymight@163.com>
+
+In my first post, There is the special thread execution order.
+
+
+high level outcome is:
+two thread will invoke CompletableFuture#postComplete() 
+on same object concurrently.
+
+
+expected outcome:
+only one thread can invoke CompletableFuture#postComplete()
+on a object.
+
+
+like I said, in CompletableFuture.UniApply#tryFire(),
+d.completeThrowable(x, r); and dep = null;
+are not a atomic operation. The gap between two codes
+may cause high level outcome.
+
+
+PS:when dep == null, it means current Completion Object
+has been done.
+
+
+PPS: CompletableFuture#postComplete() seems not design to be
+invoked on same object.
+
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200823/f27cce74/attachment.htm>
+
+From martinrb at google.com  Sun Aug 23 03:03:00 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Sun, 23 Aug 2020 00:03:00 -0700
+Subject: [concurrency-interest] CompletableFuture#postComplete() can be
+ invoked concurrently?
+In-Reply-To: <102e209c.3582.1741a17d1eb.Coremail.allmaymight@163.com>
+References: <2af9b7e.24c7.17416be6aa4.Coremail.allmaymight@163.com>
+ <CA+kOe08J5eEFx9Kgv83yfroSeR5zZ7y9N6xZcccptOMT2JyZZg@mail.gmail.com>
+ <4c19c04.3134.174196945ea.Coremail.allmaymight@163.com>
+ <CANkgWKh5DJ7q6SHN6ke6EwcxoaMqeKutwARCD6omU8wq7f4kJA@mail.gmail.com>
+ <102e209c.3582.1741a17d1eb.Coremail.allmaymight@163.com>
+Message-ID: <CA+kOe0_3sWwHZs=2PV92mOK1=hKgpoOYL1KQ-v8sR-apv=3qDA@mail.gmail.com>
+
+     * Method postComplete is called upon completion unless the target
+     * is guaranteed not to be observable (i.e., not yet returned or
+     * linked). Multiple threads can call postComplete, which
+
+On Sat, Aug 22, 2020 at 11:53 PM Liu <allmaymight at 163.com> wrote:
+>
+> In my first post, There is the special thread execution order.
+>
+> high level outcome is:
+> two thread will invoke CompletableFuture#postComplete()
+> on same object concurrently.
+>
+> expected outcome:
+> only one thread can invoke CompletableFuture#postComplete()
+> on a object.
+>
+> like I said, in CompletableFuture.UniApply#tryFire(),
+> d.completeThrowable(x, r); and dep = null;
+> are not a atomic operation. The gap between two codes
+> may cause high level outcome.
+>
+> PS:when dep == null, it means current Completion Object
+> has been done.
+>
+> PPS: CompletableFuture#postComplete() seems not design to be
+> invoked on same object.
+>
+>
+
+From oleksandr.otenko at gmail.com  Sun Aug 23 03:09:22 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sun, 23 Aug 2020 08:09:22 +0100
+Subject: [concurrency-interest] CompletableFuture#postComplete() can be
+ invoked concurrently?
+In-Reply-To: <CA+kOe0_3sWwHZs=2PV92mOK1=hKgpoOYL1KQ-v8sR-apv=3qDA@mail.gmail.com>
+References: <2af9b7e.24c7.17416be6aa4.Coremail.allmaymight@163.com>
+ <CA+kOe08J5eEFx9Kgv83yfroSeR5zZ7y9N6xZcccptOMT2JyZZg@mail.gmail.com>
+ <4c19c04.3134.174196945ea.Coremail.allmaymight@163.com>
+ <CANkgWKh5DJ7q6SHN6ke6EwcxoaMqeKutwARCD6omU8wq7f4kJA@mail.gmail.com>
+ <102e209c.3582.1741a17d1eb.Coremail.allmaymight@163.com>
+ <CA+kOe0_3sWwHZs=2PV92mOK1=hKgpoOYL1KQ-v8sR-apv=3qDA@mail.gmail.com>
+Message-ID: <CANkgWKgUoGKBvoygWCadkysEAN_56dWn5R_LeiFVxEqF=xW4bg@mail.gmail.com>
+
+Besides, first need to show reachability of that state.
+
+So you have src.result set. Concurrent invocations of d.completeThrowable
+vs d.completeValue are possible only if two threads can see different
+src.result or different src.result.ex.
+
+I don't see a path to reach this necessary condition.
+
+Alex
+
+On Sun, 23 Aug 2020, 08:03 Martin Buchholz, <martinrb at google.com> wrote:
+
+>      * Method postComplete is called upon completion unless the target
+>      * is guaranteed not to be observable (i.e., not yet returned or
+>      * linked). Multiple threads can call postComplete, which
+>
+> On Sat, Aug 22, 2020 at 11:53 PM Liu <allmaymight at 163.com> wrote:
+> >
+> > In my first post, There is the special thread execution order.
+> >
+> > high level outcome is:
+> > two thread will invoke CompletableFuture#postComplete()
+> > on same object concurrently.
+> >
+> > expected outcome:
+> > only one thread can invoke CompletableFuture#postComplete()
+> > on a object.
+> >
+> > like I said, in CompletableFuture.UniApply#tryFire(),
+> > d.completeThrowable(x, r); and dep = null;
+> > are not a atomic operation. The gap between two codes
+> > may cause high level outcome.
+> >
+> > PS:when dep == null, it means current Completion Object
+> > has been done.
+> >
+> > PPS: CompletableFuture#postComplete() seems not design to be
+> > invoked on same object.
+> >
+> >
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200823/eb833bc0/attachment.htm>
+
+From dl at cs.oswego.edu  Sun Aug 23 08:33:28 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 23 Aug 2020 08:33:28 -0400
+Subject: [concurrency-interest] CompletableFuture.cancel vs
+ Future.cancel bug?
+In-Reply-To: <CA+eZwrGh+zzWcY3Cg-OpFzjOCko3_ebvryjPX58aqgYMCa6JYw@mail.gmail.com>
+References: <CA+eZwrE8hACJmh3y3NDc_+Gyw7KOEmb7E0gzFTAGWLWzJnbzEg@mail.gmail.com>
+ <CA+eZwrHceG0eM6wKbKV6W0v6kOyJ57qKVXmL4z6FRWE_0BspgA@mail.gmail.com>
+ <CA+kOe0_w1AFsBNO+DourmDgpdj+t1LK3DUih5JzL2Yk2w2ndgA@mail.gmail.com>
+ <CA+eZwrGh+zzWcY3Cg-OpFzjOCko3_ebvryjPX58aqgYMCa6JYw@mail.gmail.com>
+Message-ID: <ae322168-5b47-92c7-2d51-e8735a661a45@cs.oswego.edu>
+
+I agree that the Future.cancel javadoc should be improved to better 
+distinguish the return value spec from the method description. It was 
+not the intent to require the return value to be a CAS-like indication 
+of whether the current invocation was responsible for cancellation. It 
+is nice when it can do so (and some implementations do), but the 
+intention for this high-level interface spec was to allow a wide range 
+of implementations,. Perhaps it would have been better to define cancel 
+as void, requiring a call to isCancelled to check. In other words...
+
+On 8/20/20 3:06 PM, Sergi Vladykin via Concurrency-interest wrote:
+>
+> Here is the part with "typically":
+>
+>      * @return {@code false} if the task could not be cancelled,
+>      * typically because it has already completed normally;
+>      * {@code true} otherwise
+>
+> I read it as "usually it is impossible to cancel the task because it 
+> has already been completed normally, but there are other reasons: for 
+> example it has already been completed exceptionally or cancelled".
+The case left out here is "already cancelled", which can go either way.
+>
+> And I've already cited the beginning of that javadoc which explicitly 
+> states that the attempt WILL fail if the task has been cancelled:
+>
+>      * Attempts to cancel execution of this task.  This attempt will
+>      * fail if the task has already completed, has already been cancelled,
+>      * or could not be cancelled for some other reason.
+> I see no room for wiggling here.
+
+"The attempt" is not a description of return value. Sorry for the confusion.
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200823/c1fad049/attachment.htm>
+
+From dl at cs.oswego.edu  Sun Aug 23 08:40:49 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 23 Aug 2020 08:40:49 -0400
+Subject: [concurrency-interest] CompletableFuture#postComplete() can be
+ invoked concurrently?
+In-Reply-To: <CANkgWKgUoGKBvoygWCadkysEAN_56dWn5R_LeiFVxEqF=xW4bg@mail.gmail.com>
+References: <2af9b7e.24c7.17416be6aa4.Coremail.allmaymight@163.com>
+ <CA+kOe08J5eEFx9Kgv83yfroSeR5zZ7y9N6xZcccptOMT2JyZZg@mail.gmail.com>
+ <4c19c04.3134.174196945ea.Coremail.allmaymight@163.com>
+ <CANkgWKh5DJ7q6SHN6ke6EwcxoaMqeKutwARCD6omU8wq7f4kJA@mail.gmail.com>
+ <102e209c.3582.1741a17d1eb.Coremail.allmaymight@163.com>
+ <CA+kOe0_3sWwHZs=2PV92mOK1=hKgpoOYL1KQ-v8sR-apv=3qDA@mail.gmail.com>
+ <CANkgWKgUoGKBvoygWCadkysEAN_56dWn5R_LeiFVxEqF=xW4bg@mail.gmail.com>
+Message-ID: <18687d48-d0d8-c8e4-e59d-648fef347abc@cs.oswego.edu>
+
+Thanks to Alex and Martin for pointing out that this case cannot arise. 
+It would be great if we could have full mechanical proofs of such 
+things. People out there occasionally work on these for j.u.c 
+components, but they always lag development by a long time. In the mean 
+time, we should improve internal algorithm documentation.
+
+On 8/23/20 3:09 AM, Alex Otenko via Concurrency-interest wrote:
+> Besides, first need to show reachability of that state.
+>
+> So you have src.result set. Concurrent invocations of 
+> d.completeThrowable vs d.completeValue are possible only if two 
+> threads can see different src.result or different src.result.ex.
+>
+> I don't see a path to reach this necessary condition.
+>
+> Alex
+>
+> On Sun, 23 Aug 2020, 08:03 Martin Buchholz, <martinrb at google.com 
+> <mailto:martinrb at google.com>> wrote:
+>
+>          * Method postComplete is called upon completion unless the target
+>          * is guaranteed not to be observable (i.e., not yet returned or
+>          * linked). Multiple threads can call postComplete, which
+>
+>     On Sat, Aug 22, 2020 at 11:53 PM Liu <allmaymight at 163.com
+>     <mailto:allmaymight at 163.com>> wrote:
+>     >
+>     > In my first post, There is the special thread execution order.
+>     >
+>     > high level outcome is:
+>     > two thread will invoke CompletableFuture#postComplete()
+>     > on same object concurrently.
+>     >
+>     > expected outcome:
+>     > only one thread can invoke CompletableFuture#postComplete()
+>     > on a object.
+>     >
+>     > like I said, in CompletableFuture.UniApply#tryFire(),
+>     > d.completeThrowable(x, r); and dep = null;
+>     > are not a atomic operation. The gap between two codes
+>     > may cause high level outcome.
+>     >
+>     > PS:when dep == null, it means current Completion Object
+>     > has been done.
+>     >
+>     > PPS: CompletableFuture#postComplete() seems not design to be
+>     > invoked on same object.
+>     >
+>     >
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200823/10e3d669/attachment-0001.htm>
+
+From sergi.vladykin at gmail.com  Sun Aug 23 09:30:05 2020
+From: sergi.vladykin at gmail.com (Sergi Vladykin)
+Date: Sun, 23 Aug 2020 16:30:05 +0300
+Subject: [concurrency-interest] CompletableFuture.cancel vs
+ Future.cancel bug?
+In-Reply-To: <ae322168-5b47-92c7-2d51-e8735a661a45@cs.oswego.edu>
+References: <CA+eZwrE8hACJmh3y3NDc_+Gyw7KOEmb7E0gzFTAGWLWzJnbzEg@mail.gmail.com>
+ <CA+eZwrHceG0eM6wKbKV6W0v6kOyJ57qKVXmL4z6FRWE_0BspgA@mail.gmail.com>
+ <CA+kOe0_w1AFsBNO+DourmDgpdj+t1LK3DUih5JzL2Yk2w2ndgA@mail.gmail.com>
+ <CA+eZwrGh+zzWcY3Cg-OpFzjOCko3_ebvryjPX58aqgYMCa6JYw@mail.gmail.com>
+ <ae322168-5b47-92c7-2d51-e8735a661a45@cs.oswego.edu>
+Message-ID: <CA+eZwrEae2ye4Wnwgt2gaZPVKEdLoyoO0av38DDDr7BAodUnYw@mail.gmail.com>
+
+Doug,
+
+Thanks for the clarification!
+
+Yes, my interpretation was exactly "successful attempt" == "return true",
+"failed attempt" == "return false". Would be nice to have this spec
+improved.
+
+Also, could you please clarify why the decision was made not to have
+CAS-like semantics for CompletableFuture.cancel() while it was clearly
+possible? Maybe there are some hidden benefits I don't see?
+
+
+
+On Sun, Aug 23, 2020 at 3:34 PM Doug Lea via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> I agree that the Future.cancel javadoc should be improved to better
+> distinguish the return value spec from the method description. It was not
+> the intent to require the return value to be a CAS-like indication of
+> whether the current invocation was responsible for cancellation. It is nice
+> when it can do so (and some implementations do), but the intention for this
+> high-level interface spec was to allow a wide range of implementations,.
+> Perhaps it would have been better to define cancel as void, requiring a
+> call to isCancelled to check. In other words...
+> On 8/20/20 3:06 PM, Sergi Vladykin via Concurrency-interest wrote:
+>
+>
+> Here is the part with "typically":
+>
+>      * @return {@code false} if the task could not be cancelled,
+>      * typically because it has already completed normally;
+>      * {@code true} otherwise
+>
+> I read it as "usually it is impossible to cancel the task because it has
+> already been completed normally, but there are other reasons: for example
+> it has already been completed exceptionally or cancelled".
+>
+> The case left out here is "already cancelled", which can go either way.
+>
+>
+> And I've already cited the beginning of that javadoc which explicitly
+> states that the attempt WILL fail if the task has been cancelled:
+>
+>      * Attempts to cancel execution of this task.  This attempt will
+>      * fail if the task has already completed, has already been cancelled,
+>      * or could not be cancelled for some other reason.
+>
+> I see no room for wiggling here.
+>
+> "The attempt" is not a description of return value. Sorry for the
+> confusion.
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200823/78a7673b/attachment.htm>
+
+From dl at cs.oswego.edu  Sun Aug 23 16:15:42 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 23 Aug 2020 16:15:42 -0400
+Subject: [concurrency-interest] CompletableFuture.cancel vs
+ Future.cancel bug?
+In-Reply-To: <CA+eZwrEae2ye4Wnwgt2gaZPVKEdLoyoO0av38DDDr7BAodUnYw@mail.gmail.com>
+References: <CA+eZwrE8hACJmh3y3NDc_+Gyw7KOEmb7E0gzFTAGWLWzJnbzEg@mail.gmail.com>
+ <CA+eZwrHceG0eM6wKbKV6W0v6kOyJ57qKVXmL4z6FRWE_0BspgA@mail.gmail.com>
+ <CA+kOe0_w1AFsBNO+DourmDgpdj+t1LK3DUih5JzL2Yk2w2ndgA@mail.gmail.com>
+ <CA+eZwrGh+zzWcY3Cg-OpFzjOCko3_ebvryjPX58aqgYMCa6JYw@mail.gmail.com>
+ <ae322168-5b47-92c7-2d51-e8735a661a45@cs.oswego.edu>
+ <CA+eZwrEae2ye4Wnwgt2gaZPVKEdLoyoO0av38DDDr7BAodUnYw@mail.gmail.com>
+Message-ID: <59d70082-fe20-45eb-0759-a48a98d932b5@cs.oswego.edu>
+
+On 8/23/20 9:30 AM, Sergi Vladykin wrote:
+>
+>
+> Yes, my interpretation was exactly "successful attempt" == "return 
+> true", "failed attempt" == "return false". Would be nice to have this 
+> spec improved.
+See draft update below, that also tries to clarify mayInterruptIfRunning.
+>
+> Also, could you please clarify why the decision was made not to have 
+> CAS-like semantics for CompletableFuture.cancel() while it was clearly 
+> possible? Maybe there are some hidden benefits I don't see?
+>
+I don't have a clear recollection (it was during JDK5), but it may have 
+been a reflection of issues with (concurrent) Collection remove() 
+methods requiring that the return value indicate that the current call 
+was responsible for removal, which is sometimes arbitrary and causes 
+extra expense and complexity. (We considered trying to weaken this, but 
+didn't.)
+
+... possible javadoc update:
+
+     /**
+      * Attempts to cancel execution of this task.  This method has no
+      * effect if the task is already completed or cancelled, and may
+      * fail if the task could not be cancelled for any reason. If
+      * successful, and this task has not started when {@code cancel}
+      * is called, this task should never run.  If the task has already
+      * started, then the {@code mayInterruptIfRunning} parameter
+      * determines whether the thread executing this task (if it is
+      * known by the implementation) should be interrupted in an
+      * attempt to stop the task.
+      *
+      * <p>After this method returns, subsequent calls to {@link 
+#isDone} will
+      * always return {@code true}.  Subsequent calls to {@link 
+#isCancelled}
+      * will always return {@code true} if this method returned {@code 
+true}.
+      *
+      * @param mayInterruptIfRunning {@code true} if the thread
+      * executing this task should be interrupted (if the thread is
+      * known to the implementation); otherwise, in-progress tasks are
+      * allowed to complete
+      * @return {@code false} if the task could not be cancelled,
+      * typically because it has already completed; {@code true}
+      * otherwise. If two or more threads cause a task to be cancelled,
+      * then at least one of them returns {@code true}.
+      */
+     boolean cancel(boolean mayInterruptIfRunning);
+
+
+From oleksandr.otenko at gmail.com  Mon Aug 24 05:01:48 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 24 Aug 2020 10:01:48 +0100
+Subject: [concurrency-interest] CompletableFuture#postComplete() can be
+ invoked concurrently?
+In-Reply-To: <18687d48-d0d8-c8e4-e59d-648fef347abc@cs.oswego.edu>
+References: <2af9b7e.24c7.17416be6aa4.Coremail.allmaymight@163.com>
+ <CA+kOe08J5eEFx9Kgv83yfroSeR5zZ7y9N6xZcccptOMT2JyZZg@mail.gmail.com>
+ <4c19c04.3134.174196945ea.Coremail.allmaymight@163.com>
+ <CANkgWKh5DJ7q6SHN6ke6EwcxoaMqeKutwARCD6omU8wq7f4kJA@mail.gmail.com>
+ <102e209c.3582.1741a17d1eb.Coremail.allmaymight@163.com>
+ <CA+kOe0_3sWwHZs=2PV92mOK1=hKgpoOYL1KQ-v8sR-apv=3qDA@mail.gmail.com>
+ <CANkgWKgUoGKBvoygWCadkysEAN_56dWn5R_LeiFVxEqF=xW4bg@mail.gmail.com>
+ <18687d48-d0d8-c8e4-e59d-648fef347abc@cs.oswego.edu>
+Message-ID: <CANkgWKiAo--fXxEqbUNEcrtGvam8Ksdb7Ms62fQ=84JrUWEqHw@mail.gmail.com>
+
+I think target audience is important. This decides which things need to be
+said explicitly, and which can be left to be inferred, supposing the target
+audience can formulate the right questions.
+
+Say, in this case knowing what a sufficient condition is for this to be
+impossible, makes the proof very mechanical. But knowing what questions to
+ask seems to be a prerequisite. (And actually the safety guarantees that I
+checked the code for, turned out to be documented)
+
+Alex
+
+On Sun, 23 Aug 2020, 13:41 Doug Lea via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Thanks to Alex and Martin for pointing out that this case cannot arise. It
+> would be great if we could have full mechanical proofs of such things.
+> People out there occasionally work on these for j.u.c components, but they
+> always lag development by a long time. In the mean time, we should improve
+> internal algorithm documentation.
+> On 8/23/20 3:09 AM, Alex Otenko via Concurrency-interest wrote:
+>
+> Besides, first need to show reachability of that state.
+>
+> So you have src.result set. Concurrent invocations of d.completeThrowable
+> vs d.completeValue are possible only if two threads can see different
+> src.result or different src.result.ex.
+>
+> I don't see a path to reach this necessary condition.
+>
+> Alex
+>
+> On Sun, 23 Aug 2020, 08:03 Martin Buchholz, <martinrb at google.com> wrote:
+>
+>>      * Method postComplete is called upon completion unless the target
+>>      * is guaranteed not to be observable (i.e., not yet returned or
+>>      * linked). Multiple threads can call postComplete, which
+>>
+>> On Sat, Aug 22, 2020 at 11:53 PM Liu <allmaymight at 163.com> wrote:
+>> >
+>> > In my first post, There is the special thread execution order.
+>> >
+>> > high level outcome is:
+>> > two thread will invoke CompletableFuture#postComplete()
+>> > on same object concurrently.
+>> >
+>> > expected outcome:
+>> > only one thread can invoke CompletableFuture#postComplete()
+>> > on a object.
+>> >
+>> > like I said, in CompletableFuture.UniApply#tryFire(),
+>> > d.completeThrowable(x, r); and dep = null;
+>> > are not a atomic operation. The gap between two codes
+>> > may cause high level outcome.
+>> >
+>> > PS:when dep == null, it means current Completion Object
+>> > has been done.
+>> >
+>> > PPS: CompletableFuture#postComplete() seems not design to be
+>> > invoked on same object.
+>> >
+>> >
+>>
+>
+> _______________________________________________
+> Concurrency-interest mailing listConcurrency-interest at cs.oswego.eduhttp://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200824/7e28ef53/attachment.htm>
+
+From sergi.vladykin at gmail.com  Mon Aug 24 09:45:21 2020
+From: sergi.vladykin at gmail.com (Sergi Vladykin)
+Date: Mon, 24 Aug 2020 16:45:21 +0300
+Subject: [concurrency-interest] CompletableFuture.cancel vs
+ Future.cancel bug?
+In-Reply-To: <59d70082-fe20-45eb-0759-a48a98d932b5@cs.oswego.edu>
+References: <CA+eZwrE8hACJmh3y3NDc_+Gyw7KOEmb7E0gzFTAGWLWzJnbzEg@mail.gmail.com>
+ <CA+eZwrHceG0eM6wKbKV6W0v6kOyJ57qKVXmL4z6FRWE_0BspgA@mail.gmail.com>
+ <CA+kOe0_w1AFsBNO+DourmDgpdj+t1LK3DUih5JzL2Yk2w2ndgA@mail.gmail.com>
+ <CA+eZwrGh+zzWcY3Cg-OpFzjOCko3_ebvryjPX58aqgYMCa6JYw@mail.gmail.com>
+ <ae322168-5b47-92c7-2d51-e8735a661a45@cs.oswego.edu>
+ <CA+eZwrEae2ye4Wnwgt2gaZPVKEdLoyoO0av38DDDr7BAodUnYw@mail.gmail.com>
+ <59d70082-fe20-45eb-0759-a48a98d932b5@cs.oswego.edu>
+Message-ID: <CA+eZwrE1S4X+Bj2s8Mgt8q6zztcOy1Fp-VJCUmE-AY+S4g_Vfw@mail.gmail.com>
+
+Got it, thanks!
+
+Regarding the javadoc, I would avoid the words "success" and "failure" or
+we need to clarify what exactly they mean in this context.
+
+Maybe something like this would be more clear:
+
+     /**
+      * Attempts to cancel execution of this task. This method has no
+      * effect if the task is already completed or cancelled or
+      * if the task could not be cancelled for any other reason. If
+      * this task has been cancelled before it has started, it should never
+run.
+
+Also, the description of the return value makes me think that it is allowed
+to return true more than once only if multiple threads have executed
+cancel() at the same time,
+but a single thread can not see this effect if it calls cancel() multiple
+times sequentially. In other words the following test must pass:
+
+var future = new CompletableFuture<>();
+assertTrue(future.cancel(true)); // Causes cancellation.
+assertFalse(future.cancel(true)); // Does not cause cancellation because
+the future has already been cancelled by the previous call.
+
+But obviously this does not hold for CompletableFuture. I would avoid
+mentioning that there must be more than one thread at play.
+
+I would rather rewrite this return value description completely, because
+the part "return {@code false} if the task could not be cancelled" sounds
+very misleading.
+To me it still means that if a future has already been cancelled then it
+can not be cancelled twice and thus the second cancel() call must return
+false.
+
+>From what I see there are two main types of cancel() implementation: one is
+CAS-like, another returns true if already cancelled.
+The most clear and comprehensive description I could come up with:
+
+      * @return {@code true} if the cancellation is successful.
+      * The exact semantics of "successful cancellation" is implementation
+specific:
+      * it may mean that this exact call caused the future to become {@link
+#isCancelled cancelled}
+      * or that the future is {@link #isCancelled cancelled} now regardless
+of what caused it,
+      * other implementations are permitted as well.
+      */
+
+
+
+
+On Sun, Aug 23, 2020 at 11:15 PM Doug Lea <dl at cs.oswego.edu> wrote:
+
+> On 8/23/20 9:30 AM, Sergi Vladykin wrote:
+> >
+> >
+> > Yes, my interpretation was exactly "successful attempt" == "return
+> > true", "failed attempt" == "return false". Would be nice to have this
+> > spec improved.
+> See draft update below, that also tries to clarify mayInterruptIfRunning.
+> >
+> > Also, could you please clarify why the decision was made not to have
+> > CAS-like semantics for CompletableFuture.cancel() while it was clearly
+> > possible? Maybe there are some hidden benefits I don't see?
+> >
+> I don't have a clear recollection (it was during JDK5), but it may have
+> been a reflection of issues with (concurrent) Collection remove()
+> methods requiring that the return value indicate that the current call
+> was responsible for removal, which is sometimes arbitrary and causes
+> extra expense and complexity. (We considered trying to weaken this, but
+> didn't.)
+>
+> ... possible javadoc update:
+>
+>      /**
+>       * Attempts to cancel execution of this task.  This method has no
+>       * effect if the task is already completed or cancelled, and may
+>       * fail if the task could not be cancelled for any reason. If
+>       * successful, and this task has not started when {@code cancel}
+>       * is called, this task should never run.  If the task has already
+>       * started, then the {@code mayInterruptIfRunning} parameter
+>       * determines whether the thread executing this task (if it is
+>       * known by the implementation) should be interrupted in an
+>       * attempt to stop the task.
+>       *
+>       * <p>After this method returns, subsequent calls to {@link
+> #isDone} will
+>       * always return {@code true}.  Subsequent calls to {@link
+> #isCancelled}
+>       * will always return {@code true} if this method returned {@code
+> true}.
+>       *
+>       * @param mayInterruptIfRunning {@code true} if the thread
+>       * executing this task should be interrupted (if the thread is
+>       * known to the implementation); otherwise, in-progress tasks are
+>       * allowed to complete
+>       * @return {@code false} if the task could not be cancelled,
+>       * typically because it has already completed; {@code true}
+>       * otherwise. If two or more threads cause a task to be cancelled,
+>       * then at least one of them returns {@code true}.
+>       */
+>      boolean cancel(boolean mayInterruptIfRunning);
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200824/b3d7972f/attachment-0001.htm>
+
+From cpovirk at google.com  Tue Aug 25 11:42:33 2020
+From: cpovirk at google.com (Chris Povirk)
+Date: Tue, 25 Aug 2020 11:42:33 -0400
+Subject: [concurrency-interest] CompletableFuture.cancel vs
+ Future.cancel bug?
+In-Reply-To: <CA+eZwrE1S4X+Bj2s8Mgt8q6zztcOy1Fp-VJCUmE-AY+S4g_Vfw@mail.gmail.com>
+References: <CA+eZwrE8hACJmh3y3NDc_+Gyw7KOEmb7E0gzFTAGWLWzJnbzEg@mail.gmail.com>
+ <CA+eZwrHceG0eM6wKbKV6W0v6kOyJ57qKVXmL4z6FRWE_0BspgA@mail.gmail.com>
+ <CA+kOe0_w1AFsBNO+DourmDgpdj+t1LK3DUih5JzL2Yk2w2ndgA@mail.gmail.com>
+ <CA+eZwrGh+zzWcY3Cg-OpFzjOCko3_ebvryjPX58aqgYMCa6JYw@mail.gmail.com>
+ <ae322168-5b47-92c7-2d51-e8735a661a45@cs.oswego.edu>
+ <CA+eZwrEae2ye4Wnwgt2gaZPVKEdLoyoO0av38DDDr7BAodUnYw@mail.gmail.com>
+ <59d70082-fe20-45eb-0759-a48a98d932b5@cs.oswego.edu>
+ <CA+eZwrE1S4X+Bj2s8Mgt8q6zztcOy1Fp-VJCUmE-AY+S4g_Vfw@mail.gmail.com>
+Message-ID: <CAEvq2npTcGAL8+G4BBycm_ci8XppUbn_QvwHA1yTROnYePXGeg@mail.gmail.com>
+
+Anecdotally, we do have at least one place in Guava in which we rely on *our
+own Future implementations* to return true from cancel(...) only if that
+particular call was responsible for the cancellation. Here's the code,
+which could otherwise NPE
+<https://github.com/google/guava/blob/9b972a21f793fcbb1ac2d41d6c6d6c97d54adb25/guava/src/com/google/common/util/concurrent/Futures.java#L918>
+(by
+dereferencing state/localState, which would be nulled out by the first
+cancellation). Glancing at the first few pages of hits in the wider Google
+codebase, I can see at least one more bit of code that would throw an
+exception, at least one that would lose track of the number of outstanding
+tasks, and a few that would track metrics incorrectly.
+
+That said:
+
+   - As I suggested above, we are very likely to encounter only our own
+   Future implementations. (Sometimes this is outright guaranteed, as in the
+   example I linked.)
+   - If we encounter other Future implementations, the problem already
+   exists. Changing the doc to better explain the state of the world sounds
+   like a good thing.
+   - We might be able to work around the different return value (though
+   perhaps sometimes at a noticeable cost in complexity or performance).
+
+So practically speaking, we are not very likely to be bitten by the current
+behavior. And I agree that a change to that behavior is riskier than doing
+nothing. So I like the idea of just better documenting how things stand
+today.
+
+If anyone out there is implementing Future or a similar API from scratch,
+though, I wanted to at least encourage you to implement cancel(...)'s
+return value according to the current docs: The extra information can be
+useful (and it sometimes turns out to be easy enough to provide, as in
+CompleteableFuture, which actually has to do extra work to return true in
+the "already cancelled" case).
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200825/79cf7ba0/attachment.htm>
+
+From sergi.vladykin at gmail.com  Wed Aug 26 08:34:56 2020
+From: sergi.vladykin at gmail.com (Sergi Vladykin)
+Date: Wed, 26 Aug 2020 15:34:56 +0300
+Subject: [concurrency-interest] CompletableFuture.cancel vs
+ Future.cancel bug?
+In-Reply-To: <CAEvq2npTcGAL8+G4BBycm_ci8XppUbn_QvwHA1yTROnYePXGeg@mail.gmail.com>
+References: <CA+eZwrE8hACJmh3y3NDc_+Gyw7KOEmb7E0gzFTAGWLWzJnbzEg@mail.gmail.com>
+ <CA+eZwrHceG0eM6wKbKV6W0v6kOyJ57qKVXmL4z6FRWE_0BspgA@mail.gmail.com>
+ <CA+kOe0_w1AFsBNO+DourmDgpdj+t1LK3DUih5JzL2Yk2w2ndgA@mail.gmail.com>
+ <CA+eZwrGh+zzWcY3Cg-OpFzjOCko3_ebvryjPX58aqgYMCa6JYw@mail.gmail.com>
+ <ae322168-5b47-92c7-2d51-e8735a661a45@cs.oswego.edu>
+ <CA+eZwrEae2ye4Wnwgt2gaZPVKEdLoyoO0av38DDDr7BAodUnYw@mail.gmail.com>
+ <59d70082-fe20-45eb-0759-a48a98d932b5@cs.oswego.edu>
+ <CA+eZwrE1S4X+Bj2s8Mgt8q6zztcOy1Fp-VJCUmE-AY+S4g_Vfw@mail.gmail.com>
+ <CAEvq2npTcGAL8+G4BBycm_ci8XppUbn_QvwHA1yTROnYePXGeg@mail.gmail.com>
+Message-ID: <CA+eZwrHfKYEpAfKne95+xqtSsXq77j-fdcc167uYHN7o28U_vA@mail.gmail.com>
+
+> If anyone out there is implementing Future or a similar API from scratch,
+> though, I wanted to at least encourage you to implement cancel(...)'s
+> return value according to the current docs
+>
+
+Looks like Google guys see this spec the same way as I do.
+
+Probably for Guava it would make sense to have an utility method in Futures
+like :
+
+public static boolean cancel(Future<?> f) {
+     if (f instanceof CompletableFuture)
+           return !f.isDone() &&
+((CompletableFuture)f).completeExceptionally(new CancellationException());
+     else
+           return f.cancel(true);
+}
+
+Though, I don't see any clean workarounds for ForkJoinTask except dirty
+magic with reflection/unsafe or by abusing compareAndSetForkJoinTaskTag()
+method.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200826/74fc41d4/attachment.htm>
+

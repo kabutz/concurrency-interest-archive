@@ -1,0 +1,1433 @@
+From mr.chrisvest at gmail.com  Mon Jan  2 15:27:57 2017
+From: mr.chrisvest at gmail.com (Chris Vest)
+Date: Mon, 2 Jan 2017 21:27:57 +0100
+Subject: [concurrency-interest] Dealing with ABA
+Message-ID: <2F1F79EB-615D-42E9-8CC8-AEB45EE9D99F@gmail.com>
+
+... when just allocating objects and letting the GC take care of it is not an option.
+
+I have a concurrent data structure that is implemented in terms of volatile reads, getAndSet and compareAndSet. Currently I'm allocating objects to avoid any ABA problems, but due to the scale of the data I would like to work with, I'm working on moving it off-heap: tighter layout & packing, and not having object headers, means that I can cut the memory usage in half this way. However, this also means that some of the fields - pointers to other parts of memory - become susceptible to the ABA problem.
+
+What options do I have for coping with that? I'm still writing Java (or JVMese?) so if C++ have something clever built in, then that won't be immediately applicable :)
+
+Thanks,
+Chris
+
+From dl at cs.oswego.edu  Tue Jan  3 07:36:14 2017
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 3 Jan 2017 07:36:14 -0500
+Subject: [concurrency-interest] Dealing with ABA
+In-Reply-To: <2F1F79EB-615D-42E9-8CC8-AEB45EE9D99F@gmail.com>
+References: <2F1F79EB-615D-42E9-8CC8-AEB45EE9D99F@gmail.com>
+Message-ID: <bd27ab5a-a320-e965-fa79-03d7ed22b26d@cs.oswego.edu>
+
+On 01/02/2017 03:27 PM, Chris Vest wrote:
+
+> I have a concurrent data structure that is implemented in terms of
+> volatile reads, getAndSet and compareAndSet. Currently I'm allocating
+> objects to avoid any ABA problems, but due to the scale of the data I
+> would like to work with, I'm working on moving it off-heap: tighter
+> layout & packing, and not having object headers, means that I can cut
+> the memory usage in half this way. However, this also means that some
+> of the fields - pointers to other parts of memory - become
+> susceptible to the ABA problem.
+>
+> What options do I have for coping with that? I'm still writing Java
+> (or JVMese?) so if C++ have something clever built in, then that
+> won't be immediately applicable :)
+>
+
+There's no magic solution. To use CAS, you need enough version bits
+to cover the maximum gap in overwritten versions that a caller
+can see. Which is equivalent to determining the maximum gap before
+a GC would be sure to collect if it were a regular reference.
+When you can bound this below an approximation of infinity
+(as in 64bit refs), you can use fewer version bits, but they
+still need to be atomically CAS-able, so even then you generally
+end up using 64bits total (and ignore version bits on deref).
+
+Without all this, the best you can do is to use locks,
+other lock-like constructions, or techniques like hazard
+pointers that require per-thread and per-use bookkeeping.
+
+-Doug
+
+From ati at activeviam.com  Tue Jan  3 11:01:19 2017
+From: ati at activeviam.com (Antoine Tissier)
+Date: Tue, 3 Jan 2017 17:01:19 +0100
+Subject: [concurrency-interest] Suspecting a problem in recent jdk-9
+	builds
+In-Reply-To: <CAA--OignGKhhkp71WV7=jxvk+t+p88g4gXUvr3DhStbX6f4_1g@mail.gmail.com>
+References: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+ <CA+kOe09RZXpWdO-cBXz4ybrSAhn5axff+zJ1zG1jo9j0eiyr6Q@mail.gmail.com>
+ <CAA--OignGKhhkp71WV7=jxvk+t+p88g4gXUvr3DhStbX6f4_1g@mail.gmail.com>
+Message-ID: <CAA--Oig4TcN7bh4ZKh5eXsiVzikEnqQqfodLVVCnA6upuv9zTw@mail.gmail.com>
+
+Further to my previous message I am trying to checkout the revisions
+of the jdk9
+project <http://hg.openjdk.java.net/jdk9/jdk9/> corresponding to the
+addition of the VarHandles and its parent revision, and then build the
+respective JVMs. This is the first time I am trying to do this and I am not
+sure of the right way to go.
+
+So far I have identified the sha-1 of the respective changesets in the jdk
+child project (955eab36f5da
+<http://hg.openjdk.java.net/jdk9/jdk9/jdk/rev/955eab36f5da> and f3af17da360b
+<http://hg.openjdk.java.net/jdk9/jdk9/jdk/rev/f3af17da360b>), but I do not
+know how to relate them to the changesets of the root jdk9 project (which I
+need in order to checkout the right revisions of the whole project and
+build the corresponding JVMs). What should I do to find the right
+changesets? Do I need the forest extension in Mercurial in order to apply
+them properly?
+
+Many thanks,
+Antoine
+
+On Fri, Dec 30, 2016 at 6:03 PM, Antoine Tissier <ati at activeviam.com> wrote:
+
+> Thank you for all your answers.
+>
+> We tried to run jcstress and all the tests passed without any error.
+>
+> Our application uses several TBs of RAM, so we need to use G1GC. The
+> problem still occurs when adding -XX:-UseBiasedLocking to the VM args. We
+> are going to try building the application with the commit corresponding to
+> the addition of the VarHandles and the one just before to see if we can
+> narrow the problem down to this change.
+>
+> Note that we are a partner of Oracle and we are running our application on
+> the Oracle network, so it is accessible by the JVM engineers. Let us know
+> if you need to arrange access to the application.
+>
+> Best,
+> Antoine
+>
+> On Wed, Dec 28, 2016 at 5:56 PM, Martin Buchholz <martinrb at google.com>
+> wrote:
+>
+>> Experience suggests that such problems are *usually* in the application
+>> code, but of course there are undiscovered bugs in java.util.concurrent.
+>>
+>> Since only you can reproduce the problem, only you can narrow down the
+>> possible root causes.  You could build your own openjdk9, bisect to the
+>> exact commit that is causing problems, but it would be a lot of work, and
+>> it might in the end be a change to hotspot gc, with root cause still
+>> unknown...
+>>
+>> On Wed, Dec 28, 2016 at 1:30 AM, Antoine Tissier <ati at activeviam.com>
+>> wrote:
+>>
+>>> Hi,
+>>>
+>>> We have been running benchmarks for our in-memory analytics software
+>>> ActivePivot on a M6.32 machine (Solaris Sparc, 8 TB RAM, 2304 logical cores
+>>> (288 physical cores)).
+>>> Our benchmarks involve high parallelism along with many queries divided
+>>> in a high number of tasks (CountedCompleters) in the ForkJoinPool. With
+>>> build 145 of jdk-9, some tasks are not executed, causing larger completion
+>>> problems. However, with the earlier build 111, the problem does not occur.
+>>>
+>>> On a smaller Linux machine (Linux amd 64, 64 logical cores (32 physical
+>>> cores), 512 GB RAM) but with a similar setup, the problem was not
+>>> reproduced.
+>>>
+>>> The problem seems to arise when a large number of completers (>20 000)
+>>> are involved: forking tasks works well but when submitting tasks to a new
+>>> pool, it seems that their compute method is sometimes not called.
+>>> We indeed log every call to ForkJoinPool.submit, as well as everytime a
+>>> completer enters its compute method, and clearly see that once in a while,
+>>> the task is never computed after having been submitted. We let the system
+>>> run for an additional hour, and there was no more progress even though the
+>>> system was idle. Thread dumps did not show any suspect activity (all worker
+>>> threads were idle).
+>>>
+>>> We tried to reproduce the problem with a similar but more simple test,
+>>> but it was not successful.
+>>>
+>>> Are you aware of any concurrency/task completion problems in the more
+>>> recent builds of jdk-9 ?
+>>> Are there any additional tests that we could run in order to diagnose
+>>> this issue ?
+>>>
+>>> Best regards,
+>>> Antoine
+>>>
+>>>
+>>>
+>>> --
+>>> [image: ActiveViam]
+>>>
+>>> 46 rue de l'Arbre Sec, 75001 Paris
+>>> France
+>>> [image: Twitter] <https://twitter.com/active_viam> [image: Blog]
+>>> <http://activeviam.com/blog/> [image: Linkedin]
+>>> <https://www.linkedin.com/company/85029> [image: Youtube]
+>>> <https://www.youtube.com/channel/UCGjYnbjlPamN0RvSm3eGqCw> Antoine
+>>> Tissier
+>>> *Junior Software Engineer*
+>>>
+>>>
+>>> [image: Mobile]+33(0) 6.26.33.35.62 <+33%206%2026%2033%2035%2062>
+>>> [image: Skype]antoine_tissier
+>>> [image: Website]www.activeviam.com <https://activeviam.com/>
+>>>
+>>>
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>>>
+>>
+>
+>
+> --
+> [image: ActiveViam]
+>
+> 46 rue de l'Arbre Sec, 75001 Paris
+> France
+> [image: Twitter] <https://twitter.com/active_viam> [image: Blog]
+> <http://activeviam.com/blog/> [image: Linkedin]
+> <https://www.linkedin.com/company/85029> [image: Youtube]
+> <https://www.youtube.com/channel/UCGjYnbjlPamN0RvSm3eGqCw> Antoine Tissier
+> *Junior Software Engineer*
+>
+>
+> [image: Mobile]+33(0) 6.26.33.35.62 <+33%206%2026%2033%2035%2062>
+> [image: Skype]antoine_tissier
+> [image: Website]www.activeviam.com <https://activeviam.com/>
+>
+>
+
+
+-- 
+[image: ActiveViam]
+
+46 rue de l'Arbre Sec, 75001 Paris
+France
+[image: Twitter] <https://twitter.com/active_viam> [image: Blog]
+<http://activeviam.com/blog/> [image: Linkedin]
+<https://www.linkedin.com/company/85029> [image: Youtube]
+<https://www.youtube.com/channel/UCGjYnbjlPamN0RvSm3eGqCw> Antoine Tissier
+*Junior Software Engineer*
+
+
+[image: Mobile]+33(0) 6.26.33.35.62
+[image: Skype]antoine_tissier
+[image: Website]www.activeviam.com <https://activeviam.com/>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20170103/f14d362c/attachment-0001.html>
+
+From aph at redhat.com  Tue Jan  3 11:17:25 2017
+From: aph at redhat.com (Andrew Haley)
+Date: Tue, 3 Jan 2017 16:17:25 +0000
+Subject: [concurrency-interest] Suspecting a problem in recent jdk-9
+ builds
+In-Reply-To: <CAA--Oig4TcN7bh4ZKh5eXsiVzikEnqQqfodLVVCnA6upuv9zTw@mail.gmail.com>
+References: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+ <CA+kOe09RZXpWdO-cBXz4ybrSAhn5axff+zJ1zG1jo9j0eiyr6Q@mail.gmail.com>
+ <CAA--OignGKhhkp71WV7=jxvk+t+p88g4gXUvr3DhStbX6f4_1g@mail.gmail.com>
+ <CAA--Oig4TcN7bh4ZKh5eXsiVzikEnqQqfodLVVCnA6upuv9zTw@mail.gmail.com>
+Message-ID: <a969c905-7234-044f-1d5d-941aba6bc82a@redhat.com>
+
+On 03/01/17 16:01, Antoine Tissier wrote:
+> 
+> So far I have identified the sha-1 of the respective changesets in
+> the jdk child project (955eab36f5da
+> <http://hg.openjdk.java.net/jdk9/jdk9/jdk/rev/955eab36f5da> and
+> f3af17da360b
+> <http://hg.openjdk.java.net/jdk9/jdk9/jdk/rev/f3af17da360b>), but I
+> do not know how to relate them to the changesets of the root jdk9
+> project (which I need in order to checkout the right revisions of
+> the whole project and build the corresponding JVMs). What should I
+> do to find the right changesets? Do I need the forest extension in
+> Mercurial in order to apply them properly?
+
+Unfortunately they are not synchronized.  If you're going to bisect
+your checkouts then you will probably need to do it based on a single
+project (such as jdk) or check out all of the subtrees based on a
+particular commit time, e.g. midnight on a particular day.
+
+Andrew.
+
+
+From dl at cs.oswego.edu  Tue Jan  3 11:40:38 2017
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 3 Jan 2017 11:40:38 -0500
+Subject: [concurrency-interest] Suspecting a problem in recent jdk-9
+ builds
+In-Reply-To: <CAA--Oig4TcN7bh4ZKh5eXsiVzikEnqQqfodLVVCnA6upuv9zTw@mail.gmail.com>
+References: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+ <CA+kOe09RZXpWdO-cBXz4ybrSAhn5axff+zJ1zG1jo9j0eiyr6Q@mail.gmail.com>
+ <CAA--OignGKhhkp71WV7=jxvk+t+p88g4gXUvr3DhStbX6f4_1g@mail.gmail.com>
+ <CAA--Oig4TcN7bh4ZKh5eXsiVzikEnqQqfodLVVCnA6upuv9zTw@mail.gmail.com>
+Message-ID: <e1ccc14d-205d-d294-7a39-f15a9ede3523@cs.oswego.edu>
+
+On 01/03/2017 11:01 AM, Antoine Tissier wrote:
+> Further to my previous message I am trying to checkout the revisions of
+> the jdk9 project <http://hg.openjdk.java.net/jdk9/jdk9/> corresponding
+> to the addition of the VarHandles and its parent revision, and then
+> build the respective JVMs. This is the first time I am trying to do this
+> and I am not sure of the right way to go.
+
+I was about to suggest that you first try to isolate across
+weekly builds, but I no longer see a link to "previous" builds at
+   https://jdk9.java.net/download/
+If someone knows, please post.
+
+Also, if it comes to it, ask (off-list) for a VarHandle-less
+version of jsr166.jar that you could run.
+
+-Doug
+
+
+From gilles at landel.fr  Tue Jan  3 12:43:50 2017
+From: gilles at landel.fr (Gilles LANDEL)
+Date: Tue, 3 Jan 2017 18:43:50 +0100
+Subject: [concurrency-interest] Concurrency-interest Digest, Vol 144,
+	Issue 2
+In-Reply-To: <mailman.1.1483462801.5641.concurrency-interest@cs.oswego.edu>
+References: <mailman.1.1483462801.5641.concurrency-interest@cs.oswego.edu>
+Message-ID: <009701d265e8$f3bf1510$db3d3f30$@landel.fr>
+
+I'm not sure if it's the good way but you can change the build number in the URL:
+
+Ex:
+http://download.java.net/java/jdk9/changes/jdk-9+149.html
+http://download.java.net/java/jdk9/changes/jdk-9+148.html
+...
+http://download.java.net/java/jdk9/changes/jdk-9+139.html
+
+To download, after accepting the agreement:
+www.java.net/download/java/jdk9/archive/149/binaries/jdk-9-ea+149_linux-x86_bin.tar.gz
+www.java.net/download/java/jdk9/archive/148/binaries/jdk-9-ea+148_linux-x86_bin.tar.gz
+...
+http://www.java.net/download/java/jdk9/archive/139/binaries/jdk-9-ea+139_linux-x86_bin.tar.gz
+
+Gilles
+
+-----Message d'origine-----
+De : Concurrency-interest [mailto:concurrency-interest-bounces at cs.oswego.edu] De la part de concurrency-interest-request at cs.oswego.edu
+Envoyé : mardi 3 janvier 2017 18:00
+À : concurrency-interest at cs.oswego.edu
+Objet : Concurrency-interest Digest, Vol 144, Issue 2
+
+Send Concurrency-interest mailing list submissions to
+	concurrency-interest at cs.oswego.edu
+
+To subscribe or unsubscribe via the World Wide Web, visit
+	http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+or, via email, send a message with subject or body 'help' to
+	concurrency-interest-request at cs.oswego.edu
+
+You can reach the person managing the list at
+	concurrency-interest-owner at cs.oswego.edu
+
+When replying, please edit your Subject line so it is more specific than "Re: Contents of Concurrency-interest digest..."
+
+
+Today's Topics:
+
+   1. Re: Suspecting a problem in recent jdk-9 builds (Andrew Haley)
+   2. Re: Suspecting a problem in recent jdk-9 builds (Doug Lea)
+
+
+----------------------------------------------------------------------
+
+Message: 1
+Date: Tue, 3 Jan 2017 16:17:25 +0000
+From: Andrew Haley <aph at redhat.com>
+To: Antoine Tissier <ati at activeviam.com>,
+	concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] Suspecting a problem in recent
+	jdk-9 builds
+Message-ID: <a969c905-7234-044f-1d5d-941aba6bc82a at redhat.com>
+Content-Type: text/plain; charset=utf-8
+
+On 03/01/17 16:01, Antoine Tissier wrote:
+> 
+> So far I have identified the sha-1 of the respective changesets in the 
+> jdk child project (955eab36f5da 
+> <http://hg.openjdk.java.net/jdk9/jdk9/jdk/rev/955eab36f5da> and 
+> f3af17da360b 
+> <http://hg.openjdk.java.net/jdk9/jdk9/jdk/rev/f3af17da360b>), but I do 
+> not know how to relate them to the changesets of the root jdk9 project 
+> (which I need in order to checkout the right revisions of the whole 
+> project and build the corresponding JVMs). What should I do to find 
+> the right changesets? Do I need the forest extension in Mercurial in 
+> order to apply them properly?
+
+Unfortunately they are not synchronized.  If you're going to bisect your checkouts then you will probably need to do it based on a single project (such as jdk) or check out all of the subtrees based on a particular commit time, e.g. midnight on a particular day.
+
+Andrew.
+
+
+
+------------------------------
+
+Message: 2
+Date: Tue, 3 Jan 2017 11:40:38 -0500
+From: Doug Lea <dl at cs.oswego.edu>
+To: concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] Suspecting a problem in recent
+	jdk-9 builds
+Message-ID: <e1ccc14d-205d-d294-7a39-f15a9ede3523 at cs.oswego.edu>
+Content-Type: text/plain; charset=utf-8; format=flowed
+
+On 01/03/2017 11:01 AM, Antoine Tissier wrote:
+> Further to my previous message I am trying to checkout the revisions 
+> of the jdk9 project <http://hg.openjdk.java.net/jdk9/jdk9/> 
+> corresponding to the addition of the VarHandles and its parent 
+> revision, and then build the respective JVMs. This is the first time I 
+> am trying to do this and I am not sure of the right way to go.
+
+I was about to suggest that you first try to isolate across weekly builds, but I no longer see a link to "previous" builds at
+   https://jdk9.java.net/download/
+If someone knows, please post.
+
+Also, if it comes to it, ask (off-list) for a VarHandle-less version of jsr166.jar that you could run.
+
+-Doug
+
+
+
+------------------------------
+
+Subject: Digest Footer
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+------------------------------
+
+End of Concurrency-interest Digest, Vol 144, Issue 2
+****************************************************
+
+
+From paul.sandoz at oracle.com  Tue Jan  3 16:04:16 2017
+From: paul.sandoz at oracle.com (Paul Sandoz)
+Date: Tue, 3 Jan 2017 13:04:16 -0800
+Subject: [concurrency-interest] Suspecting a problem in recent jdk-9
+	builds
+In-Reply-To: <2413d23c-80a0-6843-d70b-3c50c99cabb6@cs.oswego.edu>
+References: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+ <2413d23c-80a0-6843-d70b-3c50c99cabb6@cs.oswego.edu>
+Message-ID: <AE801B72-0C4C-4C5F-AF62-F216A9A8A62F@oracle.com>
+
+
+> On 28 Dec 2016, at 04:30, Doug Lea <dl at cs.oswego.edu> wrote:
+> 
+> On 12/28/2016 04:30 AM, Antoine Tissier wrote:
+>> Hi,
+>> 
+>> We have been running benchmarks for our in-memory analytics software
+>> ActivePivot on a M6.32 machine (Solaris Sparc, 8 TB RAM, 2304 logical
+>> cores (288 physical cores)).
+>> Our benchmarks involve high parallelism along with many queries divided
+>> in a high number of tasks (CountedCompleters) in the ForkJoinPool. With
+>> build 145 of jdk-9, some tasks are not executed, causing larger
+>> completion problems. However, with the earlier build 111, the problem
+>> does not occur.
+>> 
+>> On a smaller Linux machine (Linux amd 64, 64 logical cores (32 physical
+>> cores), 512 GB RAM) but with a similar setup, the problem was not
+>> reproduced.
+>> 
+>> The problem seems to arise when a large number of completers (>20 000)
+>> are involved: forking tasks works well but when submitting tasks to a
+>> new pool, it seems that their compute method is sometimes not called.
+>> We indeed log every call to ForkJoinPool.submit, as well as everytime a
+>> completer enters its compute method, and clearly see that once in a
+>> while, the task is never computed after having been submitted. We let
+>> the system run for an additional hour, and there was no more progress
+>> even though the system was idle. Thread dumps did not show any suspect
+>> activity (all worker threads were idle).
+>> 
+>> We tried to reproduce the problem with a similar but more simple test,
+>> but it was not successful.
+>> 
+>> Are you aware of any concurrency/task completion problems in the more
+>> recent builds of jdk-9 ?
+> 
+> The only changes in any relevant j.u.c classes were to incorporate
+> VarHandles in June. I believe these were tested on Sparcs, but not
+> by me.
+> 
+
+Yes, the SPARC platform would be included in our battery of tests (which should include the newly added jcstress tests).
+
+The VarHandle method execution will wire up to the equivalent unsafe methods and those used by Fork/Join should all be intrinsic on SPARC (and those intrinsics should not have changed, we just added more, but i will go back and eyeball the code).
+
+My first thought was that some inlining limit was reached, but since Antoine points out that certain tasks are failing to complete i wonder if it’s a combination of VarHandle use and restructure of the implementation?
+
+Paul.
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 841 bytes
+Desc: Message signed with OpenPGP using GPGMail
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20170103/8ec55965/attachment.sig>
+
+From ati at activeviam.com  Thu Jan  5 09:24:15 2017
+From: ati at activeviam.com (Antoine Tissier)
+Date: Thu, 5 Jan 2017 15:24:15 +0100
+Subject: [concurrency-interest] Suspecting a problem in recent jdk-9
+	builds
+In-Reply-To: <AE801B72-0C4C-4C5F-AF62-F216A9A8A62F@oracle.com>
+References: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+ <2413d23c-80a0-6843-d70b-3c50c99cabb6@cs.oswego.edu>
+ <AE801B72-0C4C-4C5F-AF62-F216A9A8A62F@oracle.com>
+Message-ID: <CAA--OiiCy1swhLjkRCtxjMYKHbX8S3qJs-=mFVRcdZacvXzb3g@mail.gmail.com>
+
+As Doug suggested, I first tried to bisect across weekly builds, using
+Gilles method of renaming the URLs in the download page with the right
+build number.
+
+It appears that the problem is reproduced with build ea+129 but not with
+build ea+128. The latter was released before changeset 955eab36f5da
+<http://hg.openjdk.java.net/jdk9/jdk9/jdk/rev/955eab36f5da> of the jdk,
+which was committed later the same day and includes the replacement of
+Unsafe with VarHandles in j.u.c classes.
+
+If needed it is possible to arrange access to our system in order to
+investigate the problem.
+
+Antoine
+-- 
+[image: ActiveViam]
+
+46 rue de l'Arbre Sec, 75001 Paris
+France
+[image: Twitter] <https://twitter.com/active_viam> [image: Blog]
+<http://activeviam.com/blog/> [image: Linkedin]
+<https://www.linkedin.com/company/85029> [image: Youtube]
+<https://www.youtube.com/channel/UCGjYnbjlPamN0RvSm3eGqCw> Antoine Tissier
+*Junior Software Engineer*
+
+
+[image: Mobile]+33(0) 6.26.33.35.62
+[image: Skype]antoine_tissier
+[image: Website]www.activeviam.com <https://activeviam.com/>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20170105/14bfbdd6/attachment.html>
+
+From dl at cs.oswego.edu  Thu Jan  5 09:44:38 2017
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Thu, 5 Jan 2017 09:44:38 -0500
+Subject: [concurrency-interest] Suspecting a problem in recent jdk-9
+ builds
+In-Reply-To: <CAA--OiiCy1swhLjkRCtxjMYKHbX8S3qJs-=mFVRcdZacvXzb3g@mail.gmail.com>
+References: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+ <2413d23c-80a0-6843-d70b-3c50c99cabb6@cs.oswego.edu>
+ <AE801B72-0C4C-4C5F-AF62-F216A9A8A62F@oracle.com>
+ <CAA--OiiCy1swhLjkRCtxjMYKHbX8S3qJs-=mFVRcdZacvXzb3g@mail.gmail.com>
+Message-ID: <e9c63776-b2a1-dbb0-eb7e-0cb84536bce5@cs.oswego.edu>
+
+On 01/05/2017 09:24 AM, Antoine Tissier wrote:
+
+> It appears that the problem is reproduced with build ea+129 but not with
+> build ea+128. The latter was released before changeset 955eab36f5da
+> <http://hg.openjdk.java.net/jdk9/jdk9/jdk/rev/955eab36f5da> of the jdk,
+> which was committed later the same day and includes the replacement of
+> Unsafe with VarHandles in j.u.c classes.
+>
+> If needed it is possible to arrange access to our system in order to
+> investigate the problem.
+>
+
+OK, let's arrange this off-list.
+
+-Doug
+
+
+
+From martinrb at google.com  Thu Jan  5 11:44:10 2017
+From: martinrb at google.com (Martin Buchholz)
+Date: Thu, 5 Jan 2017 08:44:10 -0800
+Subject: [concurrency-interest] Suspecting a problem in recent jdk-9
+	builds
+In-Reply-To: <CAA--OiiCy1swhLjkRCtxjMYKHbX8S3qJs-=mFVRcdZacvXzb3g@mail.gmail.com>
+References: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+ <2413d23c-80a0-6843-d70b-3c50c99cabb6@cs.oswego.edu>
+ <AE801B72-0C4C-4C5F-AF62-F216A9A8A62F@oracle.com>
+ <CAA--OiiCy1swhLjkRCtxjMYKHbX8S3qJs-=mFVRcdZacvXzb3g@mail.gmail.com>
+Message-ID: <CA+kOe08FxPJBwtd-M1N_PjpyCbUPbWvDU_Qs=yPP+HtcU65sCA@mail.gmail.com>
+
+For future reference, one can find sets of changes via mercurial, like:
+(cd ~/ws/jdk9/jdk && hg log -r "'jdk-9+128'::'jdk-9+129'")
+
+If I narrow down, I see:
+ $ (cd ~/ws/jdk9/jdk && hg log -u dl -r "'jdk-9+128'::'jdk-9+129'")
+changeset:   15085:d04ea07c1629
+parent:      15083:9446c534f022
+user:        dl
+date:        Fri Jul 15 13:51:43 2016 -0700
+summary:     8159924: Various improvements to StampedLock code
+
+changeset:   15086:fd4819ec5afd
+user:        dl
+date:        Fri Jul 15 13:55:51 2016 -0700
+summary:     8157523: Various improvements to ForkJoin/SubmissionPublisher
+code
+
+changeset:   15087:f3af17da360b
+user:        dl
+date:        Fri Jul 15 13:59:58 2016 -0700
+summary:     8157522: Performance improvements to CompletableFuture
+
+changeset:   15088:955eab36f5da
+user:        dl
+date:        Fri Jul 15 14:04:09 2016 -0700
+summary:     8080603: Replace Unsafe with VarHandle in java.util.concurrent
+classes
+
+changeset:   15140:c659d2cdc7ba
+user:        dl
+date:        Tue Jul 26 09:49:25 2016 -0700
+summary:     8162396: j.u.c java.lang.LinkageError
+
+changeset:   15141:fe3146f5e7b1
+user:        dl
+date:        Tue Jul 26 09:53:38 2016 -0700
+summary:     8160402: Garbage retention with CompletableFuture.anyOf
+
+changeset:   15142:fe0d3813e6c3
+user:        dl
+date:        Tue Jul 26 09:57:51 2016 -0700
+summary:     8160751: Optimize ConcurrentHashMap.keySet().removeAll
+
+changeset:   15143:e2c8961887a2
+user:        dl
+date:        Tue Jul 26 10:02:05 2016 -0700
+summary:     8161608: StampedLock should use storeStoreFence when acquiring
+write lock
+
+changeset:   15144:47699aa2e69e
+tag:         jdk-9+129
+user:        dl
+date:        Tue Jul 26 10:06:19 2016 -0700
+summary:     8161591: Miscellaneous changes imported from jsr166 CVS 2016-07
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20170105/8fc60f42/attachment.html>
+
+From rl.stpuu at gmail.com  Tue Jan 10 16:22:21 2017
+From: rl.stpuu at gmail.com (Roussanka Loukanova)
+Date: Tue, 10 Jan 2017 22:22:21 +0100
+Subject: [concurrency-interest] CfP - Logic, Information, Language, Memory,
+	Reasoning 2017 (LogInfoLangMR'17)
+Message-ID: <CACAe74iP5E4wF955YWuA1itCbEbf5==JE2sHGxk8xDqpj-PC9w@mail.gmail.com>
+
+=========================================================================
+                        CALL FOR PAPERS
+
+                      Special Session on
+Logic, Information, Language, Memory, Reasoning 2017 (LogInfoLangMR’17)
+
+   http://www.dcai-conference.net/special-sessions/loginfolangmr
+
+14th International Conference on Distributed Computing and Artificial
+Intelligence 2017 (DCAI'17)
+
+             Polytechnic of Porto, Porto (Portugal)
+                       June 21-23, 2017
+
+            * Submission deadline: February 6, 2017 *
+=========================================================================
+
+DESCRIPTION
+=====
+We are in the reality of systems that model human language, reasoning,
+and use advanced techniques for saving and accessing information.
+Prominently, computational processing of human language is an
+interdisciplinary area of research and development of computerized
+systems. In nature, relations between information, language,
+reasoning, and memory have many, interdependent facets that can be
+heterogeneous. Theories, applications, and technologies strive to meet
+adequate treatment of natural phenomena of information, language, and
+information exchange. Furthermore, integrated approaches from
+mathematics and computer science provide support for reliable,
+advanced, applications.
+
+We welcome submissions of papers on the following topics, without
+limiting to them, across theories, applications, methods, approaches,
+and technologies:
+
+- Logic for applications to language processing
+- Classic and new theories of formal and natural languages
+- Computational processing of natural language --- approaches,
+theories, methods, computerized systems
+- Computational morphology, syntax, semantics, and syntax-semantics interfaces
+- Multilingual Processing
+- Speech Processing
+- Logic for reasoning systems --- theories and applications
+- Logic in data science
+- Information theories
+- Integration of data and reasoning
+- Models of computation
+- Mathematics for linguistics and cognitive science
+- Interdisciplinary approaches to computation, language, reasoning, memory, data
+- Computational theories and applications in life sciences
+- Computational neuroscience of information, language, memory, reasoning
+- Computational aspects of information, languages, and memory in nature
+
+IMPORTANT DATES:
+=====
+Submission dates:      6th February, 2017
+Notification date:    13th March, 2017
+Paper ready deadline: 27th March, 2017
+Conference dates:     21st-23rd June, 2017
+
+SUBMISSION INSTRUCTIONS:
+=====
+DCAI Special Session papers must be formatted according to the
+Springer LNCS Template, with a maximum length of 8 pages in length,
+including figures and references. All proposed papers must be
+submitted in electronic form (PDF format) using the Paper Submission
+Page.
+http://www.dcai-conference.net/submission
+
+PUBLICATION:
+=====
+Accepted papers will be included in DCAI Proceedings. At least one of
+the authors will be required to register and attend the symposium to
+present the paper in order to include the paper in the conference
+proceedings. All accepted papers will be published by Advances in
+Intelligent Systems and Computing series of Springer Verlag. For more
+details, see:
+http://www.dcai-conference.net/special-sessions
+
+CO-CHAIRS:
+=====
+Roussanka Loukanova, Stockholm University, Sweden
+Kristina Liefke, Ludwig-Maximilians-University Munich, Germany
+
+Program Committee (PC):
+
+The PC consists of experts in the topics of the event.
+
+CONTACT:
+=====
+Roussanka Loukanova <rloukanova at gmail.com>
+Kristina Liefke <Kristina.Liefke at lrz.uni-muenchen.de>
+
+From trueinsider at gmail.com  Sat Jan 14 00:07:36 2017
+From: trueinsider at gmail.com (insider)
+Date: Sat, 14 Jan 2017 08:07:36 +0300
+Subject: [concurrency-interest]  Persist data across CompletableFutures
+Message-ID: <CANr1bhhgit6Z2AVNkODPiWT1h6GVZHm2pbS+rYzTrJKqpiDWag@mail.gmail.com>
+
+I feel that there should be some standard way of persisting data across
+single chain of CompletableFutures (something similar to ThreadLocal only
+with different scope). I believe C# has this as
+System.Threading.AsyncLocal<T>
+
+What's your thoughts on this?
+
+--
+Best regards,
+Nikolay
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20170114/069edd79/attachment.html>
+
+From perm at sics.se  Sat Jan 14 04:53:59 2017
+From: perm at sics.se (Per Mildner)
+Date: Sat, 14 Jan 2017 10:53:59 +0100
+Subject: [concurrency-interest] Persist data across CompletableFutures
+In-Reply-To: <CANr1bhhgit6Z2AVNkODPiWT1h6GVZHm2pbS+rYzTrJKqpiDWag@mail.gmail.com>
+References: <CANr1bhhgit6Z2AVNkODPiWT1h6GVZHm2pbS+rYzTrJKqpiDWag@mail.gmail.com>
+Message-ID: <48747A29-1F7A-4406-8BF8-DB510BE39207@sics.se>
+
+
+> On 14 Jan 2017, at 06:07, insider <trueinsider at gmail.com> wrote:
+> 
+> I feel that there should be some standard way of persisting data across single chain of CompletableFutures (something similar to ThreadLocal only with different scope). I believe C# has this as System.Threading.AsyncLocal<T>
+> 
+> What's your thoughts on this?
+
+I asked a related question, with a proof-of-concept implementation, last year, see <http://cs.oswego.edu/pipermail/concurrency-interest/2016-August/015323.html <http://cs.oswego.edu/pipermail/concurrency-interest/2016-August/015323.html>>. This did not get much feedback, unfortunately.
+
+We use something like this, and it seems to work well. The main, huge, drawback is that our implementation can not pass the “task-tree-local variables” to tasks created by the Java 8 concurrent streams etc..
+
+I would love to see something like this implemented in a way that makes it work with all the built-in fork/join features in Java 8.
+
+Regards,
+
+> 
+> --
+> Best regards,
+> Nikolay
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+Per Mildner                                     Per.Mildner at sics.se <mailto:Per.Mildner at sics.se>
+Swedish Institute of Computer Science
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20170114/a264e779/attachment.html>
+
+From viktor.klang at gmail.com  Sat Jan 14 05:10:43 2017
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Sat, 14 Jan 2017 11:10:43 +0100
+Subject: [concurrency-interest] Persist data across CompletableFutures
+In-Reply-To: <48747A29-1F7A-4406-8BF8-DB510BE39207@sics.se>
+References: <CANr1bhhgit6Z2AVNkODPiWT1h6GVZHm2pbS+rYzTrJKqpiDWag@mail.gmail.com>
+ <48747A29-1F7A-4406-8BF8-DB510BE39207@sics.se>
+Message-ID: <CANPzfU_GmK9tS=MjfY+vddnYqJ1E+cNTa+Fdy=zXDM-+b+G_fA@mail.gmail.com>
+
+Hey,
+
+I apologize in advance if this comes across as negative, I promised myself
+to not complain in 2017 so I hope you see this as a bit of a "tales from
+the trenches" report. :)
+
+It's possible to build a feature like that with Scala Futures since the
+`ExecutionContext` (think Executor) has a `prepare()`-method[1] which can
+be used to store away thread-local state to be restored once the Runnable
+is actually executed.
+
+However, there are a couple of concerns:
+
+* What happens to forks? (tasks split into multiple subtasks)
+   – because without immutable or *coordinated* data in those "locals" Here
+Be Dragons
+* What happens to joins? (tasks coalesced into fewer tasks)
+   – because which of the values will you use? What if they have both been
+modified? Or just are different?
+* How do you reason about memory consumption when you can have possibly
+millions of async tasks being queued up? What's the visibility into this
+"on the side" storage?
+* What's the implication for nested execution? (i.e. if some Executor
+executes the code synchronously)
+* A single Executors' failure to support this feature means that things
+just stop working and it might be really hard to know why, especially for
+libraries that have embedded, opaque, thread pools.
+
+
+TL;DR:
+
+In my experience the value of said feature doesn't really carry its weight
+since it tends to lead to non-deterministic failure cases with very limited
+opportunity for the developer to figure out what went wrong.
+
+I'd love to see alternate proposals for solving the "transient context"
+problem, but I believe the appropriate solution is true continuations on
+the JVM. *fingers crossed*
+
+1: Note that I deprecated that method for 2.12.0 since it is extremely
+tricky for developers of custom Executors to remember to use it, and use it
+in the right places the right number of times.
+
+
+On Sat, Jan 14, 2017 at 10:53 AM, Per Mildner <perm at sics.se> wrote:
+
+>
+> On 14 Jan 2017, at 06:07, insider <trueinsider at gmail.com> wrote:
+>
+> I feel that there should be some standard way of persisting data across
+> single chain of CompletableFutures (something similar to ThreadLocal only
+> with different scope). I believe C# has this as
+> System.Threading.AsyncLocal<T>
+>
+> What's your thoughts on this?
+>
+>
+> I asked a related question, with a proof-of-concept implementation, last
+> year, see <http://cs.oswego.edu/pipermail/concurrency-
+> interest/2016-August/015323.html>. This did not get much feedback,
+> unfortunately.
+>
+> We use something like this, and it seems to work well. The main, huge,
+> drawback is that our implementation can not pass the “task-tree-local
+> variables” to tasks created by the Java 8 concurrent streams etc..
+>
+> I would love to see something like this implemented in a way that makes it
+> work with all the built-in fork/join features in Java 8.
+>
+> Regards,
+>
+>
+> --
+> Best regards,
+> Nikolay
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> Per Mildner                                     Per.Mildner at sics.se
+> Swedish Institute of Computer Science
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+
+-- 
+Cheers,
+√
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20170114/2d92a5d2/attachment.html>
+
+From thurston at nomagicsoftware.com  Wed Jan 18 13:45:10 2017
+From: thurston at nomagicsoftware.com (thurstonn)
+Date: Wed, 18 Jan 2017 11:45:10 -0700 (MST)
+Subject: [concurrency-interest] Final Freeze & Inheritance
+Message-ID: <1484765110413-13925.post@n7.nabble.com>
+
+Given the following understanding:
+
+class SafelyInitialized
+{
+   int x;
+   final int y;
+
+   SafelyInitialized(int i)
+   {
+       this.y = i;
+       this.x = i
+   }
+
+}
+
+is  /de facto/ a class safe for initialization (de facto because it's not
+formally prescribed by the JMM, but all JVM implementations provide such a
+'guarantee', per A. Shipilev).
+
+What about this?
+
+class Maybe extends SafelyInitialized
+{
+      int z;
+      Maybe(int i)
+      {
+          super(i);
+          this.z = i
+      } 
+
+
+}
+
+My inference is *No*, Maybe is not a class safe for initialization (i.e.
+maybe.z can evaluate 0), but it's not clear to me.
+
+Thanks
+
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/Final-Freeze-Inheritance-tp13925.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From forax at univ-mlv.fr  Wed Jan 18 15:48:49 2017
+From: forax at univ-mlv.fr (Remi Forax)
+Date: Wed, 18 Jan 2017 21:48:49 +0100 (CET)
+Subject: [concurrency-interest] Final Freeze & Inheritance
+In-Reply-To: <1484765110413-13925.post@n7.nabble.com>
+References: <1484765110413-13925.post@n7.nabble.com>
+Message-ID: <86577132.1509878.1484772529693.JavaMail.zimbra@u-pem.fr>
+
+----- Mail original -----
+> De: "thurstonn" <thurston at nomagicsoftware.com>
+> À: concurrency-interest at cs.oswego.edu
+> Envoyé: Mercredi 18 Janvier 2017 19:45:10
+> Objet: [concurrency-interest] Final Freeze & Inheritance
+
+> Given the following understanding:
+> 
+> class SafelyInitialized
+> {
+>   int x;
+>   final int y;
+> 
+>   SafelyInitialized(int i)
+>   {
+>       this.y = i;
+>       this.x = i
+>   }
+> 
+> }
+> 
+> is  /de facto/ a class safe for initialization (de facto because it's not
+> formally prescribed by the JMM, but all JVM implementations provide such a
+> 'guarantee', per A. Shipilev).
+
+Today all known implementations have a stronger guarantee, but tomorrow ???
+I've hard time to understand why are you making a bet that no JVM will change in the future. 
+
+Rémi
+
+From vitalyd at gmail.com  Wed Jan 18 16:02:34 2017
+From: vitalyd at gmail.com (Vitaly Davidovich)
+Date: Wed, 18 Jan 2017 21:02:34 +0000
+Subject: [concurrency-interest] Final Freeze & Inheritance
+In-Reply-To: <86577132.1509878.1484772529693.JavaMail.zimbra@u-pem.fr>
+References: <1484765110413-13925.post@n7.nabble.com>
+ <86577132.1509878.1484772529693.JavaMail.zimbra@u-pem.fr>
+Message-ID: <CAHjP37FpQW5A5Lhi9ra5J5ZF4GDsnA0z-FcJBdvZqRF3yKX0sA@mail.gmail.com>
+
+It's Java, we know the implementation precedent trumps the spec - spec is
+adjusted to match implementation :).
+
+But, I don't see why inheritance matters here.
+On Wed, Jan 18, 2017 at 3:52 PM Remi Forax <forax at univ-mlv.fr> wrote:
+
+> ----- Mail original -----
+>
+> > De: "thurstonn" <thurston at nomagicsoftware.com>
+>
+> > À: concurrency-interest at cs.oswego.edu
+>
+> > Envoyé: Mercredi 18 Janvier 2017 19:45:10
+>
+> > Objet: [concurrency-interest] Final Freeze & Inheritance
+>
+>
+>
+> > Given the following understanding:
+>
+> >
+>
+> > class SafelyInitialized
+>
+> > {
+>
+> >   int x;
+>
+> >   final int y;
+>
+> >
+>
+> >   SafelyInitialized(int i)
+>
+> >   {
+>
+> >       this.y = i;
+>
+> >       this.x = i
+>
+> >   }
+>
+> >
+>
+> > }
+>
+> >
+>
+> > is  /de facto/ a class safe for initialization (de facto because it's not
+>
+> > formally prescribed by the JMM, but all JVM implementations provide such
+> a
+>
+> > 'guarantee', per A. Shipilev).
+>
+>
+>
+> Today all known implementations have a stronger guarantee, but tomorrow ???
+>
+> I've hard time to understand why are you making a bet that no JVM will
+> change in the future.
+>
+>
+>
+> Rémi
+>
+> _______________________________________________
+>
+> Concurrency-interest mailing list
+>
+> Concurrency-interest at cs.oswego.edu
+>
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> --
+Sent from my phone
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20170118/47a29a26/attachment.html>
+
+From thurston at nomagicsoftware.com  Wed Jan 18 14:37:40 2017
+From: thurston at nomagicsoftware.com (thurstonn)
+Date: Wed, 18 Jan 2017 12:37:40 -0700 (MST)
+Subject: [concurrency-interest] Final Freeze & Inheritance
+In-Reply-To: <CAHjP37FpQW5A5Lhi9ra5J5ZF4GDsnA0z-FcJBdvZqRF3yKX0sA@mail.gmail.com>
+References: <1484765110413-13925.post@n7.nabble.com>
+ <86577132.1509878.1484772529693.JavaMail.zimbra@u-pem.fr>
+ <CAHjP37FpQW5A5Lhi9ra5J5ZF4GDsnA0z-FcJBdvZqRF3yKX0sA@mail.gmail.com>
+Message-ID: <1484768260247-13928.post@n7.nabble.com>
+
+Vitaly Davidovich wrote
+> It's Java, we know the implementation precedent trumps the spec - spec is
+> adjusted to match implementation :).
+> 
+> But, I don't see why inheritance matters here.
+> On Wed, Jan 18, 2017 at 3:52 PM Remi Forax &lt;
+
+> forax@
+
+> &gt; wrote:
+
+Well, it might matter if there is only a single fence emitted, and it's
+directly after the SafelyInitialized constructor, so:
+
+super()
+STORESTORE
+this.z = i
+publish (unsafely) Maybe instance
+
+wouldn't prevent another thread from reading 0 for maybe.z
+
+
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/Final-Freeze-Inheritance-tp13925p13928.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From vitalyd at gmail.com  Wed Jan 18 16:28:22 2017
+From: vitalyd at gmail.com (Vitaly Davidovich)
+Date: Wed, 18 Jan 2017 16:28:22 -0500
+Subject: [concurrency-interest] Final Freeze & Inheritance
+In-Reply-To: <1484768260247-13928.post@n7.nabble.com>
+References: <1484765110413-13925.post@n7.nabble.com>
+ <86577132.1509878.1484772529693.JavaMail.zimbra@u-pem.fr>
+ <CAHjP37FpQW5A5Lhi9ra5J5ZF4GDsnA0z-FcJBdvZqRF3yKX0sA@mail.gmail.com>
+ <1484768260247-13928.post@n7.nabble.com>
+Message-ID: <CAHjP37EkQB8Bamu6_u0ABZBXmCd5-5nDNv_te4OWEdrP1V2=HA@mail.gmail.com>
+
+I'd imagine (expect, really) it's the entire object construction that gets
+the freeze, irrespective of how many super ctors are called in the process.
+
+On Wed, Jan 18, 2017 at 2:37 PM, thurstonn <thurston at nomagicsoftware.com>
+wrote:
+
+> Vitaly Davidovich wrote
+> > It's Java, we know the implementation precedent trumps the spec - spec is
+> > adjusted to match implementation :).
+> >
+> > But, I don't see why inheritance matters here.
+> > On Wed, Jan 18, 2017 at 3:52 PM Remi Forax &lt;
+>
+> > forax@
+>
+> > &gt; wrote:
+>
+> Well, it might matter if there is only a single fence emitted, and it's
+> directly after the SafelyInitialized constructor, so:
+>
+> super()
+> STORESTORE
+> this.z = i
+> publish (unsafely) Maybe instance
+>
+> wouldn't prevent another thread from reading 0 for maybe.z
+>
+>
+>
+>
+>
+> --
+> View this message in context: http://jsr166-concurrency.
+> 10961.n7.nabble.com/Final-Freeze-Inheritance-tp13925p13928.html
+> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20170118/529cc7b8/attachment.html>
+
+From oleksandr.otenko at gmail.com  Thu Jan 19 04:58:57 2017
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Thu, 19 Jan 2017 09:58:57 +0000
+Subject: [concurrency-interest] Final Freeze & Inheritance
+In-Reply-To: <CAHjP37EkQB8Bamu6_u0ABZBXmCd5-5nDNv_te4OWEdrP1V2=HA@mail.gmail.com>
+References: <1484765110413-13925.post@n7.nabble.com>
+ <86577132.1509878.1484772529693.JavaMail.zimbra@u-pem.fr>
+ <CAHjP37FpQW5A5Lhi9ra5J5ZF4GDsnA0z-FcJBdvZqRF3yKX0sA@mail.gmail.com>
+ <1484768260247-13928.post@n7.nabble.com>
+ <CAHjP37EkQB8Bamu6_u0ABZBXmCd5-5nDNv_te4OWEdrP1V2=HA@mail.gmail.com>
+Message-ID: <9C7203F0-A42B-4639-AF5B-E5AF4D64D7B6@gmail.com>
+
+I’d imagine it is only the final field store that gets the freeze, so whatever happens after it in program order is not safely constructed.
+
+In this case the initialization of x is not safe.
+
+Alex
+
+
+> On 18 Jan 2017, at 21:28, Vitaly Davidovich <vitalyd at gmail.com> wrote:
+> 
+> I'd imagine (expect, really) it's the entire object construction that gets the freeze, irrespective of how many super ctors are called in the process.
+> 
+> On Wed, Jan 18, 2017 at 2:37 PM, thurstonn <thurston at nomagicsoftware.com <mailto:thurston at nomagicsoftware.com>> wrote:
+> Vitaly Davidovich wrote
+> > It's Java, we know the implementation precedent trumps the spec - spec is
+> > adjusted to match implementation :).
+> >
+> > But, I don't see why inheritance matters here.
+> > On Wed, Jan 18, 2017 at 3:52 PM Remi Forax &lt;
+> 
+> > forax@
+> 
+> > &gt; wrote:
+> 
+> Well, it might matter if there is only a single fence emitted, and it's
+> directly after the SafelyInitialized constructor, so:
+> 
+> super()
+> STORESTORE
+> this.z = i
+> publish (unsafely) Maybe instance
+> 
+> wouldn't prevent another thread from reading 0 for maybe.z
+> 
+> 
+> 
+> 
+> 
+> --
+> View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/Final-Freeze-Inheritance-tp13925p13928.html <http://jsr166-concurrency.10961.n7.nabble.com/Final-Freeze-Inheritance-tp13925p13928.html>
+> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20170119/82003343/attachment-0001.html>
+
+From aph at redhat.com  Thu Jan 19 05:05:38 2017
+From: aph at redhat.com (Andrew Haley)
+Date: Thu, 19 Jan 2017 10:05:38 +0000
+Subject: [concurrency-interest] Final Freeze & Inheritance
+In-Reply-To: <9C7203F0-A42B-4639-AF5B-E5AF4D64D7B6@gmail.com>
+References: <1484765110413-13925.post@n7.nabble.com>
+ <86577132.1509878.1484772529693.JavaMail.zimbra@u-pem.fr>
+ <CAHjP37FpQW5A5Lhi9ra5J5ZF4GDsnA0z-FcJBdvZqRF3yKX0sA@mail.gmail.com>
+ <1484768260247-13928.post@n7.nabble.com>
+ <CAHjP37EkQB8Bamu6_u0ABZBXmCd5-5nDNv_te4OWEdrP1V2=HA@mail.gmail.com>
+ <9C7203F0-A42B-4639-AF5B-E5AF4D64D7B6@gmail.com>
+Message-ID: <c0f34b06-07ab-602c-20f7-c2e1cf3cd7a8@redhat.com>
+
+On 19/01/17 09:58, Alex Otenko wrote:
+
+> I’d imagine it is only the final field store that gets the freeze,
+> so whatever happens after it in program order is not safely
+> constructed.
+> 
+> In this case the initialization of x is not safe.
+
+Yes, exactly.  I have considered using STLR for writing to final
+fields on AArch64, but it's not really an optimization so I didn't.
+
+Andrew.
+
+From shade at redhat.com  Thu Jan 19 05:45:58 2017
+From: shade at redhat.com (Aleksey Shipilev)
+Date: Thu, 19 Jan 2017 11:45:58 +0100
+Subject: [concurrency-interest] Final Freeze & Inheritance
+In-Reply-To: <1484765110413-13925.post@n7.nabble.com>
+References: <1484765110413-13925.post@n7.nabble.com>
+Message-ID: <6c8fbc4f-ffa6-ad62-adb9-9a0cf7d0a804@redhat.com>
+
+On 01/18/2017 07:45 PM, thurstonn wrote:
+> Given the following understanding:
+> 
+> class SafelyInitialized
+> {
+>    int x;
+>    final int y;
+> 
+>    SafelyInitialized(int i)
+>    {
+>        this.y = i;
+>        this.x = i
+>    }
+> 
+> }
+> 
+> is  /de facto/ a class safe for initialization (de facto because it's not
+> formally prescribed by the JMM, but all JVM implementations provide such a
+> 'guarantee', per A. Shipilev).
+
+This is a good learning exercise about separating the language spec requirements
+and implementation details.
+
+I usually say that *Hotspot* VM *happens* to make it stronger by emitting the
+barrier after all fields inits, on the exit path from constructor. We can't
+vouch for all VMs in the world with all cases.
+
+You can plausibly either do the barrier right after the final field store, or
+even emit some "special" store instruction with needed semantics just for that
+final field. Both will expose non-final "x" to the racy behavior, as per spec.
+(Part of the reason is the final field semantic rule from 17.5.1 requires to
+read *through* the final field on the reader side to get any effect on the
+outcome -- so reading/writing plain fields without dependent final fields in the
+middle is not affected by any freeze action).
+
+Probably even scarier example that I saw in the wild is that Johnny uses "x"
+happily with no problems, and then Billy removes "final" from _another_ field in
+an irrelevant changeset -- oops. Friends don't let friends to piggyback on
+finality of irrelevant fields.
+
+> What about this?
+> 
+> class Maybe extends SafelyInitialized
+> {
+>       int z;
+>       Maybe(int i)
+>       {
+>           super(i);
+>           this.z = i
+>       } 
+> 
+> 
+> }
+> 
+> My inference is *No*, Maybe is not a class safe for initialization (i.e.
+> maybe.z can evaluate 0), but it's not clear to me.
+
+Since the first case above is not safe, this is not safe either.
+
+-Aleksey
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 819 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20170119/990b495a/attachment.sig>
+
+From pavel.rappo at gmail.com  Mon Jan 30 06:22:03 2017
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Mon, 30 Jan 2017 11:22:03 +0000
+Subject: [concurrency-interest] CompletionStage and checked exceptions
+Message-ID: <CAChcVunUY78MvFZPcGtRrh5BMWD7RkoyX+OXXQXEiUMSkXa1TQ@mail.gmail.com>
+
+Hi,
+
+It most likely has been discussed before, unfortunately I haven't found the
+relevant link, but only a couple of threads where this has been mentioned
+(e.g. [1]).
+
+I was wondering why there's no readily available facility to call a computation
+that can throw a checked exception? For example:
+
+    cs.whenComplete((result, error) -> ((Closeable) c).close());
+
+Thanks,
+-Pavel
+
+-------------------------------------------------------------------------------
+[1] http://cs.oswego.edu/pipermail/concurrency-interest/2014-November/013168.html
+
+From viktor.klang at gmail.com  Mon Jan 30 12:06:00 2017
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Mon, 30 Jan 2017 18:06:00 +0100
+Subject: [concurrency-interest] CompletionStage and checked exceptions
+In-Reply-To: <CAChcVunUY78MvFZPcGtRrh5BMWD7RkoyX+OXXQXEiUMSkXa1TQ@mail.gmail.com>
+References: <CAChcVunUY78MvFZPcGtRrh5BMWD7RkoyX+OXXQXEiUMSkXa1TQ@mail.gmail.com>
+Message-ID: <CANPzfU966zw5B=Ff1zVuQ0740CqPL6NwLgZj4ioS-YuGAZZWhg@mail.gmail.com>
+
+On Mon, Jan 30, 2017 at 12:22 PM, Pavel Rappo <pavel.rappo at gmail.com> wrote:
+
+> Hi,
+>
+> It most likely has been discussed before, unfortunately I haven't found the
+> relevant link, but only a couple of threads where this has been mentioned
+> (e.g. [1]).
+>
+> I was wondering why there's no readily available facility to call a
+> computation
+> that can throw a checked exception? For example:
+>
+>     cs.whenComplete((result, error) -> ((Closeable) c).close());
+>
+>
+My 2c: The jury's pretty much in when it comes to checked exceptions: what
+I do in Java is sprinkle it with sneakyThrows. (It's pretty easy to make it
+accept a lambda.)
+
+This problem never comes up in Scala since it doesn't have checked
+exceptions, but if it did, it can easily be dealt with using
+scala.util.Try* (a heap-based equivalent of the stack-based try-catch)
+
+
+* Interestingly, a Future in Scala is an *eventual* Try<T>
+
+
+> Thanks,
+> -Pavel
+>
+> ------------------------------------------------------------
+> -------------------
+> [1] http://cs.oswego.edu/pipermail/concurrency-
+> interest/2014-November/013168.html
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+-- 
+Cheers,
+√
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20170130/7eccd6d9/attachment.html>
+
+From 7025260588 at txt.att.net  Mon Jan 30 17:41:52 2017
+From: 7025260588 at txt.att.net (7025260588 at txt.att.net)
+Date: Mon, 30 Jan 2017 14:41:52 -0800
+Subject: [concurrency-interest] Concurrency-interest_Digest, _Vol_144,
+	_Issue_9
+In-Reply-To: mailman.1.1485795601.11830.concurrency-interest@cs.oswego.edu
+Message-ID: <emXF1u00D0a0okT01mXFml@txt.att.net>
+
+Stop
+
+  -----Original Message-----
+  From: <concurrency-interest at cs.oswego.edu>
+  Sent: Mon, 30 Jan 2017 12:00:01 -0500
+  To: 7025260588 at txt.att.net
+ Subject: Concurrency-interest_Digest,_Vol_144,_Issue_9
+
+>Send Concurrency-interest mailing list submissions to
+>	concurrency-interest at cs.oswego.edu
+>
+>To subscribe or unsubscribe via the World Wide Web, visit
+>	http://cs.oswego.edu/mailman
+
+==================================================================
+This mobile text message is brought to you by AT&T
+

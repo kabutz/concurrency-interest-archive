@@ -1,0 +1,4312 @@
+From dawidk at mathcs.emory.edu  Wed Aug  3 14:43:00 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Wed Aug  3 14:43:29 2005
+Subject: [concurrency-interest] backport-util-concurrent: releave 2.0_01
+	available
+Message-ID: <42F11034.9030408@mathcs.emory.edu>
+
+The backport-util-concurrent, version 2.0_01, is now available:
+
+http://www.mathcs.emory.edu/dcl/util/backport-util-concurrent/
+
+It clarifies licensing issues, contains new implementations of 
+PriorityQueue and refactored AbstractMap, and fixes a minor 
+compatibility bug.
+
+Regards,
+Dawid Kurzyniec
+
+From dawidk at mathcs.emory.edu  Thu Aug  4 13:45:37 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Thu Aug  4 13:45:48 2005
+Subject: [concurrency-interest] Does "Thread.stop" do what is says it does?
+Message-ID: <42F25441.9070203@mathcs.emory.edu>
+
+The javadoc of Thread.stop says:
+
+     * It is permitted to stop a thread that has not yet been started.
+     * If the thread is eventually started, it immediately terminates.
+
+However, the first statement of Thread.stop is:
+
+            if (!this.isAlive()) return;
+
+And isAlive javadoc says:
+
+     * Tests if this thread is alive. A thread is alive if it has
+     * been started and has not yet died.
+
+This seems to imply that stop is a no-op on a thread that has not yet 
+started, and I can't see why the thread would be terminated as soon as 
+it starts. So what's the deal here?
+
+
+BTW:
+
+I know that Thread.stop is deprecated and pure evil, I realize the risks 
+of getting inconsistent data by abruptly releasing locks, but I think 
+that in the system I am writing, using Thread.stop is necessary and the 
+risks are manageable. I am developing a multi-user middleware platform 
+(a distributed service container) which runs potentially untrusted code 
+in isolated sandboxes. Sometimes, though, "friend" services are allowed 
+to break the isolation barriers and share data, so the "Isolates" API is 
+not applicable. Instead, we implement sandboxing via separate class 
+loaders, strict confinement, and security policies.
+
+For the sake of this discussion, let's assume that I am implementing an 
+applet container that can host multiple applets at a time. Let's say I 
+loaded an applet that became unresponsive and I want to unload it 
+anyway. I first ask it nicely to leave, wait a while, then interrupt all 
+its threads, wait a while, then stop all threads, wait a while, then 
+finally blacklist all remaining threads, set their priorities to minimum 
+and revoke all their security privileges. Stopping seems to be fairly 
+safe, since those applets don't really share any objects, so whatever 
+gets messed up as a result of abrupt stopping becomes a garbage anyway. 
+And, even if they somehow manage to lock a shared system object (which 
+is generally prevented by security policies, e.g. they cannot write to 
+standard output), the system is at a deadlock anyway if I don't stop 
+those bastards :)
+
+Sure, really evil services can escape the axe by catching ThreadDeath. 
+Little I can do about that. But here I am trying to guard against poorly 
+written or buggy ones (e.g. looping infinitely, in which case merely 
+interrupting them won't suffice) rather than malicious ones. (The latter 
+case is dealt with using code source certificates etc.)
+
+Regards,
+Dawid
+
+From dawidk at mathcs.emory.edu  Thu Aug  4 14:17:16 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Thu Aug  4 14:17:26 2005
+Subject: [concurrency-interest] Does "Thread.stop" do what is says it does?
+In-Reply-To: <42F25441.9070203@mathcs.emory.edu>
+References: <42F25441.9070203@mathcs.emory.edu>
+Message-ID: <42F25BAC.2090201@mathcs.emory.edu>
+
+Dawid Kurzyniec wrote:
+
+> The javadoc of Thread.stop says:
+>
+>     * It is permitted to stop a thread that has not yet been started.
+>     * If the thread is eventually started, it immediately terminates.
+>
+> However, the first statement of Thread.stop is:
+>
+>            if (!this.isAlive()) return;
+>
+> And isAlive javadoc says:
+>
+>     * Tests if this thread is alive. A thread is alive if it has
+>     * been started and has not yet died.
+>
+> This seems to imply that stop is a no-op on a thread that has not yet 
+> started, and I can't see why the thread would be terminated as soon as 
+> it starts. So what's the deal here?
+
+Replying to myself: the observed behavior seems to be that stop followed 
+by start does not cause immediate thread termination, so I guess I 
+report it here as a bug. (I guess it should be "if (this.getState() == 
+TERMINATED) return;" or something equivalent).
+
+Regards,
+Dawid
+
+From miles at milessabin.com  Thu Aug  4 15:40:58 2005
+From: miles at milessabin.com (Miles Sabin)
+Date: Thu Aug  4 15:41:17 2005
+Subject: [concurrency-interest] Does "Thread.stop" do what is says it does?
+In-Reply-To: <42F25441.9070203@mathcs.emory.edu>
+References: <42F25441.9070203@mathcs.emory.edu>
+Message-ID: <200508042041.00594.miles@milessabin.com>
+
+Dawid Kurzyniec wrote,
+> Sometimes, though, "friend" services are allowed to break the
+> isolation barriers and share data, so the "Isolates" API is not
+> applicable. Instead, we implement sandboxing via separate class
+> loaders, strict confinement, and security policies.
+
+I'm not going to comment on the ethics of using Thread.stop, but I can't 
+let this pass ...
+
+Isolates really, really, really are exactly what you want. Yes, you'll 
+most likely have to use message passing to achieve effects equivalent 
+to shared state. But this will always be possible, and assuming a 
+reasonably well behaved and efficient implementation of the Link API a 
+message passing alternative shouldn't be problematic from a performance 
+point of view.
+
+Sandboxing via classloader partitioning and security policies are the 
+best we currently have, but they can't prevent interference due to 
+buggy or malicious code, and they can't provide resource managment or 
+revocation in any particularly general or reliable way ... Thread.stop 
+is just the tip of the iceberg.
+
+"Partial isolation" would be lovely, but to do it properly (or even 
+approximate it) would require so many drastic changes to Java's type 
+system and overall semantics that I'm sorry to say we'll never see it.
+
+Cheers,
+
+
+Miles
+From dholmes at dltech.com.au  Thu Aug  4 21:39:09 2005
+From: dholmes at dltech.com.au (David Holmes)
+Date: Thu Aug  4 21:39:15 2005
+Subject: [concurrency-interest] Does "Thread.stop" do what is says it does?
+In-Reply-To: <42F25BAC.2090201@mathcs.emory.edu>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIEIDGAAA.dholmes@dltech.com.au>
+
+Dawid,
+
+> Replying to myself: the observed behavior seems to be that stop followed
+> by start does not cause immediate thread termination, so I guess I
+> report it here as a bug. (I guess it should be "if (this.getState() ==
+> TERMINATED) return;" or something equivalent).
+
+There is a lot of history here and numerous bugs concerning the incorrect
+behaviour of "still born" threads - ones which have been stopped before they
+started. Back in 1.1 it worked as advertised, but there was a different bug
+whereby once stop() had been called then isAlive() returned false even
+though the thread was not terminated. In 1.2 if I recall correctly they
+fixed the isAlive problem, broke the still-born behaviour and deprecated the
+stop method. So thereafter any bug reports concerning this were flagged as
+"will not fix as it concerns a deprecated method". Not sure what bugs are
+still present in the bug parade.
+
+In short you cannot rely on Thread.stop doing anything per its documentation
+these days.
+
+David Holmes
+
+From ian.griffiths at yellow-b.com  Fri Aug  5 03:33:23 2005
+From: ian.griffiths at yellow-b.com (Ian Griffiths)
+Date: Fri Aug  5 03:34:17 2005
+Subject: [concurrency-interest] Does "Thread.stop" do what is says it does?
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCIEIDGAAA.dholmes@dltech.com.au>
+References: <42F25BAC.2090201@mathcs.emory.edu>
+	<NFBBKALFDCPFIDBNKAPCIEIDGAAA.dholmes@dltech.com.au>
+Message-ID: <WorldClient-F200508050933.AA33230060@yellow-b.com>
+
+It seems to me that this discussion still leaves unanswered the central
+question:
+
+- How can we stop a thread that has got out of control (infinite looping
+or other anti-social behavior)?
+
+I have the case with an application that we've written that runs code
+provided by different departments (like applets) in separate classloaders.
+
+As the different departments have varying IT, Java and testing skills,
+we occasionally have this case. It is very annoying as the only solution
+seems to be to stop a system running hundreds of users if the "Applet"
+refuses to stop of its own accord.
+
+I think all people in this situation are waiting impatiently for
+Isolates. But is there any thing we can do until they come?
+
+Ian
+
+-----Original Message-----
+From: "David Holmes" <dholmes@dltech.com.au>
+To: "Dawid Kurzyniec" <dawidk@mathcs.emory.edu>,
+<concurrency-interest@altair.cs.oswego.edu>
+Cc: 
+Date: Fri, 5 Aug 2005 11:39:09 +1000
+Subject: ***SPAM*** Score/Req: 8.0/7.7 - RE: [concurrency-interest] Does
+"Thread.stop" do what is says it does?
+
+> Dawid,
+> 
+> > Replying to myself: the observed behavior seems to be that stop
+> followed
+> > by start does not cause immediate thread termination, so I guess I
+> > report it here as a bug. (I guess it should be "if (this.getState()
+> ==
+> > TERMINATED) return;" or something equivalent).
+> 
+> There is a lot of history here and numerous bugs concerning the
+> incorrect
+> behaviour of "still born" threads - ones which have been stopped
+> before they
+> started. Back in 1.1 it worked as advertised, but there was a
+> different bug
+> whereby once stop() had been called then isAlive() returned false
+> even
+> though the thread was not terminated. In 1.2 if I recall correctly
+> they
+> fixed the isAlive problem, broke the still-born behaviour and
+> deprecated the
+> stop method. So thereafter any bug reports concerning this were
+> flagged as
+> "will not fix as it concerns a deprecated method". Not sure what bugs
+> are
+> still present in the bug parade.
+> 
+> In short you cannot rely on Thread.stop doing anything per its
+> documentation
+> these days.
+> 
+> David Holmes
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From jbloch at gmail.com  Fri Aug  5 12:37:58 2005
+From: jbloch at gmail.com (Joshua Bloch)
+Date: Fri Aug  5 12:38:00 2005
+Subject: [concurrency-interest] Does "Thread.stop" do what is says it does?
+In-Reply-To: <WorldClient-F200508050933.AA33230060@yellow-b.com>
+References: <42F25BAC.2090201@mathcs.emory.edu>
+	<NFBBKALFDCPFIDBNKAPCIEIDGAAA.dholmes@dltech.com.au>
+	<WorldClient-F200508050933.AA33230060@yellow-b.com>
+Message-ID: <b097ac5105080509376dbfee42@mail.gmail.com>
+
+Ian,
+
+On 8/5/05, Ian Griffiths <ian.griffiths@yellow-b.com> wrote:
+> It seems to me that this discussion still leaves unanswered the central
+> question:
+> 
+> - How can we stop a thread that has got out of control (infinite looping
+> or other anti-social behavior)?
+
+If you need absolute safety, kill the process (VM).  Nothing else is
+guaranteed to work.  Merely using separate classloaders is not
+sufficient.  It lowers the odds of a catastrophic failure, but does
+not prevent one.  If you're willing to take chances, call Thread.stop
+and hope for the best.  In the absence of isolates, I really don't
+think there's a lot more to say about the topic.
+
+            Josh
+
+From dawidk at mathcs.emory.edu  Fri Aug  5 14:28:30 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Fri Aug  5 14:28:42 2005
+Subject: [concurrency-interest] Does "Thread.stop" do what is says it does?
+In-Reply-To: <WorldClient-F200508050933.AA33230060@yellow-b.com>
+References: <42F25BAC.2090201@mathcs.emory.edu><NFBBKALFDCPFIDBNKAPCIEIDGAAA	.dholmes@dltech.com.au>
+	<WorldClient-F200508050933.AA33230060@yellow-b.com>
+Message-ID: <42F3AFCE.6050500@mathcs.emory.edu>
+
+Ian Griffiths wrote:
+
+>It seems to me that this discussion still leaves unanswered the central
+>question:
+>
+>- How can we stop a thread that has got out of control (infinite looping
+>or other anti-social behavior)?
+>  
+>
+As Josh said, nothing is really foolproof, since a malicious thread can 
+always catch and ignore ThreadDeath. In fact, some months ago I was 
+experiencing JVM crashes when simulating such malicious service and 
+attempts of the system to aggressively get rid of it. But, if it is safe 
+to assume that the code is not malicious, but that it can be just buggy 
+(e.g. frequent pattern: try { ... } catch (InterruptedException e) {}), 
+with careful class loader confinement, I think Thread.stop is the best 
+solution we have now. Before stopping, it is probably a good idea to 
+apply the procedure described in CPJ book: ask nicely, then interrupt, 
+then revoke security privileges and lower priority.
+
+The best solution I can come up with to the problem of Thread.stop being 
+no-op if the thread has not yet been started, is to check isAlive, and 
+if false, precede stop() with start() (catching possible exception). 
+Thread references should be kept in a weak data structure, so that 
+unreferenced threads are ignored and gc-ed even if they have not yet 
+started. This way, when we see a non-collected thread that is not alive, 
+we know that somebody probably holds a reference to it and may be 
+planning something nasty, so it is safer to defensively start/stop.
+
+Also, a non-trivial problem here is to decide which threads should 
+actually be terminated, since, in general, the mapping between services 
+(or sessions) and threads is dynamic. Our system 
+(http://www.mathcs.emory.edu/dcl/h2o/) permits external remote 
+invocations of hosted services. When an RMI thread enters the service 
+code, it becomes subject to termination if the service is destroyed, but 
+it is no longer so after it exits the service code. When a thread 
+"attached" to a service spawns a new thread, that new thread should also 
+be "attached" to the service. Implementing this seems impossible at 
+first sight, but it can be done with a bit of trickery, intercepting 
+setPriority() from the thread constructor in a security manager. 
+Finally, tasks submitted to thread pools by a thread "attached" to a 
+service should usually also be attached to that service. To achieve 
+that, we have implemented a thread local delegation mechanism, and a 
+simple security-extended version of ThreadPoolExecutor, which delegates 
+context class loader, access control context, and delegatable thread 
+locals from the submitter to the task. As long as all "shared" thread 
+pools are instances of this class, the service-to-threads association is 
+correctly preserved.
+
+In addition to service-to-threads association, we needed 
+session-to-threads association: when the user session is terminated, all 
+threads associated with that session should be terminated. This can be 
+implemented in an analogous way as service-to-threads association.
+
+Regards,
+Dawid
+
+From dawidk at mathcs.emory.edu  Fri Aug  5 14:55:55 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Fri Aug  5 14:56:03 2005
+Subject: [concurrency-interest] Does "Thread.stop" do what is says it does?
+In-Reply-To: <200508042041.00594.miles@milessabin.com>
+References: <42F25441.9070203@mathcs.emory.edu>
+	<200508042041.00594.miles@milessabin.com>
+Message-ID: <42F3B63B.5080504@mathcs.emory.edu>
+
+Miles Sabin wrote:
+
+>Dawid Kurzyniec wrote,
+>  
+>
+>>Sometimes, though, "friend" services are allowed to break the
+>>isolation barriers and share data, so the "Isolates" API is not
+>>applicable. Instead, we implement sandboxing via separate class
+>>loaders, strict confinement, and security policies.
+>>    
+>>
+>
+>I'm not going to comment on the ethics of using Thread.stop, but I can't 
+>let this pass ...
+>
+>Isolates really, really, really are exactly what you want. Yes, you'll 
+>most likely have to use message passing to achieve effects equivalent 
+>to shared state. But this will always be possible, and assuming a 
+>reasonably well behaved and efficient implementation of the Link API a 
+>message passing alternative shouldn't be problematic from a performance 
+>point of view.
+>
+>Sandboxing via classloader partitioning and security policies are the 
+>best we currently have, but they can't prevent interference due to 
+>buggy or malicious code, and they can't provide resource managment or 
+>revocation in any particularly general or reliable way ... Thread.stop 
+>is just the tip of the iceberg.
+>
+>  
+>
+When isolates appear, we will definitely give them a second look - at 
+least, they may allow us to implement a configurable hierarchies of 
+isolation levels (process, isolate, class loader, shared). But our 
+system (http://www.mathcs.emory.edu/dcl/h2o/) is not an applet 
+container, or a servlet engine - it is a distributed computing and 
+resource sharing platform. Services (which we call pluglets) are pieces 
+of distributed applications, and they are in fact expected to 
+communicate. If they happen to be loaded into the same address space, it 
+is important that they can share data directly. In other words, in our 
+typical applications, communication performance requirements usually 
+outweight isolation requirements. The container owner provides a 
+security policy that prevents untrusted pluglets from loading; we can 
+thus expect certain level of cooperation from loaded pluglets, we just 
+need to shield the system from buggy ones. Given all that, I find the 
+abstraction of isolates too, well, isolating, to be used as a default in 
+our system. Nonetheless, as I said, it may be very interesting to allow 
+hierarchical levels of isolation in the future.
+
+Regards,
+Dawid
+
+From miles at milessabin.com  Fri Aug  5 17:57:41 2005
+From: miles at milessabin.com (Miles Sabin)
+Date: Fri Aug  5 17:58:01 2005
+Subject: [concurrency-interest] Does "Thread.stop" do what is says it does?
+In-Reply-To: <42F3B63B.5080504@mathcs.emory.edu>
+References: <42F25441.9070203@mathcs.emory.edu>
+	<200508042041.00594.miles@milessabin.com>
+	<42F3B63B.5080504@mathcs.emory.edu>
+Message-ID: <200508052257.42470.miles@milessabin.com>
+
+Dawid Kurzyniec wrote,
+> When isolates appear, we will definitely give them a second look - at
+> least, they may allow us to implement a configurable hierarchies of
+> isolation levels (process, isolate, class loader, shared). But our
+> system (http://www.mathcs.emory.edu/dcl/h2o/) is not an applet
+> container, or a servlet engine - it is a distributed computing and
+> resource sharing platform. Services (which we call pluglets) are
+> pieces of distributed applications, and they are in fact expected to
+> communicate. If they happen to be loaded into the same address space,
+> it is important that they can share data directly. In other words, in
+> our typical applications, communication performance requirements
+> usually outweight isolation requirements.
+
+Understood, not the least because, as far as my day job is concerned, 
+this is precisely my situation too.
+
+Given an application which is already structured in such a way that 
+inter-process and inter-host interaction is accommodated, the mapping 
+to Isolates and Links should be a relatively painless, even pleasant, 
+experience (if that's not the case, comments to isolate-interest@ 
+altair.cs.oswego.edu ASAP would be much appreciated).
+
+The rest is down to quality of implementation. I'm hopeful, but the best 
+I can do is report that my early multi-process prototype implementation 
+of JSR-121 (conformant at the time, but not in any way tuned) performed 
+adequately on a variety of typical distributed computing style 
+benchmarks. I'd expect that an industrial strength implementation would 
+do much better. Which is not to say that I'd recommend Isolates and 
+Links for emulating fine-grained CSP- or pi-style computational models, 
+but anything somewhat coarser than that should get along with them just 
+fine. In extreme cases, Isolates can share state via memory mapped 
+files using Links for coordination.
+
+> Given all that, I find the abstraction of isolates too, well,
+> isolating, to be used as a default in our system.
+
+Odd perhaps, but I find the opposite to be the case. Treating everything 
+as remote, even when it might be local is a strangely liberating 
+experience ;-)
+
+Cheers,
+
+
+Miles
+From gregg at cytetech.com  Sat Aug  6 00:51:19 2005
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Sat Aug  6 00:51:44 2005
+Subject: [concurrency-interest] Does "Thread.stop" do what is says it does?
+In-Reply-To: <200508052257.42470.miles@milessabin.com>
+References: <42F25441.9070203@mathcs.emory.edu>	<200508042041.00594.miles@milessabin.com>	<42F3B63B.5080504@mathcs.emory.edu>
+	<200508052257.42470.miles@milessabin.com>
+Message-ID: <42F441C7.6080602@cytetech.com>
+
+
+
+Miles Sabin wrote:
+>>Given all that, I find the abstraction of isolates too, well,
+>>isolating, to be used as a default in our system.
+> 
+> Odd perhaps, but I find the opposite to be the case. Treating everything 
+> as remote, even when it might be local is a strangely liberating 
+> experience ;-)
+
+The Jini platform provides a rather liberating mechanism through the use of the RMI programming model to drive you to 
+think in this direction.  When you finally decide that things should be separated, it's amazing how fast you can find 
+things that can be separated from the cohesive forces that single JVMs put on your architecture...
+
+Gregg Wonderly
+From the.mindstorm.mailinglist at gmail.com  Sat Aug  6 19:38:00 2005
+From: the.mindstorm.mailinglist at gmail.com (Alexandru Popescu)
+Date: Sat Aug  6 18:38:26 2005
+Subject: [concurrency-interest] JSR166X
+Message-ID: <42F549D8.1040509@gmail.com>
+
+:alex |.::the_mindstorm::.|
+From the.mindstorm.mailinglist at gmail.com  Sat Aug  6 19:43:41 2005
+From: the.mindstorm.mailinglist at gmail.com (Alexandru Popescu)
+Date: Sat Aug  6 18:44:05 2005
+Subject: [concurrency-interest] JSR166X gone?
+In-Reply-To: <42ED6898.50705@cs.oswego.edu>
+References: <42EAC40F.8050108@allcaps.org> <42ED6898.50705@cs.oswego.edu>
+Message-ID: <42F54B2D.4080602@gmail.com>
+
+#: Doug Lea changed the world a bit at a time by saying on  8/1/2005 2:11 AM :#
+> Andrew Lentvorski wrote:
+>> Has the stuff in JSR166X migrated to some other, possibly official package?
+>> 
+>> I can't seem to find the jar for it anymore in the CVS repository.
+>> 
+> 
+> Sorry, this was just a mechanical error on my part. I need to swap
+> around various settings to build Tiger vs Mustang versions whenever
+> regenerating public javadocs and jars and sometimes get it wrong without
+> noticing. The jsr166x.jar should be in its usual place now.
+> 
+
+:alex |.::the_mindstorm::.|
+
+> On the larger question though, yes, the NavigableMaps and Deques in
+> jsr166x are still slated to be included in Mustang. Integrating them
+> into Sun builds is taking longer than planned, but they should be
+> in the java.net Mustang snapshots sometime.
+> 
+> -Doug
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+From p.veentjer at anchormen.nl  Sun Aug  7 04:42:17 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Sun Aug  7 04:42:43 2005
+Subject: [concurrency-interest] More control on 'full' with blockingqueue.
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA07C9EF@gerard.anchormen.nl>
+
+For a searchengine platform I`m currently developing (based on Lucene) I need better control on BlockingQueues when they are full. If I only check on the number of items in the queue it could happen that I would have 10 documents of 100 mb in a Queue (and this is a bad thing). But if I restrict the size of the Queue too much, processing 100 documents of 1kb would take too long. Therefore I need better control if it is allowed to add an item to the Queue and that is why I have written the ConditionalBlockingQueue and it uses a strategy: IsFull (the names have to be improved) and this allows better control. The behaviour of BlockingQueues that block on the capacity (the number of items in the Queue) could be made with the IsFull strategy.
+ 
+My question is what you think of this solution and if there are others that had the same problem.
+ 
+At the moment (I haven`t added the new ConditionalBlockingQueue implementation) I have solved the problem by creating 2 LinkedBlockingQueues: small document queue (with a big capacity) and a big document queue (with a small capacity) where I have some control on the total amount of documents being processed but in some cases it could bring the system down to its knees (if there are a lot of big documents).
+ 
+Another thing I was wondering about, is why final class fields are places in local variables? Functionally they are equivalent so the only reason I can think of is that it would be faster. But isn`t this an optimalisation the compiler could do (if it is faster)?
+ 
+example from the LinkedBlockingQueue:
+ 
+ public E take() throws InterruptedException {
+        E x;
+        int c = -1;
+        final AtomicInteger count = this.count;//Why??
+        final ReentrantLock takeLock = this.takeLock;//Why??
+        takeLock.lockInterruptibly();
+        try {
+            try {
+                while (count.get() == 0)
+                    notEmpty.await();
+            } catch (InterruptedException ie) {
+                notEmpty.signal(); // propagate to a non-interrupted thread
+                throw ie;
+            }
+            x = extract();
+            c = count.getAndDecrement();
+            if (c > 1)
+                notEmpty.signal();
+        } finally {
+            takeLock.unlock();
+        }
+        if (c == capacity)
+            signalNotFull();
+        return x;
+    }
+
+From scherer at cs.rochester.edu  Sun Aug  7 12:20:41 2005
+From: scherer at cs.rochester.edu (Bill Scherer)
+Date: Sun Aug  7 12:20:47 2005
+Subject: [concurrency-interest] More control on 'full' with blockingqueue.
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA07C9EF@gerard.anchormen.nl>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA07C9EF@gerard.anchormen.nl>
+Message-ID: <Pine.LNX.4.62.0508071209110.32258@bogota.cs.rochester.edu>
+
+On Sun, 7 Aug 2005, Peter Veentjer - Anchor Men wrote:
+
+> For a searchengine platform I`m currently developing (based on Lucene) I 
+> need better control on BlockingQueues when they are full. If I only 
+> check on the number of items in the queue it could happen that I would 
+> have 10 documents of 100 mb in a Queue (and this is a bad thing). But if 
+> I restrict the size of the Queue too much, processing 100 documents of 
+> 1kb would take too long. Therefore I need better control if it is 
+> allowed to add an item to the Queue and that is why I have written the 
+> ConditionalBlockingQueue and it uses a strategy: IsFull (the names have 
+> to be improved) and this allows better control. The behaviour of 
+> BlockingQueues that block on the capacity (the number of items in the 
+> Queue) could be made with the IsFull strategy.
+>
+> My question is what you think of this solution and if there are others 
+> that had the same problem.
+
+I've not had the same problem, but if I'm understanding you correctly, it 
+seems that a nice solution might be something along the lines of the 
+following:
+
+Modify the various offer() and take() (and related) calls to accept a 
+weight parameter (which would also need to be added into the Node class 
+(see the insert() method). In your case, you'd supply this as a function 
+of the document length. Then, instead of using getAndIncrement() and 
+getAndDecrement() calls inside offer() and take(), use getAndAdd() (which 
+can take a negative operand) to add the weight of the current document.
+
+With all this done, you have a straightforward way to bound the total size 
+of documents being processed at any one time. In particular, your queue 
+size plus the size of the largest document you ever process is your 
+worst-case size. (It can go over if you remove one document, getting just 
+under the queue size, then add something really big. You could also addd 
+conditional logic to forbid adding big doucments until the queue is small 
+enough to hold them, but I doubt that this would gain you anything in 
+practice.
+
+If you need help getting this blocking queue variant working, let me know.
+
+Cheers,
+ 			-- Bill
+From tim at peierls.net  Sun Aug  7 12:36:57 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Sun Aug  7 12:37:13 2005
+Subject: [concurrency-interest] More control on 'full' with blockingqueue.
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA07C9EF@gerard.anchormen.nl>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA07C9EF@gerard.anchormen.nl>
+Message-ID: <42F638A9.3000103@peierls.net>
+
+Peter Veentjer - Anchor Men wrote:
+> Another thing I was wondering about, is why final class fields are places 
+> in local variables? Functionally they are equivalent so the only reason I 
+> can think of is that it would be faster. But isn`t this an optimalisation 
+> the compiler could do (if it is faster)?
+
+Doug Lea once explained it like this: "... it is a hack to work around a 
+hotspot [limitation].  It currently doesn't understand that a final field can 
+be cached across a code block."
+
+--tim
+
+From p.veentjer at anchormen.nl  Sun Aug  7 13:45:32 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Sun Aug  7 13:45:50 2005
+Subject: [concurrency-interest] More control on 'full' with blockingqueue.
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA07C9F0@gerard.anchormen.nl>
+
+ 
+
+I've not had the same problem, but if I'm understanding you correctly, it
+seems that a nice solution might be something along the lines of the
+following:
+
+Modify the various offer() and take() (and related) calls to accept a
+weight parameter (which would also need to be added into the Node class
+(see the insert() method). In your case, you'd supply this as a function
+of the document length. Then, instead of using getAndIncrement() and
+getAndDecrement() calls inside offer() and take(), use getAndAdd() (which
+can take a negative operand) to add the weight of the current document.
+------------------
+This could be a solution and this would give an indication for the remaining capacity.
+ 
+The advantage of totally externalizing the 'isfull' functionality is
+- I can share the instance between multiple queues and this make communication between them possible.
+- It is less restrictive. It doesn`t impose a numeric weight to each item. It seperates the what from the how better I think.
+
+If you need help getting this blocking queue variant working, let me know.
+-------------------
+Thanks for the offer, but I already have implemented a version based on the LinkedBlockingQueue. Maybe you want to have a look at it?
+
+And do you know if there are extensions available for the concurrency library? For the Collection Framework there are numerous extensions available, but I haven`t found any for the concurrency library.
+
+
+
+From scherer at cs.rochester.edu  Mon Aug  8 09:22:16 2005
+From: scherer at cs.rochester.edu (Bill Scherer)
+Date: Mon Aug  8 09:22:22 2005
+Subject: [concurrency-interest] More control on 'full' with blockingqueue.
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA07C9F0@gerard.anchormen.nl>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA07C9F0@gerard.anchormen.nl>
+Message-ID: <Pine.LNX.4.62.0508080918250.26854@bogota.cs.rochester.edu>
+
+On Sun, 7 Aug 2005, Peter Veentjer - Anchor Men wrote:
+
+>
+>
+> I've not had the same problem, but if I'm understanding you correctly, it
+> seems that a nice solution might be something along the lines of the
+> following:
+>
+> Modify the various offer() and take() (and related) calls to accept a
+> weight parameter (which would also need to be added into the Node class
+> (see the insert() method). In your case, you'd supply this as a function
+> of the document length. Then, instead of using getAndIncrement() and
+> getAndDecrement() calls inside offer() and take(), use getAndAdd() (which
+> can take a negative operand) to add the weight of the current document.
+> ------------------
+> This could be a solution and this would give an indication for the 
+> remaining capacity.
+>
+> The advantage of totally externalizing the 'isfull' functionality is
+> - I can share the instance between multiple queues and this make 
+>   communication between them possible.
+> - It is less restrictive. It doesn`t impose a numeric weight to each 
+>   item. It seperates the what from the how better I think.
+>
+> If you need help getting this blocking queue variant working, let me know.
+> -------------------
+> Thanks for the offer, but I already have implemented a version based on 
+> the LinkedBlockingQueue. Maybe you want to have a look at it?
+
+I would be happy to take a look at it.
+
+> And do you know if there are extensions available for the concurrency 
+> library? For the Collection Framework there are numerous extensions 
+> available, but I haven`t found any for the concurrency library.
+
+I'm not aware of any, but I haven't gone looking for them either (so don't 
+read too much into this).
+
+Cheers,
+ 			-- Bill
+From normelton at gmail.com  Mon Aug  8 12:32:33 2005
+From: normelton at gmail.com (Norman Elton)
+Date: Mon Aug  8 12:32:43 2005
+Subject: [concurrency-interest] Request (bug fix?) for
+	ScheduledThreadPoolExecutor
+Message-ID: <A92BC3AA-5092-46BD-9C6C-43183F1CA9DE@gmail.com>
+
+If I create a ThreadPoolExecutor that overrides the beforeExecute and  
+afterExecute methods, I see my Runnable go into the pool, and come  
+out. This is very handy.
+
+If I change to a ScheduledThreadPoolExecutor, the objects passed to  
+these methods are of type ScheduledFutureTask, not my original  
+objects. Looking at the code, it appears that  
+ScheduledThreadPoolExecutor wraps my Runnable inside this new object.
+
+So the question is... Is this necessary? For immediate executions  
+(non-scheduled), could the internals of ScheduledThreadPoolExecutor  
+keep my Runnables intact, or provide some way to get them back after  
+execution?
+
+Thanks for any advice,
+
+Norman Elton
+
+------------------------------------------------------
+Norman Elton
+Information Technology - Network Engineering
+College of William & Mary
+757-221-7790
+
+
+
+From tim at peierls.net  Mon Aug  8 19:27:29 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Mon Aug  8 19:27:46 2005
+Subject: [concurrency-interest] Request (bug fix?) for
+	ScheduledThreadPoolExecutor
+In-Reply-To: <A92BC3AA-5092-46BD-9C6C-43183F1CA9DE@gmail.com>
+References: <A92BC3AA-5092-46BD-9C6C-43183F1CA9DE@gmail.com>
+Message-ID: <42F7EA61.5090304@peierls.net>
+
+Norman Elton wrote:
+> If I create a ThreadPoolExecutor that overrides the beforeExecute and  
+> afterExecute methods, I see my Runnable go into the pool, and come  out. 
+> This is very handy.
+> 
+> If I change to a ScheduledThreadPoolExecutor, the objects passed to  
+> these methods are of type ScheduledFutureTask, not my original  objects. 
+> Looking at the code, it appears that  ScheduledThreadPoolExecutor wraps 
+> my Runnable inside this new object.
+> 
+> So the question is... Is this necessary? For immediate executions  
+> (non-scheduled), could the internals of ScheduledThreadPoolExecutor  
+> keep my Runnables intact, or provide some way to get them back after  
+> execution?
+
+TPE works in terms of execute(Runnable); the implementations of 
+submit(Callable) and STPE.schedule(Runnable,...) wrap the Callable or 
+scheduled Runnable to provide a return value and/or delayed execution -- this 
+wrapped task has to be a Runnable so that TPE can execute it.
+
+There is currently no standard way to map back from the wrapper to its 
+contained Callable or Runnable, so beforeExecute and afterExecute get passed 
+the wrapper Runnable.
+
+But you can do this mapping yourself, for example, by storing the 
+ScheduledFuture and associated Runnable in a Map when submitting:
+
+     Map<Object, Runnable> map = ...;
+     ScheduledFuture<?> f = ses.schedule(runnable, 100, MILLISECONDS);
+     map.put(f, runnable);
+
+Then in beforeExecute/afterExecute, you can look up the "real" Runnable:
+
+     void beforeExecute(Thread t, Runnable r) {
+         if (map.containsKey(r))
+             r = map.get(r);
+         // use r
+     }
+
+This is inconvenient, and it relies on a private implementation detail. But 
+there is hope: JDK 6.0 is slated to provide protected methods that you can 
+override to control the type of the returned wrapper, at which point this will 
+all become a bit easier, because you can then use a custom wrapper that 
+"knows" its original task.
+
+     class MySTPE extends ScheduledThreadPoolExecutor {
+         ...
+         protected <V> RunnableScheduledFuture<V> decorateTask(
+             Runnable runnable, RunnableScheduledFuture<V> task) {
+             return new MyWrapper(runnable, task);
+         }
+     }
+
+     class MyWrapper<V> implements RunnableScheduledFuture<V> {
+         private final Runnable runnable;
+         private final RunnableScheduledFuture<V> task;
+         MyWrapper(Runnable runnable, RunnableScheduledFuture<V> task) {
+             this.runnable = runnable;
+             this.task = task;
+         }
+         public Runnable originalRunnable() { return runnable; }
+         // ... delegate RunnableScheduledFuture methods to task
+     }
+
+     void beforeExecute(Thread t, Runnable r) {
+         if (r instanceof MyWrapper)
+             r = ((MyWrapper) r).originalRunnable();
+         // use r
+     }
+
+--tim
+
+From p.veentjer at anchormen.nl  Tue Aug  9 17:51:51 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Tue Aug  9 17:52:26 2005
+Subject: [concurrency-interest] overview new features.
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA07C9F7@gerard.anchormen.nl>
+
+Does anyone have a good overview of the new concurrency features of Java 6? I`m quite interested what is comming next.
+ 
+At the moment I`m happy with the concurrency library (have made some Spring beans so that it can be integrated in Spring better). But there are some parts where the concurrency library could be improved. One of those things would be better control on timeout behaviour of the executorservices. That is why I have created the BlockingExecutor that gives the control.
+ 
+public interface BlockingExecutor {
+ /**
+  * @param command the command to execute.
+  * @throws InterruptedException if the current thread has been interrupted. If that happens,
+  *                              the command is not executed.
+  * @throws NullPointerException if command is null.
+  */
+ void put(Runnable command) throws InterruptedException;
+
+ /**
+  * Offers a command to this BlockingExecutor.
+  *
+  * @param command the command to execute.
+  * @param timeout how long to wait before giving up, in units of unit
+  * @param unit    a TimeUnit determining how to interpret the timeout parameter
+  * @return true if successful, or false if the specified waiting time elapses before space is available.
+  * @throws InterruptedException if the current thread has been interrupted. If that happens,
+  *                              the command is not executed.
+  * @throws NullPointerException if command or unit is null.
+  */
+ boolean offer(Runnable command, long timeout, TimeUnit unit) throws InterruptedException;
+}
+ 
+Maybe this would be a nice addition to the concurrency library.
+ 
+And why where the Takeable/Puttable/Channel interfaces/implementations removed? I had to create my own libary based on those interfaces and I think the original code should have made it into java 5. JMS is too heavy... and the removed code was perfect.
+
+From tim at peierls.net  Tue Aug  9 23:02:12 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Tue Aug  9 23:02:26 2005
+Subject: [concurrency-interest] overview new features.
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA07C9F7@gerard.anchormen.nl>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA07C9F7@gerard.anchormen.nl>
+Message-ID: <42F96E34.5000701@peierls.net>
+
+Peter Veentjer - Anchor Men wrote:
+> Does anyone have a good overview of the new concurrency features of Java 6?
+> I`m quite interested what is comming next.
+
+You can browse the JSR166 maintenance updates docs, see the Concurrency JSR166
+Interest Site -- http://gee.cs.oswego.edu/dl/concurrency-interest/index.html
+-- for details, particularly
+
+  http://gee.cs.oswego.edu/dl/concurrency-interest/post-tiger.html
+
+
+>  ... But there are some
+> parts where the concurrency library could be improved. One of those things
+> would be better control on timeout behaviour of the executorservices. That
+> is why I have created the BlockingExecutor that gives the control.
+> 
+> public interface BlockingExecutor {
+>  void put(Runnable command) throws InterruptedException;
+>  boolean offer(Runnable command, long timeout, TimeUnit unit) throws InterruptedException;
+> }
+
+Do you have a small example that illustrates the use of BlockingExecutor to do 
+something that is difficult or impossible to achieve conveniently with the 
+standard task execution framework?
+
+
+> And why where the Takeable/Puttable/Channel interfaces/implementations
+> removed? I had to create my own libary based on those interfaces and I
+> think the original code should have made it into java 5. JMS is too
+> heavy... and the removed code was perfect.
+
+The method names haven't changed, only the class name.
+
+  Channel -> BlockingQueue
+  Takeable -> the take and poll methods of BlockingQueue
+  Puttable -> the put and offer methods of BlockingQueue
+
+There are no separate interfaces to describe the puttable side of a 
+BlockingQueue from its takeable side, but you can provide simple wrappers to 
+achieve the same effect.
+
+--tim
+
+From dl at cs.oswego.edu  Wed Aug 10 07:22:41 2005
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed Aug 10 07:22:44 2005
+Subject: [concurrency-interest] ExecutorService.invokeAll signatures
+Message-ID: <42F9E381.7060505@cs.oswego.edu>
+
+Someone posted a bug report 6267833:
+
+http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6267833
+
+It says that the current ExecutorService.invokeAll signature:
+    <T> List<Future<T>> invokeAll(Collection<Callable<T>> tasks)
+should be:
+    <T> List<Future<T>> invokeAll(Collection<? extends Callable<T>> tasks)
+
+The poster is right. The proposed signature is a much better choice.
+However, there is a small compatibility issue. While the change
+would be binary compatible with existing usages, doing this
+would cause existing ExecutorService implementations/subclasses written
+by usrs to encounter compilation errors until they also change the
+signature.
+
+This is a hard decision -- a small benefit to the many users of
+ExecutorServices vs a small risk that anyone has ever written
+a class that overrides this method and couldn't trivially adapt it.
+
+So we'd like to know if anyone on this list has done this.
+If you've ever written a custom ExecutorService that
+overrrides the version of invokeAll in AbstractExecutorService,
+and couldn't easily adapt, could you let me know?
+
+Thanks!
+
+-Doug
+
+From dawidk at mathcs.emory.edu  Thu Aug 11 15:47:21 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Thu Aug 11 15:47:36 2005
+Subject: [concurrency-interest] Re: Backport condition variables and
+	reentrant locks.
+In-Reply-To: <1123711217.7873.30.camel@localhost>
+References: <1123711217.7873.30.camel@localhost>
+Message-ID: <42FBAB49.7060603@mathcs.emory.edu>
+
+Maciej Szefler wrote:
+
+>Dawid,
+>
+>Great job with the backport, its  a life saver. However, I have recently
+>run into a problem. It seems that the condition variables do not work as
+>advertised with reentrant locks. I find that if a thread has multiple
+>holds on a reentrant lock a conditional variable await() call will only
+>release one of those holds.  This is contrary to expectations (at least
+>mine and the JavaDoc author's). 
+>
+>  
+>
+You are right. This is a bug. Conditional variables in the backport were 
+derived from dl.util.concurrent.CondVar, which was POSIX-style 
+condition, supposed to work with non-reentrant mutexes. It should be 
+easy to fix; I will include the fix in the next release (probably 2-3 
+weeks from now).
+
+Regards,
+Dawid
+
+From TEREKHOV at de.ibm.com  Thu Aug 11 16:32:41 2005
+From: TEREKHOV at de.ibm.com (Alexander Terekhov)
+Date: Thu Aug 11 16:32:55 2005
+Subject: [concurrency-interest] Re: Backport condition variables
+	and	reentrant locks.
+In-Reply-To: <42FBAB49.7060603@mathcs.emory.edu>
+Message-ID: <OFFAF0614F.CA540E83-ONC125705A.007057CD-C125705A.0070C4EC@de.ibm.com>
+
+
+You better include an incarnation of pthread_mutex_setlockcount_np() and
+let your
+clients shoot themselves in the foot.
+
+regards,
+alexander.
+
+
+
+Sent by:    concurrency-interest-bounces@cs.oswego.edu
+
+To:    Maciej Szefler <mbs@fivesight.com>
+cc:    concurrency-interest@altair.cs.oswego.edu
+Subject:    [concurrency-interest] Re: Backport condition variables and
+       reentrant locks.
+
+
+Maciej Szefler wrote:
+
+>Dawid,
+>
+>Great job with the backport, its  a life saver. However, I have recently
+>run into a problem. It seems that the condition variables do not work as
+>advertised with reentrant locks. I find that if a thread has multiple
+>holds on a reentrant lock a conditional variable await() call will only
+>release one of those holds.  This is contrary to expectations (at least
+>mine and the JavaDoc author's).
+>
+>
+>
+You are right. This is a bug. Conditional variables in the backport were
+derived from dl.util.concurrent.CondVar, which was POSIX-style
+condition, supposed to work with non-reentrant mutexes. It should be
+easy to fix; I will include the fix in the next release (probably 2-3
+weeks from now).
+
+Regards,
+Dawid
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From dawidk at mathcs.emory.edu  Thu Aug 11 16:51:24 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Thu Aug 11 16:51:43 2005
+Subject: [concurrency-interest] Re: Backport condition
+	variablesand	reentrant locks.
+In-Reply-To: <OFFAF0614F.CA540E83-ONC125705A.007057CD-C125705A.0070C4EC@de.ibm.com>
+References: <OFFAF0614F.CA540E83-ONC125705A.007057CD-C125705A.0070C4EC@de.ibm.com>
+Message-ID: <42FBBA4C.2040903@mathcs.emory.edu>
+
+Alexander Terekhov wrote:
+
+>You better include an incarnation of pthread_mutex_setlockcount_np() and
+>let your
+>clients shoot themselves in the foot.
+>
+>  
+>
+I am not sure I follow; what I meant was: the JSR 166 conditional 
+variables work with reentrant variables, so should the backport version. 
+The current backport implementation of await() simply releases the lock 
+once, and then reacquires it once, which leads to the erroneous behavior 
+when the thread has multiple holds. The fix I am going to make is for 
+await() to release all holds, remembering how many there were, and then 
+reacquire all of them before returning. That's how Object.wait() behaves 
+for built-in locks.
+
+Regards,
+Dawid
+
+From TEREKHOV at de.ibm.com  Thu Aug 11 17:26:10 2005
+From: TEREKHOV at de.ibm.com (Alexander Terekhov)
+Date: Thu Aug 11 17:26:21 2005
+Subject: [concurrency-interest] Re: Backport
+	condition	variablesand	reentrant locks.
+In-Reply-To: <42FBBA4C.2040903@mathcs.emory.edu>
+Message-ID: <OFF12766FA.E01DDEC9-ONC125705A.0075ADEF-C125705A.0075AAA4@de.ibm.com>
+
+
+http://lists.boost.org/Archives/boost/2004/07/68013.php
+
+regards,
+alexander.
+
+From dholmes at dltech.com.au  Thu Aug 11 18:55:38 2005
+From: dholmes at dltech.com.au (David Holmes)
+Date: Thu Aug 11 18:55:48 2005
+Subject: [concurrency-interest] Re:
+	Backportcondition	variablesand	reentrant locks.
+In-Reply-To: <OFF12766FA.E01DDEC9-ONC125705A.0075ADEF-C125705A.0075AAA4@de.ibm.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMEOGGAAA.dholmes@dltech.com.au>
+
+Alex,
+
+> http://lists.boost.org/Archives/boost/2004/07/68013.php
+
+This is totally irrelevant for j.u.c Conditions with ReentrantLock. It's
+semantics are already defined.
+
+David Holmes
+
+From TEREKHOV at de.ibm.com  Thu Aug 11 19:17:36 2005
+From: TEREKHOV at de.ibm.com (Alexander Terekhov)
+Date: Thu Aug 11 19:17:48 2005
+Subject: [concurrency-interest]
+	Re:	Backportcondition	variablesand	reentrant locks.
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCMEOGGAAA.dholmes@dltech.com.au>
+Message-ID: <OFC7BEE467.F9FACA4E-ONC125705A.007FBF52-C125705A.007FDE2A@de.ibm.com>
+
+
+Wrongly defined. OK, back to lurking.
+
+regards,
+alexander.
+
+"David Holmes" <dholmes@dltech.com.au>@cs.oswego.edu on 08/12/2005 12:55:38
+AM
+
+Sent by:    concurrency-interest-bounces@cs.oswego.edu
+
+
+To:    <concurrency-interest@altair.cs.oswego.edu>
+cc:
+Subject:    RE: [concurrency-interest] Re:      Backportcondition
+       variablesand     reentrant locks.
+
+
+Alex,
+
+> http://lists.boost.org/Archives/boost/2004/07/68013.php
+
+This is totally irrelevant for j.u.c Conditions with ReentrantLock. It's
+semantics are already defined.
+
+David Holmes
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From chussenet at yahoo.com  Sun Aug 21 10:12:13 2005
+From: chussenet at yahoo.com (Claude Hussenet)
+Date: Sun Aug 21 10:12:25 2005
+Subject: [concurrency-interest] Access to pool size 
+Message-ID: <20050821141214.92416.qmail@web40528.mail.yahoo.com>
+
+Is there a way to have access to the pool size of an
+ExecutorService created through the factory methods
+of the Executors class?
+
+It looks like that I would have to instantiate
+directly
+ThreadPoolExecutor if I want to monitor the pool size
+of an ExecutorService.
+
+Please confirm...
+
+Rgds-Claude
+
+
+
+
+
+
+
+Claude Hussenet
+Independent J2EE Architect Consultant
+http://claudehussenet.com
+
+
+		
+____________________________________________________
+Start your day with Yahoo! - make it your home page 
+http://www.yahoo.com/r/hs 
+ 
+From tim at peierls.net  Sun Aug 21 10:44:31 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Sun Aug 21 10:44:44 2005
+Subject: [concurrency-interest] Access to pool size
+In-Reply-To: <20050821141214.92416.qmail@web40528.mail.yahoo.com>
+References: <20050821141214.92416.qmail@web40528.mail.yahoo.com>
+Message-ID: <4308934F.1090007@peierls.net>
+
+Claude Hussenet wrote:
+> Is there a way to have access to the pool size of an
+> ExecutorService created through the factory methods
+> of the Executors class?
+> 
+> It looks like that I would have to instantiate
+> directly
+> ThreadPoolExecutor if I want to monitor the pool size
+> of an ExecutorService.
+> 
+> Please confirm...
+
+It's true: the Executors factory methods aren't specified to return a 
+ThreadPoolExecutor, even though they do in practice.
+
+If all you want is to retrieve the count of active threads in the pool, 
+however, you don't have to use a TPE constructor:
+
+   int getActiveThreadCount(ExecutorService exec) {
+       if (exec instanceof ThreadPoolExecutor) {
+           return ((ThreadPoolExecutor) exec).getActiveCount();
+       else // probably obtained with newSingleThreadExecutor
+           return 1;
+   }
+
+That else-clause is a bit of a gamble; you might prefer to return some 
+distinguished value to indicate "unknown".
+
+--tim
+
+From chussenet at yahoo.com  Sun Aug 21 12:43:57 2005
+From: chussenet at yahoo.com (Claude Hussenet)
+Date: Sun Aug 21 12:44:08 2005
+Subject: [concurrency-interest] Access to pool size
+In-Reply-To: <4308934F.1090007@peierls.net>
+Message-ID: <20050821164357.79646.qmail@web40507.mail.yahoo.com>
+
+Thx Tim,it works for me.Rgds-Claude
+
+--- Tim Peierls <tim@peierls.net> wrote:
+
+> Claude Hussenet wrote:
+> > Is there a way to have access to the pool size of
+> an
+> > ExecutorService created through the factory
+> methods
+> > of the Executors class?
+> > 
+> > It looks like that I would have to instantiate
+> > directly
+> > ThreadPoolExecutor if I want to monitor the pool
+> size
+> > of an ExecutorService.
+> > 
+> > Please confirm...
+> 
+> It's true: the Executors factory methods aren't
+> specified to return a 
+> ThreadPoolExecutor, even though they do in practice.
+> 
+> If all you want is to retrieve the count of active
+> threads in the pool, 
+> however, you don't have to use a TPE constructor:
+> 
+>    int getActiveThreadCount(ExecutorService exec) {
+>        if (exec instanceof ThreadPoolExecutor) {
+>            return ((ThreadPoolExecutor)
+> exec).getActiveCount();
+>        else // probably obtained with
+> newSingleThreadExecutor
+>            return 1;
+>    }
+> 
+> That else-clause is a bit of a gamble; you might
+> prefer to return some 
+> distinguished value to indicate "unknown".
+> 
+> --tim
+> 
+> 
+
+
+Claude Hussenet
+Independent J2EE Architect Consultant
+http://claudehussenet.com
+
+
+		
+____________________________________________________
+Start your day with Yahoo! - make it your home page 
+http://www.yahoo.com/r/hs 
+ 
+From ravs at online.no  Mon Aug 22 06:01:31 2005
+From: ravs at online.no (Ravinder Singh)
+Date: Mon Aug 22 06:02:14 2005
+Subject: [concurrency-interest] Whats up with the ThreadPoolExecutor?
+Message-ID: <4309A27B.7040407@online.no>
+
+I don't know if this is a bug or me just using it wrongly. But I add 
+work to the pool, and I add the same Runnable each time. Since I try to 
+avoid GC. But it seems that it doesn't process the full queue. If I 
+create a new Runnable each time its ok.
+
+It seems that the remaining work (unprocessed) is the amount of maximum 
+threads. So it seems taht a new thread is not able to start its first 
+work somehow...
+
+Tried to extract the code in this small application:
+----------------------------------------------------------------------------------------------------------------------------- 
+
+import org.apache.log4j.BasicConfigurator;
+import edu.emory.mathcs.backport.java.util.concurrent.*;
+
+public class WPTest
+{
+   static ThreadPoolExecutor wp = null;
+   static Runnable workInProgress = new Woerker();
+   static private int cSt, cWrk;
+   static int WORKCOUNT = 1000;
+
+
+   public static void main(String[] args)
+   {
+       BasicConfigurator.configure();
+       wp = new ThreadPoolExecutor(1, 10, 60, TimeUnit.SECONDS, new 
+ArrayBlockingQueue(30));
+       wp.setCorePoolSize(0);
+       wp.setMaximumPoolSize(30);
+       wp.setKeepAliveTime(60000, TimeUnit.MILLISECONDS);
+
+       for (int i = 0; i < WORKCOUNT; i++)
+       {
+           cWrk++;
+           addWork(workInProgress);
+       }
+
+       while (cSt != WORKCOUNT)
+       {
+           System.out.println("Counters: " + ":" + cSt + ":" + cWrk);
+           try
+           {
+               Thread.sleep(1000);
+           }
+           catch (InterruptedException e)
+           {
+               e.printStackTrace();
+           }
+       }
+       System.out.println("Done...");
+   }
+
+
+   public static class Woerker implements Runnable
+   {
+       public void run()
+       {
+           cSt++;
+       }
+   }
+
+
+   public static void addWork(Runnable r)
+   {
+       boolean addOk = false;
+       while (!addOk)
+       {
+           try
+           {
+               wp.execute(r);
+               addOk = true;
+           }
+           catch (RejectedExecutionException rx)
+           {
+               // Ignore, keep trying.
+           }
+       }
+   }
+}
+
+
+From dl at cs.oswego.edu  Mon Aug 22 11:31:05 2005
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon Aug 22 11:31:07 2005
+Subject: [concurrency-interest] Change summaries
+Message-ID: <4309EFB9.3050102@cs.oswego.edu>
+
+
+Courtesy of Martin Buchholz (the main Sun engineer responsible for
+juva.util.*), we now have a mechanically updated summary of all
+bugs and RFEs related to JSR166 stuff for Mustang. See the revised
+http://gee.cs.oswego.edu/dl/concurrency-interest/post-tiger.html
+which now mostly just points to this summary. (Note that many
+of these are for java.util collections, and are listed because they
+may impact java.util.concurrent collection implementations and
+subclasses.)
+
+If you are interested in spec/javadoc details, see
+http://gee.cs.oswego.edu/dl/wwwtmp/jsr166/jsr166.html
+that provides very helpful side-by-side comparisons of changes.
+Note though that it is a snapshot of in-progess changes that doesn't
+perfectly correspond either to our main javadocs (at
+http://gee.cs.oswego.edu/dl/jsr166/dist/docs/)
+or to ones fully committed into Mustang builds.
+
+-Doug
+
+
+
+From demandmass at hotmail.com  Mon Aug 22 13:14:25 2005
+From: demandmass at hotmail.com (Anthony Salem)
+Date: Mon Aug 22 13:14:42 2005
+Subject: [concurrency-interest] New project Ursus uses concurrency backport
+In-Reply-To: <mailman.0.1124728289.4453.concurrency-interest@altair.cs.oswego.edu>
+Message-ID: <BAY109-F13461C2DB1992E3CDFA7C5C4B60@phx.gbl>
+
+Greetings,
+
+I have released a new open source project to the public under the BSD 
+license.  It relies on the util.concurrent PR backport by Dawid Kurzyniec.  
+Since I am using other peoples work I feel obligated to inform them of my 
+decision.
+
+I just subscribed to this list and I've been reading some of the previous 
+posts and I feel like a mouse among men. However amaturish my code may be, 
+perhaps someone out there can benefit from it.
+
+My project is an internet application framework supporting non-blocking IO, 
+encryption, and SQL persistence.  I borrowed heavily from the slide show on 
+nio that Doug Lea provided on the "Supplement to Concurrent Programming in 
+Java" page.
+
+If anyone is interested in this project more information can be found at the 
+project web site.
+
+http://ursus.sourceforge.net
+
+Also the source can be checked out from module "ursus" at
+anonymous@cvs.sourceforge.net:/cvsroot/ursus
+
+Sincerely,
+Anthony Salem
+
+_________________________________________________________________
+On the road to retirement? Check out MSN Life Events for advice on how to 
+get there! http://lifeevents.msn.com/category.aspx?cid=Retirement
+
+From dawidk at mathcs.emory.edu  Mon Aug 22 13:37:50 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Mon Aug 22 13:37:59 2005
+Subject: [concurrency-interest] New project Ursus uses concurrency backport
+In-Reply-To: <BAY109-F13461C2DB1992E3CDFA7C5C4B60@phx.gbl>
+References: <BAY109-F13461C2DB1992E3CDFA7C5C4B60@phx.gbl>
+Message-ID: <430A0D6E.7020304@mathcs.emory.edu>
+
+Anthony Salem wrote:
+
+> Greetings,
+>
+> I have released a new open source project to the public under the BSD 
+> license.  It relies on the util.concurrent PR backport by Dawid 
+> Kurzyniec.  Since I am using other peoples work I feel obligated to 
+> inform them of my decision.
+>
+Thanks,
+
+BTW, I thought to myself that it would be nice to have a section 
+"Projects that use backport.util.concurrent" on the backport page. So, 
+whoever uses the backport and don't mind to have their project listed, 
+please just send me a URL, and, if you feel like, a brief overview, and 
+I will be more than happy to put it on the Web.
+
+Regards,
+Dawid Kurzyniec
+
+From tim at peierls.net  Mon Aug 22 16:29:02 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Mon Aug 22 16:29:20 2005
+Subject: [concurrency-interest] Whats up with the ThreadPoolExecutor?
+In-Reply-To: <4309A27B.7040407@online.no>
+References: <4309A27B.7040407@online.no>
+Message-ID: <430A358E.2050404@peierls.net>
+
+Ravinder Singh wrote:
+> I don't know if this is a bug or me just using it wrongly. But I add 
+> work to the pool, and I add the same Runnable each time. Since I try to 
+> avoid GC. But it seems that it doesn't process the full queue. If I 
+> create a new Runnable each time its ok.
+
+There may be a bug in java.util.concurrent.ThreadPoolExecutor (and thus in the
+backport TPE).
+
+     public void execute(Runnable command) {
+         for (;;) {
+             ...
+             if (workQueue.offer(command))
+                 return;
+             Runnable r = addIfUnderMaximumPoolSize(command);
+             if (r == command)  // !!!
+                 return;
+             if (r == null) { /* reject */ }
+             // else retry
+         }
+     }
+
+On the line marked "!!!", there is an identity comparison. When you use the 
+same Runnable object, this test can succeed even though the command hasn't run.
+
+However, it's not clear to me that TPE should have to support this kind of 
+thing. The workaround is simple: use separate Runnable instances.
+
+
+>   static private int cSt, cWrk;
+> 
+>   public static class Woerker implements Runnable
+>   {
+>       public void run()
+>       {
+>           cSt++;
+>       }
+>   }
+
+This is not the main problem, but you are incrementing the cSt counter without 
+any kind of synchronization, so the cSt value you are seeing is suspect.
+
+--tim
+
+From dholmes at dltech.com.au  Mon Aug 22 20:27:45 2005
+From: dholmes at dltech.com.au (David Holmes)
+Date: Mon Aug 22 20:27:50 2005
+Subject: [concurrency-interest] Whats up with the ThreadPoolExecutor?
+In-Reply-To: <4309A27B.7040407@online.no>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMEIHGBAA.dholmes@dltech.com.au>
+
+Ravinder,
+
+> I don't know if this is a bug or me just using it wrongly. But I add
+> work to the pool, and I add the same Runnable each time. Since I try to
+> avoid GC. But it seems that it doesn't process the full queue. If I
+> create a new Runnable each time its ok.
+
+As Tim indicated this is indeed a bug, but one only exercised under
+particular conditions:
+ - there are >= core-size threads already in the pool
+ - the queue is bounded and full
+ - you've submitted the same Runnable multiple times
+
+So change any of the above and you can work-around the problem.
+
+There is an easy fix that Dawid can hopefully get into the backport in the
+very near future:
+
+- addIfUnderCorePoolSize needs to be changed to return an int <0, 0 or >0 to
+represent the three cases it is checking for.
+
+Cheers,
+David Holmes
+
+From dl at cs.oswego.edu  Mon Aug 22 20:33:49 2005
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon Aug 22 20:33:51 2005
+Subject: [concurrency-interest] Whats up with the ThreadPoolExecutor?
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCMEIHGBAA.dholmes@dltech.com.au>
+References: <NFBBKALFDCPFIDBNKAPCMEIHGBAA.dholmes@dltech.com.au>
+Message-ID: <430A6EED.6050407@cs.oswego.edu>
+
+David Holmes wrote:
+> 
+> There is an easy fix that Dawid can hopefully get into the backport in the
+> very near future:
+
+And the fix for the java.util.concurrent version will with some luck be 
+in Mustang.
+
+While we never expected anyone to reuse Runnable tasks
+in this way, (and in general, it is not a good idea)
+the specs did not say you cannot, so it is indeed a bug.
+
+-Doug
+
+
+From dawidk at mathcs.emory.edu  Mon Aug 22 20:47:41 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Mon Aug 22 20:47:58 2005
+Subject: [concurrency-interest] Whats up with the ThreadPoolExecutor?
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCMEIHGBAA.dholmes@dltech.com.au>
+References: <NFBBKALFDCPFIDBNKAPCMEIHGBAA.dholmes@dltech.com.au>
+Message-ID: <430A722D.7020706@mathcs.emory.edu>
+
+David Holmes wrote:
+
+>Ravinder,
+>
+>  
+>
+>>I don't know if this is a bug or me just using it wrongly. But I add
+>>work to the pool, and I add the same Runnable each time. Since I try to
+>>avoid GC. But it seems that it doesn't process the full queue. If I
+>>create a new Runnable each time its ok.
+>>    
+>>
+>
+>As Tim indicated this is indeed a bug, but one only exercised under
+>particular conditions:
+> - there are >= core-size threads already in the pool
+> - the queue is bounded and full
+> - you've submitted the same Runnable multiple times
+>
+>So change any of the above and you can work-around the problem.
+>
+>There is an easy fix that Dawid can hopefully get into the backport in the
+>very near future:
+>
+>  
+>
+I will. Thanks.
+
+BTW. the updated backport distribution, with fix of Condition variables 
+which used to not properly release multiple lock holds on await() can be 
+downloaded from the backport page - under "daily builds".
+
+Regards,
+Dawid
+
+
+From gergg at cox.net  Mon Aug 22 23:41:44 2005
+From: gergg at cox.net (Gregg Wonderly)
+Date: Mon Aug 22 23:42:27 2005
+Subject: [concurrency-interest] Whats up with the ThreadPoolExecutor?
+In-Reply-To: <430A6EED.6050407@cs.oswego.edu>
+References: <NFBBKALFDCPFIDBNKAPCMEIHGBAA.dholmes@dltech.com.au>
+	<430A6EED.6050407@cs.oswego.edu>
+Message-ID: <430A9AF8.1010609@cox.net>
+
+Doug Lea wrote:
+> David Holmes wrote:
+> 
+>>
+>> There is an easy fix that Dawid can hopefully get into the backport in 
+>> the
+>> very near future:
+> 
+> 
+> And the fix for the java.util.concurrent version will with some luck be 
+> in Mustang.
+> 
+> While we never expected anyone to reuse Runnable tasks
+> in this way, (and in general, it is not a good idea)
+> the specs did not say you cannot, so it is indeed a bug.
+
+I've recently made changes to Timer to allow TimerTasks to be reused so that a TimerTask can reschedule the same object 
+into the future without a lot of garbage being generated for fast cycling tasks with odd repeating intervals.  I think 
+it makes a lot of sense to try and work towards reducing garbage generation by not requiring new objects.  There are, of 
+course some interesting issues, such as this one...
+
+Gregg Wonderly
+From jbloch at gmail.com  Tue Aug 23 01:37:28 2005
+From: jbloch at gmail.com (Joshua Bloch)
+Date: Tue Aug 23 01:37:32 2005
+Subject: [concurrency-interest] Whats up with the ThreadPoolExecutor?
+In-Reply-To: <430A9AF8.1010609@cox.net>
+References: <NFBBKALFDCPFIDBNKAPCMEIHGBAA.dholmes@dltech.com.au>
+	<430A6EED.6050407@cs.oswego.edu> <430A9AF8.1010609@cox.net>
+Message-ID: <b097ac5105082222374e88383b@mail.gmail.com>
+
+It was not an accident that you can't reuse a finished timer task.  It
+was a conscious design decision, based the principal that one should
+minimize mutability (keep the state space of a object as simple as
+possible).  In fact, I use it as an example of good API design in my
+API design talk.  I would be very, very surprised if you could come up
+with a realistic example of a program whose performance is noticeably
+improved by reusing timer tasks.
+
+            Josh
+
+On 8/22/05, Gregg Wonderly <gergg@cox.net> wrote:
+> Doug Lea wrote:
+> > David Holmes wrote:
+> >
+> >>
+> >> There is an easy fix that Dawid can hopefully get into the backport in
+> >> the
+> >> very near future:
+> >
+> >
+> > And the fix for the java.util.concurrent version will with some luck be
+> > in Mustang.
+> >
+> > While we never expected anyone to reuse Runnable tasks
+> > in this way, (and in general, it is not a good idea)
+> > the specs did not say you cannot, so it is indeed a bug.
+> 
+> I've recently made changes to Timer to allow TimerTasks to be reused so that a TimerTask can reschedule the same object
+> into the future without a lot of garbage being generated for fast cycling tasks with odd repeating intervals.  I think
+> it makes a lot of sense to try and work towards reducing garbage generation by not requiring new objects.  There are, of
+> course some interesting issues, such as this one...
+> 
+> Gregg Wonderly
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From ravs at online.no  Tue Aug 23 03:11:24 2005
+From: ravs at online.no (Ravinder Singh)
+Date: Tue Aug 23 03:11:35 2005
+Subject: [concurrency-interest] Whats up with the ThreadPoolExecutor?
+In-Reply-To: <430A358E.2050404@peierls.net>
+References: <4309A27B.7040407@online.no> <430A358E.2050404@peierls.net>
+Message-ID: <430ACC1C.10604@online.no>
+
+I don't think its suspect, since the integer is only incremented and 
+never deccremented, the value should allways be correct.
+
+I have now corrected to use a separate Runnable for each task.
+
+>>   static private int cSt, cWrk;
+>>
+>>   public static class Woerker implements Runnable
+>>   {
+>>       public void run()
+>>       {
+>>           cSt++;
+>>       }
+>>   }
+>
+>
+> This is not the main problem, but you are incrementing the cSt counter 
+> without any kind of synchronization, so the cSt value you are seeing 
+> is suspect.
+>
+> --tim
+>
+
+
+From ravs at online.no  Tue Aug 23 03:21:57 2005
+From: ravs at online.no (Ravinder Singh)
+Date: Tue Aug 23 03:22:15 2005
+Subject: [concurrency-interest] Whats up with the ThreadPoolExecutor?
+In-Reply-To: <430A6EED.6050407@cs.oswego.edu>
+References: <NFBBKALFDCPFIDBNKAPCMEIHGBAA.dholmes@dltech.com.au>
+	<430A6EED.6050407@cs.oswego.edu>
+Message-ID: <430ACE95.8020008@online.no>
+
+The reason I am doing it this way, is that our system processess 
+messages from a jms queue. And I am using a threadpool to faster process 
+messages simoultaneously. But if I somehow loose connection to the 
+message source, I must drop everything in the work queue.
+By using the same Runnable which just picks messages from a linkedlist I 
+could just empty that list, when connection breaks.
+
+I have allready reported the bug to Sun, and hopefully they will do 
+something about it.
+
+
+Doug Lea wrote:
+
+> David Holmes wrote:
+>
+>>
+>> There is an easy fix that Dawid can hopefully get into the backport 
+>> in the
+>> very near future:
+>
+>
+> And the fix for the java.util.concurrent version will with some luck 
+> be in Mustang.
+>
+> While we never expected anyone to reuse Runnable tasks
+> in this way, (and in general, it is not a good idea)
+> the specs did not say you cannot, so it is indeed a bug.
+>
+> -Doug
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+
+From ravs at online.no  Tue Aug 23 03:27:23 2005
+From: ravs at online.no (Ravinder Singh)
+Date: Tue Aug 23 03:27:36 2005
+Subject: [concurrency-interest] Whats up with the ThreadPoolExecutor?
+In-Reply-To: <430ACC1C.10604@online.no>
+References: <4309A27B.7040407@online.no> <430A358E.2050404@peierls.net>
+	<430ACC1C.10604@online.no>
+Message-ID: <430ACFDB.8000105@online.no>
+
+I take it back... sorry.. It does offcourse affect the value, if you 
+don't sync it.
+
+
+Ravinder Singh wrote:
+
+> I don't think its suspect, since the integer is only incremented and 
+> never deccremented, the value should allways be correct.
+>
+> I have now corrected to use a separate Runnable for each task.
+>
+>>>   static private int cSt, cWrk;
+>>>
+>>>   public static class Woerker implements Runnable
+>>>   {
+>>>       public void run()
+>>>       {
+>>>           cSt++;
+>>>       }
+>>>   }
+>>
+>>
+>>
+>> This is not the main problem, but you are incrementing the cSt 
+>> counter without any kind of synchronization, so the cSt value you are 
+>> seeing is suspect.
+>>
+>> --tim
+>>
+>
+>
+>
+>
+
+From spyromus at gmail.com  Tue Aug 23 04:16:34 2005
+From: spyromus at gmail.com (Aleksey Gureev)
+Date: Tue Aug 23 04:16:55 2005
+Subject: [concurrency-interest] New project Ursus uses concurrency backport
+In-Reply-To: <430A0D6E.7020304@mathcs.emory.edu>
+References: <BAY109-F13461C2DB1992E3CDFA7C5C4B60@phx.gbl>
+	<430A0D6E.7020304@mathcs.emory.edu>
+Message-ID: <1124784995.7759.35.camel@thehole>
+
+Hi,
+
+> BTW, I thought to myself that it would be nice to have a section 
+> "Projects that use backport.util.concurrent" on the backport page. So, 
+> whoever uses the backport and don't mind to have their project listed, 
+> please just send me a URL, and, if you feel like, a brief overview, and 
+> I will be more than happy to put it on the Web.
+
+We do use it in BlogBridge (http://www.blogbridge.com/). BlogBridge is a
+new generation of information management system. At first glance it
+looks much like a regular RSS reader, but its features allow to do much
+more.
+
+Thanks,
+
+-- 
+Aleksey Gureev
+BlogBridge Team
+http://www.blogbridge.com/
+
+
+From dl at cs.oswego.edu  Tue Aug 23 07:35:39 2005
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue Aug 23 07:35:42 2005
+Subject: [concurrency-interest] Whats up with the ThreadPoolExecutor?
+In-Reply-To: <430ACE95.8020008@online.no>
+References: <NFBBKALFDCPFIDBNKAPCMEIHGBAA.dholmes@dltech.com.au>	<430A6EED.6050407@cs.oswego.edu>
+	<430ACE95.8020008@online.no>
+Message-ID: <430B0A0B.5070907@cs.oswego.edu>
+
+Ravinder Singh wrote:
+> 
+> 
+> I have allready reported the bug to Sun, and hopefully they will do 
+> something about it.
+> 
+
+You must be new here :-)
+
+While it is always a good idea to officially report bugs, we (the
+ex-JSR166 folks) always work with Sun to get fixes in for anything in
+java.util.concurrent, so reporting them on concurrency-interet list is
+the most efficient path to resolution.
+
+-Doug
+
+From p.veentjer at anchormen.nl  Tue Aug 23 08:00:38 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Tue Aug 23 08:00:56 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA0711E6@gerard.anchormen.nl>
+
+ 
+ 
+I have the following problem.
+ 
+I want some kind of container that can store an object. Multiple threads
+can read a value from that container, and if there is no object
+available (the value is null) they are going to sleep (or sleep untill a
+timeout occurs). If there is a value available, all threads that where
+sleeping wake up.. and read the value (but don`t remove it like a in
+blockingqueue)
+ 
+The problem:
+-A good name for such a structure. At the moment I have NotNullWaiter,
+but well.. that sucks.
+-I want to know if there exist something like it. 
+ 
+And I would like it if you would have a look at my code.
+ 
+public class NotNullWaiter<E> {
+ 
+ private final ReadWriteLock _lock;
+ private final Condition _itemAvailable;
+ private volatile E _item;
+ 
+ public NotNullWaiter(){
+  this(false);
+ }
+ 
+ public NotNullWaiter(boolean fair){
+  _lock = new ReentrantReadWriteLock(fair);
+  _itemAvailable = _lock.writeLock().newCondition();
+ }
+ 
+ public E read()throws InterruptedException{
+  _lock.readLock().lockInterruptibly();
+ 
+  try{
+   while(_item==null)
+    _itemAvailable.wait();
+ 
+   return _item;
+  }finally{
+   _lock.readLock().unlock();
+  }
+ }
+ 
+ public E read(long timeout, TimeUnit timeUnit)throws
+InterruptedException{
+  if(timeUnit == null)throw new NullPointerException();
+ 
+  _lock.readLock().lockInterruptibly();
+ 
+  try{
+   long nanos = timeUnit.toNanos(timeout);
+   for (;;) {
+    //if there is an item available, return it.
+    if (_item !=null)
+     return _item;
+ 
+    //if the time has passed, return null to indicate no item is
+available.
+    if (nanos <= 0)
+     return null;
+ 
+    try {
+     nanos = _itemAvailable.awaitNanos(nanos);
+    } catch (InterruptedException ie) {
+     _itemAvailable.signal(); // propagate to non-interrupted thread
+(todo: why???)
+     throw ie;
+    }
+   }
+  }finally{
+   _lock.readLock().unlock();
+  }
+ }
+ 
+ public void write(E item)throws InterruptedException{
+     _lock.writeLock().lockInterruptibly();
+ 
+  try{
+   _item = item;
+   if(item != null)
+    _itemAvailable.signalAll();
+  }finally{
+   _lock.writeLock().unlock();
+  }
+ }
+ 
+ /*
+ private void write(E e, long timeout, TimeUnit timeUnit)throws
+InterruptedException{
+    if(timeUnit == null)throw new NullPointerException();
+ 
+  _lock.writeLock().lockInterruptibly();
+  try{
+      long nanos = timeUnit.toNanos(timeout);
+            for (;;) {
+ 
+   }
+  }finally{
+   _lock.writeLock().unlock();
+  }
+ } */
+}
+
+
+Met vriendelijke groet,
+
+Peter Veentjer
+Anchor Men Interactive Solutions - duidelijk in zakelijke
+internetoplossingen
+
+Praediniussingel 41
+9711 AE Groningen
+
+T: 050-3115222
+F: 050-5891696
+E: p.veentjer@anchormen.nl <BLOCKED::mailto:p.veentjer@anchormen.nl> 
+I : www.anchormen.nl <BLOCKED::blocked::http://www.anchormen.nl/> 
+
+ 
+
+Met vriendelijke groet,
+
+Peter Veentjer
+Anchor Men Interactive Solutions - duidelijk in zakelijke
+internetoplossingen
+
+Praediniussingel 41
+9711 AE Groningen
+
+T: 050-3115222
+F: 050-5891696
+E: p.veentjer@anchormen.nl
+I : www.anchormen.nl <blocked::http://www.anchormen.nl/> 
+
+ 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20050823/407b3f1a/attachment.htm
+From p.veentjer at anchormen.nl  Tue Aug 23 08:46:04 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Tue Aug 23 08:46:23 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA0711E8@gerard.anchormen.nl>
+
+A Future is meant to be used a single time. My structure needs to be updated null/value/value/null/value etc many many times and threads waiting for a value need to sleep if there is no value. 
+
+You can`t unset a Future.. My structure needs to be set/unset many times.  
+
+-----Oorspronkelijk bericht-----
+Van: Michael Hicks [mailto:mwh@cs.umd.edu] 
+Verzonden: dinsdag 23 augustus 2005 14:08
+Aan: Peter Veentjer - Anchor Men
+Onderwerp: Re: [concurrency-interest] Waiting for object value to be available.
+
+Looks similar to a Future, and you might be able to use a FutureTask instead of your code below, depending on how you want to implement creation of the stored value; see http://java.sun.com/j2se/1.5.0/docs/api/java/util/concurrent/
+Future.html.
+
+Mike
+
+On Aug 23, 2005, at 8:00 AM, Peter Veentjer - Anchor Men wrote:
+
+> ?
+> ?
+> I have the following problem.
+> ?
+> I want some kind of container that can store an object. Multiple 
+> threads can read a value from that container, and if there is no 
+> object available (the value is null) they are going to sleep (or sleep 
+> untill a timeout occurs). If there is a value available, all threads 
+> that where sleeping wake up.. and read the value (but don`t remove it 
+> like a in blockingqueue)
+> ?
+> The problem:
+> -A good name for such a structure. At the moment I have NotNullWaiter, 
+> but well.. that sucks.
+> -I want to know if there exist something like it.
+> ?
+> And I would like it if you would have a look at my code.
+> ?
+> public class NotNullWaiter<E> {
+> ?
+> ?private final ReadWriteLock _lock;
+> ?private final Condition _itemAvailable;
+> ?private volatile E _item;
+> ?
+> ?public NotNullWaiter(){
+> ??this(false);
+> ?}
+> ?
+> ?public NotNullWaiter(boolean fair){
+> ??_lock = new ReentrantReadWriteLock(fair);
+> ??_itemAvailable = _lock.writeLock().newCondition();
+> ?}
+> ?
+> ?public E read()throws InterruptedException{
+> ??_lock.readLock().lockInterruptibly();
+> ?
+> ??try{
+> ???while(_item==null)
+> ????_itemAvailable.wait();
+> ?
+> ???return _item;
+> ??}finally{
+> ???_lock.readLock().unlock();
+> ??}
+> ?}
+> ?
+> ?public E read(long timeout, TimeUnit timeUnit)throws 
+> InterruptedException{
+> ??if(timeUnit == null)throw new NullPointerException();
+> ?
+> ??_lock.readLock().lockInterruptibly();
+> ?
+> ??try{
+> ???long nanos = timeUnit.toNanos(timeout);
+> ???for (;;) {
+> ????//if there is an item available, return it.
+> ????if (_item !=null)
+> ?????return _item;
+> ?
+> ????//if the time has passed, return null to indicate no item is 
+> available.
+> ????if (nanos <= 0)
+> ?????return null;
+> ?
+> ????try {
+> ?????nanos = _itemAvailable.awaitNanos(nanos);
+> ????} catch (InterruptedException ie) {
+> ?????_itemAvailable.signal(); // propagate to non-interrupted thread
+> (todo: why???)
+> ?????throw ie;
+> ????}
+> ???}
+> ??}finally{
+> ???_lock.readLock().unlock();
+> ??}
+> ?}
+> ?
+> ?public void write(E item)throws InterruptedException{
+> ???? _lock.writeLock().lockInterruptibly();
+> ?
+> ??try{
+> ???_item = item;
+> ???if(item != null)
+> ????_itemAvailable.signalAll();
+> ??}finally{
+> ???_lock.writeLock().unlock();
+> ??}
+> ?}
+> ?
+> ?/*
+> ?private void write(E e, long timeout, TimeUnit timeUnit)throws 
+> InterruptedException{
+> ?? ?if(timeUnit == null)throw new NullPointerException();
+> ?
+> ??_lock.writeLock().lockInterruptibly();
+> ??try{
+> ????? long nanos = timeUnit.toNanos(timeout);
+> ??????????? for (;;) {
+> ?
+> ???}
+> ??}finally{
+> ???_lock.writeLock().unlock();
+> ??}
+> ?} */
+> }
+>
+> Met vriendelijke groet,
+>
+> Peter Veentjer
+> Anchor Men Interactive Solutions - duidelijk in zakelijke 
+> internetoplossingen
+>
+> Praediniussingel 41
+> 9711 AE Groningen
+>
+> T: 050-3115222
+> F: 050-5891696
+> E: p.veentjer@anchormen.nl
+> I?: www.anchormen.nl
+> ?
+>
+> Met vriendelijke groet,
+>
+> Peter Veentjer
+> Anchor Men Interactive Solutions - duidelijk in zakelijke 
+> internetoplossingen
+>
+> Praediniussingel 41
+> 9711 AE Groningen
+>
+> T: 050-3115222
+> F: 050-5891696
+> E: p.veentjer@anchormen.nl
+> I?: www.anchormen.nl
+> ?_______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+From gregg at cytetech.com  Tue Aug 23 09:18:21 2005
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Tue Aug 23 09:19:00 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA0711E6@gerard.anchormen.nl>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA0711E6@gerard.anchormen.nl>
+Message-ID: <430B221D.5020702@cytetech.com>
+
+
+
+Peter Veentjer - Anchor Men wrote:
+> I want some kind of container that can store an object. Multiple threads 
+> can read a value from that container, and if there is no object 
+> available (the value is null) they are going to sleep (or sleep untill a 
+> timeout occurs). If there is a value available, all threads that where 
+> sleeping wake up.. and read the value (but don`t remove it like a in 
+> blockingqueue)
+
+This is what the whole j.u.c.Future interface is for.  Have a look there
+and the pointers from that Javadoc to FutureTask etc.
+
+Gregg Wondely
+From p.veentjer at anchormen.nl  Tue Aug 23 10:00:08 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Tue Aug 23 10:00:30 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA0711E9@gerard.anchormen.nl>
+
+I have used Futures but if understand them correct they are meant for
+the completion of tasks. And my implementation is not based on the
+completion of tasks. 
+
+Maybe you could elaborate on your suggestion. And please keep in mind
+that the value wrapper will be updated many many times.. A Future only
+completes once..
+
+
+From spyromus at gmail.com  Tue Aug 23 10:16:21 2005
+From: spyromus at gmail.com (Aleksey Gureev)
+Date: Tue Aug 23 10:16:39 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA0711E9@gerard.anchormen.nl>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA0711E9@gerard.anchormen.nl>
+Message-ID: <1124806582.7759.89.camel@thehole>
+
+Peter,
+
+Maybe I will sound a bit stupid, but why not using a bounded queue for
+tasks. It looks like a classical multiple providers vs. multiple
+consumers problem. The consumers are sleeping while there's no object in
+the queue. When provider puts an object, first consumer gets awaken and
+takes the object into processing.
+
+If you think that it matches your scenario I can give you a short sample
+on demand.
+
+Thanks,
+
+Aleksey Gureev
+Noizeramp Creative Group
+Home: http://www.noizeramp.com/
+Blog: http://blog.noizeramp.com/
+
+On Tue, 2005-08-23 at 16:00 +0200, Peter Veentjer - Anchor Men wrote:
+> I have used Futures but if understand them correct they are meant for
+> the completion of tasks. And my implementation is not based on the
+> completion of tasks. 
+> 
+> Maybe you could elaborate on your suggestion. And please keep in mind
+> that the value wrapper will be updated many many times.. A Future only
+> completes once..
+> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From p.veentjer at anchormen.nl  Tue Aug 23 11:03:06 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Tue Aug 23 11:03:27 2005
+Subject: [concurrency-interest] (no subject)
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA0711EC@gerard.anchormen.nl>
+
+The difference with a bounded queue is that the item from the bounded
+queue will be removed and that isn`t what I want. A lot of readers may
+use the item that is in the container, but they don`t remove it. Only
+when I set the item to null, the item will be removed and all request
+for an item value will result in a block (untill an item is available
+again).
+
+So a BlockingQueue looks a lot like it.. But there is a difference.
+
+ 
+
+Met vriendelijke groet,
+
+Peter Veentjer
+Anchor Men Interactive Solutions - duidelijk in zakelijke
+internetoplossingen
+
+Praediniussingel 41
+9711 AE Groningen
+
+T: 050-3115222
+F: 050-5891696
+E: p.veentjer@anchormen.nl
+I : www.anchormen.nl <blocked::http://www.anchormen.nl/> 
+
+ 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20050823/5e7f9ce9/attachment-0001.htm
+From p.veentjer at anchormen.nl  Tue Aug 23 11:42:42 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Tue Aug 23 11:43:03 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA0711EF@gerard.anchormen.nl>
+
+The difference with a bounded queue is that the item from the bounded
+queue will be removed and that isn`t what I want. A lot of readers may
+use the item that is in the container, but they don`t remove it. Only
+when I set the item to null, the item will be removed and all request
+for an item value will result in a block (untill a new item is available
+again).
+
+So a BlockingQueue looks a lot like it.. But there is a difference.
+
+ 
+
+Met vriendelijke groet,
+
+Peter Veentjer
+Anchor Men Interactive Solutions - duidelijk in zakelijke
+internetoplossingen
+
+Praediniussingel 41
+9711 AE Groningen
+
+T: 050-3115222
+F: 050-5891696
+E: p.veentjer@anchormen.nl
+I : www.anchormen.nl <blocked::http://www.anchormen.nl/> 
+
+ 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20050823/d4914814/attachment.htm
+From dl at cs.oswego.edu  Tue Aug 23 12:02:45 2005
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue Aug 23 12:02:48 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA0711E6@gerard.anchormen.nl>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA0711E6@gerard.anchormen.nl>
+Message-ID: <430B48A5.8010803@cs.oswego.edu>
+
+Peter Veentjer - Anchor Men wrote:
+>  
+>  
+> I have the following problem.
+>  
+> I want some kind of container that can store an object. Multiple threads 
+> can read a value from that container, and if there is no object 
+> available (the value is null) they are going to sleep (or sleep untill a 
+> timeout occurs). If there is a value available, all threads that where 
+> sleeping wake up.. and read the value (but don`t remove it like a in 
+> blockingqueue)
+
+I think the most common approach to this sort of problem is to use
+an Observer or Listener design. (My CPJ book includes a description
+in section 3.5.2). This might be overkill here if you don't want or
+need to otherwise maintain observers in lists and multicast to them
+change notifications. If so, you might be able to make a simple
+custom synchronization scheme. One possibility is to associate a version
+number with your data objects, and have the observer threads wait
+for versions to change from their last known version, and signalling
+all waiters when they do change. Note that in these kinds of schemes
+though, observers might miss seeing one of the versions. If that's not
+OK, you probably need a full listener/multicast design to allow
+tighter coordination.
+
+-Doug
+
+From p.veentjer at anchormen.nl  Tue Aug 23 13:00:15 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Tue Aug 23 13:00:33 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA07CA0E@gerard.anchormen.nl>
+
+I think the most common approach to this sort of problem is to use
+an Observer or Listener design. (My CPJ book includes a description
+in section 3.5.2). This might be overkill here if you don't want or
+need to otherwise maintain observers in lists and multicast to them
+change notifications.
+------------------------
+It is very important that the threads that want to read the value, are 
+going to sleep untill a value is available. I think it is more complex 
+to create this behaviour by using a observer/observable than a
+small concurrency stone.
+ 
+And you could see the wait/notify functionality of java as a
+observer/observable. The observers (threads) are waiting in a list (every java object
+can have a collection of threads waiting to be notified) and the event 
+would be the signal. So I don`t see the need to create java objects for 
+something that already is in the core of Java.
+ 
+Let me explain where this NullWaiter is going to be part of. I need 
+something that can be compared to a ThreadPoolExecutor. But I don`t
+want to execute a single job, but I want to execute a job by all
+threads in that structure repeatedly (untill the task is set to null). I have
+called this structure the Repeater. The NullWaiter is going to be
+part of the Repeater and contains the task all threads are waiting for.
+If no task is available, all threads wait. But if a task is available,
+they will keep repeating it..over.. and over.. and over.
+ 
+Why do I need such a strange beast? It is going to be part
+of a channels project I`m writing. One of the usages is that a
+Repeater is going to 'suck' messages out of a channel.
+ 
+example:
+ 
+ public static void main(String[] args){
+  Channel<FetchRequest> requestChannel = new StdBufferedChannel<FetchRequest>(500);
+  Channel<FetchResult> resultChannel = new StdBufferedChannel<FetchResult>(50);
+  
+  RepeaterService fetchRepeater = new StdRepeaterService(5);//5 threads
+  fetchRepeater.start();
+  Fetcher fetcher = new Fetcher(requestChannel,resultChannel,fetchRepeater);
+  
+  RepeaterService analyzeRepeater = new StdRepeaterService(1);//1 thread
+  analyzeRepeater.start();
+  Analyzer analyzer = new Analyzer(resultChannel,requestChannel,analyzerExecutor);
+  
+  try {
+       requestChannel.put(new FetchRequest(new URL("http://dmoz.org/")));
+  } catch (InterruptedException e) {
+   e.printStackTrace();
+  } catch (MalformedURLException e) {
+   e.printStackTrace();
+  }
+ }
+ 
+ 
+ 
+ 
+
+
+
+From tim at peierls.net  Tue Aug 23 13:31:54 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Tue Aug 23 13:32:41 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA07CA0E@gerard.anchormen.nl>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA07CA0E@gerard.anchormen.nl>
+Message-ID: <430B5D8A.10401@peierls.net>
+
+Peter Veentjer - Anchor Men wrote:
+> Let me explain where this NullWaiter is going to be part of. I need 
+> something that can be compared to a ThreadPoolExecutor. But I don`t
+> want to execute a single job, but I want to execute a job by all
+> threads in that structure repeatedly (untill the task is set to null). I have
+> called this structure the Repeater. The NullWaiter is going to be
+> part of the Repeater and contains the task all threads are waiting for.
+> If no task is available, all threads wait. But if a task is available,
+> they will keep repeating it..over.. and over.. and over.
+
+I still don't really understand the use case, but does this interface describe 
+what you want?
+
+   interface AwaitableValue<V> {
+       V get() throws InterruptedException;
+       void set(V value);
+   }
+
+And if so, does this simpler implementation (doesn't use RWL) meet your needs?
+
+   class SimpleAwaitableValue<V> implements AwaitableValue<V> {
+       private volatile V value;
+       public V get() throws InterruptedException {
+           V v = value;
+           if (v != null) return v;
+           synchronized (this) {
+               while (value == null) wait();
+               return value;
+           }
+       }
+       public synchronized void set(V v) {
+           value = v;
+           if (value != null) notifyAll();
+       }
+   }
+
+--tim
+
+From p.veentjer at anchormen.nl  Tue Aug 23 13:39:27 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Tue Aug 23 13:39:49 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA07CA0F@gerard.anchormen.nl>
+
+
+I still don't really understand the use case, but does this interface describe
+what you want?
+ 
+--------------------------------------
+ 
+Yes it does.. I allready had removed the read write lock but your name is a lot better than mine :)
+ 
+public class Bar<E> {
+ private final ReentrantLock _lock;
+ private volatile E _item;
+ private final Condition _availableCond;
+ public Bar(boolean fair){
+  _lock = new ReentrantLock(fair);
+  _availableCond = _lock.newCondition();
+ }
+ public E get() throws InterruptedException {
+  _lock.lockInterruptibly();
+  try{
+   while(_item == null)
+    _availableCond.wait();
+   return _item;
+  }finally{
+   _lock.unlock();
+  }
+ }
+ public void set(E item) throws InterruptedException {
+  _lock.lockInterruptibly();
+  try{
+   _item = item;
+   if(_item!=null)
+    _availableCond.signalAll();
+  }finally{
+   _lock.unlock();
+  }
+ }
+}
+
+ 
+But I`m going to need the read write lock. I don`t want multiple values of the WaitableValue out there.. only one is allowed (I only want one task-instance running, not two).. So I`m going to use the read write lock to garantuee that all old values are returned before a new value is available.
+
+
+From Darron_Shaffer at stercomm.com  Tue Aug 23 14:04:12 2005
+From: Darron_Shaffer at stercomm.com (Shaffer, Darron)
+Date: Tue Aug 23 14:04:26 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+Message-ID: <303629700276DF4D9ED7D011221B8FAA02A3592A@scidubmsg03.sci.local>
+
+The old WaitableReference class would do this nicely.  Unfortunately, it
+didn't make it into Java 5.
+
+By the way, why didn't this group of classes end up in Java 5?
+
+
+-----Original Message-----
+From: concurrency-interest-bounces@cs.oswego.edu
+[mailto:concurrency-interest-bounces@cs.oswego.edu] On Behalf Of Peter
+Veentjer - Anchor Men
+Sent: Tuesday, August 23, 2005 12:00 PM
+To: Doug Lea; concurrency-interest@altair.cs.oswego.edu
+Subject: RE: [concurrency-interest] Waiting for object value to be
+available.
+
+I think the most common approach to this sort of problem is to use
+an Observer or Listener design. (My CPJ book includes a description
+in section 3.5.2). This might be overkill here if you don't want or
+need to otherwise maintain observers in lists and multicast to them
+change notifications.
+------------------------
+It is very important that the threads that want to read the value, are 
+going to sleep untill a value is available. I think it is more complex 
+to create this behaviour by using a observer/observable than a
+small concurrency stone.
+ 
+And you could see the wait/notify functionality of java as a
+observer/observable. The observers (threads) are waiting in a list
+(every java object
+can have a collection of threads waiting to be notified) and the event 
+would be the signal. So I don`t see the need to create java objects for 
+something that already is in the core of Java.
+ 
+Let me explain where this NullWaiter is going to be part of. I need 
+something that can be compared to a ThreadPoolExecutor. But I don`t
+want to execute a single job, but I want to execute a job by all
+threads in that structure repeatedly (untill the task is set to null). I
+have
+called this structure the Repeater. The NullWaiter is going to be
+part of the Repeater and contains the task all threads are waiting for.
+If no task is available, all threads wait. But if a task is available,
+they will keep repeating it..over.. and over.. and over.
+ 
+Why do I need such a strange beast? It is going to be part
+of a channels project I`m writing. One of the usages is that a
+Repeater is going to 'suck' messages out of a channel.
+ 
+example:
+ 
+ public static void main(String[] args){
+  Channel<FetchRequest> requestChannel = new
+StdBufferedChannel<FetchRequest>(500);
+  Channel<FetchResult> resultChannel = new
+StdBufferedChannel<FetchResult>(50);
+  
+  RepeaterService fetchRepeater = new StdRepeaterService(5);//5 threads
+  fetchRepeater.start();
+  Fetcher fetcher = new
+Fetcher(requestChannel,resultChannel,fetchRepeater);
+  
+  RepeaterService analyzeRepeater = new StdRepeaterService(1);//1 thread
+  analyzeRepeater.start();
+  Analyzer analyzer = new
+Analyzer(resultChannel,requestChannel,analyzerExecutor);
+  
+  try {
+       requestChannel.put(new FetchRequest(new
+URL("http://dmoz.org/")));
+  } catch (InterruptedException e) {
+   e.printStackTrace();
+  } catch (MalformedURLException e) {
+   e.printStackTrace();
+  }
+ }
+ 
+ 
+ 
+ 
+
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From matthias.ernst at coremedia.com  Tue Aug 23 14:12:52 2005
+From: matthias.ernst at coremedia.com (Ernst, Matthias)
+Date: Tue Aug 23 14:13:05 2005
+Subject: AW: [concurrency-interest] Waiting for object value to be available.
+Message-ID: <F34C8A704C489B46B9E9FBDBD1B91D5FC04613@MARS.coremedia.com>
+
+Interesting challenge, actually.
+
+Tim's SimpleAvaitableValue does it, yet I was hoping to find a simple
+lock-free version that avoids "lock-getValue-unlock"-sequence in the
+common case (value != null) and requires only a volatile read.
+
+So I thought, "AbstractQueuedSynchronizer implements all the queueing,
+you just have to model the state transitions", and tried to morph AQS by
+changing the state type from 'int' to 'Object'.
+
+This proved more complicated than I had expected :-)
+
+Is this a case for separating the queueing functionality from the
+integer state and the notion of shared/exclusive?
+
+Matthias
+
+From tim at peierls.net  Tue Aug 23 14:21:27 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Tue Aug 23 14:22:08 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA07CA0F@gerard.anchormen.nl>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA07CA0F@gerard.anchormen.nl>
+Message-ID: <430B6927.2060908@peierls.net>
+
+Peter Veentjer - Anchor Men wrote:
+> I allready had removed the read write lock ...
+>  
+> public class Bar<E> {
+>  private final ReentrantLock _lock;
+>  private volatile E _item;
+>  private final Condition _availableCond;
+>  public Bar(boolean fair){
+>   _lock = new ReentrantLock(fair);
+>   _availableCond = _lock.newCondition();
+>  }
+>  public E get() throws InterruptedException {
+>   _lock.lockInterruptibly();
+>   try{
+>    while(_item == null)
+>     _availableCond.wait();
+>    return _item;
+>   }finally{
+>    _lock.unlock();
+>   }
+>  }
+>  public void set(E item) throws InterruptedException {
+>   _lock.lockInterruptibly();
+>   try{
+>    _item = item;
+>    if(_item!=null)
+>     _availableCond.signalAll();
+>   }finally{
+>    _lock.unlock();
+>   }
+>  }
+> }
+
+Your version doesn't take advantage of the volatility of _item. You should 
+either remove the volatile keyword or add these lines to the top of your get() 
+implementation:
+
+     E item = _item;
+     if (item != null) return item;
+
+Also, do you have any experimental evidence to suggest that the Lock will ever 
+need to be fair? It seems unlikely to me, especially if you add the volatile 
+optimization above, where readers don't even block when there's a non-null value.
+
+And since there won't be much blocking, there won't be much lock contention, 
+so you don't really need to use ReentrantLock at all. Stick with intrinsic 
+locking, as in the SimpleAwaitableValue code I posted.
+
+ReentrantLock is appropriate when you need a feature that it provides that 
+intrinsic locking doesn't or when you expect a *lot* of contention. Otherwise, 
+intrinsic locking is easier to read and likely to perform just as well, if not 
+better.
+
+
+> But I`m going to need the read write lock. I don`t want multiple 
+> values of the WaitableValue out there.. only one is allowed
+> (I only want one task-instance running, not two).. So I`m going
+> to use the read write lock to garantuee that all old values
+> are returned before a new value is available.
+
+Using RWL doesn't prevent two readers from seeing different values if there is 
+an intervening write, so I don't think you need it.
+
+--tim
+
+From dl at cs.oswego.edu  Tue Aug 23 14:40:44 2005
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue Aug 23 14:40:47 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+In-Reply-To: <303629700276DF4D9ED7D011221B8FAA02A3592A@scidubmsg03.sci.local>
+References: <303629700276DF4D9ED7D011221B8FAA02A3592A@scidubmsg03.sci.local>
+Message-ID: <430B6DAC.2040301@cs.oswego.edu>
+
+Shaffer, Darron wrote:
+> The old WaitableReference class would do this nicely.  Unfortunately, it
+> didn't make it into Java 5.
+> 
+> By the way, why didn't this group of classes end up in Java 5?
+> 
+
+This was a "doesn't-carry-its-weight" judgement. It would have entailed
+putting out specs, inmplementations, and TCK tests for up to eighteen
+little classes that are rarely used (especially considering overlap
+with the AtomicX classes, which were sorely needed) and not too
+hard for people to make themselves when they need them.
+
+Someday I ought to make good on intent to separately release new
+J2SE5-compatible versions of the little things in dl.util.concurrent
+that didn't make it into java.util.concurrent. But too many other things
+always seem to have higher priority. (Maybe someone on this list
+would like to take this on?)
+
+-Doug
+
+From dl at cs.oswego.edu  Tue Aug 23 14:43:40 2005
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue Aug 23 14:43:43 2005
+Subject: AW: [concurrency-interest] Waiting for object value to be
+	available.
+In-Reply-To: <F34C8A704C489B46B9E9FBDBD1B91D5FC04613@MARS.coremedia.com>
+References: <F34C8A704C489B46B9E9FBDBD1B91D5FC04613@MARS.coremedia.com>
+Message-ID: <430B6E5C.6040909@cs.oswego.edu>
+
+Ernst, Matthias wrote:
+> 
+> Tim's SimpleAvaitableValue does it, yet I was hoping to find a simple
+> lock-free version that avoids "lock-getValue-unlock"-sequence in the
+> common case (value != null) and requires only a volatile read.
+
+(Not sure I understand. Tim's does that bypass, at the expense only
+of a recheck, which is likely to be about as fast as anything else.)
+
+> 
+> So I thought, "AbstractQueuedSynchronizer implements all the queueing,
+> you just have to model the state transitions", and tried to morph AQS by
+> changing the state type from 'int' to 'Object'.
+
+I can't think of a really good reason to want to do this. Why not use
+integer codes for null/nonull and then another Object field for data?
+Like Tim though, my guess is that even this is excessive compared to
+Tim's version unless it is a performance bottleneck.
+
+> 
+> This proved more complicated than I had expected :-)
+> 
+> Is this a case for separating the queueing functionality from the
+> integer state and the notion of shared/exclusive?
+
+Among the challenges in doing this would be to give some handle to
+synchronizer implementors for avoiding garbage retention stemming
+from references inside AQS nodes. Lack of good ideas about this
+and related issues led us to add "Long" version of AQS to Mustang
+but not "Reference" version.
+
+
+-Doug
+
+From p.veentjer at anchormen.nl  Tue Aug 23 16:52:06 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Tue Aug 23 16:53:21 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA07CA16@gerard.anchormen.nl>
+
+Your version doesn't take advantage of the volatility of _item. 
+--------------------
+What is there to take advantage of (I guess I`m missing something)? 
+And I would rather make something that is less efficient but a lot clearer.
+ So if mine doesn`t work.. I`ll change it, but if it does, I won`t change it 
+(it would be to difficult to understand).
+
+Also, do you have any experimental evidence to suggest that the Lock will ever
+need to be fair? It seems unlikely to me, especially if you add the volatile
+optimization above, where readers don't even block when there's a non-null value.
+
+And since there won't be much blocking, there won't be much lock contention,
+so you don't really need to use ReentrantLock at all. Stick with intrinsic
+locking, as in the SimpleAwaitableValue code I posted.
+
+ReentrantLock is appropriate when you need a feature that it provides that
+intrinsic locking doesn't or when you expect a *lot* of contention. Otherwise,
+intrinsic locking is easier to read and likely to perform just as well, if not
+better.
+--------------------------------
+You have lost me here. I`m not a concurrency master, so I would rather have something
+that I understand and works... than something that maybe works better/efficient but I can`t 
+understand. 
+ 
+
+Using RWL doesn't prevent two readers from seeing different values if there is
+an intervening write, so I don't think you need it.
+---------------------------------------------
+With a RWL this behaviour can be realised. If every readed returns the read value (so unlocks a readlock)
+only a write lock can be optained of all readers have unlocked.
+
+--tim
+
+
+
+
+From p.veentjer at anchormen.nl  Tue Aug 23 17:14:03 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Tue Aug 23 17:18:12 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA07CA18@gerard.anchormen.nl>
+
+Your version doesn't take advantage of the volatility of _item. 
+------------------------------------
+Btw: If I don`t add the volatile keyword, the item in the while loop could be a cached value and that value could never update. So or something has changed in Java (and Java has changed their memory/concurrency model), or I`m missing something.. (or you made a mistake).
+ 
+the code:
+ 
+  public E get() throws InterruptedException {
+>   _lock.lockInterruptibly();
+>   try{
+>    while(_item == null)
+>     _availableCond.wait();
+>    return _item;
+>   }finally{
+>    _lock.unlock();
+>   }
+>  }
+
+ 
+It _item is not made volatile, the while loop could use some value stored in some kind of cpu-register that never gets updated. That is as far as I know of, the whole reason about the existence of the volatile keyword.
+ 
+ 
+ 
+You should
+either remove the volatile keyword or add these lines to the top of your get()
+implementation:
+
+     E item = _item;
+     if (item != null) return item;
+
+Also, do you have any experimental evidence to suggest that the Lock will ever
+need to be fair? It seems unlikely to me, especially if you add the volatile
+optimization above, where readers don't even block when there's a non-null value.
+
+And since there won't be much blocking, there won't be much lock contention,
+so you don't really need to use ReentrantLock at all. Stick with intrinsic
+locking, as in the SimpleAwaitableValue code I posted.
+
+ReentrantLock is appropriate when you need a feature that it provides that
+intrinsic locking doesn't or when you expect a *lot* of contention. Otherwise,
+intrinsic locking is easier to read and likely to perform just as well, if not
+better.
+
+
+> But I`m going to need the read write lock. I don`t want multiple
+> values of the WaitableValue out there.. only one is allowed
+> (I only want one task-instance running, not two).. So I`m going
+> to use the read write lock to garantuee that all old values
+> are returned before a new value is available.
+
+Using RWL doesn't prevent two readers from seeing different values if there is
+an intervening write, so I don't think you need it.
+
+--tim
+
+
+
+
+From joe.bowbeer at gmail.com  Tue Aug 23 17:52:44 2005
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Tue Aug 23 17:52:58 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA0711E6@gerard.anchormen.nl>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA0711E6@gerard.anchormen.nl>
+Message-ID: <31f2a7bd05082314529a4cc09@mail.gmail.com>
+
+I suggest a custom Future implementation or a custom BlockingQueueimplementation.
+As others have pointed out, Future provides the desired get() orget(timeout) API for the reading client.
+Similary, BlockingQueue provides poll() and poll(timeout).
+In terms of implementation, these approaches resolve to eithercreating a resetable FutureTask or employing a single-entryBlockingQueue (where the writing client would first take the onlyelement from the queue and then put a new element).
+I suggest the latter.  You can repackage the API to hide theBlockingQueue details from the user, but the details would look like:
+queue = new ArrayBlockingQueue<E>(1);
+// readers
+E = queue.poll(timeout, unit);
+// writer
+queue.clear();queue.put(E);
+
+Joe.
+
+
+On 8/23/05, Peter Veentjer - Anchor Men <p.veentjer@anchormen.nl> wrote:>  >   >  >   > I have the following problem. >   > I want some kind of container that can store an object. Multiple threads can> read a value from that container, and if there is no object available (the> value is null) they are going to sleep (or sleep untill a timeout occurs).> If there is a value available, all threads that where sleeping wake up.. and> read the value (but don`t remove it like a in blockingqueue) >   > The problem: > -A good name for such a structure. At the moment I have NotNullWaiter, but> well.. that sucks. > -I want to know if there exist something like it. >   > And I would like it if you would have a look at my code. >   > public class NotNullWaiter<E> { >   >  private final ReadWriteLock _lock;>  private final Condition _itemAvailable;>  private volatile E _item; >   >  public NotNullWaiter(){>   this(false);>  } >   >  public NotNullWaiter(boolean fair){>   _lock = new ReentrantReadWriteLock(fair);>   _itemAvailable = _lock.writeLock().newCondition();>  } >   >  public E read()throws InterruptedException{>   _lock.readLock().lockInterruptibly(); >   >   try{>    while(_item==null)>     _itemAvailable.wait(); >   >    return _item;>   }finally{>    _lock.readLock().unlock();>   }>  } >   >  public E read(long timeout, TimeUnit timeUnit)throws InterruptedException{>   if(timeUnit == null)throw new NullPointerException(); >   >   _lock.readLock().lockInterruptibly(); >   >   try{>    long nanos = timeUnit.toNanos(timeout);>    for (;;) {>     //if there is an item available, return it.>     if (_item !=null)>      return _item; >   >     //if the time has passed, return null to indicate no item is available.>     if (nanos <= 0)>      return null; >   >     try {>      nanos = _itemAvailable.awaitNanos(nanos);>     } catch (InterruptedException ie) {>      _itemAvailable.signal(); // propagate to non-interrupted thread (todo:> why???)>      throw ie;>     }>    }>   }finally{>    _lock.readLock().unlock();>   }>  } >   >  public void write(E item)throws InterruptedException{>      _lock.writeLock().lockInterruptibly(); >   >   try{>    _item = item;>    if(item != null)>     _itemAvailable.signalAll();>   }finally{>    _lock.writeLock().unlock();>   }>  } >   >  /*>  private void write(E e, long timeout, TimeUnit timeUnit)throws> InterruptedException{>     if(timeUnit == null)throw new NullPointerException(); >   >   _lock.writeLock().lockInterruptibly();>   try{>       long nanos = timeUnit.toNanos(timeout);>             for (;;) { >   >    }>   }finally{>    _lock.writeLock().unlock();>   }>  } */> }>  >  > > Met vriendelijke groet,> > Peter Veentjer> Anchor Men Interactive Solutions ? duidelijk in zakelijke> internetoplossingen> > Praediniussingel 41> 9711 AE Groningen> > T: 050-3115222> F: 050-5891696> E: p.veentjer@anchormen.nl> I : www.anchormen.nl >   >  > > Met vriendelijke groet,> > Peter Veentjer> Anchor Men Interactive Solutions ? duidelijk in zakelijke> internetoplossingen> > Praediniussingel 41> 9711 AE Groningen> > T: 050-3115222> F: 050-5891696> E: p.veentjer@anchormen.nl> I : www.anchormen.nl >   > _______________________________________________> Concurrency-interest mailing list> Concurrency-interest@altair.cs.oswego.edu> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest> > >
+From joe.bowbeer at gmail.com  Tue Aug 23 18:32:01 2005
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Tue Aug 23 18:32:09 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+In-Reply-To: <31f2a7bd05082314529a4cc09@mail.gmail.com>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA0711E6@gerard.anchormen.nl>
+	<31f2a7bd05082314529a4cc09@mail.gmail.com>
+Message-ID: <31f2a7bd05082315322455cd3e@mail.gmail.com>
+
+Oops.  Scratch the ArrayBlockingQueue idea.  poll is not peek and vice versa..
+
+I still think the BlockingQueue interface is a reasonable model, but
+you'd need a custom implementation.
+
+Back to resettable Future then.
+
+
+On 8/23/05, Joe Bowbeer <joe.bowbeer@gmail.com> wrote:
+> I suggest a custom Future implementation or a custom BlockingQueue
+> implementation.
+> 
+> As others have pointed out, Future provides the desired get() or
+> get(timeout) API for the reading client.
+> 
+> Similary, BlockingQueue provides poll() and poll(timeout).
+> 
+> In terms of implementation, these approaches resolve to either
+> creating a resetable FutureTask or employing a single-entry
+> BlockingQueue (where the writing client would first take the only
+> element from the queue and then put a new element).
+> 
+> I suggest the latter.  You can repackage the API to hide the
+> BlockingQueue details from the user, but the details would look like:
+> 
+> queue = new ArrayBlockingQueue<E>(1);
+> 
+> // readers
+> 
+> E = queue.poll(timeout, unit);
+> 
+> // writer
+> 
+> queue.clear();
+> queue.put(E);
+> 
+> 
+> Joe.
+> 
+> 
+> 
+> On 8/23/05, Peter Veentjer - Anchor Men <p.veentjer@anchormen.nl> wrote:
+> >
+> >
+> >
+> >
+> > I have the following problem.
+> >
+> > I want some kind of container that can store an object. Multiple threads can
+> > read a value from that container, and if there is no object available (the
+> > value is null) they are going to sleep (or sleep untill a timeout occurs).
+> > If there is a value available, all threads that where sleeping wake up.. and
+> > read the value (but don`t remove it like a in blockingqueue)
+> >
+> > The problem:
+> > -A good name for such a structure. At the moment I have NotNullWaiter, but
+> > well.. that sucks.
+> > -I want to know if there exist something like it.
+> >
+> > And I would like it if you would have a look at my code.
+> >
+> > public class NotNullWaiter<E> {
+> >
+> >  private final ReadWriteLock _lock;
+> >  private final Condition _itemAvailable;
+> >  private volatile E _item;
+> >
+> >  public NotNullWaiter(){
+> >   this(false);
+> >  }
+> >
+> >  public NotNullWaiter(boolean fair){
+> >   _lock = new ReentrantReadWriteLock(fair);
+> >   _itemAvailable = _lock.writeLock().newCondition();
+> >  }
+> >
+> >  public E read()throws InterruptedException{
+> >   _lock.readLock().lockInterruptibly();
+> >
+> >   try{
+> >    while(_item==null)
+> >     _itemAvailable.wait();
+> >
+> >    return _item;
+> >   }finally{
+> >    _lock.readLock().unlock();
+> >   }
+> >  }
+> >
+> >  public E read(long timeout, TimeUnit timeUnit)throws InterruptedException{
+> >   if(timeUnit == null)throw new NullPointerException();
+> >
+> >   _lock.readLock().lockInterruptibly();
+> >
+> >   try{
+> >    long nanos = timeUnit.toNanos(timeout);
+> >    for (;;) {
+> >     //if there is an item available, return it.
+> >     if (_item !=null)
+> >      return _item;
+> >
+> >     //if the time has passed, return null to indicate no item is available.
+> >     if (nanos <= 0)
+> >      return null;
+> >
+> >     try {
+> >      nanos = _itemAvailable.awaitNanos(nanos);
+> >     } catch (InterruptedException ie) {
+> >      _itemAvailable.signal(); // propagate to non-interrupted thread (todo:
+> > why???)
+> >      throw ie;
+> >     }
+> >    }
+> >   }finally{
+> >    _lock.readLock().unlock();
+> >   }
+> >  }
+> >
+> >  public void write(E item)throws InterruptedException{
+> >      _lock.writeLock().lockInterruptibly();
+> >
+> >   try{
+> >    _item = item;
+> >    if(item != null)
+> >     _itemAvailable.signalAll();
+> >   }finally{
+> >    _lock.writeLock().unlock();
+> >   }
+> >  }
+> >
+> >  /*
+> >  private void write(E e, long timeout, TimeUnit timeUnit)throws
+> > InterruptedException{
+> >     if(timeUnit == null)throw new NullPointerException();
+> >
+> >   _lock.writeLock().lockInterruptibly();
+> >   try{
+> >       long nanos = timeUnit.toNanos(timeout);
+> >             for (;;) {
+> >
+> >    }
+> >   }finally{
+> >    _lock.writeLock().unlock();
+> >   }
+> >  } */
+> > }
+> >
+
+From dholmes at dltech.com.au  Tue Aug 23 19:54:02 2005
+From: dholmes at dltech.com.au (David Holmes)
+Date: Tue Aug 23 19:54:27 2005
+Subject: [concurrency-interest] Waiting for object value to be available.
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA07CA18@gerard.anchormen.nl>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIEJNGBAA.dholmes@dltech.com.au>
+
+Being in a different time-zone gives me the advantage of seeing the story
+unwind so that all the requirements are extracted.
+
+>From what I read Peter wants a "waitable reference" as has been discussed,
+which is very much like a settable FutureTask. *However* the part that I
+don't think people have picked up on yet is the use of the ReadWriteLock. If
+I understand Peter correctly, the intent is that the value of the object
+can't be changed while anybody is using that value - which in this case
+means a thread is running that task. So the intent then is that the getter
+will do something like:
+
+    readLock.acquire();
+    try {
+       V val = value.get();
+       process(val);
+    }
+    finally {
+      readLock.release();
+    }
+
+However the code that Peter originally showed does not do this. It simply
+held the readLock while doing the get() and returning the value. Hence as
+soon as the value was returned and the readLock released then the value
+could be changed and two (or more) different versions of the task could be
+being processed.
+
+So the interface that I see for this is more like:
+
+    E acquireValue();
+    void releaseValue(E val);
+    void setValue(E val);
+
+and so the client of this would do:
+
+    E val = value.acquireValue();
+    try {
+        process(val);
+    }
+    finally {
+       value.releaseValue(val);
+    }
+
+The intent being that if the number of successful acquires exceed the number
+of successful releases then the current value is being used and so setValue
+will block.
+
+Does this represent what you want to do Peter? If so we can pursue
+implementation approaches.
+
+
+A couple of additional notes. In the original code you have:
+
+  public E read()throws InterruptedException{
+    _lock.readLock().lockInterruptibly();
+     try{
+       while(_item==null)
+            _itemAvailable.wait();
+
+You can't do this. The Condition is associated with the WriteLock and to
+wait on it you must hold the WriteLock. To fix this per acquireValue above
+you would do:
+
+    writeLock.lockInterruptibly();
+    try {
+       while(item == null)
+             itemAvailable.await();  // NOTE await NOT Object.wait
+       readLock.lock(); //  writer can acquire readLock to downgrade
+       return item;
+    }
+    finally {
+       writeLock.unlock();
+    }
+
+and in releaseValue() you would do the readLock.unlock(). Of course you need
+to take great care in the client code to ensure the releaseValue() is always
+called even if the client throws an exception etc.
+
+
+Second issue: volatile. You only need to use volatile if you will access a
+shared mutable variable without using any other form of synchronization.
+Other forms of synchronization include always accessing the variable with
+the same lock held (or for ReadWrite locks a read-lock or write-lock from
+the same ReadWriteLock); or correctly using atomic variables or other
+volatile variables that protect/coordinate access to the variable concerned.
+In your code you always access _item with a lock held, so it need not be
+volatile. The use of Locks provides all the necessary memory model
+guarantees that ensures that all updates are visible where they need to be.
+
+Tim's point was that you could use the volatility of item to do a safe
+fast-path through the code, for the case where item is not null, to avoid
+the need for acquiring a lock ie it would be a performance boost. That
+comment doesn't account for the "nobody can set while the value is being
+used" semantics that I think you want, however.
+
+I hope this helps.
+
+Cheers,
+David Holmes
+
+PS. Please try and use a mail program that correctly indents or prefixes
+text written by others - it is vary hard to see in your mails what comments
+are from you and what are quoted from other posters. Thanks.
+
+From jbloch at gmail.com  Sat Aug 27 14:21:23 2005
+From: jbloch at gmail.com (Joshua Bloch)
+Date: Sat Aug 27 14:21:25 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <b097ac5105082614341782b8b4@mail.gmail.com>
+References: <b097ac5105082614341782b8b4@mail.gmail.com>
+Message-ID: <b097ac5105082711214e756ecc@mail.gmail.com>
+
+Folks,
+
+Hi. I wrote a new java.util.concurrent.locks.Lock implementation
+called FileLock.  Briefly, a FileLock instance is backed by a
+java.nio.channels.FileLock as well as a
+java.util.concurrent.locks.ReentrantLock.  It implements functionality
+similarlar to ReentrantLock, but without the bells and whistles, and
+it works across VMs as well as within a VM.
+
+But there are problems:
+
+(1) Perhaps the fundamental problem: if you're doing locking across
+VMs, it's probably because you're protecting some shared persistent
+resource.  If a VM holding a FileLock dies, the lock is automatically
+dropped.  If the shared persistent resource is in an inconsistent
+state, woe betide thee.
+
+(2) I discovered that there is a bug in java.nio.channels.FileLock.
+As a result, you get horrible, machine-dependent behavior if you try
+to create multiple instances of my FileLock class in a single VM
+backed by the same file.  On windows, your process hangs.  On Unix,
+you don't get mutual exclusion among threads.  If
+java.nio.channels.FileLock obeyed its spec, you'd get a nice exception
+(OverlappingFileLockException).  I reported this bug today, but I
+don't expect it to get fixed any time soon.
+
+(3) If I were to implement condition variables in conjunction with
+FileLock, Condition.signal would not work across VMs.  This would
+violate the principle of least astonishment.  So, for now, I haven't
+implemented condition variables (though it would be easy to do).
+
+(4) People would use FileLocks across physical machines, using NFS
+files.  This might work reliably.  Or it might not.  If it didn't,
+they'd get angry at me.
+
+Anyway, if you are so inclined, take a look at it and tell me what you
+think.  When I first came up with the idea, I thought it might make a
+nice addition to j.u.c, but now I'm not so sure.
+
+            Josh
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: FileLock.java
+Type: application/octet-stream
+Size: 8186 bytes
+Desc: not available
+Url : /pipermail/attachments/20050827/50e21ae0/FileLock.obj
+From gregg at cytetech.com  Sat Aug 27 21:14:20 2005
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Sat Aug 27 21:15:07 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <b097ac5105082711214e756ecc@mail.gmail.com>
+References: <b097ac5105082614341782b8b4@mail.gmail.com>
+	<b097ac5105082711214e756ecc@mail.gmail.com>
+Message-ID: <43110FEC.1010407@cytetech.com>
+
+
+
+Joshua Bloch wrote:
+> Hi. I wrote a new java.util.concurrent.locks.Lock implementation
+> called FileLock.  Briefly, a FileLock instance is backed by a
+> java.nio.channels.FileLock as well as a
+> java.util.concurrent.locks.ReentrantLock.  It implements functionality
+> similarlar to ReentrantLock, but without the bells and whistles, and
+> it works across VMs as well as within a VM.
+> 
+> But there are problems:
+
+> (4) People would use FileLocks across physical machines, using NFS
+> files.  This might work reliably.  Or it might not.  If it didn't,
+> they'd get angry at me.
+> 
+> Anyway, if you are so inclined, take a look at it and tell me what you
+> think.  When I first came up with the idea, I thought it might make a
+> nice addition to j.u.c, but now I'm not so sure.
+
+For remote, distributed capabilities, the Jini platform's transaction manager
+really provides a crash resilent implementation.  The configurabilty and
+flexibility at deployment provides a great way to make things as effecient or as
+secure as you need.
+
+I know Jini is not in the J2SE, but at some point, I hope people who need
+distributed solutions will come to realize what power and capabilities
+are in Jini.
+
+There's really not an interesting reason to recreate all of that work.
+
+Gregg Wonderly
+From joe.bowbeer at gmail.com  Mon Aug 29 14:15:24 2005
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Mon Aug 29 14:15:31 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <43110FEC.1010407@cytetech.com>
+References: <b097ac5105082614341782b8b4@mail.gmail.com>
+	<b097ac5105082711214e756ecc@mail.gmail.com>
+	<43110FEC.1010407@cytetech.com>
+Message-ID: <31f2a7bd05082911153d2792b1@mail.gmail.com>
+
+On 8/27/05, Gregg Wonderly <gregg@cytetech.com> wrote:
+> 
+> For remote, distributed capabilities, the Jini platform's transaction manager
+> really provides a crash resilent implementation.  The configurabilty and
+> flexibility at deployment provides a great way to make things as effecient or as
+> secure as you need.
+> 
+
+See also JavaSpaces, built on Jini's distributed transaction support:
+
+Explore Jini Transactions with JavaSpaces
+http://www.artima.com/jini/jiniology/js4.html
+
+Getting Started With JavaSpaces Technology
+http://java.sun.com/developer/technicalArticles/tools/JavaSpaces/
+
+"The JavaSpaces API uses the package net.jini.core.transaction to
+provide basic atomic transactions that group multiple operations
+across multiple JavaSpaces services into a bundle that acts as a
+single atomic operation."
+
+Joe.
+
+From dawidk at mathcs.emory.edu  Mon Aug 29 17:08:11 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Mon Aug 29 17:19:46 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <43110FEC.1010407@cytetech.com>
+References: <b097ac5105082614341782b8b4@mail.gmail.com><b097ac5105082711214e	756ecc@mail.gmail.com>
+	<43110FEC.1010407@cytetech.com>
+Message-ID: <4313793B.80703@mathcs.emory.edu>
+
+Gregg Wonderly wrote:
+
+>
+>> (4) People would use FileLocks across physical machines, using NFS
+>> files.  This might work reliably.  Or it might not.  If it didn't,
+>> they'd get angry at me.
+>>
+>> Anyway, if you are so inclined, take a look at it and tell me what you
+>> think.  When I first came up with the idea, I thought it might make a
+>> nice addition to j.u.c, but now I'm not so sure.
+>
+>
+> For remote, distributed capabilities, the Jini platform's transaction 
+> manager
+> really provides a crash resilent implementation.  The configurabilty and
+> flexibility at deployment provides a great way to make things as 
+> effecient or as
+> secure as you need.
+>
+> I know Jini is not in the J2SE, but at some point, I hope people who need
+> distributed solutions will come to realize what power and capabilities
+> are in Jini.
+>
+> There's really not an interesting reason to recreate all of that work.
+>
+Gregg,
+
+I hope that your point is that distributed file locking is not a 
+reliable substitute for a transaction manager, be it Jini or otherwise, 
+when one is needed. If so, I fully agree. On the other hand, distributed 
+transaction manager is shooting flies from a cannon if all you need is 
+basic non-distributed inter-process synchronization. (Carrying that 
+cannon around, no matter how well-featured it is, will cost you in terms 
+of deployment size and complexity, and run-time overheads of two-phase 
+commit etc.) So, all in all I am happy to see this file lock 
+implementation, even if it is prone to abuse (what isn't?). However, I 
+am not very sure if it belongs to j.u.c., as the latter is very "core" 
+and compact, and single-JVM-oriented. My feeling is that a file lock 
+would stick out. But, for instance, I think it would make a good 
+candidate for an online article.
+
+Regards,
+Dawid
+
+
+From gregg at cytetech.com  Mon Aug 29 19:54:47 2005
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Mon Aug 29 19:55:45 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <4313793B.80703@mathcs.emory.edu>
+References: <b097ac5105082614341782b8b4@mail.gmail.com><b097ac5105082711214e	756ecc@mail.gmail.com>
+	<43110FEC.1010407@cytetech.com> <4313793B.80703@mathcs.emory.edu>
+Message-ID: <4313A047.1000605@cytetech.com>
+
+
+
+Dawid Kurzyniec wrote:
+> Gregg Wonderly wrote:
+>> For remote, distributed capabilities, the Jini platform's transaction 
+>> manager
+>> really provides a crash resilent implementation.  The configurabilty and
+>> flexibility at deployment provides a great way to make things as 
+>> effecient or as
+>> secure as you need.
+>>
+>> I know Jini is not in the J2SE, but at some point, I hope people who need
+>> distributed solutions will come to realize what power and capabilities
+>> are in Jini.
+>>
+>> There's really not an interesting reason to recreate all of that work.
+>>
+> Gregg,
+> 
+> I hope that your point is that distributed file locking is not a 
+> reliable substitute for a transaction manager, be it Jini or otherwise, 
+> when one is needed. If so, I fully agree. On the other hand, distributed 
+> transaction manager is shooting flies from a cannon if all you need is 
+> basic non-distributed inter-process synchronization.
+
+My point is that a solution already exists.  If you think that you need a same machine, interprocess solution today, 
+chances are that tomorrow you'll need a distributed version.  It may not happen that way, but the failure scenarios and 
+all of the situations that develop on an interprocess solution are exactly what happen in a distributed system.
+
+Look at the 8 fallacies of distributed computing and replace network with filesystem, or process and you'll find that 
+the parallels are very telling.
+
+It is short sighted views of expansion and potential impact that are the foundation of the events that are reflected in 
+the 8 fallacies of distributed computing.
+
+It might feel like you're carrying around a cannon.  But when you might someday have to sink the whole ship, it's always 
+nice to have the correct tools already in hand.  Investing in the right technology base has always rewarded me with many 
+more opportunities to exploit what I have done.  In the case of Jini, I can distributed my applications on one or more 
+machines as needed.  The operations between processes work no matter what environment I deploy in.
+
+There will always be time/space tradeoffs to be considered, but I think this problem has already be solved and there 
+really is not a new solution needed.
+
+There might instead need to be some exploration done in how to optimize marshalling/unmarshalling, or other parts of the 
+JERI/RMI stack.  This might make the time/space tradeoffs work out to allow some applications to use less hardware.
+
+But, the cost of hardware at a fixed price, compared to the unbounded cost of fixing or dealing with marginal/broken 
+software is a pretty compelling argument for using something that is already proven and well defined in operation, 
+complexity and scalability (you can measure the performance and calculate the hardware/network needs).
+
+Gregg Wonderly
+From brian at quiotix.com  Mon Aug 29 21:55:56 2005
+From: brian at quiotix.com (Brian Goetz)
+Date: Mon Aug 29 21:56:09 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <4313A047.1000605@cytetech.com>
+References: <b097ac5105082614341782b8b4@mail.gmail.com><b097ac5105082711214e	756ecc@mail.gmail.com>	<43110FEC.1010407@cytetech.com>
+	<4313793B.80703@mathcs.emory.edu> <4313A047.1000605@cytetech.com>
+Message-ID: <4313BCAC.7080903@quiotix.com>
+
+> My point is that a solution already exists.  If you think that you need 
+> a same machine, interprocess solution today, chances are that tomorrow 
+> you'll need a distributed version.  It may not happen that way, but the 
+> failure scenarios and all of the situations that develop on an 
+> interprocess solution are exactly what happen in a distributed system.
+
+This is a pretty compelling argument.  Take caching; there are lots of 
+good off-the-shelf caching products out there, but everyone rolls their 
+own, because "they don't need something that big, they just need a Map 
+with expiration."  Over time, they end up reinventing a pretty 
+complicated wheel.
+
+
+From dawidk at mathcs.emory.edu  Tue Aug 30 00:32:49 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Tue Aug 30 00:33:12 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <4313A047.1000605@cytetech.com>
+References: <b097ac5105082614341782b8b4@mail.gmail.com><b097ac5105082711214e		756ecc@mail.gmail.com><43110FEC.1010407@cytetech.com>
+	<4313793B.80703@mathcs.emory.edu> <4313A047.1000605@cytetech.com>
+Message-ID: <4313E171.1030307@mathcs.emory.edu>
+
+Gregg Wonderly wrote:
+
+>>> There's really not an interesting reason to recreate all of that work.
+>>>
+>> I hope that your point is that distributed file locking is not a 
+>> reliable substitute for a transaction manager, be it Jini or 
+>> otherwise, when one is needed. If so, I fully agree. On the other 
+>> hand, distributed transaction manager is shooting flies from a cannon 
+>> if all you need is basic non-distributed inter-process synchronization.
+>
+>
+>
+> My point is that a solution already exists. 
+
+Only, to a different problem.
+
+> If you think that you 
+> need a same machine, interprocess solution today, chances are that 
+> tomorrow you'll need a distributed version.  (...)
+>
+"If you only have a hammer, everything looks like a nail." Or, a
+federation of distributed services, for that matter.
+
+Scenarios where I would use file locking are those where I would
+synchronize access to shared files stored in the very same filesystem.
+For instance, suppose I am developing an e-mail client that caches
+messages in ${user.home}/Mail. Then I need some means of protecting data
+from mangling when the user launches two clients simultaneously. The
+same goes if I am developing an e-mail server, since the user may open
+multiple sessions simultaneously, which can e.g. move/delete files on
+the server. Or, suppose I want to make sure that only a single instance
+of an executable can be running on a host (e.g. if it is a system-level
+service). These are well-known (for decades) and legit use cases for
+file locking, in which I would be out of my mind to deploy a distributed
+transaction manager.
+
+The bottom line is that EVERY technology, be it a hammer, Jini, or file
+locking, has its domain of applicability. Claiming that one technology
+can solve all world's problems is naive. At least, stick to the issue at
+hand, and confine yourself to precise, technical, non-vague,
+non-hypothetical, non-tutoring, non-red-herring and non-philosophical
+arguments.
+
+Regards,
+Dawid
+
+
+
+
+From jbloch at gmail.com  Tue Aug 30 00:39:11 2005
+From: jbloch at gmail.com (Joshua Bloch)
+Date: Tue Aug 30 00:39:13 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <4313BCAC.7080903@quiotix.com>
+References: <b097ac5105082614341782b8b4@mail.gmail.com>
+	<43110FEC.1010407@cytetech.com> <4313793B.80703@mathcs.emory.edu>
+	<4313A047.1000605@cytetech.com> <4313BCAC.7080903@quiotix.com>
+Message-ID: <b097ac510508292139c8c14f4@mail.gmail.com>
+
+I don't find this at all convincing.  When I was implementing
+java.util.prefs, an interprocess locking mechanism was precisely what
+I needed.  I did not need any of the other trappings of a full-blown
+transaction system, and yes, I know what they are: I designed and
+built distributed transaction systems for over a decade.
+
+As for distributed vs. interprocess, the file-locking semantics of NFS
+are supposed to be well-defined at to work properly.  I'm not sure if
+this is really the case.  I would assume there are some good and some
+bad implementations out there.
+
+Jini is a large, complex AP consisting of 60+ packages! 
+java.util.concurrency.locks.Lock has 6 methods.  If I can save someone
+from having to learn the former by introducing a special-purpose
+implementation of the latter, I've done a good deed.  I don't see it
+as reimplementing the wheel.
+
+        Josh
+
+On 8/29/05, Brian Goetz <brian@quiotix.com> wrote:
+> > My point is that a solution already exists.  If you think that you need
+> > a same machine, interprocess solution today, chances are that tomorrow
+> > you'll need a distributed version.  It may not happen that way, but the
+> > failure scenarios and all of the situations that develop on an
+> > interprocess solution are exactly what happen in a distributed system.
+> 
+> This is a pretty compelling argument.  Take caching; there are lots of
+> good off-the-shelf caching products out there, but everyone rolls their
+> own, because "they don't need something that big, they just need a Map
+> with expiration."  Over time, they end up reinventing a pretty
+> complicated wheel.
+> 
+> 
+>
+
+From ian.griffiths at yellow-b.com  Tue Aug 30 10:05:35 2005
+From: ian.griffiths at yellow-b.com (Ian Griffiths)
+Date: Tue Aug 30 10:04:39 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <b097ac510508292139c8c14f4@mail.gmail.com>
+References: <b097ac5105082614341782b8b4@mail.gmail.com>
+	<43110FEC.1010407@cytetech.com> <4313793B.80703@mathcs.emory.edu>
+	<4313A047.1000605@cytetech.com> <4313BCAC.7080903@quiotix.com>
+	<b097ac510508292139c8c14f4@mail.gmail.com>
+Message-ID: <WorldClient-F200508301605.AA05350007@yellow-b.com>
+
+I tend to agree with Josh.
+
+I've used Jini pretty widely for distributed, highly secure modules such
+ as storing session parameters and system parameters that have to
+survive a crash. It has many qualities such as robustness and
+"distributability". One quality it does lack glaringly is speed  (which
+is understandable as it's busy doing other things).
+
+I've been working a lot recently with the problem of sharing data
+between processes on the same machine. I have to run a number of
+identical processes on the servers for a very stupid reason: Windows
+won't allow a session greater than 1.6Gb and the machine has 8Gb of
+memory. I would be quite happy to run one 6Gb process. But Hotspot isn't
+and won't!
+
+So I'm stuck with the problem of sharing some files between applications.
+
+A simple to use file lock would probably do the trick just nicely.
+
+I would agree with one of the previous posters that j.u.c. is not the
+place to put it. Probably in an io or communications package.
+
+Ian
+
+-----Original Message-----
+From: Joshua Bloch <jbloch@gmail.com>
+To: Brian Goetz <brian@quiotix.com>
+Cc: concurrency-interest@altair.cs.oswego.edu, Dawid Kurzyniec
+<dawidk@mathcs.emory.edu>, gregg.wonderly@pobox.com
+Date: Mon, 29 Aug 2005 21:39:11 -0700
+Subject: Re: [concurrency-interest] A new Lock implementation: FileLock
+
+> I don't find this at all convincing.  When I was implementing
+> java.util.prefs, an interprocess locking mechanism was precisely what
+> I needed.  I did not need any of the other trappings of a full-blown
+> transaction system, and yes, I know what they are: I designed and
+> built distributed transaction systems for over a decade.
+> 
+> As for distributed vs. interprocess, the file-locking semantics of
+> NFS
+> are supposed to be well-defined at to work properly.  I'm not sure if
+> this is really the case.  I would assume there are some good and some
+> bad implementations out there.
+> 
+> Jini is a large, complex AP consisting of 60+ packages! 
+> java.util.concurrency.locks.Lock has 6 methods.  If I can save
+> someone
+> from having to learn the former by introducing a special-purpose
+> implementation of the latter, I've done a good deed.  I don't see it
+> as reimplementing the wheel.
+> 
+>         Josh
+> 
+> On 8/29/05, Brian Goetz <brian@quiotix.com> wrote:
+> > > My point is that a solution already exists.  If you think that
+> you need
+> > > a same machine, interprocess solution today, chances are that
+> tomorrow
+> > > you'll need a distributed version.  It may not happen that way,
+> but the
+> > > failure scenarios and all of the situations that develop on an
+> > > interprocess solution are exactly what happen in a distributed
+> system.
+> > 
+> > This is a pretty compelling argument.  Take caching; there are lots
+> of
+> > good off-the-shelf caching products out there, but everyone rolls
+> their
+> > own, because "they don't need something that big, they just need a
+> Map
+> > with expiration."  Over time, they end up reinventing a pretty
+> > complicated wheel.
+> > 
+> > 
+> >
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From gregg at cytetech.com  Tue Aug 30 11:28:15 2005
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Tue Aug 30 11:29:05 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <b097ac510508292139c8c14f4@mail.gmail.com>
+References: <b097ac5105082614341782b8b4@mail.gmail.com>	
+	<43110FEC.1010407@cytetech.com> <4313793B.80703@mathcs.emory.edu>	
+	<4313A047.1000605@cytetech.com> <4313BCAC.7080903@quiotix.com>
+	<b097ac510508292139c8c14f4@mail.gmail.com>
+Message-ID: <43147B0F.8050704@cytetech.com>
+
+
+
+Joshua Bloch wrote:
+> Jini is a large, complex AP consisting of 60+ packages! 
+
+There are many parts of Jini which you don't need for such things.
+
+> java.util.concurrency.locks.Lock has 6 methods.
+
+I understand this thought, but it in fact uses the whole JVM implementation which is many more lines of code than Jini. 
+  You're willing to accept the requirement to use Java for your application.  So I'm not sure how valid of an argument 
+size is.  Jini is a toolkit, just like the Java platform is.  It's targeted at providing solutions to some specific 
+types of problems.  Those problems are not trivial in nature, but can appear minimal at first glance.
+
+ > If I can save someone
+> from having to learn the former by introducing a special-purpose
+> implementation of the latter, I've done a good deed.  I don't see it
+> as reimplementing the wheel.
+
+You will recreate all the logic and trappings associated with distributed failures.  When an application releases the 
+lock, does that mean that the now unlocked data is valid, or invalid?  How will you know?  A distributed transaction 
+system would let you arrive at a safe point.
+
+One example might be that you ran out of space on the file system.  Half of the data made it to disk, the other half is 
+still pending, or lost.  But, the file system is actively aquiring new space, and you'd really like to let the failed 
+writer finish its job, before letting other writers put their data in there.  However, at some point, you want progress 
+to be made.  If the releasing process actually exited when the write failed because it has a bug, you could use a 
+distributed lease to finally expire the access lock unconditionally and move on with some type of cleanup.
+
+Transactions and leasing allow things to progress in a way that all participating parties can agree with.  If you just 
+implement the file lock, then you'll need some kind of IPC eventually to let the processes discuss how to handle 
+different issues, I'd bet.  Its the development of the initial need verses the longterm needs of the application that 
+can make the problem seem a lot smaller than it actually is.
+
+The speed of distributed transactions can be many orders of magnitude slower than a single machine kernel based file 
+lock, or an NFS file lock.  There are many exchanges between multiple processes.  It's an area where a lot of research 
+and experimentation could be performed.  It might be that an NFS file lock based transaction implementation in Jini 
+would be a great optimization.  I don't know.  However, I don't use NFS on any filesystems that my applications run on 
+though, so that solution is not attractive from that point of view.
+
+I have no doubt that many people on this list know precisely all of the issues that need to be dealt with.  I just 
+detect a one small step at a time thought process that will, sure enough, allow you to get done what you want done. 
+But, eventually, you'll recreate all the abilities that already exist in Jini, or are enabled my the tools in Jini, and 
+that seems like a non-benefit to the Java platform.
+
+
+Gregg Wonderly
+From gregg at cytetech.com  Tue Aug 30 12:12:25 2005
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Tue Aug 30 12:13:15 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <4313E171.1030307@mathcs.emory.edu>
+References: <b097ac5105082614341782b8b4@mail.gmail.com><b097ac5105082711214e		756ecc@mail.gmail.com><43110FEC.1010407@cytetech.com>
+	<4313793B.80703@mathcs.emory.edu> <4313A047.1000605@cytetech.com>
+	<4313E171.1030307@mathcs.emory.edu>
+Message-ID: <43148569.3050603@cytetech.com>
+
+
+
+Dawid Kurzyniec wrote:
+>> My point is that a solution already exists. 
+> 
+> Only, to a different problem.
+
+I appreciate this feeling.  But, I am not sure that it's well founded, yet.
+
+> Scenarios where I would use file locking are those where I would
+> synchronize access to shared files stored in the very same filesystem.
+> For instance, suppose I am developing an e-mail client that caches
+> messages in ${user.home}/Mail. Then I need some means of protecting data
+> from mangling when the user launches two clients simultaneously. The
+> same goes if I am developing an e-mail server, since the user may open
+> multiple sessions simultaneously, which can e.g. move/delete files on
+> the server. Or, suppose I want to make sure that only a single instance
+> of an executable can be running on a host (e.g. if it is a system-level
+> service). These are well-known (for decades) and legit use cases for
+> file locking, in which I would be out of my mind to deploy a distributed
+> transaction manager.
+
+In many of these cases I would use an accessor service, today, instead of a distributed locking mechanism.  This would 
+allow a single place to be in control of access, and multithreading issues could be controlled exactly in the place 
+where that control was needed.  Sure we used to use locks, because everything was on the same machine there were little 
+library functions that were part of various packages that you needed to use to do locking with those applications.  The 
+problem is that all of them did something differently, and this made interworking more difficult.  A standard locking 
+service allows you to tie the operations of multiple applications together for a new application.
+
+Advisory file locking is straight forward to use.  When we used link(2) to create advisory locks in unix, we got into 
+problems with stuck locks when processes crashed.  We would next add signal handlers to try and catch the process death 
+and remove all locks.  Then, the errant users found out about SIGKILL, and found that they could wreak havoc on things. 
+  So we added flock() so that the lock was really implemented in the kernel.  That is a locking service implementation! 
+  Now, everyone goes through the same implementation, doing the same thing.  Josh is talking about taking one such 
+implementation of a file locking service that is distributed via NFS.  I'm suggesting that it would be even better to 
+take the next step and just use something that already exists, which provides a lot of additional features that aren't 
+afterthought addons.
+
+> The bottom line is that EVERY technology, be it a hammer, Jini, or file
+> locking, has its domain of applicability. Claiming that one technology
+> can solve all world's problems is naive. At least, stick to the issue at
+> hand, and confine yourself to precise, technical, non-vague,
+> non-hypothetical, non-tutoring, non-red-herring and non-philosophical
+> arguments.
+
+Dawid, I'm sorry that you feel like my argument was overbearing or incorrectly placed.  My personal experience with 
+software development over the past 20+ years has taught me that cutting corners and creating a minimal implementation 
+for my own use, just to get started "cheaper" is not really the best thing.
+
+The technical argument is that the Jini transactional services do everything you need for a working distributed locking 
+service.  Do they do it optimally, or exactly the way you might implement it with ignorance to prior arts, in a new 
+application?  Probably not.  But, the foundation is there to improve on.  The JERI stack is plugable for providing more 
+optimal transports of data while maintaining a Java platform API approach to programming.
+
+Gregg Wonderly
+From jbloch at gmail.com  Tue Aug 30 12:41:41 2005
+From: jbloch at gmail.com (Joshua Bloch)
+Date: Tue Aug 30 12:41:48 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <43147B0F.8050704@cytetech.com>
+References: <b097ac5105082614341782b8b4@mail.gmail.com>
+	<43110FEC.1010407@cytetech.com> <4313793B.80703@mathcs.emory.edu>
+	<4313A047.1000605@cytetech.com> <4313BCAC.7080903@quiotix.com>
+	<b097ac510508292139c8c14f4@mail.gmail.com>
+	<43147B0F.8050704@cytetech.com>
+Message-ID: <b097ac5105083009415e5eb9bd@mail.gmail.com>
+
+Gregg,
+
+> Joshua Bloch wrote:
+> > Jini is a large, complex AP consisting of 60+ packages!
+> 
+> There are many parts of Jini which you don't need for such things.
+> 
+> > java.util.concurrency.locks.Lock has 6 methods.
+> 
+> I understand this thought, but it in fact uses the whole JVM implementation which is many more lines of code than Jini.
+
+That is utterly irrelevant.  Who cares how many lines of code there
+are in the JVM *implementation*?  We are talking about the conceptual
+weight of an interface.  The target audience for this class already
+knows the java.util.concurrent.locks.Lock *interface*, so the marginal
+conceptual weight of this implementation is pretty close to zero.  The
+audience does not know Jini, and the marginal conceptual weight to
+learn it is large.
+
+> One example might be that you ran out of space on the file system.  Half of the data made it to disk, the other half is
+> still pending, or lost.  But, the file system is actively aquiring new space, and you'd really like to let the failed
+> writer finish its job, before letting other writers put their data in there.  However, at some point, you want progress
+> to be made.  If the releasing process actually exited when the write failed because it has a bug, you could use a
+> distributed lease to finally expire the access lock unconditionally and move on with some type of cleanup.
+
+Typically you create a new file, and atomically replace the old one by
+changing the name of the new one.  If you run out of space creating
+the new one, the old one never changes.  This is what I did in
+java.util.prefs. It is crude but effective.
+
+This is the last I will say on this subtopic; you may have the last
+word if it pleases you.
+
+          Josh
+
+From dawidk at mathcs.emory.edu  Tue Aug 30 13:18:40 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Tue Aug 30 13:18:50 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <43148569.3050603@cytetech.com>
+References: <b097ac5105082614341782b8b4@mail.gmail.com><b097ac5105082711214e			756ecc@mail.gmail.com><43110FEC.1010407@cytetech.com><4313793B.80703@math	cs.emory.edu>
+	<4313A047.1000605@cytetech.com><4313E171.1030307@mathcs.emory.edu>
+	<43148569.3050603@cytetech.com>
+Message-ID: <431494F0.6040206@mathcs.emory.edu>
+
+Gregg Wonderly wrote:
+
+>
+>
+> Dawid Kurzyniec wrote:
+>
+>> Scenarios where I would use file locking are those where I would
+>> synchronize access to shared files stored in the very same filesystem.
+>> For instance, suppose I am developing an e-mail client that caches
+>> messages in ${user.home}/Mail. Then I need some means of protecting data
+>> from mangling when the user launches two clients simultaneously. The
+>> same goes if I am developing an e-mail server, since the user may open
+>> multiple sessions simultaneously, which can e.g. move/delete files on
+>> the server. Or, suppose I want to make sure that only a single instance
+>> of an executable can be running on a host (e.g. if it is a system-level
+>> service). These are well-known (for decades) and legit use cases for
+>> file locking, in which I would be out of my mind to deploy a distributed
+>> transaction manager.
+>
+>
+> In many of these cases I would use an accessor service, today, instead 
+> of a distributed locking mechanism.  This would allow a single place 
+> to be in control of access, and multithreading issues could be 
+> controlled exactly in the place where that control was needed. (...)
+
+In the scenarios I outlined, accessor service would be exposed to 
+exactly same issues, and I don't see how it is supposed to help. When do 
+you start the accessor service? Who starts it? How do you make sure that 
+you only have one instance running? What do you do when it crashes? How 
+do you detect it crashed? In fact, in the IMAP server example in 
+particular, if you look from the perspective of IMAP clients, the server 
+can itself be considered an accessor service. After all, it allows 
+clients to indirectly access shared files stored on the server host. 
+Should I be implementing an accessor service using an accessor service? 
+Where does it stop?
+
+At some level, "distributed system" ends and the "local system" begins, 
+and you simply have to assume that something is reliable - in this case, 
+the local file system. Otherwise, multiphase commit is not going to help 
+you either, because at some point it has to give green light to writing 
+data to a file system, and if the file system crashes just at this 
+moment, you end up with inconsistent data as well. You make Jini sound 
+as a magic bullet that can somehow solve reliability issues in 
+distributed systems which are known to be unsolvable without assumptions 
+that are in fact stronger than those needed for a file lock to work 
+reliably.
+
+>
+> Advisory file locking is straight forward to use.  When we used 
+> link(2) to create advisory locks in unix, we got into problems with 
+> stuck locks when processes crashed. (...)
+
+Again, there is no way around that. At some level, stuff gets written to 
+the filesystem. If the accessor service, or a local resource manager 
+involved in a distributed transaction, crashes during a filesystem 
+operation, it leaves inconsistent data. If the data is left "locked", 
+you have a stale lock - similarly in behavior to Thread.suspend in Java. 
+But if you release the lock, you leave unprotected inconsistent data - 
+like Thread.stop does. In either case, you need some error-recovery 
+procedure; just restarting the crashed process won't suffice. At some 
+level, you simply have to deal with that, possibly resorting to human 
+intervention, because file systems are not transactional. File locks and 
+renaming files as a "commit" are as good as it gets.
+
+> The technical argument is that the Jini transactional services do 
+> everything you need for a working distributed locking service.
+
+And I claim that file locks are good for *non-distributed* shared 
+filesystem access, keeping in mind that all systems are non-distributed 
+at some level where they interact with the file system. Hence, again, 
+the conclusion that file locks and distributed transaction managers are 
+solutions to different problems :)
+
+Side note. Download size of JRE 5.0: about 15 MB. Download size of Jini 
+starter kit: over 11 MB. Not a huge difference. And note that the 
+bulkiness of JRE is already considered a barrier to entry in some cases.
+
+Regards,
+Dawid
+
+From P.H.Welch at kent.ac.uk  Tue Aug 30 13:59:12 2005
+From: P.H.Welch at kent.ac.uk (P.H.Welch)
+Date: Tue Aug 30 13:59:26 2005
+Subject: [concurrency-interest] CSP, the pi-calculus and CPA-2005
+Message-ID: <E1EAAO8-0000G6-Jy@myrtle.ukc.ac.uk>
+
+
+Hi,
+
+This is the busiest mailing list to which I'm subscribed - by quite a bit!
+Which is good, :).  I'm afraid I'm only a quiet observer right now, but
+it's very interesting and useful.  One day I hope to chip in.
+
+This is a small chip in.  For a concurrency interest list, it is surprising
+to see no discussion based on analysing what you are doing and what you are
+wanting to do using the viewpoint and mathematics of process algebra - in
+particular, Hoare's CSP and Milner's pi-calculus.  These have lots to offer
+about practical issues (and, certainly, Java ones) and are starting to get
+together - a powerful combination.
+
+For the interested, here are three URLs on recent and about-to-happen
+conferences:
+
+  http://www.cs.auc.dk/~luca/BICI/PA-05/         (1-5 August, 2005)
+  http://www.lsbu.ac.uk/menass/csp25/            (6-8 July, 2004)
+  http://wotug.org/cpa2005/programme.shtml       (18-21 September, 2005)
+
+The first two celebrated the first 25 years of process algebra - and are
+well worth tracking down the proceedings.  The third is about to happen
+in Eindhoven, The Netherlands.  CPA is only a small conference with
+a single stream of presentations, including evening Fringe sessions in
+the hotel (basement) bar.  If any are this (European) side of the Atlantic
+next month, you may enjoy!
+
+I guess this is a (last minute) call for delegates, but I hope it's more
+than that.  The reason we take these algebras so seriously is that we do
+want to build complex systems that work ... much more easily than we manage
+to achieve at the moment.  The ideas spinning from the maths gives us
+formal (i.e steady/precise) platforms from which very efficient technology
+grows (much of which is Java relevant).  These include highly dynamic
+systems, including mobility and location awareness, hardware design and
+hardware-software co-design, new languages, old languages, embedded,
+distributed and super computing and more.
+
+Many thanks for your time,
+
+Peter Welch.
+From gregg at cytetech.com  Tue Aug 30 14:30:48 2005
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Tue Aug 30 14:31:37 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <431494F0.6040206@mathcs.emory.edu>
+References: <b097ac5105082614341782b8b4@mail.gmail.com><b097ac5105082711214e			756ecc@mail.gmail.com><43110FEC.1010407@cytetech.com><4313793B.80703@math	cs.emory.edu>
+	<4313A047.1000605@cytetech.com><4313E171.1030307@mathcs.emory.edu>
+	<43148569.3050603@cytetech.com> <431494F0.6040206@mathcs.emory.edu>
+Message-ID: <4314A5D8.6090005@cytetech.com>
+
+
+
+Dawid Kurzyniec wrote:
+>> Advisory file locking is straight forward to use.  When we used 
+>> link(2) to create advisory locks in unix, we got into problems with 
+>> stuck locks when processes crashed. (...) 
+>
+> Again, there is no way around that. At some level, stuff gets written to 
+> the filesystem. If the accessor service, or a local resource manager 
+> involved in a distributed transaction, crashes during a filesystem 
+> operation, it leaves inconsistent data. If the data is left "locked", 
+> you have a stale lock - similarly in behavior to Thread.suspend in Java. 
+> But if you release the lock, you leave unprotected inconsistent data - 
+> like Thread.stop does. In either case, you need some error-recovery 
+> procedure; just restarting the crashed process won't suffice. At some 
+> level, you simply have to deal with that, possibly resorting to human 
+> intervention, because file systems are not transactional. File locks and 
+> renaming files as a "commit" are as good as it gets.
+
+In the Jini transaction specification there is a section on recovery after crash.  What is described is that a 
+transaction participant is not supposed to respond to the commit request, until it has persisted enough information to 
+know how to fully recover to the state it was in prior to the crash.  If it votes commit, and crashes during the 
+activities of the commit, it has to be prepared to recover to a commited state.  If it refuses the commit, it has to be 
+prepared to roll back on restart.
+
+The intermediate case where the transaction has not been voted on yet, requires some careful attention to details.
+You need to keep a crash count, and increment it when you restart.  The API includes providing the crashcount to the 
+transaction manager so that when you rejoin the transaction, it can say, hey, you crashed, and we're already voting, or 
+hey you crashed, and we're still waiting to vote.  The transaction manager can then respond to your join request with an 
+appropriate response, and the application can handle that response accordingly.
+
+It is this specific behavior, encapsulated into the API and the functionality of the transaction manager, that provides 
+the power to recover from a stuck lock by just restarting the failed process.  Rather than the actions being a 
+perpherial activity of the participant, as you describe above, it is an integral part of the API.  That's the stuff that 
+you don't have to reinvent, rediscover or otherwise stumble through.
+
+Gregg Wonderly
+From gregg at cytetech.com  Tue Aug 30 14:37:19 2005
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Tue Aug 30 14:38:07 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <b097ac5105083009415e5eb9bd@mail.gmail.com>
+References: <b097ac5105082614341782b8b4@mail.gmail.com>	
+	<43110FEC.1010407@cytetech.com> <4313793B.80703@mathcs.emory.edu>	
+	<4313A047.1000605@cytetech.com> <4313BCAC.7080903@quiotix.com>	
+	<b097ac510508292139c8c14f4@mail.gmail.com>	
+	<43147B0F.8050704@cytetech.com>
+	<b097ac5105083009415e5eb9bd@mail.gmail.com>
+Message-ID: <4314A75F.9020203@cytetech.com>
+
+Joshua Bloch wrote:
+>>There are many parts of Jini which you don't need for such things.
+>>
+>>>java.util.concurrency.locks.Lock has 6 methods.
+>>
+>>I understand this thought, but it in fact uses the whole JVM implementation which is many more lines of code than Jini.
+ >
+> That is utterly irrelevant.  Who cares how many lines of code there
+> are in the JVM *implementation*?  We are talking about the conceptual
+> weight of an interface.  The target audience for this class already
+> knows the java.util.concurrent.locks.Lock *interface*, so the marginal
+> conceptual weight of this implementation is pretty close to zero.  The
+> audience does not know Jini, and the marginal conceptual weight to
+> learn it is large.
+
+I guess I'm missing the irrelevancy when you suggesting something based on NFS that would require learning about NFS 
+semantics, installing an NFS based filesystem implementation etc.  There are barriers everywhere Josh.  I'm not trying 
+to undermine your idea, I'm trying to suggest that there are tools that might make it easier.
+
+>>One example might be that you ran out of space on the file system.  Half of the data made it to disk, the other half is
+>>still pending, or lost.  But, the file system is actively aquiring new space, and you'd really like to let the failed
+>>writer finish its job, before letting other writers put their data in there.  However, at some point, you want progress
+>>to be made.  If the releasing process actually exited when the write failed because it has a bug, you could use a
+>>distributed lease to finally expire the access lock unconditionally and move on with some type of cleanup.
+>
+> Typically you create a new file, and atomically replace the old one by
+> changing the name of the new one.  If you run out of space creating
+> the new one, the old one never changes.  This is what I did in
+> java.util.prefs. It is crude but effective.
+
+This is a pretty typical mechanism for small files.  But large mailbox files as was Dawid's example, would typically not 
+be replicated as a safety measure.  There are variations on every theme.  And points and counter points can be brought 
+up.  I'm trying to share my experiences.   I'm sorry I'm such a lousy communicator.
+
+> This is the last I will say on this subtopic; you may have the last
+> word if it pleases you.
+
+I am not trying to gain pleasure here.  I am sorry you feel attacked or otherwise abused by my comments.  Please accept 
+my apologies.
+
+Gregg Wonderly
+From miles at milessabin.com  Tue Aug 30 16:09:21 2005
+From: miles at milessabin.com (Miles Sabin)
+Date: Tue Aug 30 16:09:36 2005
+Subject: [concurrency-interest] CSP, the pi-calculus and CPA-2005
+In-Reply-To: <E1EAAO8-0000G6-Jy@myrtle.ukc.ac.uk>
+References: <E1EAAO8-0000G6-Jy@myrtle.ukc.ac.uk>
+Message-ID: <200508302109.22175.miles@milessabin.com>
+
+P.H.Welch wrote,
+> This is a small chip in.  For a concurrency interest list, it is
+> surprising to see no discussion based on analysing what you are doing
+> and what you are wanting to do using the viewpoint and mathematics of
+> process algebra - in particular, Hoare's CSP and Milner's
+> pi-calculus.  These have lots to offer about practical issues (and,
+> certainly, Java ones) and are starting to get together - a powerful
+> combination.
+
+I think you'll find that many of the people on this list have an 
+interest in process algebras in one way or another. But I'm not quite 
+so surprised that they don't get discussed here ... the process algebra 
+approach to concurrency is very different from the threads, locks and 
+shared state approach that's hard-wired into Java and reflected in JSR 
+166.
+
+FWIW, JSR 121, the Java Isolation API, has a CSP/pi-ish feel to it: 
+communication is based on message passing rather than shared state, 
+communication channels can be passed across communication channels for 
+scope extrusion. Pete Soper's collected various things you might find 
+interesting here,
+
+  http://www.bitser.net/isolate-interest/
+
+Cheers,
+
+
+Miles
+From dawidk at mathcs.emory.edu  Tue Aug 30 16:20:59 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Tue Aug 30 16:21:10 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <4314A5D8.6090005@cytetech.com>
+References: <b097ac5105082614341782b8b4@mail.gmail.com><b097ac5105082711214e				756ecc@mail.gmail.com><43110FEC.1010407@cytetech.com><4313793B.80703@mat	h	cs.emory.edu><4313A047.1000605@cytetech.com><4313E171.1030307@mathcs.emor	y.edu><43148569.3050603@cytetech.com>
+	<431494F0.6040206@mathcs.emory.edu> <4314A5D8.6090005@cytetech.com>
+Message-ID: <4314BFAB.8090806@mathcs.emory.edu>
+
+Gregg Wonderly wrote:
+
+>
+>
+> Dawid Kurzyniec wrote:
+>
+>>> Advisory file locking is straight forward to use.  When we used 
+>>> link(2) to create advisory locks in unix, we got into problems with 
+>>> stuck locks when processes crashed. (...) 
+>>
+>>
+>> Again, there is no way around that. At some level, stuff gets written 
+>> to the filesystem. If the accessor service, or a local resource 
+>> manager involved in a distributed transaction, crashes during a 
+>> filesystem operation, it leaves inconsistent data. If the data is 
+>> left "locked", you have a stale lock - similarly in behavior to 
+>> Thread.suspend in Java. But if you release the lock, you leave 
+>> unprotected inconsistent data - like Thread.stop does. In either 
+>> case, you need some error-recovery procedure; just restarting the 
+>> crashed process won't suffice. At some level, you simply have to deal 
+>> with that, possibly resorting to human intervention, because file 
+>> systems are not transactional. File locks and renaming files as a 
+>> "commit" are as good as it gets.
+>
+>
+> In the Jini transaction specification there is a section on recovery 
+> after crash.  What is described is that a transaction participant is 
+> not supposed to respond to the commit request, until it has persisted 
+> enough information to know how to fully recover to the state it was in 
+> prior to the crash.  If it votes commit, and crashes during the 
+> activities of the commit, it has to be prepared to recover to a 
+> commited state.  If it refuses the commit, it has to be prepared to 
+> roll back on restart.
+>
+> The intermediate case where the transaction has not been voted on yet, 
+> requires some careful attention to details.
+> You need to keep a crash count, and increment it when you restart.  
+> The API includes providing the crashcount to the transaction manager 
+> so that when you rejoin the transaction, it can say, hey, you crashed, 
+> and we're already voting, or hey you crashed, and we're still waiting 
+> to vote.  The transaction manager can then respond to your join 
+> request with an appropriate response, and the application can handle 
+> that response accordingly.
+>
+This is very interesting, but doesn't change the picture much. All it 
+says is that a process can be able to restore its persistent storage to 
+a consistent state when restarted after crash, by utilizing the fact 
+that filesystem operations are idempotent. However, the Jini transaction 
+API does not help a squad in achieving that. It makes state repair after 
+crash a sole responsibility of a transaction participant. What's more, 
+the whole scheme assumes that there is a reliable mechanism for 
+detecting crashes and restarting processes. The "mechanism" can be a 
+sysadmin, or yet another process, but that process can crash too, so 
+eventually, the human supervision is needed.
+
+> It is this specific behavior, encapsulated into the API and the 
+> functionality of the transaction manager, that provides the power to 
+> recover from a stuck lock by just restarting the failed process.  
+> Rather than the actions being a perpherial activity of the 
+> participant, as you describe above, it is an integral part of the 
+> API.  That's the stuff that you don't have to reinvent, rediscover or 
+> otherwise stumble through.
+>
+As I said above, the application programmer has to implement the 
+recovery herself in both cases, and the code would look exactly the 
+same. (And what "provides the power" is not a transaction manager but 
+the filesystem idempotency). The only reason I might want to adhere to a 
+distributed transaction API when coding that is if I was making it a 
+part of a distributed transaction. I still can't see how it would do me 
+any good, and even how to go about it, if I was implementing a singleton 
+system service or a mail client. The TX API is about coordinating 
+changes of private (persistent) states between distributed collaborants. 
+File locking is about synchronizing access to a shared, common state. 
+Where's the connection?...
+
+Regards,
+Dawid
+
+From gregg at cytetech.com  Tue Aug 30 17:41:35 2005
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Tue Aug 30 17:42:29 2005
+Subject: [concurrency-interest] A new Lock implementation: FileLock
+In-Reply-To: <4314BFAB.8090806@mathcs.emory.edu>
+References: <b097ac5105082614341782b8b4@mail.gmail.com><b097ac5105082711214e				756ecc@mail.gmail.com><43110FEC.1010407@cytetech.com><4313793B.80703@mat	h	cs.emory.edu><4313A047.1000605@cytetech.com><4313E171.1030307@mathcs.emor	y.edu><43148569.3050603@cytetech.com>
+	<431494F0.6040206@mathcs.emory.edu> <4314A5D8.6090005@cytetech.com>
+	<4314BFAB.8090806@mathcs.emory.edu>
+Message-ID: <4314D28F.3010603@cytetech.com>
+
+
+
+Dawid Kurzyniec wrote:
+> This is very interesting, but doesn't change the picture much. All it 
+> says is that a process can be able to restore its persistent storage to 
+> a consistent state when restarted after crash, by utilizing the fact 
+> that filesystem operations are idempotent.
+
+I said persistent, not stored on a filesystem.  It might be a filesystem, but it might be something else.
+
+ > However, the Jini transaction
+> API does not help a squad in achieving that. It makes state repair after 
+> crash a sole responsibility of a transaction participant.
+
+Yes, but because it's already part of the system design, users don't have to invent it.  So, it's a value added by the 
+system.  That's what I am trying to make the point of.  Not that it waters the plants and lets the dog out.  It already 
+does all the software things that you'd need the software to do.
+
+>> It is this specific behavior, encapsulated into the API and the 
+>> functionality of the transaction manager, that provides the power to 
+>> recover from a stuck lock by just restarting the failed process.  
+>> Rather than the actions being a perpherial activity of the 
+>> participant, as you describe above, it is an integral part of the 
+>> API.  That's the stuff that you don't have to reinvent, rediscover or 
+>> otherwise stumble through.
+>>
+> As I said above, the application programmer has to implement the 
+> recovery herself in both cases, and the code would look exactly the 
+> same. 
+
+For any transactional system, yes you'd have to do all of this stuff.  The point is that its already described, 
+documented and designed so that you just have to implement the pieces.  That's the value added.  The fact that there is 
+a public API on top is an additional value added.  Once your code knows how to use the Jini transaction manager service 
+interface, you can use any such compliant manager that might come into existance right?
+
+ > (And what "provides the power" is not a transaction manager but
+> the filesystem idempotency). The only reason I might want to adhere to a 
+> distributed transaction API when coding that is if I was making it a 
+> part of a distributed transaction. I still can't see how it would do me 
+> any good, and even how to go about it, if I was implementing a singleton 
+> system service or a mail client. The TX API is about coordinating 
+> changes of private (persistent) states between distributed collaborants. 
+> File locking is about synchronizing access to a shared, common state. 
+> Where's the connection?...
+
+A lock's state is always transactionally managed.  You decide that you are ready for the lock to be locked or unlocked 
+at specific places.  try { } finally {} is one such fine grained transactional approach where a particular outcome is 
+guarenteed without other intervening issues, to proceed to the desired conclusion.  So, when you share a transaction, 
+you can use the commit vote as a stepping point.  I would implement a distributed lock with transactions using this 
+algorithm
+
+TransactionParticipant p = new MyLocalParticipant();
+Transaction.Created mytrans = trmgr.create(Lease.FOREVER);
+LeaseRenewalManager lrm = new LeaseRenewalManager();
+
+MyLeaseListener leaselis = new MyLeaseListener( mytrans );
+// we pass a lease listener here that might can help mitigate the
+// failure of the transaction manager.  When it detects the lease
+// state changing, then it can do interesting things.
+lrm.renewFor( mytrans.lease, Lease.FOREVER, leaselis );
+
+DistributedLock lock = srvr.getLockAccess("TheWellKnownLockName");
+Transaction otherTrans;
+
+while( true ) {
+	if( leaselis.transactionValid() == false ) {
+		doSomethingInteresting();
+	}
+
+	// Attempt the lock with our transaction
+	otherTrans = lock.testAndSet( mytrans );
+
+	// Check if we got the lock, or someone else did
+	if( otherTrans.equals(mytrans) == false ) {
+		// Someone elses lock, join their transaction
+		// and wait for it to complete.
+		try {
+			otherTrans.join( p );
+			// if we care about the outcome, then there
+			// is some logic that goes here to manage what
+			// happens next.  If we don't care about
+			// the outcome, then we can just wait for
+			// some type of completion and continue.
+			p.waitForCompleted();
+		} catch( IOException ex ) {
+			logException(ex);
+		}
+	} else {
+		// we got the lock, do our work.
+		doLockWork();
+
+		// Now, commit the transaction and release the lock.
+		try {
+			mytrans.commit();
+		} catch( RemoteException ex ) {
+			logException(ex);
+		} finally {
+			lrm.cancel(mytrans.lease);
+			// Pass in the owning transaction to make sure we release only
+			// the correct lock, not another that occured because of network
+			// segmentation or other bugs.
+			lock.release( mytrans );
+		}
+		break;
+	}
+}
+
+I think this is a familar algorithm.  The issue is that there are some needs for handling RemoteExceptions and some 
+other related issues that make the API feel heavier.  But, it's the same logic with the same ordering and outcome 
+potentials.
+
+My view is that we need to research how to encapsulate all this knowledge into less work for the user.  I think that 
+would be a much better choice than having 5 variations for 5 different weights of appication needs.  A common, singular 
+API with service provider plugability and other powerful mechanisms allows a single focus on getting work done instead 
+of reinventing all the pieces that are needed for each type of application.
+
+I've always found it easier to dummy out the activities of an all encompassing API then try and figure out how to expand 
+the capabilities of a limited API to do more than it was designed to to.
+
+A simple example might help you understand my point.  Look at what had to happen with JMX in order to implement 
+remoting.  It was designed originally for no-remoting from the point of view of not talking RMI use into account in the 
+set of thrown exceptions on all methods.
+
+To solve the problem, the original MBeanServer interface was defined to extend the MBeanServerConnection super interface 
+that provided remoting.  This was a fairly simple mechanism.  But, it required all JMX users that wanted remoting to 
+change source code to use MBeanServerConnection instead of MBeanServer everywhere.  And then, they now had to deal with 
+IOException everywhere.  That's a big impact on a lot of applications.
+
+This is the type of thing that I'm trying to convey.  You can always start simple, but when you're done, is it still 
+simple?  Hopefully it is, but there's a very small class of interprocess issues that are simple to solve.
+
+Gregg Wonderly

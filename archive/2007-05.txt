@@ -1,0 +1,3687 @@
+From szabolcs.ferenczi at gmail.com  Tue May  1 13:27:42 2007
+From: szabolcs.ferenczi at gmail.com (Szabolcs Ferenczi)
+Date: Tue, 1 May 2007 19:27:42 +0200
+Subject: [concurrency-interest] An article example
+In-Reply-To: <c6f400460704291608t1fba2e8ep785d49d12d7e9f13@mail.gmail.com>
+References: <c6f400460704291608t1fba2e8ep785d49d12d7e9f13@mail.gmail.com>
+Message-ID: <c8955b000705011027t7dac07f8v5a648cf72bee41e7@mail.gmail.com>
+
+On 30/04/07, Alexandru Popescu ? <the.mindstorm.mailinglist at gmail.com> wrote:
+
+> Now this comment kind of confuses me because as far as I can say by
+> the end of step3, the queue is indeed empty and the 2nd consumer will
+> see this in the condition queue.isEmpty() so it will wait.
+>
+> Can you please explain what am I missing?
+
+I am afraid what can even be more confusing is the suggestion in the
+article for fixing the bug:
+
+  "(By the way, do you know how to fix the bug? Careful: replacing the
+notifyAll() with notify() solves the problem in this scenario but will
+fail on others!)"
+
+The Java concurrency experts in this list will surely know that
+replacing notifyAll() with notify() is by no way the solution to the
+problem. In fact it introduces even more confusion. Because the
+problem is not in the notification but in the combination of if-wait,
+which is considered harmful in the Java world. If they will run
+ConTest for some more time, they will find it out.
+
+However, according to the semantics of the Java 'wait()' primitive, we
+can tell it without any test:
+
+  In any Java code it is a definite error when the 'wait()' is used in
+an if branch.
+
+Let me remark that in the original monitor construction as suggested
+by Hoare, the if check is correct before the wait statement. In Java
+it is not correct. More confusion for a lot of people.
+
+Best Regards,
+Szabolcs
+
+
+From dcholmes at optusnet.com.au  Tue May  1 15:46:37 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed, 02 May 2007 05:46:37 +1000
+Subject: [concurrency-interest] An article example
+In-Reply-To: <c8955b000705011027t7dac07f8v5a648cf72bee41e7@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEKOHGAA.dcholmes@optusnet.com.au>
+
+Szabolcs Ferenczi wrote:
+> I am afraid what can even be more confusing is the suggestion in the
+> article for fixing the bug:
+> 
+>   "(By the way, do you know how to fix the bug? Careful: replacing the
+> notifyAll() with notify() solves the problem in this scenario but will
+> fail on others!)"
+
+They aren't suggesting a fix, they are telling you that although changing to notify() appears to be a fix, it only actually corrects this one scenario. It was poor form for them to not actually tell you what the real fix was - though I presume they wanted you to run the tool and have it tell you.
+
+For any reader wondering why changing the notifyAll() to a notify() would help the immediate problem but not actually fix the bug: the notify() would only wake one of the consumers and so the second would remain waiting until a second notification that would indicate another item has been produced - hence two consumers would not try to consume one item. But there is still a bug present because  - in general - between being notified that there is an item and actually reacquiring the lock to go and grab that item, another consumer could have come along and taken the item already. Hence you must always re-check the condition you were waiting for after the wait() returns - hence the canonical form for using wait() is:
+    while (!condition)
+       wait();
+
+> Let me remark that in the original monitor construction as suggested
+> by Hoare, the if check is correct before the wait statement. In Java
+> it is not correct. More confusion for a lot of people.
+ 
+It isn't correct with Brinch-Hansen monitors either. So I don't see this as a source of confusion for Java programmers in general - depending on what classes you took your exposure to any kind of monitor concept could be very limited. 
+
+The reason it is correct with Hoare monitors is that the "notifier" (which isn't explicit) hands-off the monitor to the waiter, so there is no possibility of the condition changing in the mean-time. While semantically this is a nice model the performance implications are not good due to the forced context switching. 
+
+For anyone interested in the wide-range of monitor "styles" available I'd recommend the paper by Peter Buhr et al: "Monitor Classification"
+
+http://citeseer.ist.psu.edu/buhr95monitor.html
+
+Buhr's uC++ language is also very interesting. There are various papers I believe, but if you want lots of gory detail then check out the book:
+http://plg.uwaterloo.ca/~usystem/pub/uSystem/uC++book.pdf
+
+
+David Holmes
+
+
+From szabolcs.ferenczi at gmail.com  Tue May  1 18:37:59 2007
+From: szabolcs.ferenczi at gmail.com (Szabolcs Ferenczi)
+Date: Wed, 2 May 2007 00:37:59 +0200
+Subject: [concurrency-interest] An article example
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCCEKOHGAA.dcholmes@optusnet.com.au>
+References: <c8955b000705011027t7dac07f8v5a648cf72bee41e7@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCCEKOHGAA.dcholmes@optusnet.com.au>
+Message-ID: <c8955b000705011537l3b7b32f3wf7256dd168445b9@mail.gmail.com>
+
+On 01/05/07, David Holmes <dcholmes at optusnet.com.au> wrote:
+
+> > Let me remark that in the original monitor construction as suggested
+> > by Hoare, the if check is correct before the wait statement. In Java
+> > it is not correct. More confusion for a lot of people.
+>
+> It isn't correct with Brinch-Hansen monitors either. So I don't see this as a source of confusion for Java programmers in general - depending on what classes you took your exposure to any kind of monitor concept could be very limited.
+
+Well, I was not talking about Brinch Hansen's monitor. Just because
+this problem does not apply there at all (see
+http://brinch-hansen.net/papers/1973b.pdf). If you want to understand
+why, "I suggest you go and read a lot of literature on the subject to
+understand" the differences between the proposed monitor concepts so
+far.
+
+>
+> The reason it is correct with Hoare monitors is that the "notifier" (which isn't explicit) hands-off the monitor to the waiter, so there is no possibility of the condition changing in the mean-time. While semantically this is a nice model the performance implications are not good due to the forced context switching.
+
+In Hoare's monitor _there is_ an explicit notify called
+condvariable.signal, which gives priority to the process suspended on
+the condition variable of the monitor (see
+http://www.acm.org/classics/feb96/). That is one of the reasons why
+the wait can be preceded by a simple 'if' statement there.
+
+But not in Java!
+
+In Java, the 'if' statement guarding the wait operation is a definite
+mistake. No test is needed to see this. If you cannot see that yet,
+try this page: http://java.sun.com/javase/6/docs/api/java/lang/Object.html#wait()
+
+To make it more clear: This construction in the article would not even
+work for a single consumer in Java. I hope it is clear to anyone on
+this list.
+
+Best Regards,
+Szabolcs
+
+From jseigh_cp00 at xemaps.com  Tue May  1 18:53:00 2007
+From: jseigh_cp00 at xemaps.com (Joseph Seigh)
+Date: Tue, 01 May 2007 18:53:00 -0400
+Subject: [concurrency-interest] An article example
+In-Reply-To: <c8955b000704301412t6e86c591md33266cf7216d81a@mail.gmail.com>
+References: <c6f400460704291608t1fba2e8ep785d49d12d7e9f13@mail.gmail.com>	<NFBBKALFDCPFIDBNKAPCEEKFHGAA.dcholmes@optusnet.com.au>	<c6f400460704291822s6e7062e9n8b2629747dfe120a@mail.gmail.com>
+	<c8955b000704301412t6e86c591md33266cf7216d81a@mail.gmail.com>
+Message-ID: <4637C4CC.5030004@xemaps.com>
+
+Szabolcs Ferenczi wrote:
+
+>It adapted some form of the monitor construction but unfortunately the
+>most primitive form. It is something that was proposed by Horare for
+>operating systems in '72 (http://www.acm.org/classics/feb96/). At the
+>same time there was a alternative proposal by Per Brinch Hansen
+>(http://brinch-hansen.net/papers/1973b.pdf), which was at a bit higher
+>level. In the latter proposal the language primitive for long term
+>scheduling was
+>
+>await(condition)
+>
+>meaning that the thread is suspended until the condition holds. No
+>question whether it should be applied in an 'if' branch or in a
+>'while' loop. After all, the 'if' and the 'while' commands are
+>designed for sequential programming.
+>  
+>
+You can already implement that with no language changes.
+
+await(Callable<Boolean> condition)
+
+Of course Java "enclosures" are admittably pretty horrific.
+
+--
+Joe Seigh
+
+From szabolcs.ferenczi at gmail.com  Tue May  1 19:44:34 2007
+From: szabolcs.ferenczi at gmail.com (Szabolcs Ferenczi)
+Date: Wed, 2 May 2007 01:44:34 +0200
+Subject: [concurrency-interest] An article example
+In-Reply-To: <4637C4CC.5030004@xemaps.com>
+References: <c6f400460704291608t1fba2e8ep785d49d12d7e9f13@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCEEKFHGAA.dcholmes@optusnet.com.au>
+	<c6f400460704291822s6e7062e9n8b2629747dfe120a@mail.gmail.com>
+	<c8955b000704301412t6e86c591md33266cf7216d81a@mail.gmail.com>
+	<4637C4CC.5030004@xemaps.com>
+Message-ID: <c8955b000705011644o68988986r43284d6078c5064@mail.gmail.com>
+
+On 02/05/07, Joseph Seigh <jseigh_cp00 at xemaps.com> wrote:
+
+> You can already implement that with no language changes.
+>
+> await(Callable<Boolean> condition)
+
+Not really. There is a big conceptual difference. Namely, in Brinch
+Hansen's version there is no need for any notification or signalling.
+In Java, there is. In Brinch Hansen's version it is part of the
+language means. In your proposal it is a user implemented
+operation.---Java was trying to adapt Hoare's version, however, not
+very successfully. Brinch Hansen's version was considered inefficient
+at that time. Although, Hoare's version was at a lower abstraction
+level but gave some scheduling control in the hands of the programmer.
+People always like illusions, so Hoare's version wins.
+
+However, you can try to advertise it if you like the idea because it
+is better than what is there now.
+
+Best Regards,
+Szabolcs
+
+From dcholmes at optusnet.com.au  Tue May  1 20:08:41 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed, 02 May 2007 10:08:41 +1000
+Subject: [concurrency-interest] An article example
+In-Reply-To: <c8955b000705011537l3b7b32f3wf7256dd168445b9@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEELAHGAA.dcholmes@optusnet.com.au>
+
+Szabolcs Ferenczi wrote:
+> Well, I was not talking about Brinch Hansen's monitor.
+
+My point is that there are a number of different monitor models, not just
+Hoare's. So your assertion that because Java monitors are not Hoare monitors
+they will cause confusion, is not justified in my opinion.
+
+What Java provides are not true monitors because the encapsulation and
+exclusion are not enforced at the object level. What it provides are
+low-level mechanisms from which a form of monitor can be constructed. It's
+more flexible, but harder to use correctly and not hard to use incorrectly.
+
+> Just because this problem does not apply there at all (see
+> http://brinch-hansen.net/papers/1973b.pdf).
+
+I was considering the abstract model of the Brinch-Hansen monitor, not its
+expression in any particular language. If the language uses a guard of the
+form "await <condition>" then "if" vs. "while" doesn't come into it.
+Brinch-Hansen certainly prefers this form as per the above paper and his
+Edison language. Other languages, like Concurrent Pascal, that use
+Brinch-Hansen monitors, used the  more explicit "if (cond) wait(condVar)".
+As per Brinch-Hansen's discussion of Edison he considered this form superior
+and he didn't consider the inherent inefficiency of re-evaluating conditions
+as being a practical problem. Hoare, on the other hand, was concerned that
+efficiency might be an issue. Later concurrent OO languages that employ
+"guards" go to great lengths to try and improve the efficiency of the
+condition reevaluation mechanism - see "Threaded Active Objects" by Stuart
+Mitchell, University of York, UK ~1994, as one example.
+
+For anyone interested, there's a good comparison of Hoare, Brinch-Hansen and
+Mesa monitor models here:
+
+http://www.andrew.cmu.edu/course/15-412/ln/412springlecture7.html
+
+> In Hoare's monitor _there is_ an explicit notify called
+> condvariable.signal,
+
+Sorry, I should have said "(which need not be explicit)". Hoare actually
+considered numerous forms of expressing the "wait" and "notify" operations.
+
+> which gives priority to the process suspended on
+> the condition variable of the monitor (see
+> http://www.acm.org/classics/feb96/). That is one of the reasons why
+> the wait can be preceded by a simple 'if' statement there.
+
+Yes I already stated this: "hands-off the monitor to the waiter".
+
+> But not in Java!
+
+No and I never disputed this.
+
+> In Java, the 'if' statement guarding the wait operation is a definite
+> mistake. No test is needed to see this. If you cannot see that yet,
+
+I never said it wasn't. As I said the canonical form for using wait()
+requires a while(!condition) loop.
+
+Regards,
+David Holmes
+
+
+From szabolcs.ferenczi at gmail.com  Wed May  2 17:02:10 2007
+From: szabolcs.ferenczi at gmail.com (Szabolcs Ferenczi)
+Date: Wed, 2 May 2007 23:02:10 +0200
+Subject: [concurrency-interest] An article example
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCEELAHGAA.dcholmes@optusnet.com.au>
+References: <c8955b000705011537l3b7b32f3wf7256dd168445b9@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCEELAHGAA.dcholmes@optusnet.com.au>
+Message-ID: <c8955b000705021402o5e0e600ex8bb6a882546564a@mail.gmail.com>
+
+On 02/05/07, David Holmes <dcholmes at optusnet.com.au> wrote:
+
+> > In Java, the 'if' statement guarding the wait operation is a definite
+> > mistake. No test is needed to see this. If you cannot see that yet,
+>
+> I never said it wasn't. As I said the canonical form for using wait()
+> requires a while(!condition) loop.
+
+I am afraid it is not about any canonical form. It is about the
+semantics of the wait() operation. If you are talking about canonical
+form, you do not understand the problem.
+
+The problem is that the wait operation is not implemented correctly in
+Java. In the monitor construction, and also intuitively one could
+expect that, a wait operation on a condition variable is extended
+until there is a signal coming for that condition. _But not in Java!_
+In Java the wait operation delays the thread for an indefinite
+interval of time, which is terminated between time 0 and the time a
+notification signal is coming. So, practically, the wait operation can
+even be finished right after it is started, even if there is not any
+notification signal arrived for the condition variable. This is the
+reason the wait operation cannot be guarded by an `if' command in
+Java. The `canonical form' you are mentioning is only the consequence
+of this implementation flaw.
+
+That is why the Java compiler should give an error but at least a
+warning whenever it encounters that a `wait()' is meant to be
+effectively guarded by an `if' statement.
+
+The `if-wait' is considered harmful in Java.
+
+Best Regards,
+Szabolcs
+
+From hanson.char at gmail.com  Thu May  3 01:46:29 2007
+From: hanson.char at gmail.com (Hanson Char)
+Date: Wed, 2 May 2007 22:46:29 -0700
+Subject: [concurrency-interest] Java Fork/Join Framework
+Message-ID: <ca53c8f80705022246s5848ccd9g4beadaa8cd9893a8@mail.gmail.com>
+
+Hi,
+
+Is there a CVS access to the source of the latest Java Fork/Join Framework
+?  Is it part of jsr166y (which currently seems to have an empty source
+tree) ?  Will the framework be made available in Java 7 ?
+
+Thanks,
+Hanson Char
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070502/f923dd95/attachment.html 
+
+From dl at cs.oswego.edu  Thu May  3 06:12:06 2007
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Thu, 03 May 2007 06:12:06 -0400
+Subject: [concurrency-interest] Java Fork/Join Framework
+In-Reply-To: <ca53c8f80705022246s5848ccd9g4beadaa8cd9893a8@mail.gmail.com>
+References: <ca53c8f80705022246s5848ccd9g4beadaa8cd9893a8@mail.gmail.com>
+Message-ID: <4639B576.9000404@cs.oswego.edu>
+
+Hanson Char wrote:
+> Hi,
+> 
+> Is there a CVS access to the source of the latest Java Fork/Join 
+> Framework ?  Is it part of jsr166y (which currently seems to have an 
+> empty source tree) ?  Will the framework be made available in Java 7 ?
+> 
+
+Coming soon. There are a couple of further pieces I need to get
+together before public preliminary release. In the mean time,
+if you are curious, snapshots of javadocs can be found at
+   http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/
+Comments and suggestions would be welcome.
+
+Yes, we hope the forkjoin package gets put into Java 7.
+
+-Doug
+
+From hanson.char at gmail.com  Thu May  3 12:33:58 2007
+From: hanson.char at gmail.com (Hanson Char)
+Date: Thu, 3 May 2007 09:33:58 -0700
+Subject: [concurrency-interest] TransferQueue
+Message-ID: <ca53c8f80705030933j7c3bd35fjb4ded222e72071f6@mail.gmail.com>
+
+Nice :)
+
+"...TransferQueue may be capacity bounded", as said in the javadoc, whereas
+LinkedTransferQueue is unbounded.  Is there any plan to include an
+optionally-bounded TransferQueue impl in Java 7 ?  If so, what would the
+name be like ?  Should the naming convention be made parallel/consistent
+against the existing LinkedBlockingQueue (which is optionally bounded) ?
+
+Hanson Char
+
+On 5/3/07, Doug Lea <dl at cs.oswego.edu> wrote:
+>
+> Hanson Char wrote:
+> > Hi,
+> >
+> > Is there a CVS access to the source of the latest Java Fork/Join
+> > Framework ?  Is it part of jsr166y (which currently seems to have an
+> > empty source tree) ?  Will the framework be made available in Java 7 ?
+> >
+>
+> Coming soon. There are a couple of further pieces I need to get
+> together before public preliminary release. In the mean time,
+> if you are curious, snapshots of javadocs can be found at
+>    http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/
+> Comments and suggestions would be welcome.
+>
+> Yes, we hope the forkjoin package gets put into Java 7.
+>
+> -Doug
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070503/2beaf351/attachment.html 
+
+From hanson.char at gmail.com  Thu May  3 12:41:22 2007
+From: hanson.char at gmail.com (Hanson Char)
+Date: Thu, 3 May 2007 09:41:22 -0700
+Subject: [concurrency-interest] TransferQueue
+In-Reply-To: <ca53c8f80705030933j7c3bd35fjb4ded222e72071f6@mail.gmail.com>
+References: <ca53c8f80705030933j7c3bd35fjb4ded222e72071f6@mail.gmail.com>
+Message-ID: <ca53c8f80705030941y3691229bsbc6f8c67418d796b@mail.gmail.com>
+
+There is minor typo in the javadoc:
+
+http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/jsr166y/LinkedTransferQueue.html
+
+"Memory consistency effects: As with other concurrent collections, actions
+in a thread prior to placing an object into a ConcurrentLinkedQueue *
+happen-before*<http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/jsr166y/package-summary.html#MemoryVisibility>actions
+subsequent to the access or removal of that element from the
+ConcurrentLinkedQueue in another thread."
+
+I suppose it means to refer to LinkedTransferQueue instead of
+"ConcurrentLinkedQueue" ?
+
+Hanson Char
+
+On 5/3/07, Hanson Char <hanson.char at gmail.com> wrote:
+>
+> Nice :)
+>
+> "...TransferQueue may be capacity bounded", as said in the javadoc,
+> whereas LinkedTransferQueue is unbounded.  Is there any plan to include an
+> optionally-bounded TransferQueue impl in Java 7 ?  If so, what would the
+> name be like ?  Should the naming convention be made parallel/consistent
+> against the existing LinkedBlockingQueue (which is optionally bounded) ?
+>
+> Hanson Char
+>
+> On 5/3/07, Doug Lea <dl at cs.oswego.edu> wrote:
+> >
+> > Hanson Char wrote:
+> > > Hi,
+> > >
+> > > Is there a CVS access to the source of the latest Java Fork/Join
+> > > Framework ?  Is it part of jsr166y (which currently seems to have an
+> > > empty source tree) ?  Will the framework be made available in Java 7 ?
+> >
+> > >
+> >
+> > Coming soon. There are a couple of further pieces I need to get
+> > together before public preliminary release. In the mean time,
+> > if you are curious, snapshots of javadocs can be found at
+> >    http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/
+> > Comments and suggestions would be welcome.
+> >
+> > Yes, we hope the forkjoin package gets put into Java 7.
+> >
+> > -Doug
+> >
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070503/ce63c606/attachment.html 
+
+From hanson.char at gmail.com  Thu May  3 12:52:16 2007
+From: hanson.char at gmail.com (Hanson Char)
+Date: Thu, 3 May 2007 09:52:16 -0700
+Subject: [concurrency-interest] Java Fork/Join Framework
+In-Reply-To: <4639B576.9000404@cs.oswego.edu>
+References: <ca53c8f80705022246s5848ccd9g4beadaa8cd9893a8@mail.gmail.com>
+	<4639B576.9000404@cs.oswego.edu>
+Message-ID: <ca53c8f80705030952u669ef52fneed29b907be5de8e@mail.gmail.com>
+
+It would be fun to see how the implementation landscape would be affected by
+the proposed closure constructs by Neal Gafter.  BTW, how likely will
+closure be included in Java 7 ?  Even if the answer is "don't know", it
+would still be nice to see how the impl could have been made with closure
+(vs the otherwise alternative).
+
+Hanson Char
+
+On 5/3/07, Doug Lea <dl at cs.oswego.edu> wrote:
+>
+> Hanson Char wrote:
+> > Hi,
+> >
+> > Is there a CVS access to the source of the latest Java Fork/Join
+> > Framework ?  Is it part of jsr166y (which currently seems to have an
+> > empty source tree) ?  Will the framework be made available in Java 7 ?
+> >
+>
+> Coming soon. There are a couple of further pieces I need to get
+> together before public preliminary release. In the mean time,
+> if you are curious, snapshots of javadocs can be found at
+>    http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/
+> Comments and suggestions would be welcome.
+>
+> Yes, we hope the forkjoin package gets put into Java 7.
+>
+> -Doug
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070503/29711a7f/attachment.html 
+
+From hanson.char at gmail.com  Thu May  3 13:12:31 2007
+From: hanson.char at gmail.com (Hanson Char)
+Date: Thu, 3 May 2007 10:12:31 -0700
+Subject: [concurrency-interest] Java Fork/Join Framework
+In-Reply-To: <4639B576.9000404@cs.oswego.edu>
+References: <ca53c8f80705022246s5848ccd9g4beadaa8cd9893a8@mail.gmail.com>
+	<4639B576.9000404@cs.oswego.edu>
+Message-ID: <ca53c8f80705031012n28c518dbtf5b55fa6f0f6f3cf@mail.gmail.com>
+
+In the code example at:
+
+http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/jsr166y/forkjoin/ForkJoinTask.html
+
+ class SortTask extends ForkJoinTask<Void> {
+...
+ coInvoke(new Sorter(array, lo, mid),
+         new Sorter(array, mid+1, hi));
+
+Does it mean to instantiate SortTask, instead of "Sorter" ?
+
+Hanson Char
+
+On 5/3/07, Doug Lea <dl at cs.oswego.edu> wrote:
+>
+> Hanson Char wrote:
+> > Hi,
+> >
+> > Is there a CVS access to the source of the latest Java Fork/Join
+> > Framework ?  Is it part of jsr166y (which currently seems to have an
+> > empty source tree) ?  Will the framework be made available in Java 7 ?
+> >
+>
+> Coming soon. There are a couple of further pieces I need to get
+> together before public preliminary release. In the mean time,
+> if you are curious, snapshots of javadocs can be found at
+>    http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/
+> Comments and suggestions would be welcome.
+>
+> Yes, we hope the forkjoin package gets put into Java 7.
+>
+> -Doug
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070503/e85f5008/attachment.html 
+
+From raptormig at gmail.com  Thu May  3 14:20:15 2007
+From: raptormig at gmail.com (Carlos Lopes)
+Date: Thu, 3 May 2007 19:20:15 +0100
+Subject: [concurrency-interest] ConcurrentHashMap putIfAbsent
+Message-ID: <82AF520F-0984-470F-8B3E-1C4AE7ADEE30@gmail.com>
+
+This function is supposed to get a CondL Object or create one if it  
+doesn't exists, but sometimes in a multicore/processor systems, 2 or  
+more Threads retrieve different CondL for the same obj.
+Isn't the function ThreadSafe?
+
+private CondL mapOb2C(Object obj) {
+         CondL c = map.get(obj);
+
+         if (c == null) {
+             c = new CondL();
+
+             CondL tmp = map.putIfAbsent(obj, c);
+             if (tmp != null) c = tmp;
+         }
+         return c;
+}
+
+Thanks in advanced.
+
+From dcholmes at optusnet.com.au  Thu May  3 15:03:07 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Fri, 04 May 2007 05:03:07 +1000
+Subject: [concurrency-interest] ConcurrentHashMap putIfAbsent
+In-Reply-To: <82AF520F-0984-470F-8B3E-1C4AE7ADEE30@gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAELJHGAA.dcholmes@optusnet.com.au>
+
+Carlos Lopes writes:
+> This function is supposed to get a CondL Object or create one if it
+> doesn't exists, but sometimes in a multicore/processor systems, 2 or
+> more Threads retrieve different CondL for the same obj.
+> Isn't the function ThreadSafe?
+>
+> private CondL mapOb2C(Object obj) {
+>          CondL c = map.get(obj);
+>
+>          if (c == null) {
+>              c = new CondL();
+>
+>              CondL tmp = map.putIfAbsent(obj, c);
+>              if (tmp != null) c = tmp;
+>          }
+>          return c;
+> }
+
+I don't see a problem with the code in that regard. Can you create a small
+test case that demonstrates the problem?
+
+David Holmes
+
+
+From joe.bowbeer at gmail.com  Thu May  3 15:17:18 2007
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Thu, 3 May 2007 12:17:18 -0700
+Subject: [concurrency-interest] ConcurrentHashMap putIfAbsent
+In-Reply-To: <82AF520F-0984-470F-8B3E-1C4AE7ADEE30@gmail.com>
+References: <82AF520F-0984-470F-8B3E-1C4AE7ADEE30@gmail.com>
+Message-ID: <31f2a7bd0705031217v29ebf010re20efb8b2c605a1c@mail.gmail.com>
+
+Looks good to me.  Can you send more code?
+
+If the equals method implemented by your keys isn't faulty, the
+testing framework may be faulty.
+
+On 5/3/07, Carlos Lopes <raptormig at gmail.com> wrote:
+> This function is supposed to get a CondL Object or create one if it
+> doesn't exists, but sometimes in a multicore/processor systems, 2 or
+> more Threads retrieve different CondL for the same obj.
+> Isn't the function ThreadSafe?
+>
+> private CondL mapOb2C(Object obj) {
+>          CondL c = map.get(obj);
+>
+>          if (c == null) {
+>              c = new CondL();
+>
+>              CondL tmp = map.putIfAbsent(obj, c);
+>              if (tmp != null) c = tmp;
+>          }
+>          return c;
+> }
+>
+> Thanks in advanced.
+>
+
+From dl at cs.oswego.edu  Thu May  3 19:36:25 2007
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Thu, 03 May 2007 19:36:25 -0400
+Subject: [concurrency-interest] TransferQueue
+In-Reply-To: <ca53c8f80705030933j7c3bd35fjb4ded222e72071f6@mail.gmail.com>
+References: <ca53c8f80705030933j7c3bd35fjb4ded222e72071f6@mail.gmail.com>
+Message-ID: <463A71F9.3060607@cs.oswego.edu>
+
+Hanson Char wrote:
+> Nice :)
+> 
+> "...TransferQueue may be capacity bounded", as said in the javadoc, 
+> whereas LinkedTransferQueue is unbounded.  Is there any plan to include 
+> an optionally-bounded TransferQueue impl in Java 7 ?  If so, what would 
+> the name be like ?  Should the naming convention be made 
+> parallel/consistent against the existing LinkedBlockingQueue (which is 
+> optionally bounded) ?
+> 
+
+This is one question still up in the air. For the bounded case,
+it's hard to do any better than use a Semaphore in front of a
+LinkedTransferQueue. We could optionally do this internally, although it
+would make the guarantees under the two modes hard to describe.
+
+Which would you prefer, supporting two modes in this class, or
+two different classes?
+
+-Doug
+
+From hanson.char at gmail.com  Thu May  3 19:49:01 2007
+From: hanson.char at gmail.com (Hanson Char)
+Date: Thu, 3 May 2007 16:49:01 -0700
+Subject: [concurrency-interest] TransferQueue
+In-Reply-To: <463A71F9.3060607@cs.oswego.edu>
+References: <ca53c8f80705030933j7c3bd35fjb4ded222e72071f6@mail.gmail.com>
+	<463A71F9.3060607@cs.oswego.edu>
+Message-ID: <ca53c8f80705031649g144a2588hcb5dc57946e25850@mail.gmail.com>
+
+>Which would you prefer, supporting two modes in this class, or
+>two different classes?
+
+Honestly I don't know.  Naively I would think making the use of LTQ
+consistent with that of LBQ would probably be what most people expect (ie
+supporting two modes in the same class), since their namings seem to follow
+a pattern (albeit accidentally it seems) ?
+
+One nice thing I like about some open source projects (such as Mina) is that
+they let the participants to vote for pure preferential (trivial?) matters.
+Let the clients/users choose what they'd like to use :)
+
+Hanson Char
+
+On 5/3/07, Doug Lea <dl at cs.oswego.edu> wrote:
+>
+> Hanson Char wrote:
+> > Nice :)
+> >
+> > "...TransferQueue may be capacity bounded", as said in the javadoc,
+> > whereas LinkedTransferQueue is unbounded.  Is there any plan to include
+> > an optionally-bounded TransferQueue impl in Java 7 ?  If so, what would
+> > the name be like ?  Should the naming convention be made
+> > parallel/consistent against the existing LinkedBlockingQueue (which is
+> > optionally bounded) ?
+> >
+>
+> This is one question still up in the air. For the bounded case,
+> it's hard to do any better than use a Semaphore in front of a
+> LinkedTransferQueue. We could optionally do this internally, although it
+> would make the guarantees under the two modes hard to describe.
+>
+> Which would you prefer, supporting two modes in this class, or
+> two different classes?
+>
+> -Doug
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070503/f695bf00/attachment.html 
+
+From jed at atlassian.com  Thu May  3 21:16:01 2007
+From: jed at atlassian.com (Jed Wesley-Smith)
+Date: Fri, 04 May 2007 11:16:01 +1000
+Subject: [concurrency-interest] ConcurrentHashMap putIfAbsent
+In-Reply-To: <82AF520F-0984-470F-8B3E-1C4AE7ADEE30@gmail.com>
+References: <82AF520F-0984-470F-8B3E-1C4AE7ADEE30@gmail.com>
+Message-ID: <463A8951.6080407@atlassian.com>
+
+Carlos,
+
+What is obj? When you say it receives different CondL for the same obj 
+is it the same reference? Or should it be the same due to the 
+hash/equals? If the latter, the usual question is how good is the 
+hash/equals, does it rely on any mutable properties of the obj (is the 
+hash idempotent)?
+
+Carlos Lopes wrote:
+> This function is supposed to get a CondL Object or create one if it  
+> doesn't exists, but sometimes in a multicore/processor systems, 2 or  
+> more Threads retrieve different CondL for the same obj.
+> Isn't the function ThreadSafe?
+>
+> private CondL mapOb2C(Object obj) {
+>          CondL c = map.get(obj);
+>
+>          if (c == null) {
+>              c = new CondL();
+>
+>              CondL tmp = map.putIfAbsent(obj, c);
+>              if (tmp != null) c = tmp;
+>          }
+>          return c;
+> }
+>
+> Thanks in advanced.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>   
+
+-- 
+cheers,
+- jed.
+
+Can you hack it? Atlassian Codegeist II plugin competition http://www.atlassian.com/codegeist
+
+
+From forax at univ-mlv.fr  Fri May  4 05:12:14 2007
+From: forax at univ-mlv.fr (=?ISO-8859-1?Q?R=E9mi_Forax?=)
+Date: Fri, 04 May 2007 11:12:14 +0200
+Subject: [concurrency-interest] Java Fork/Join Framework
+In-Reply-To: <4639B576.9000404@cs.oswego.edu>
+References: <ca53c8f80705022246s5848ccd9g4beadaa8cd9893a8@mail.gmail.com>
+	<4639B576.9000404@cs.oswego.edu>
+Message-ID: <463AF8EE.2040802@univ-mlv.fr>
+
+Doug Lea a ?crit :
+> Hanson Char wrote:
+>   
+>> Hi,
+>>
+>> Is there a CVS access to the source of the latest Java Fork/Join 
+>> Framework ?  Is it part of jsr166y (which currently seems to have an 
+>> empty source tree) ?  Will the framework be made available in Java 7 ?
+>>
+>>     
+>
+> Coming soon. There are a couple of further pieces I need to get
+> together before public preliminary release. In the mean time,
+> if you are curious, snapshots of javadocs can be found at
+>    http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/
+> Comments and suggestions would be welcome.
+>
+> Yes, we hope the forkjoin package gets put into Java 7.
+>
+> -Doug
+>   
+In all class *Tasks, the static methods are not correctly generifed.
+By example ArrayTasks.map, mapper should be typed
+TaskTypes.Mapper<? super T, ? extends U>
+and not
+TaskTypes.Mapper<T, U>.
+
+So the correct signature for map is
+static <T,U> void map(ForkJoinPool pool, T[] array, TaskTypes.Mapper<? 
+super T, ? extends U> mapper, U[] dest);
+
+This problem will vanish when function type will be used :
+static <T,U> void map(ForkJoinPool pool, T[] array, {T=>U} mapper, U[] 
+dest);
+
+R?mi
+
+
+From dl at cs.oswego.edu  Fri May  4 08:49:21 2007
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 04 May 2007 08:49:21 -0400
+Subject: [concurrency-interest] Java Fork/Join Framework
+In-Reply-To: <ca53c8f80705030952u669ef52fneed29b907be5de8e@mail.gmail.com>
+References: <ca53c8f80705022246s5848ccd9g4beadaa8cd9893a8@mail.gmail.com>	
+	<4639B576.9000404@cs.oswego.edu>
+	<ca53c8f80705030952u669ef52fneed29b907be5de8e@mail.gmail.com>
+Message-ID: <463B2BD1.5090301@cs.oswego.edu>
+
+Hanson Char wrote:
+> It would be fun to see how the implementation landscape would be 
+> affected by the proposed closure constructs by Neal Gafter.  BTW, how 
+> likely will closure be included in Java 7 ?  Even if the answer is 
+> "don't know", it would still be nice to see how the impl could have been 
+> made with closure (vs the otherwise alternative).
+> 
+
+Actually, the opposite: The upcoming existence of forkjoin,
+and the awkwardness of using it were/are one of main reasons
+for looking at improved syntax support. About which
+I'm done arguing :-), since debates about it
+are among the reasons that releasing it has slipped
+much longer than planned. At this point, I'd rather
+get it out and let other people think about whether and
+how to provide language integration in Java and/or other
+languages running on JVMs.
+
+-Doug
+
+
+
+
+
+From dl at cs.oswego.edu  Fri May  4 08:52:18 2007
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 04 May 2007 08:52:18 -0400
+Subject: [concurrency-interest] Java Fork/Join Framework
+In-Reply-To: <463AF8EE.2040802@univ-mlv.fr>
+References: <ca53c8f80705022246s5848ccd9g4beadaa8cd9893a8@mail.gmail.com>	<4639B576.9000404@cs.oswego.edu>
+	<463AF8EE.2040802@univ-mlv.fr>
+Message-ID: <463B2C82.2010502@cs.oswego.edu>
+
+R?mi Forax wrote:
+
+> So the correct signature for map is
+> static <T,U> void map(ForkJoinPool pool, T[] array, TaskTypes.Mapper<? 
+> super T, ? extends U> mapper, U[] dest);
+> 
+
+Right; thanks; already on to-do list.
+
+This makes the declarations even more fun to decode than they already are.
+
+-Doug
+
+
+
+
+From tackline at tackline.plus.com  Sun May  6 13:32:35 2007
+From: tackline at tackline.plus.com (Thomas Hawtin)
+Date: Sun, 06 May 2007 18:32:35 +0100
+Subject: [concurrency-interest] Java Fork/Join Framework
+In-Reply-To: <4639B576.9000404@cs.oswego.edu>
+References: <ca53c8f80705022246s5848ccd9g4beadaa8cd9893a8@mail.gmail.com>
+	<4639B576.9000404@cs.oswego.edu>
+Message-ID: <463E1133.2050507@tackline.plus.com>
+
+Doug Lea wrote:
+>    http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/
+> Comments and suggestions would be welcome.
+
+  * That's an awful lot of types. Wouldn't the effort spent of primitive 
+support be better spent bullying the JVM people into optimise boxing? 
+Presumably simple operations on primitives will be slow whatever.
+
+  * Similarly array and array slice use could be replaced by Lists.
+
+  * The order of parameters on for instance ArrayTasks.findAll is 
+eccentric. Rather than
+
+    ForkJoinPool pool, T[] array, TaskTypes.Predicate<T> pred,
+    int fromIndex, int toIndex
+
+keeping the array and indexes together would be better:
+
+    ForkJoinPool pool, T[] array, int fromIndex, int toIndex,
+    TaskTypes.Predicate<T> pred
+
+  * Need bounds checking specifications on some methods.
+
+  * Why List instead of Collection or Iterable? I can see sometimes you 
+might be able to optimise copies if you have, say, Collection.size and a 
+(RandomAccess) List can be sliced by index. But should other Iterables 
+be cut out?
+
+  * Not keen on all the XxxTasks classes. Overloading would be more 
+conventional.
+
+  * TaskTypes, IntTask, etc., shouldn't have a public constructor.
+
+  * For an algorithm like IntTasks.sum, isn't an overflow likely with an 
+int result?
+
+  * Why does IntTasks.findAll return List<Integer> and findAny int. 
+Either int[] and int or List<Integer> and Integer would make sense, but 
+half-and-half seems a bit odd.
+
+  * Missing methods that use Comparator rather than Comparable.
+
+  * TaskTypes.* would be more consistent with Comparator if they 
+mentioned implementing equals and hashCode.
+
+  * JavaDocs -use would by slightly more useful.
+
+  * I object to the static ForkJoinTask methods.
+
+Tom Hawtin
+
+From szabolcs.ferenczi at gmail.com  Sun May  6 14:18:05 2007
+From: szabolcs.ferenczi at gmail.com (Szabolcs Ferenczi)
+Date: Sun, 6 May 2007 20:18:05 +0200
+Subject: [concurrency-interest] MRULinkedBlockingQueue
+In-Reply-To: <DAE04D9F6FD21448A220918A522FB60E06816000@MI8NYCMAIL15.Mi8.com>
+References: <DAE04D9F6FD21448A220918A522FB60E06816000@MI8NYCMAIL15.Mi8.com>
+Message-ID: <c8955b000705061118i3ded9675k31a90283863de741@mail.gmail.com>
+
+On 18/04/07, Mike Quilleash <mike.quilleash at subexazure.com> wrote:
+
+> 1) Concurrent
+
+Now, it is not very exact, as Brian Goetz just remarked.
+
+> 2) Maintains insertion order (for iteration)
+
+I have asked what do you mean exactly by this. I am afraid there must
+be some very complicated lock-free stuff that could guarantee it.
+
+Again, assume a buffer with capacity of 2. Let the buffer contain two
+elements already [item1, item2]. Now two threads start action, T1
+calls add(item3), and T2 calls add(item4). They continue as follows:
+Both of them test offer(x) at the same time and both of them are
+unsuccessful since the buffer is full. Now both the threads
+prepare to throw an element away to make some room. The buffer becomes
+empty. Now it is again indetermined, which thread will win to insert
+the element first. So, your buffer will end up with:
+
+either [item3, item4] or [item4, item3]
+
+depending on which thread wins. That is, it is completely non
+deterministic what you will get. It also means that your criterion about
+insertion order is not met. You can repeat the thought experiment for
+a larger set as well, if you like.
+
+Insertion order per thread basis is maintained, however.
+
+I hope this helps.
+
+Szabolcs
+
+From gregg at cytetech.com  Mon May  7 00:36:17 2007
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Sun, 06 May 2007 23:36:17 -0500
+Subject: [concurrency-interest] Java Fork/Join Framework
+In-Reply-To: <463E1133.2050507@tackline.plus.com>
+References: <ca53c8f80705022246s5848ccd9g4beadaa8cd9893a8@mail.gmail.com>
+	<4639B576.9000404@cs.oswego.edu>
+	<463E1133.2050507@tackline.plus.com>
+Message-ID: <463EACC1.3080805@cytetech.com>
+
+
+
+Thomas Hawtin wrote:
+>   * Why List instead of Collection or Iterable? I can see sometimes you 
+> might be able to optimise copies if you have, say, Collection.size and a 
+> (RandomAccess) List can be sliced by index. But should other Iterables 
+> be cut out?
+
+This is one of my standing concerns.  As we all try to optimize program 
+execution, lazy creation makes a lot more sense, then creating large Lists.  If 
+a List is not going to be modifiable (it's mutability doesn't affect the called 
+context), then a List is probably not appropriate.
+
+One of my best examples is File.list().  Try running that in a small Java 
+application in a directory which the user has created 30,000 or so files in.  It 
+takes for ever for the OS to scan the directory.  It takes for ever for the JVM 
+to create the 30K File objects, especially when a security manager is active.
+
+The associated latency is huge, and the fact that the operation is 
+non-cancellable, is a big issue.  Iterable return values are inherently 
+cancellable, and thus create a much better opertunity for good programming 
+practices and good user experiences.
+
+Gregg Wonderly
+
+From dl at cs.oswego.edu  Mon May  7 07:41:28 2007
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 07 May 2007 07:41:28 -0400
+Subject: [concurrency-interest] Java Fork/Join Framework
+In-Reply-To: <463E1133.2050507@tackline.plus.com>
+References: <ca53c8f80705022246s5848ccd9g4beadaa8cd9893a8@mail.gmail.com>
+	<4639B576.9000404@cs.oswego.edu>
+	<463E1133.2050507@tackline.plus.com>
+Message-ID: <463F1068.6070204@cs.oswego.edu>
+
+Thanks for the feedback!
+
+Thomas Hawtin wrote:
+> Doug Lea wrote:
+>>    http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/
+>> Comments and suggestions would be welcome.
+> 
+>  * That's an awful lot of types. Wouldn't the effort spent of primitive 
+> support be better spent bullying the JVM people into optimise boxing? 
+
+Well, now that JVMs are mostly all open source, perhaps someone
+will give it a try. Given that boxing overhead has been a persistent
+issue in programming languages for a few decades, I don't anticipate
+any quick fixes though.
+
+The underlying idea here is that Fork/Join mechanics are basically a
+substitute for for-each style loops. Think of all the things you can
+do with such loops. Even a large number of types for bodies won't
+capture all of them.
+
+If we could teach everyone how to reliably write the kind
+of code illustrated in the sunOfSquares example in
+http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/jsr166y/forkjoin/ForkJoinTask.html
+then we wouldn't need most of these. (Although we'd still want some
+for prewired utilities like sorting.)
+But most programmers won't want to do this. It's not clear
+they'll even want to invoke the provided methods like ListTasks.reduce,
+since these require awkward arguments for map and reduce bodies -- often
+using bulky anonymous inner classes. The main moral so far is that
+it is not at all clear how to best graft on fine-grained
+large-multicore-friendly constructs in existing languages.
+
+> 
+>  * Why List instead of Collection or Iterable? 
+
+Because parallel recursive divide and conquer requires
+being able quickly to find midpoints breaking problems
+in half. Arrays and (RandomAccess) Lists provide this.
+Others don't, so you'd waste so much time linearly scanning
+to break up problems that you'd lose speedups for all but
+the heaviest code bodies. With lists and arrays, you can
+get very impressive speedups on MPs for ordinary
+reasonably small code bodies (like sums of squares for example).
+
+
+> 
+>  * For an algorithm like IntTasks.sum, isn't an overflow likely with an 
+> int result?
+> 
+>  * Why does IntTasks.findAll return List<Integer> and findAny int. 
+> Either int[] and int or List<Integer> and Integer would make sense, but 
+> half-and-half seems a bit odd.
+> 
+
+More symptoms of the too-many-task-types problem. Yes, all
+sorts of variants are possible, and there's no way to find
+out which ones are actually worth providing except via experience.
+
+> 
+>  * I object to the static ForkJoinTask methods.
+> 
+
+Do you object to static Thread methods? They use the same
+pattern for the same reason -- all the work in all ForkJoinTask
+methods is actually done via your Thread.currentThread(),
+which is specialized to ForkJoinPool.Worker.
+
+-Doug
+
+
+From tackline at tackline.plus.com  Mon May  7 12:01:47 2007
+From: tackline at tackline.plus.com (Thomas Hawtin)
+Date: Mon, 07 May 2007 17:01:47 +0100
+Subject: [concurrency-interest] Java Fork/Join Framework
+In-Reply-To: <463F1068.6070204@cs.oswego.edu>
+References: <ca53c8f80705022246s5848ccd9g4beadaa8cd9893a8@mail.gmail.com>
+	<4639B576.9000404@cs.oswego.edu>
+	<463E1133.2050507@tackline.plus.com>
+	<463F1068.6070204@cs.oswego.edu>
+Message-ID: <463F4D6B.6070308@tackline.plus.com>
+
+Doug Lea wrote:
+> 
+> Thomas Hawtin wrote:
+>>
+>>  * That's an awful lot of types. Wouldn't the effort spent of 
+>> primitive support be better spent bullying the JVM people into 
+>> optimise boxing? 
+> 
+> [...]
+> 
+> If we could teach everyone how to reliably write the kind
+> of code illustrated in the sunOfSquares example in
+> http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/jsr166y/forkjoin/ForkJoinTask.html 
+> 
+> then we wouldn't need most of these. (Although we'd still want some
+> for prewired utilities like sorting.)
+
+Can't most of that be abstracted? With a minimum sequential size, using
+a reducer shouldn't be a problem.
+
+I was thinking a general method like:
+
+public static <T> T split(
+     ForkJoinPool pool, int len, int minSeq, SplitTask<T> split
+)
+
+And then the sumOfSquares example would become:
+
+double static sumOfSquares(ForkJoinPool pool, final double[] array) {
+    return split(pool, array.length, 1024, new SplitTask<Double>() {
+            public Double slice(int lo, int hi) {
+  	       double sum = 0;
+	       for (int i = lo; i <= hi; ++i) {
+	          sum += array[i] * array[i];
+	       }
+	       return sum;
+            }
+            public Double combine(Double a, Double b) {
+                return a+b;
+            }
+        }
+    );
+}
+
+(Looking a ListTasks.reduce, a combined Mapper and Reducer would 
+simplify use a little.)
+
+>>  * Why List instead of Collection or Iterable? 
+> 
+> Because parallel recursive divide and conquer requires
+> being able quickly to find midpoints breaking problems
+> in half. Arrays and (RandomAccess) Lists provide this.
+> Others don't, so you'd waste so much time linearly scanning
+> to break up problems that you'd lose speedups for all but
+> the heaviest code bodies. With lists and arrays, you can
+> get very impressive speedups on MPs for ordinary
+> reasonably small code bodies (like sums of squares for example).
+
+I was thinking it's easy enough to convert a slow Collection or Iterable
+into a RandomAccess List, but then I guess it's easy enough for the
+caller too.
+
+>>  * I object to the static ForkJoinTask methods.
+>>
+> 
+> Do you object to static Thread methods? They use the same
+> pattern for the same reason -- all the work in all ForkJoinTask
+> methods is actually done via your Thread.currentThread(),
+> which is specialized to ForkJoinPool.Worker.
+
+Methods like yield? They only make sense on the current thread. The only
+one I see like that is ForkJoinTask.getLocalQueueSize.
+ForkJoinPool.getPool (which would be currentPool in Thread's convention)
+seems unnecessary.
+
+Tom Hawtin
+
+
+From rajesh.balamohan at gmail.com  Thu May 10 11:52:18 2007
+From: rajesh.balamohan at gmail.com (Rajesh Balamohan)
+Date: Thu, 10 May 2007 21:22:18 +0530
+Subject: [concurrency-interest] Scalability with Caches
+Message-ID: <1da12e810705100852h316fbb15x1b1bed71141cae21@mail.gmail.com>
+
+Hi All,
+
+We have a clustered system (weblogic cluster). We need to have a very high
+performing caching system and due to functionality requirements, we would
+NOT be able to replicate the caches across different nodes.
+
+Reason is - When one of the server is being updated, it might happen that
+another node gets the request and the functionality is broken. So we are
+going ahead with centralized caching approach.
+
+1. One of the node will host the cache. (ConcurrentHashMap is used
+internally.)
+   - Since we are expecting 1:1 read/write, we are planning to have
+subcaches in ConcurrentHashMap. ie, ConcurrentHashMaps of ConcurrentHashMap.
+So that, writes will be faster and to avoid synchronization.
+
+
+But I was wondering if we can use partitioned caching. Wherein,some subset
+of cache will be present in every node. And if the data is not available in
+one of the nodes, it gets the data from the other node using http request or
+so. We did not consider RMI since its expensive (we did some benchmarks for
+this).
+
+There are no open-source implementations of partitioned cache to my
+knowledge. I wanted to check with you folks, if there are any better way to
+deal with this implementation.
+
+
+-- 
+~Rajesh.B
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070510/2f0662b3/attachment.html 
+
+From teck at terracottatech.com  Thu May 10 12:34:26 2007
+From: teck at terracottatech.com (Tim Eck)
+Date: Thu, 10 May 2007 09:34:26 -0700 (PDT)
+Subject: [concurrency-interest] Scalability with Caches
+In-Reply-To: <mailman.3.1178812800.25579.concurrency-interest@altair.cs.oswego.edu>
+References: <mailman.3.1178812800.25579.concurrency-interest@altair.cs.oswego.edu>
+Message-ID: <000701c79321$11a15ca0$34e415e0$@com>
+
+In the open source area, I'd look at Terracotta, JBoss Cache, and Ehcache.
+Maybe others have other suggestions though? To the best of my knowledge,
+the partioning logic is something you'd be crafting yourself. One thing
+terracotta can do is page in (and page out) portions of object graphs on
+demand by the application code.
+
+Disclaimer: I am a terracotta employee
+
+> -----Original Message-----
+> Hi All,
+> 
+> We have a clustered system (weblogic cluster). We need to have a very
+> high
+> performing caching system and due to functionality requirements, we
+> would
+> NOT be able to replicate the caches across different nodes.
+> 
+> Reason is - When one of the server is being updated, it might happen
+> that
+> another node gets the request and the functionality is broken. So we
+> are
+> going ahead with centralized caching approach.
+> 
+> 1. One of the node will host the cache. (ConcurrentHashMap is used
+> internally.)
+>    - Since we are expecting 1:1 read/write, we are planning to have
+> subcaches in ConcurrentHashMap. ie, ConcurrentHashMaps of
+> ConcurrentHashMap.
+> So that, writes will be faster and to avoid synchronization.
+> 
+> 
+> But I was wondering if we can use partitioned caching. Wherein,some
+> subset
+> of cache will be present in every node. And if the data is not
+> available in
+> one of the nodes, it gets the data from the other node using http
+> request or
+> so. We did not consider RMI since its expensive (we did some benchmarks
+> for
+> this).
+> 
+> There are no open-source implementations of partitioned cache to my
+> knowledge. I wanted to check with you folks, if there are any better
+> way to
+> deal with this implementation.
+
+
+
+
+From rajesh.balamohan at gmail.com  Thu May 10 13:08:45 2007
+From: rajesh.balamohan at gmail.com (Rajesh Balamohan)
+Date: Thu, 10 May 2007 22:38:45 +0530
+Subject: [concurrency-interest] Scalability with Caches
+In-Reply-To: <000701c79321$11a15ca0$34e415e0$@com>
+References: <mailman.3.1178812800.25579.concurrency-interest@altair.cs.oswego.edu>
+	<000701c79321$11a15ca0$34e415e0$@com>
+Message-ID: <1da12e810705101008o6edd6f18ia60b070189522682@mail.gmail.com>
+
+Hi Tim,
+
+Thankx for the quick comment.
+
+I dont want to deviate from the topic. But had a another question on
+clustering. We earlier had RMI to access the caching service. We are
+planning to move to http-request based now instead of RMI. We did some
+benchmarks (plain http request vs rmi request) and http-request outperformed
+RMI. Have you come across such scenario where you had to replace RMI with
+http.
+
+~Rajesh.B
+
+On 5/10/07, Tim Eck <teck at terracottatech.com> wrote:
+>
+> In the open source area, I'd look at Terracotta, JBoss Cache, and Ehcache.
+> Maybe others have other suggestions though? To the best of my knowledge,
+> the partioning logic is something you'd be crafting yourself. One thing
+> terracotta can do is page in (and page out) portions of object graphs on
+> demand by the application code.
+>
+> Disclaimer: I am a terracotta employee
+>
+> > -----Original Message-----
+> > Hi All,
+> >
+> > We have a clustered system (weblogic cluster). We need to have a very
+> > high
+> > performing caching system and due to functionality requirements, we
+> > would
+> > NOT be able to replicate the caches across different nodes.
+> >
+> > Reason is - When one of the server is being updated, it might happen
+> > that
+> > another node gets the request and the functionality is broken. So we
+> > are
+> > going ahead with centralized caching approach.
+> >
+> > 1. One of the node will host the cache. (ConcurrentHashMap is used
+> > internally.)
+> >    - Since we are expecting 1:1 read/write, we are planning to have
+> > subcaches in ConcurrentHashMap. ie, ConcurrentHashMaps of
+> > ConcurrentHashMap.
+> > So that, writes will be faster and to avoid synchronization.
+> >
+> >
+> > But I was wondering if we can use partitioned caching. Wherein,some
+> > subset
+> > of cache will be present in every node. And if the data is not
+> > available in
+> > one of the nodes, it gets the data from the other node using http
+> > request or
+> > so. We did not consider RMI since its expensive (we did some benchmarks
+> > for
+> > this).
+> >
+> > There are no open-source implementations of partitioned cache to my
+> > knowledge. I wanted to check with you folks, if there are any better
+> > way to
+> > deal with this implementation.
+>
+>
+>
+>
+
+
+-- 
+~Rajesh.B
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070510/affabf6a/attachment.html 
+
+From teck at terracottatech.com  Thu May 10 13:24:32 2007
+From: teck at terracottatech.com (Tim Eck)
+Date: Thu, 10 May 2007 10:24:32 -0700 (PDT)
+Subject: [concurrency-interest] Scalability with Caches
+In-Reply-To: <1da12e810705101008o6edd6f18ia60b070189522682@mail.gmail.com>
+References: <mailman.3.1178812800.25579.concurrency-interest@altair.cs.oswego.edu>	
+	<000701c79321$11a15ca0$34e415e0$@com>
+	<1da12e810705101008o6edd6f18ia60b070189522682@mail.gmail.com>
+Message-ID: <004001c79328$113bdfe0$33b39fa0$@com>
+
+I don?t have much experience with RMI and haven't been confronted with such 
+a
+scenario. That said, I believe http is probably easier to deal with in 
+general and
+it supports a fairly rich (albeit complex) set of cache control commands at 
+the
+protocol level that might be useful in your context.
+
+> I dont want to deviate from the topic. But had a another question on 
+> clustering.
+> We earlier had RMI to access the caching service. We are planning to move 
+> to
+> http-request based now instead of RMI. We did some benchmarks (plain http 
+>  >
+> request vs rmi request) and http-request outperformed RMI. Have you come 
+> across
+> such scenario where you had to replace RMI with http.
+
+
+
+
+From Lawrence.Edwards at rbos.com  Thu May 10 13:30:13 2007
+From: Lawrence.Edwards at rbos.com (EDWARDS, Lawrence, GBM)
+Date: Thu, 10 May 2007 18:30:13 +0100
+Subject: [concurrency-interest] Scalability with Caches
+Message-ID: <030D7F9A16CBAB4E89B5647AE54790A60C67228A@lonms01000.fm.rbsgrp.net>
+
+Hi Rajesh
+ 
+Tangosol Coherence has an interesting mechanisms for implicit and explicit
+locking in distributed partitioned caches which could be useful for you to
+investigate. I would suggest looking at their wiki (registration required)
+http://wiki.tangosol.com/display/COH33UG/Transactions%2C+Locks+and+Concurren
+cy for some ideas - we have used EntryProcessors for similar use cases.
+
+Regards
+Lawrence Edwards
+
+
+________________________________
+
+	From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of Rajesh
+Balamohan
+	Sent: 10 May 2007 16:52
+	To: Concurrency-interest at cs.oswego.edu
+	Subject: [concurrency-interest] Scalability with Caches
+	
+	
+	Hi All,
+	
+	We have a clustered system (weblogic cluster). We need to have a
+very high performing caching system and due to functionality requirements,
+we would NOT be able to replicate the caches across different nodes. 
+	
+	Reason is - When one of the server is being updated, it might happen
+that another node gets the request and the functionality is broken. So we
+are going ahead with centralized caching approach.
+	
+	1. One of the node will host the cache. (ConcurrentHashMap is used
+internally.) 
+	   - Since we are expecting 1:1 read/write, we are planning to have
+subcaches in ConcurrentHashMap. ie, ConcurrentHashMaps of ConcurrentHashMap.
+So that, writes will be faster and to avoid synchronization.
+	
+	
+	But I was wondering if we can use partitioned caching. Wherein,some
+subset of cache will be present in every node. And if the data is not
+available in one of the nodes, it gets the data from the other node using
+http request or so. We did not consider RMI since its expensive (we did some
+benchmarks for this). 
+	
+	There are no open-source implementations of partitioned cache to my
+knowledge. I wanted to check with you folks, if there are any better way to
+deal with this implementation. 
+	
+	
+	-- 
+	~Rajesh.B 
+
+***********************************************************************************
+The Royal Bank of Scotland plc. Registered in Scotland No 90312. Registered Office: 36 St Andrew Square, Edinburgh EH2 2YB. 
+Authorised and regulated by the Financial Services Authority 
+ 
+This e-mail message is confidential and for use by the 
+addressee only. If the message is received by anyone other 
+than the addressee, please return the message to the sender 
+by replying to it and then delete the message from your 
+computer. Internet e-mails are not necessarily secure. The 
+Royal Bank of Scotland plc does not accept responsibility for 
+changes made to this message after it was sent. 
+
+Whilst all reasonable care has been taken to avoid the 
+transmission of viruses, it is the responsibility of the recipient to 
+ensure that the onward transmission, opening or use of this 
+message and any attachments will not adversely affect its 
+systems or data. No responsibility is accepted by The 
+Royal Bank of Scotland plc in this regard and the recipient should carry 
+out such virus and other checks as it considers appropriate. 
+Visit our websites at: 
+www.rbs.com
+www.rbsgc.com
+www.rbsmarkets.com
+***********************************************************************************
+
+From szabolcs.ferenczi at gmail.com  Sat May 12 17:08:32 2007
+From: szabolcs.ferenczi at gmail.com (Szabolcs Ferenczi)
+Date: Sat, 12 May 2007 23:08:32 +0200
+Subject: [concurrency-interest] "if (!cond) wait()" is considered harmful in
+	Java
+Message-ID: <c8955b000705121408k6b17961dv7ab8bb5de276bbd7@mail.gmail.com>
+
+I am discussing the "if (!cond) wait)" problem in Java off list and I
+came to some interesting conclusion that I am going to share with the
+concurrency-interest list.
+
+As all of us know "if (!cond) wait)" is considered harmful in Java.
+The reason why is not really known. Well, the reason is the semantics
+of the "wait()" operation. One problem with it is the spurious wakeup.
+
+Normally, as it is defined for a correct monitor, the wait should
+delay the process until the signal comes for that condition:
+
+  wait() := delay until (signal)
+
+Consequently, when the wait call terminates, the condition is
+established for the progress, hence the signal.
+
+  if (!cond) wait();
+  assertTrue(cond);
+
+Unfortunately, in Java the semantics of the "wait()" is different:
+
+  wait() := delay until (signal OR spurious wakeup)
+
+It follows that when the wait call terminates, either the condition is
+established for the progress or there was a spurious wakeup. It must
+be checked. An obvious check is to check the condition again: if the
+condition still holds, it was a spurious wakeup, so the process must
+be delayed for some more time.
+
+  while (!cond) wait();
+  assertTrue(cond);
+
+The "while" is there because of the spurious wakeups and the "(!cond)"
+checks for the other cause, i.e. if the valid signal arrived.
+
+Practically, any Java algorithm should stay valid if you replace the
+"wait()" with a timed out version of the wait with the minimal timeout
+value, e.g. "wait(1)". Just check it:
+
+  if (!cond) wait(1);
+  assertTrue(cond);
+
+No, it will not pass the test. But if while is used, it passes:
+
+  while (!cond) wait(1);
+  assertTrue(cond);
+
+Yes, it is ok.
+
+Now, the timed wait has one more factor for termination. Normally, it
+may terminate for either of the two valid reasons:
+
+  wait(t) := delay until (signal OR timeout signal)
+
+In Java, it is more complicated again:
+
+  wait(t) := delay until (signal OR timeout signal OR spurious wakeup)
+
+Let us assume we are implementing the timeout version of a put
+operation of a bounded buffer. With the correct wait semantics it
+could look as simple as this:
+
+1 boolean synchronized put(Object item, long timeout) {
+2   if (full) { wait(timeout); }
+3   if (full) { return false; }
+4   insert(item);
+5   return true;
+6 }
+
+Note that when the "wait(timeout)" returns, one of the conditions holds:
+
+(1) either signal arrived due to a "get()" operation
+(2) or timeout signal arrived
+
+The selection of the two is handled by the second "if (full)" clause
+at line 3. It selects between the two events that might have happened.
+
+Now, with the Java semantics, the situation is more complex because
+instead of for two reasons, the wait might terminate for three
+reasons, i.e. the spurious wakeup is added to the reasons. First of
+all we must replace the first if statements at line 2 with a while to
+prepare for the spurious wakeups and extend the condition with the
+timing wait tag.
+
+2  while (full || <timed>) { wait(timeout); }
+
+Then the effect of the spurious wakeup on the timeout value must be
+compensated. We have to maintain the remaining time in the argument of
+the repeated wait just because the spurious wakeup:
+
+2a  long timeToGo = timeout;
+2b  while (full || <timed>) { wait(timeToGo); timeToGo = <remaining time>;}
+
+To maintain it, we have to calculate the remaining time and extend the
+expression of the while statement:
+
+2a  final long limit = currentTimeMillis() + timeout;
+2b  long timeToGo = limit - currentTimeMillis();
+2c  while (full || timeToGo > 0) {
+2d    wait(timeToGo);
+2e    timeToGo = limit - currentTimeMillis();
+2f  }
+
+Now we have three elements in the code for the three possible causes
+for the wait to terminate:
+
+1. while loop for the spurious return
+2. check on full for the valid signal on the condition variable
+3. timeToGo > 0 check for the timeout signal
+
+The method looks like this now:
+
+1  boolean synchronized put(Object item, long timeout) {
+2a   final long limit = currentTimeMillis() + timeout;
+2b   long timeToGo = limit - currentTimeMillis();
+2c   while (full && timeToGo > 0) {
+2d     wait(timeToGo);
+2e     timeToGo = limit - currentTimeMillis();
+2f   }
+3    if (full) { return false; }
+4    insert(item);
+5    return true;
+6  }
+
+Six additional lines were needed to cope with the extra "feature" of
+the Java wait, namely, that it can return spuriously. This means less
+efficiency, more complexity and more chance for programming errors. Of
+course there are several optimisation possibilities on this piece of
+code, such as:
+
+1. The check for the timeout termination (line 3) can be moved inside
+the while loop
+2. The calls to the currentTimeMillis() can be minimised
+
+Anyhow, the example shows the difference in complexity that had to be
+introduced just because the "wait()" is not implemented properly in
+Java. This indicates that a little bug fix in the implementation of
+the "wait()" operation could help considerably without having any
+backwards compatibility problem.
+
+Without the bug fix of the "wait()", however, the "if (!cond) wait()"
+is considered harmful in Java and should be flagged with an error by
+the compiler.
+
+Best Regards,
+Szabolcs
+
+From alarmnummer at gmail.com  Sun May 13 01:43:16 2007
+From: alarmnummer at gmail.com (Peter Veentjer)
+Date: Sun, 13 May 2007 07:43:16 +0200
+Subject: [concurrency-interest] "if (!cond) wait()" is considered
+	harmful in Java
+In-Reply-To: <c8955b000705121408k6b17961dv7ab8bb5de276bbd7@mail.gmail.com>
+References: <c8955b000705121408k6b17961dv7ab8bb5de276bbd7@mail.gmail.com>
+Message-ID: <1466c1d60705122243v7a751affy9fafdb9ddebefe00@mail.gmail.com>
+
+I have added some extra methods that contain the logic that needs to
+be repeated every time. Usage of a java.util.concurrent.lock.Condition
+now looks like this:
+
+public void tryAwait(long timeout, TimeUnit unit) throws
+TimeoutException, InterruptedException {
+        long timeoutNs = toUsableNanos(timeout, unit);
+
+        if (open)
+            return;
+
+        mainLock.lockInterruptibly();
+        try {
+            while (!open)
+                timeoutNs = awaitNanosAndThrow(isOpenCondition,timeoutNs);
+        } finally {
+            mainLock.unlock();
+        }
+    }
+
+This is very acceptable imho
+
+And this is the awaitNanosAndThrow (I still don't like the name but
+couldn't come up with something better).
+
+    public static long awaitNanosAndThrow(Condition condition, long timeoutNs)
+            throws InterruptedException, TimeoutException {
+        if (condition == null) throw new NullPointerException();
+        ensureNoTimeout(timeoutNs);
+        long remainingNs = condition.awaitNanos(timeoutNs);
+        if (remainingNs <= 0)
+            throw new TimeoutException();
+        return remainingNs;
+    }
+
+
+On 5/12/07, Szabolcs Ferenczi <szabolcs.ferenczi at gmail.com> wrote:
+> I am discussing the "if (!cond) wait)" problem in Java off list and I
+> came to some interesting conclusion that I am going to share with the
+> concurrency-interest list.
+>
+> As all of us know "if (!cond) wait)" is considered harmful in Java.
+> The reason why is not really known. Well, the reason is the semantics
+> of the "wait()" operation. One problem with it is the spurious wakeup.
+>
+> Normally, as it is defined for a correct monitor, the wait should
+> delay the process until the signal comes for that condition:
+>
+>   wait() := delay until (signal)
+>
+> Consequently, when the wait call terminates, the condition is
+> established for the progress, hence the signal.
+>
+>   if (!cond) wait();
+>   assertTrue(cond);
+>
+> Unfortunately, in Java the semantics of the "wait()" is different:
+>
+>   wait() := delay until (signal OR spurious wakeup)
+>
+> It follows that when the wait call terminates, either the condition is
+> established for the progress or there was a spurious wakeup. It must
+> be checked. An obvious check is to check the condition again: if the
+> condition still holds, it was a spurious wakeup, so the process must
+> be delayed for some more time.
+>
+>   while (!cond) wait();
+>   assertTrue(cond);
+>
+> The "while" is there because of the spurious wakeups and the "(!cond)"
+> checks for the other cause, i.e. if the valid signal arrived.
+>
+> Practically, any Java algorithm should stay valid if you replace the
+> "wait()" with a timed out version of the wait with the minimal timeout
+> value, e.g. "wait(1)". Just check it:
+>
+>   if (!cond) wait(1);
+>   assertTrue(cond);
+>
+> No, it will not pass the test. But if while is used, it passes:
+>
+>   while (!cond) wait(1);
+>   assertTrue(cond);
+>
+> Yes, it is ok.
+>
+> Now, the timed wait has one more factor for termination. Normally, it
+> may terminate for either of the two valid reasons:
+>
+>   wait(t) := delay until (signal OR timeout signal)
+>
+> In Java, it is more complicated again:
+>
+>   wait(t) := delay until (signal OR timeout signal OR spurious wakeup)
+>
+> Let us assume we are implementing the timeout version of a put
+> operation of a bounded buffer. With the correct wait semantics it
+> could look as simple as this:
+>
+> 1 boolean synchronized put(Object item, long timeout) {
+> 2   if (full) { wait(timeout); }
+> 3   if (full) { return false; }
+> 4   insert(item);
+> 5   return true;
+> 6 }
+>
+> Note that when the "wait(timeout)" returns, one of the conditions holds:
+>
+> (1) either signal arrived due to a "get()" operation
+> (2) or timeout signal arrived
+>
+> The selection of the two is handled by the second "if (full)" clause
+> at line 3. It selects between the two events that might have happened.
+>
+> Now, with the Java semantics, the situation is more complex because
+> instead of for two reasons, the wait might terminate for three
+> reasons, i.e. the spurious wakeup is added to the reasons. First of
+> all we must replace the first if statements at line 2 with a while to
+> prepare for the spurious wakeups and extend the condition with the
+> timing wait tag.
+>
+> 2  while (full || <timed>) { wait(timeout); }
+>
+> Then the effect of the spurious wakeup on the timeout value must be
+> compensated. We have to maintain the remaining time in the argument of
+> the repeated wait just because the spurious wakeup:
+>
+> 2a  long timeToGo = timeout;
+> 2b  while (full || <timed>) { wait(timeToGo); timeToGo = <remaining time>;}
+>
+> To maintain it, we have to calculate the remaining time and extend the
+> expression of the while statement:
+>
+> 2a  final long limit = currentTimeMillis() + timeout;
+> 2b  long timeToGo = limit - currentTimeMillis();
+> 2c  while (full || timeToGo > 0) {
+> 2d    wait(timeToGo);
+> 2e    timeToGo = limit - currentTimeMillis();
+> 2f  }
+>
+> Now we have three elements in the code for the three possible causes
+> for the wait to terminate:
+>
+> 1. while loop for the spurious return
+> 2. check on full for the valid signal on the condition variable
+> 3. timeToGo > 0 check for the timeout signal
+>
+> The method looks like this now:
+>
+> 1  boolean synchronized put(Object item, long timeout) {
+> 2a   final long limit = currentTimeMillis() + timeout;
+> 2b   long timeToGo = limit - currentTimeMillis();
+> 2c   while (full && timeToGo > 0) {
+> 2d     wait(timeToGo);
+> 2e     timeToGo = limit - currentTimeMillis();
+> 2f   }
+> 3    if (full) { return false; }
+> 4    insert(item);
+> 5    return true;
+> 6  }
+>
+> Six additional lines were needed to cope with the extra "feature" of
+> the Java wait, namely, that it can return spuriously. This means less
+> efficiency, more complexity and more chance for programming errors. Of
+> course there are several optimisation possibilities on this piece of
+> code, such as:
+>
+> 1. The check for the timeout termination (line 3) can be moved inside
+> the while loop
+> 2. The calls to the currentTimeMillis() can be minimised
+>
+> Anyhow, the example shows the difference in complexity that had to be
+> introduced just because the "wait()" is not implemented properly in
+> Java. This indicates that a little bug fix in the implementation of
+> the "wait()" operation could help considerably without having any
+> backwards compatibility problem.
+>
+> Without the bug fix of the "wait()", however, the "if (!cond) wait()"
+> is considered harmful in Java and should be flagged with an error by
+> the compiler.
+>
+> Best Regards,
+> Szabolcs
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From larryr at saturn.sdsu.edu  Sun May 13 04:57:43 2007
+From: larryr at saturn.sdsu.edu (Larry Riedel)
+Date: Sun, 13 May 2007 01:57:43 -0700
+Subject: [concurrency-interest] "if (!cond) wait()" is considered
+	harmful in Java
+In-Reply-To: <c8955b000705121408k6b17961dv7ab8bb5de276bbd7@mail.gmail.com>
+Message-ID: <1179046663.645194.4856.nullmailer@riedel.org>
+
+
+It has always seemed to me like Java is oriented
+towards engineering applications, where performance,
+and partial and/or spurious failures, have to be
+accounted for in the design and implementation of the
+application regardless, and the tools are expected
+to provide tradeoffs for things like performance and
+flexibility vs predictability and provability.
+
+I have figured the implementation of wait() could
+have taken care of making sure it only returns
+when a particular condition has been satisfied, but
+that would take away too much flexibility from the
+application programmer, or impact performance of the
+JVM too much on a particular underlying platform like
+win32/Windows or pthreads/unix.
+
+To me the semantics of wait() are a reflection of the
+limitations of the available platforms where Java is
+implemented, not something which is a flaw in the
+design of wait().  I have presumed everybody always
+agreed it would be /nice/ if wait() only returned when
+a condition is satisfied; I presumed the same thing for
+pthread_cond_wait(); that it was an engineering tradeoff,
+
+
+Larry
+
+
+From szabolcs.ferenczi at gmail.com  Sun May 13 07:21:04 2007
+From: szabolcs.ferenczi at gmail.com (Szabolcs Ferenczi)
+Date: Sun, 13 May 2007 13:21:04 +0200
+Subject: [concurrency-interest] "if (!cond) wait()" is considered
+	harmful in Java
+In-Reply-To: <1179046663.645194.4856.nullmailer@riedel.org>
+References: <c8955b000705121408k6b17961dv7ab8bb5de276bbd7@mail.gmail.com>
+	<1179046663.645194.4856.nullmailer@riedel.org>
+Message-ID: <c8955b000705130421r337a5f93jf5d9b57b28c222e7@mail.gmail.com>
+
+On 13/05/07, Larry Riedel <larryr at saturn.sdsu.edu> wrote:
+
+> I have figured the implementation of wait() could
+> have taken care of making sure it only returns
+> when a particular condition has been satisfied, but
+> that would take away too much flexibility from the
+> application programmer, or impact performance of the
+> JVM too much on a particular underlying platform like
+> win32/Windows or pthreads/unix.
+
+Interesting statement that triggered me thinking like this:
+
+I cannot see why it would take away any flexibility from the
+application programmer if the "wait()" would return only when a
+particular condition has been satisfied. Let us check it again: the
+problem comes from the fact that "wait()" may return spuriously. So,
+instead of the clean semantics:
+
+  wait() := delay until (signal)
+
+we have this version:
+
+  wait() := delay until (signal OR spurious wakeup)
+
+Now I cannot imagine an application that could make use of the extra
+"feature". There might be a need in the application field to receive
+spurious wakeups but I cannot see the need for it at the moment.
+
+On the other hand, as I tried to demonstrate, any application level
+algorithm must cope with the unwanted extra "feature".
+
+I can admit that at a certain implementation level the
+non-deterministic wakeup might be there, however, concurrent
+programming is about filtering out non-determinacy from the lower
+levels.
+
+So, if it is really not needed, it should be filtered out as soon as possible.
+
+Surprisingly enough, unwanted returns can be filtered out as well. My
+analysis has just shown that at the user level you have to check why
+the wait comes back. Spurious returns must be checked as well. Now
+this check could be moved down inside the implementation of the
+"wait()" and the clean semantics is back. It is something like a
+refactoring step. I mean something like this:
+
+void wait(Callable<Boolean> c) {
+  while (!c) wait();
+}
+
+It would be much better if the spurious wakeup could be detected by
+other means and be filtered out without changing the interface of the
+"wait()". The argument would not be needed then.
+
+Then the "if (!cond) wait(cond)" becomes valid:
+
+  if (!cond) wait(cond);
+  assertTrue(cond);
+
+Even we get close to the "await(cond)" operation in functionality (as
+suggested by Joseph Seigh in another thread) since the initial "if
+(!cond)" becomes redundant, so that this becomes also valid:
+
+  wait(cond);
+  assertTrue(cond);
+
+I am not claiming that it is a silver bullet. However, providing it as
+an alternative may simplify things in many applications. After all,
+people always speak about engineering tradeoffs.
+
+The timeout version "wait(Callable<Boolean> condition, long timeout)"
+can also be engineered so that all of the lines 2a-2f (see my initial
+post) be moved down and implemented as optimally as possible.
+
+Best Regards,
+Szabolcs
+
+From larryr at saturn.sdsu.edu  Sun May 13 23:45:00 2007
+From: larryr at saturn.sdsu.edu (Larry Riedel)
+Date: Sun, 13 May 2007 20:45:00 -0700
+Subject: [concurrency-interest] "if (!cond) wait()" is considered
+	harmful in Java
+In-Reply-To: <c8955b000705130421r337a5f93jf5d9b57b28c222e7@mail.gmail.com>
+Message-ID: <1179114300.827230.20460.nullmailer@riedel.org>
+
+
+> > I have figured the implementation of wait() could
+> > have taken care of making sure it only returns
+> > when a particular condition has been satisfied, but
+> > that would take away too much flexibility from the
+> > application programmer, or impact performance of the
+> > JVM too much on a particular underlying platform like
+> > win32/Windows or pthreads/unix.
+> 
+> Interesting statement that triggered me thinking like this:
+> 
+> I cannot see why it would take away any flexibility from the
+> application programmer if the "wait()" would return only
+> when a particular condition has been satisfied. Let us check
+> it again: the problem comes from the fact that "wait()" may
+> return spuriously. [...]
+
+I think I could have phrased that better.  I meant
+to say the current semantics offer the application
+programmer the flexibility to choose whether or not to
+have their application code incur any performance cost
+of filtering out spurious wakeups, rather requiring the
+JVM implementation to do the filtering, thus forcing all
+applications to incur whatever is the performance cost
+on a particular platform, even those applications which
+could have been successfully implemented without doing
+any filtering of garbage from the underlying platform.
+
+If it was up to me I would have had the API provide
+two forms of wait() call, one which offered the more
+intuitive semantics, and one which offered the more raw
+semantics; it has seemed to me historically like there
+was a feeling among the decision makers for the designs
+of Java APIs that fewer operations in a class is better,
+that in general fewer choices is better.  Not that I am
+saying that philosophy, or any coherent philosophy, is
+evident across the panoply of Java API classes.
+
+
+Larry
+
+
+From sanders at cise.ufl.edu  Mon May 14 09:59:34 2007
+From: sanders at cise.ufl.edu (Beverly Sanders)
+Date: Mon, 14 May 2007 09:59:34 -0400 (EDT)
+Subject: [concurrency-interest] "if (!cond) wait()" is considered
+	harmful in Java
+In-Reply-To: <mailman.1.1179072000.25118.concurrency-interest@altair.cs.oswego.edu>
+References: <mailman.1.1179072000.25118.concurrency-interest@altair.cs.oswego.edu>
+Message-ID: <1191.68.220.130.120.1179151174.squirrel@webmail.cise.ufl.edu>
+
+
+> Message: 1
+> Date: Sat, 12 May 2007 23:08:32 +0200
+> From: "Szabolcs Ferenczi" <szabolcs.ferenczi at gmail.com>
+
+[discussion showing that dealing with spurious wake ups of wait requires
+more lines of code than with "Hoare monitor" semantics"]
+
+> Anyhow, the example shows the difference in complexity that had to be
+> introduced just because the "wait()" is not implemented properly in Java.
+
+I don't really agree with this. One can develop a concurrent algorithm 
+with atomic await statements <await( cond) S> then systematically
+transform it to an implementation using synchronized blocks, or
+locks, or semaphores, or "Hoare monitors" or whatever.  Thus the
+particular semantics of any of these choices is really not that
+big of a deal.  However, the "while(!cond)wait();S" construct
+that one uses with Java is actually a little easier to get right
+than the "if(!cond)wait();S" that "Hoare monitor" semantics would
+allow. This has to do with placement of the notify()s, an aspect
+completely missing from Szabolcs Ferenczi's discussion.
+
+In Java <await( cond) S> turns into (ignoring interrupts)
+synchronized(obj){ while (!cond) wait(); S;}. In addition,
+notifiy()s or notifyAll()s need to be added everywhere that cond could be
+established.  The while is required because of the
+possibility of spurious wake ups and also because the scheduler is
+not required to immediately schedule the notified thread.
+
+Spurious wake ups can come from the implementation of wait, but
+they can also come from extra notifies put in place by the programmer.
+Sometimes, these are unavoidable, such as when threads use a single
+condition variable to wait on multiple conditions.  A nice feature of the
+"synchronized(obj){while(!cond) wait(); S}"
+construction is that safety and liveness concerns have been nicely
+separated. One will never get an incorrect program from too many
+notify()s, or a notifyAll() where a notify() will do--just a  less
+efficient one. On the other hand, too few notifies is a liveness error.
+This allows the programmer to err on the side of too many notify()s.
+In particular, it allows a Java program to be developed using
+notifyAll()s--leaving optimizations such as changing a notifyAll()
+to a notify(), if appropriate, for later.
+
+If wait had "Hoare monitor" semantics, and one used  "if(cond)wait();S",
+an extra notify would be a safety violation.  It might be a good
+idea to use the while construct anyway just to get the additional
+robustness--and if one were using synchronized blocks and threads
+need to wait on multiple conditions, the single intrinsic condition
+variable would require the while construct to be used anyway.
+
+
+(My complaint with the semantics of wait in Java is not the possibility of
+spurious wake ups, but defining wait(0) to be the same as wait().)
+
+
+
+
+
+
+From rodolfo at drogaraia.com.br  Tue May 15 15:40:54 2007
+From: rodolfo at drogaraia.com.br (Rodolfo Ricci)
+Date: Tue, 15 May 2007 16:40:54 -0300
+Subject: [concurrency-interest] Using on Applications Server
+Message-ID: <200705151640.54750.rodolfo@drogaraia.com.br>
+
+Can I use this API on Aplication server to control a group of threads ?
+Or  I can only use it on a single application?
+
+
+Thanks
+
+From alarmnummer at gmail.com  Wed May 16 03:27:01 2007
+From: alarmnummer at gmail.com (Peter Veentjer)
+Date: Wed, 16 May 2007 09:27:01 +0200
+Subject: [concurrency-interest] Using on Applications Server
+In-Reply-To: <200705151640.54750.rodolfo@drogaraia.com.br>
+References: <200705151640.54750.rodolfo@drogaraia.com.br>
+Message-ID: <1466c1d60705160027n4695e475xc094874e9c57ae3e@mail.gmail.com>
+
+It depends on the application server. I have used it on Tomcat, Jetty,
+JBoss, OC4J without problems.
+
+And in combination with Spring it works like a dream :)
+
+On 5/15/07, Rodolfo Ricci <rodolfo at drogaraia.com.br> wrote:
+> Can I use this API on Aplication server to control a group of threads ?
+> Or  I can only use it on a single application?
+>
+>
+> Thanks
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From rodolfo at drogaraia.com.br  Wed May 16 06:32:21 2007
+From: rodolfo at drogaraia.com.br (Rodolfo Ricci)
+Date: Wed, 16 May 2007 07:32:21 -0300
+Subject: [concurrency-interest] Using on Applications Server
+In-Reply-To: <1466c1d60705160027n4695e475xc094874e9c57ae3e@mail.gmail.com>
+References: <200705151640.54750.rodolfo@drogaraia.com.br>
+	<1466c1d60705160027n4695e475xc094874e9c57ae3e@mail.gmail.com>
+Message-ID: <200705160732.21953.rodolfo@drogaraia.com.br>
+
+Thank you, very much.
+I'll try to use it.
+
+ 
+On Wednesday 16 May 2007 04:27, Peter Veentjer wrote:
+> It depends on the application server. I have used it on Tomcat, Jetty,
+> JBoss, OC4J without problems.
+>
+> And in combination with Spring it works like a dream :)
+>
+> On 5/15/07, Rodolfo Ricci <rodolfo at drogaraia.com.br> wrote:
+> > Can I use this API on Aplication server to control a group of threads ?
+> > Or  I can only use it on a single application?
+> >
+> >
+> > Thanks
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at altair.cs.oswego.edu
+> > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From alarmnummer at gmail.com  Wed May 16 06:59:57 2007
+From: alarmnummer at gmail.com (Peter Veentjer)
+Date: Wed, 16 May 2007 12:59:57 +0200
+Subject: [concurrency-interest] Using on Applications Server
+In-Reply-To: <200705160732.21953.rodolfo@drogaraia.com.br>
+References: <200705151640.54750.rodolfo@drogaraia.com.br>
+	<1466c1d60705160027n4695e475xc094874e9c57ae3e@mail.gmail.com>
+	<200705160732.21953.rodolfo@drogaraia.com.br>
+Message-ID: <1466c1d60705160359v4f9b4d3eq3f1fbdc38aaf473d@mail.gmail.com>
+
+Are you going to use it in combination with EJB's?
+
+On 5/16/07, Rodolfo Ricci <rodolfo at drogaraia.com.br> wrote:
+> Thank you, very much.
+> I'll try to use it.
+>
+>
+> On Wednesday 16 May 2007 04:27, Peter Veentjer wrote:
+> > It depends on the application server. I have used it on Tomcat, Jetty,
+> > JBoss, OC4J without problems.
+> >
+> > And in combination with Spring it works like a dream :)
+> >
+> > On 5/15/07, Rodolfo Ricci <rodolfo at drogaraia.com.br> wrote:
+> > > Can I use this API on Aplication server to control a group of threads ?
+> > > Or  I can only use it on a single application?
+> > >
+> > >
+> > > Thanks
+> > > _______________________________________________
+> > > Concurrency-interest mailing list
+> > > Concurrency-interest at altair.cs.oswego.edu
+> > > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From rodolfo at drogaraia.com.br  Wed May 16 07:06:00 2007
+From: rodolfo at drogaraia.com.br (Rodolfo Ricci)
+Date: Wed, 16 May 2007 08:06:00 -0300
+Subject: [concurrency-interest] Using on Applications Server
+In-Reply-To: <1466c1d60705160359v4f9b4d3eq3f1fbdc38aaf473d@mail.gmail.com>
+References: <200705151640.54750.rodolfo@drogaraia.com.br>
+	<200705160732.21953.rodolfo@drogaraia.com.br>
+	<1466c1d60705160359v4f9b4d3eq3f1fbdc38aaf473d@mail.gmail.com>
+Message-ID: <200705160806.00826.rodolfo@drogaraia.com.br>
+
+yep!!!
+There are problems??
+
+
+
+On Wednesday 16 May 2007 07:59, Peter Veentjer wrote:
+> Are you going to use it in combination with EJB's?
+>
+> On 5/16/07, Rodolfo Ricci <rodolfo at drogaraia.com.br> wrote:
+> > Thank you, very much.
+> > I'll try to use it.
+> >
+> > On Wednesday 16 May 2007 04:27, Peter Veentjer wrote:
+> > > It depends on the application server. I have used it on Tomcat, Jetty,
+> > > JBoss, OC4J without problems.
+> > >
+> > > And in combination with Spring it works like a dream :)
+> > >
+> > > On 5/15/07, Rodolfo Ricci <rodolfo at drogaraia.com.br> wrote:
+> > > > Can I use this API on Aplication server to control a group of threads
+> > > > ? Or  I can only use it on a single application?
+> > > >
+> > > >
+> > > > Thanks
+> > > > _______________________________________________
+> > > > Concurrency-interest mailing list
+> > > > Concurrency-interest at altair.cs.oswego.edu
+> > > > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From dhanji at gmail.com  Wed May 16 16:00:03 2007
+From: dhanji at gmail.com (Dhanji R. Prasanna)
+Date: Wed, 16 May 2007 13:00:03 -0700
+Subject: [concurrency-interest] Using on Applications Server
+In-Reply-To: <200705160806.00826.rodolfo@drogaraia.com.br>
+References: <200705151640.54750.rodolfo@drogaraia.com.br>
+	<200705160732.21953.rodolfo@drogaraia.com.br>
+	<1466c1d60705160359v4f9b4d3eq3f1fbdc38aaf473d@mail.gmail.com>
+	<200705160806.00826.rodolfo@drogaraia.com.br>
+Message-ID: <aa067ea10705161300l2ec18259xfe9dba3f13604e75@mail.gmail.com>
+
+On 5/16/07, Rodolfo Ricci <rodolfo at drogaraia.com.br> wrote:
+>
+> yep!!!
+> There are problems??
+
+
+It is not recommended to start/manage threads inside an app server. The Java
+EE programming model is to rely on the framework to handle threads. However,
+the concurrency utilities are much more than thread management and many of
+these artifacts can safely be used inside an appserver (example: locks to
+synchronize access to shared objects).
+
+I believe Doug Lea is leading a concurrency package JSR for EE environments
+too.
+
+On Wednesday 16 May 2007 07:59, Peter Veentjer wrote:
+> > Are you going to use it in combination with EJB's?
+> >
+> > On 5/16/07, Rodolfo Ricci <rodolfo at drogaraia.com.br> wrote:
+> > > Thank you, very much.
+> > > I'll try to use it.
+> > >
+> > > On Wednesday 16 May 2007 04:27, Peter Veentjer wrote:
+> > > > It depends on the application server. I have used it on Tomcat,
+> Jetty,
+> > > > JBoss, OC4J without problems.
+> > > >
+> > > > And in combination with Spring it works like a dream :)
+> > > >
+> > > > On 5/15/07, Rodolfo Ricci <rodolfo at drogaraia.com.br> wrote:
+> > > > > Can I use this API on Aplication server to control a group of
+> threads
+> > > > > ? Or  I can only use it on a single application?
+> > > > >
+> > > > >
+> > > > > Thanks
+> > > > > _______________________________________________
+> > > > > Concurrency-interest mailing list
+> > > > > Concurrency-interest at altair.cs.oswego.edu
+> > > > > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070516/fff203a5/attachment.html 
+
+From brian at quiotix.com  Thu May 17 16:43:54 2007
+From: brian at quiotix.com (Brian Goetz)
+Date: Thu, 17 May 2007 16:43:54 -0400
+Subject: [concurrency-interest] "if (!cond) wait()" is considered
+ harmful in	Java
+In-Reply-To: <c8955b000705121408k6b17961dv7ab8bb5de276bbd7@mail.gmail.com>
+References: <c8955b000705121408k6b17961dv7ab8bb5de276bbd7@mail.gmail.com>
+Message-ID: <464CBE8A.30802@quiotix.com>
+
+> As all of us know "if (!cond) wait)" is considered harmful in Java.
+> The reason why is not really known. Well, the reason is the semantics
+> of the "wait()" operation. One problem with it is the spurious wakeup.
+
+This is not exactly correct.  It is also a result of the fact that there 
+is only a single wait set per intrinsic lock.  As a result, wait() may 
+return because some thread called notify() but the condition that _this_ 
+thread is waiting for is not yet true.  Also, wait() could return 
+because a thread called notifyAll() but the condition we were waiting 
+for became false again by the time _this_ thread actually reacquired the 
+lock.
+
+People love to throw rocks at spurious wakeup, but most of these 
+criticisms are, well, spurious.  Even without spurious wakeups, 
+wait/notify still requires waiting in a loop.
+
+From dl at cs.oswego.edu  Thu May 17 18:52:30 2007
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Thu, 17 May 2007 18:52:30 -0400
+Subject: [concurrency-interest] Using on Applications Server
+In-Reply-To: <aa067ea10705161300l2ec18259xfe9dba3f13604e75@mail.gmail.com>
+References: <200705151640.54750.rodolfo@drogaraia.com.br>	<200705160732.21953.rodolfo@drogaraia.com.br>	<1466c1d60705160359v4f9b4d3eq3f1fbdc38aaf473d@mail.gmail.com>	<200705160806.00826.rodolfo@drogaraia.com.br>
+	<aa067ea10705161300l2ec18259xfe9dba3f13604e75@mail.gmail.com>
+Message-ID: <464CDCAE.6080603@cs.oswego.edu>
+
+Dhanji R. Prasanna wrote:
+> 
+> 
+> It is not recommended to start/manage threads inside an app server. The 
+> Java EE programming model is to rely on the framework to handle threads. 
+> However, the concurrency utilities are much more than thread management 
+> and many of these artifacts can safely be used inside an appserver 
+> (example: locks to synchronize access to shared objects).
+> 
+> I believe Doug Lea is leading a concurrency package JSR for EE 
+> environments too.
+> 
+
+I didn't lead it, but there is a preview draft available for
+JSR236-237 at http://gee.cs.oswego.edu/dl/concurrencyee-interest/index.html
+(This was due mainly by Chris Johnson of IBM.)
+The JSR236-237 effort itself hit some messy JCP logistic problems
+so this is in limbo. I'm not sure how long, but possibly until
+some JCP rules are changed via JSR306. Which itself not likely soon.
+Sigh.
+
+-Doug
+
+
+
+From szabolcs.ferenczi at gmail.com  Thu May 17 19:41:06 2007
+From: szabolcs.ferenczi at gmail.com (Szabolcs Ferenczi)
+Date: Fri, 18 May 2007 01:41:06 +0200
+Subject: [concurrency-interest] "if (!cond) wait()" is considered
+	harmful in Java
+In-Reply-To: <464CBE8A.30802@quiotix.com>
+References: <c8955b000705121408k6b17961dv7ab8bb5de276bbd7@mail.gmail.com>
+	<464CBE8A.30802@quiotix.com>
+Message-ID: <c8955b000705171641t613827fah3b994098fcfa8a6b@mail.gmail.com>
+
+On 17/05/07, Brian Goetz <brian at quiotix.com> wrote:
+
+> ...  Even without spurious wakeups,
+> wait/notify still requires waiting in a loop.
+
+In Java, yes, unfortunately it is true just because Java does not
+implement the monitor concept correctly. In my initial post I
+mentioned that "One problem with it is the spurious wakeup."
+Subsequently,I have talked about that one problem, i.e. I have
+detailed the problem of the spurious wakeup.
+
+The other problem is that Java does not implement the re-scheduling of
+threads correctly either. Correctly implemented the wait/notify should
+ensure that the re-scheduled thread re-seizes the monitor too. This
+was missed by defining and implementing the synchronize/wait/notify
+language means in Java as well.
+
+Ceterum censeo: "if (!cond) wait()" is considered harmful in Java and
+it should be flagged with an error by the compiler.
+
+Best Regards,
+Szabolcs
+
+On 17/05/07, Brian Goetz <brian at quiotix.com> wrote:
+> > As all of us know "if (!cond) wait)" is considered harmful in Java.
+> > The reason why is not really known. Well, the reason is the semantics
+> > of the "wait()" operation. One problem with it is the spurious wakeup.
+>
+> This is not exactly correct.  It is also a result of the fact that there
+> is only a single wait set per intrinsic lock.  As a result, wait() may
+> return because some thread called notify() but the condition that _this_
+> thread is waiting for is not yet true.  Also, wait() could return
+> because a thread called notifyAll() but the condition we were waiting
+> for became false again by the time _this_ thread actually reacquired the
+> lock.
+>
+> People love to throw rocks at spurious wakeup, but most of these
+> criticisms are, well, spurious.  Even without spurious wakeups,
+> wait/notify still requires waiting in a loop.
+>
+
+From joe.bowbeer at gmail.com  Thu May 17 22:11:18 2007
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Thu, 17 May 2007 19:11:18 -0700
+Subject: [concurrency-interest] "if (!cond) wait()" is considered
+	harmful in Java
+In-Reply-To: <c8955b000705171641t613827fah3b994098fcfa8a6b@mail.gmail.com>
+References: <c8955b000705121408k6b17961dv7ab8bb5de276bbd7@mail.gmail.com>
+	<464CBE8A.30802@quiotix.com>
+	<c8955b000705171641t613827fah3b994098fcfa8a6b@mail.gmail.com>
+Message-ID: <31f2a7bd0705171911n2a4230f0q4c1d038a02c1879e@mail.gmail.com>
+
+On 5/17/07, Szabolcs Ferenczi wrote:
+>
+> Ceterum censeo: "if (!cond) wait()" is considered harmful in Java and
+> it should be flagged with an error by the compiler.
+>
+
+This is flagged by FindBugs:
+
+http://findbugs.sourceforge.net/bugDescriptions.html#WA_NOT_IN_LOOP
+
+Though I would go one step further and recommend that *all* use of
+wait and notify should be flagged by code reviewers.  There's almost
+always a better way to solve these problems using the j.u.c. features
+that were released several years ago.
+
+Condition is one of these new features -- and Condition.await() should
+also be called inside a loop.  Not doing so is also detected by
+FindBugs.
+
+--Joe
+
+From alarmnummer at gmail.com  Fri May 18 00:39:50 2007
+From: alarmnummer at gmail.com (Peter Veentjer)
+Date: Fri, 18 May 2007 06:39:50 +0200
+Subject: [concurrency-interest] Using on Applications Server
+In-Reply-To: <aa067ea10705161300l2ec18259xfe9dba3f13604e75@mail.gmail.com>
+References: <200705151640.54750.rodolfo@drogaraia.com.br>
+	<200705160732.21953.rodolfo@drogaraia.com.br>
+	<1466c1d60705160359v4f9b4d3eq3f1fbdc38aaf473d@mail.gmail.com>
+	<200705160806.00826.rodolfo@drogaraia.com.br>
+	<aa067ea10705161300l2ec18259xfe9dba3f13604e75@mail.gmail.com>
+Message-ID: <1466c1d60705172139u7383f3c5i94d4e84bd22a29ca@mail.gmail.com>
+
+> It is not recommended to start/manage threads inside an app server.
+
+As long as you don't use EJB's there are not many problems. I use
+custom threading solutions quite often under various
+applicationservers without any problems.
+
+ The Java
+> EE programming model is to rely on the framework to handle threads. However,
+> the concurrency utilities are much more than thread management and many of
+> these artifacts can safely be used inside an appserver (example: locks to
+> synchronize access to shared objects).
+>
+> I believe Doug Lea is leading a concurrency package JSR for EE environments
+> too.
+>
+> >
+> > On Wednesday 16 May 2007 07:59, Peter Veentjer wrote:
+> > > Are you going to use it in combination with EJB's?
+> > >
+> > > On 5/16/07, Rodolfo Ricci <rodolfo at drogaraia.com.br > wrote:
+> > > > Thank you, very much.
+> > > > I'll try to use it.
+> > > >
+> > > > On Wednesday 16 May 2007 04:27, Peter Veentjer wrote:
+> > > > > It depends on the application server. I have used it on Tomcat,
+> Jetty,
+> > > > > JBoss, OC4J without problems.
+> > > > >
+> > > > > And in combination with Spring it works like a dream :)
+> > > > >
+> > > > > On 5/15/07, Rodolfo Ricci < rodolfo at drogaraia.com.br> wrote:
+> > > > > > Can I use this API on Aplication server to control a group of
+> threads
+> > > > > > ? Or  I can only use it on a single application?
+> > > > > >
+> > > > > >
+> > > > > > Thanks
+> > > > > > _______________________________________________
+> > > > > > Concurrency-interest mailing list
+> > > > > > Concurrency-interest at altair.cs.oswego.edu
+> > > > > >
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at altair.cs.oswego.edu
+> >
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+>
+>
+
+From peter.kovacs.1.0rc at gmail.com  Mon May 21 12:52:16 2007
+From: peter.kovacs.1.0rc at gmail.com (Peter Kovacs)
+Date: Mon, 21 May 2007 18:52:16 +0200
+Subject: [concurrency-interest] Coordinating between multiple concurrent
+	tasks
+Message-ID: <b6e8f2e80705210952m57163ca5sa80e98d2b9d210b4@mail.gmail.com>
+
+Hi,
+
+I have to deal with multiple (aggregate) concurrent tasks and need to
+act according to the combination of their statuses. With some status
+combinations I have to wait for some of them to advance until a
+certain other combination is reached.
+
+For example: given a task "A" in a COMPLETED state, I want to be
+notified when either task "A" is restarted (i.e. its state changes
+from COMPLETED to STARTED) or another task "B" also reaches the
+COMPLETED state.
+
+Does this pattern appear familiar to anyone? Any ideas/suggestions how
+to put this together with the j.u.c building blocks?
+
+Thanks
+Peter
+
+From holger at wizards.de  Mon May 21 13:37:41 2007
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Mon, 21 May 2007 19:37:41 +0200
+Subject: [concurrency-interest] Coordinating between multiple concurrent
+ tasks
+In-Reply-To: <b6e8f2e80705210952m57163ca5sa80e98d2b9d210b4@mail.gmail.com>
+References: <b6e8f2e80705210952m57163ca5sa80e98d2b9d210b4@mail.gmail.com>
+Message-ID: <4651D8E5.9060203@wizards.de>
+
+Peter Kovacs wrote:
+> I have to deal with multiple (aggregate) concurrent tasks and need to
+> act according to the combination of their statuses. With some status
+> combinations I have to wait for some of them to advance until a
+> certain other combination is reached.
+
+JavaSpaces? 1/2 :-)
+
+-h
+
+From dcholmes at optusnet.com.au  Tue May 22 02:17:35 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Tue, 22 May 2007 16:17:35 +1000
+Subject: [concurrency-interest] Coordinating between multiple
+	concurrenttasks
+In-Reply-To: <b6e8f2e80705210952m57163ca5sa80e98d2b9d210b4@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEBFHHAA.dcholmes@optusnet.com.au>
+
+Peter,
+
+It really depends on what part of the application has knowledge of these
+conditions and how state changes can be communicated. You might be able to
+have Listeners/Observers that can fire when the state changes and use the
+nature of the change to signal a condition that the other thread is waiting
+on.
+
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Peter
+> Kovacs
+> Sent: Tuesday, 22 May 2007 2:52 AM
+> To: concurrency-interest
+> Subject: [concurrency-interest] Coordinating between multiple
+> concurrenttasks
+>
+>
+> Hi,
+>
+> I have to deal with multiple (aggregate) concurrent tasks and need to
+> act according to the combination of their statuses. With some status
+> combinations I have to wait for some of them to advance until a
+> certain other combination is reached.
+>
+> For example: given a task "A" in a COMPLETED state, I want to be
+> notified when either task "A" is restarted (i.e. its state changes
+> from COMPLETED to STARTED) or another task "B" also reaches the
+> COMPLETED state.
+>
+> Does this pattern appear familiar to anyone? Any ideas/suggestions how
+> to put this together with the j.u.c building blocks?
+>
+> Thanks
+> Peter
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From sauvagelaurent at hotmail.com  Tue May 22 07:54:47 2007
+From: sauvagelaurent at hotmail.com (laurent sauvage)
+Date: Tue, 22 May 2007 13:54:47 +0200
+Subject: [concurrency-interest] backport: FutureTask.run() invokes private
+	methods
+Message-ID: <BAY132-W8BEBC5C15FA33FF5A1901C8360@phx.gbl>
+
+Hi all,In the implementation of the backport of JSR 166, FutureTask.run() invokes FutureTask.setCompleted() and FutureTask.setFailed() private methods.Notice the equivalent protected methods FutureTask.set() and FutureTask.setException() are not called here, which does not ease customization by subclassing FutureTask.Is it  the desired behaviour ?Regards.Laurent.
+_________________________________________________________________
+Essayez Live.com et cr?ez l'Internet qui vous ressemble : infos, sports, m?t?o et bien plus encore !
+http://www.live.com/getstarted
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070522/c5b97bbe/attachment.html 
+
+From peter.kovacs.1.0rc at gmail.com  Tue May 22 13:34:36 2007
+From: peter.kovacs.1.0rc at gmail.com (Peter Kovacs)
+Date: Tue, 22 May 2007 19:34:36 +0200
+Subject: [concurrency-interest] Coordinating between multiple
+	concurrenttasks
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCEEBFHHAA.dcholmes@optusnet.com.au>
+References: <b6e8f2e80705210952m57163ca5sa80e98d2b9d210b4@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCEEBFHHAA.dcholmes@optusnet.com.au>
+Message-ID: <b6e8f2e80705221034i4b268b02n539bee685f74250e@mail.gmail.com>
+
+Thanks for your replies!
+
+I recognize that this is not really a concurrency-specific problem, after all.
+
+Thanks
+Peter
+
+On 5/22/07, David Holmes <dcholmes at optusnet.com.au> wrote:
+> Peter,
+>
+> It really depends on what part of the application has knowledge of these
+> conditions and how state changes can be communicated. You might be able to
+> have Listeners/Observers that can fire when the state changes and use the
+> nature of the change to signal a condition that the other thread is waiting
+> on.
+>
+> David Holmes
+>
+> > -----Original Message-----
+> > From: concurrency-interest-bounces at cs.oswego.edu
+> > [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Peter
+> > Kovacs
+> > Sent: Tuesday, 22 May 2007 2:52 AM
+> > To: concurrency-interest
+> > Subject: [concurrency-interest] Coordinating between multiple
+> > concurrenttasks
+> >
+> >
+> > Hi,
+> >
+> > I have to deal with multiple (aggregate) concurrent tasks and need to
+> > act according to the combination of their statuses. With some status
+> > combinations I have to wait for some of them to advance until a
+> > certain other combination is reached.
+> >
+> > For example: given a task "A" in a COMPLETED state, I want to be
+> > notified when either task "A" is restarted (i.e. its state changes
+> > from COMPLETED to STARTED) or another task "B" also reaches the
+> > COMPLETED state.
+> >
+> > Does this pattern appear familiar to anyone? Any ideas/suggestions how
+> > to put this together with the j.u.c building blocks?
+> >
+> > Thanks
+> > Peter
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at altair.cs.oswego.edu
+> > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+From dcholmes at optusnet.com.au  Tue May 22 17:55:23 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed, 23 May 2007 07:55:23 +1000
+Subject: [concurrency-interest] backport: FutureTask.run() invokes
+	privatemethods
+In-Reply-To: <BAY132-W8BEBC5C15FA33FF5A1901C8360@phx.gbl>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEBIHHAA.dcholmes@optusnet.com.au>
+
+Laurent,
+
+It sounds like the backport "emulated" this bug in j.u.c:
+
+http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6464365
+
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of laurent
+sauvage
+  Sent: Tuesday, 22 May 2007 9:55 PM
+  To: concurrency-interest at cs.oswego.edu; dawidk at mathcs.emory.edu
+  Subject: [concurrency-interest] backport: FutureTask.run() invokes
+privatemethods
+
+
+  Hi all,
+
+  In the implementation of the backport of JSR 166, FutureTask.run() invokes
+FutureTask.setCompleted() and FutureTask.setFailed() private methods.
+  Notice the equivalent protected methods FutureTask.set() and
+FutureTask.setException() are not called here, which does not ease
+customization by subclassing FutureTask.
+  Is it  the desired behaviour ?
+
+  Regards.
+
+  Laurent.
+
+
+
+----------------------------------------------------------------------------
+--
+  Soyez parmi les premiers ? essayer Windows Live Mail. Windows Live Mail.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070523/eeb1610a/attachment.html 
+
+From sauvagelaurent at hotmail.com  Wed May 23 11:47:18 2007
+From: sauvagelaurent at hotmail.com (Laurent Sauvage)
+Date: Wed, 23 May 2007 17:47:18 +0200
+Subject: [concurrency-interest] backport: FutureTask.run() invokes
+	privatemethods
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCAEBIHHAA.dcholmes@optusnet.com.au>
+Message-ID: <BAY132-DAV144EAC3809EBBE68B93076C8350@phx.gbl>
+
+Thx David.
+Hi Dawid,
+ 
+Do you intend to fix this bug in backport ?
+ 
+Regards,
+ 
+Laurent.
+  _____  
+
+De : David Holmes [mailto:dcholmes at optusnet.com.au] 
+Envoy? : mardi 22 mai 2007 23:55
+? : laurent sauvage; concurrency-interest at cs.oswego.edu;
+dawidk at mathcs.emory.edu
+Objet : RE: [concurrency-interest] backport: FutureTask.run() invokes
+privatemethods
+
+
+Laurent,
+ 
+It sounds like the backport "emulated" this bug in j.u.c:
+ 
+http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6464365
+ 
+David Holmes
+
+-----Original Message-----
+From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of laurent
+sauvage
+Sent: Tuesday, 22 May 2007 9:55 PM
+To: concurrency-interest at cs.oswego.edu; dawidk at mathcs.emory.edu
+Subject: [concurrency-interest] backport: FutureTask.run() invokes
+privatemethods
+
+
+Hi all,
+
+In the implementation of the backport of JSR 166, FutureTask.run() invokes
+FutureTask.setCompleted() and FutureTask.setFailed() private methods.
+Notice the equivalent protected methods FutureTask.set() and
+FutureTask.setException() are not called here, which does not ease
+customization by subclassing FutureTask.
+Is it  the desired behaviour ?
+
+Regards.
+
+Laurent.
+
+
+  _____  
+
+Soyez parmi les premiers ? essayer Windows Live Mail. Windows Live Mail.
+<http://ideas.live.com/programpage.aspx?versionId=5d21c51a-b161-4314-9b0e-49
+11fb2b2e6d>  
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070523/fd24c316/attachment.html 
+
+From broconne at vt.edu  Sun May 27 16:41:39 2007
+From: broconne at vt.edu (Brian O'Connell)
+Date: Sun, 27 May 2007 16:41:39 -0400
+Subject: [concurrency-interest] Backport: Signal Question?
+Message-ID: <ead4316b0705271341m7556524fo60aaae5a262bd2e5@mail.gmail.com>
+
+I have code in a production system that is deployed on multiple nodes and
+has been executing unmodified for over a year.  Within the past few days I
+have detected multiple failures across all deployed nodes.  While the code
+has not changed the underlying systems are often patched with security
+fixes, etc.  The nodes of the system are linux running on powerpc.  A quick
+"sum" test tells me I am on backport 2.0_01 with java version "java full
+version "J2RE 1.4.2 IBM build cxppc32142-20050609".  I have narrowed the
+problem to a bug in my "OrderedQueue.java" which is composed with an
+underlying PriorityQueue from the backport library.    The OrderedQueue is
+supposed to act as a priority queue, except elements are expected to be
+added implementing an interface describing their number in a sequence.
+Consumers are blocked from taking an element until the next expected
+sequence number is available or the specified wait time elapses at which
+point they may return the next lowest sequence number for processing.  (In
+retrospect I should name my method something besides take since it in no way
+is true to the documentation for the Queue interface).  These queues may
+have multiple producers but are guaranteed to only have one consumer
+thread.  By adding copious logging I have narrowed it further to an infinite
+loop in my take method.  I will attach both the take and processAddition
+method (called by offer).
+
+Here is take:
+   public Object take(long timeout, TimeUnit timeUnit) throws
+InterruptedException {
+
+        final ReentrantLock lock = this.lock;
+
+        logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".  take
+Acquiring Lock");
+
+        lock.lock();
+
+        try {
+        logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".  take
+Acquired Lock");
+
+            for (;;) {
+                logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+peeking queue");
+
+                NumberedElement element = (NumberedElement) queue.peek();
+
+                logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+Queue peeked");
+
+                if ( element != null ) {
+                    long elementNumber = element.getNumber();
+
+                    logger.log(Level.FINE, "Queue: \"" + this.toString() +
+"\".  Element on Queue.  Object " + element.toString() + " Number: " +
+elementNumber);
+
+                    if ( (elementNumber <= nextNumber)
+                            || (elementNumber ==
+NumberedElement.SIGNAL_NUMBER) ) {
+
+                        logger.log(Level.FINE, "Queue: \"" + this.toString()
++ "\".  Element on queue is the expected next element.  Removing and
+returning" );
+
+                        queue.remove();
+                        removedObject( element );
+                        return element;
+
+                    }
+                    else {
+                        /* Element exists, just not right one */
+                        try {
+
+                            logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\".  Element on queue is not the expected next element.
+Waiting timeout on newLowest condition for  " + timeout + " for lower
+element");
+
+                            boolean signaled = newLowest.await( timeout,
+timeUnit );
+
+                            if ( signaled == false ) {
+                                /* Timeout occurred. Take this element after
+a recheck */
+                                logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\" not signaled for lower elment.");
+
+                                logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\" Checking to make sure element still exists on queue
+and wasn't stolen during out signal await.");
+                                element = (NumberedElement) queue.poll();
+                                if ( element != null ) {
+                                    logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\" An element still exists.  Removed and returning");
+                                    removedObject( element );
+                                    return element;
+                                }
+                                else{
+                                    logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\" Element disappeared.. WTF?");
+                                }
+                            }
+                            else{
+                                    logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\" New Lowest Signaled During wait period.
+Rechecking.");
+                            }
+                        }
+                        catch(InterruptedException exception) {
+                               logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\" Interrupted exception.");
+                            notEmpty.signal();
+                            throw exception;
+                        }
+                    }
+                }
+                else {
+                    /* Queue is empty wait until it is not */
+                    logger.log(Level.FINE, "Queue: \"" + this.toString() +
+"\".  Queue empty awaiting notEmpty signal.");
+
+                    notEmpty.await();
+
+                    logger.log(Level.FINE, "Queue: \"" + this.toString() +
+"\".  notEmpty signaled.");
+                }
+            }
+        }
+        finally {
+            lock.unlock();
+            logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+take Released Lock");
+        }
+
+    }
+
+
+Here is processAddition:
+private final void processAddition(Object queueElement) {
+
+
+        NumberedElement element = (NumberedElement) queueElement;
+        long number = element.getNumber();
+
+        logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+Processing Addition to queue.  Object " + queueElement.toString() + "
+Number: " + number);
+
+        /*
+         * Place object on queue. If object is next number up, notify
+dequeue If object is not next number up, set timer
+         * for dequeue
+         *
+         */
+        logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+processAddition Acquiring Lock");
+
+        final ReentrantLock lock = this.lock;
+        lock.lock();
+
+        logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+processAddition Acquired Lock");
+
+        try {
+            queue.offer( element );
+
+            logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+Added object to Priority Queue.  Object " + queueElement.toString() + "
+Number: " + number);
+
+            notEmpty.signal();
+
+            logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+Condition notEmpty signaled");
+
+            if ( number == Long.MAX_VALUE ) {
+                newLowest.signal();
+                removeNow.signal();
+
+                logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+Condition newLowest and removeNow signaled");
+
+            }
+            else {
+                if ( number <= lowestNumber ) {
+                    /* Notify to take off */
+                    lowestNumber = number;
+                    newLowest.signal();
+                    logger.log(Level.FINE, "Queue: \"" + this.toString() +
+"\".  Condition newLowest signaled");
+                }
+                if ( number <= nextNumber ) {
+                    removeNow.signal();
+                    logger.log(Level.FINE, "Queue: \"" + this.toString() +
+"\".  Condition removeNow signaled");
+                }
+            }
+
+            inserted = true;
+        }
+        finally {
+            lock.unlock();
+            logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+processAddition Released Lock");
+        }
+
+    }
+
+
+Please note that the two entries in processAddition are the only place in
+which newLowest.signal() is called and they are surrounded by logging calls
+indicating such.  The behavior I have found is that occasionally an infinite
+loop occurs in take.  I was under the impression that that if a signal
+occurs an await(long,TimeUnit) would clear that signal before returning and
+therefore the next call to await(long, TimeUnit) would not return true
+unless another signal occurs either before or during the await call.  I do
+not actually see that specified in the Condition javadoc but based on the
+sample BoundedBuffer in the javadoc it seems that is likely the desired
+behavior..  Here is the log entries from a failure scenario:
+
+05/27 19:43:32[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+05/27 19:43:34[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e" New Lowest Signaled
+During wait period.  Rechecking.
+05/27 19:43:34[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  peeking queue
+05/27 19:43:34[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Queue peeked
+05/27 19:43:34[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on Queue.
+Object /projects/publish/odd/en_US/about/bNimble-53062.stg Number: 19645
+05/27 19:43:34[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+05/27 19:43:36[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e" New Lowest Signaled
+During wait period.  Rechecking.
+05/27 19:43:36[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  peeking queue
+05/27 19:43:36[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Queue peeked
+05/27 19:43:36[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on Queue.
+Object /projects/publish/odd/en_US/about/bNimble-53062.stg Number: 19645
+05/27 19:43:36[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+05/27 19:43:38[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e" New Lowest Signaled
+During wait period.  Rechecking.
+05/27 19:43:38[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  peeking queue
+05/27 19:43:38[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Queue peeked
+05/27 19:43:38[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on Queue.
+Object /projects/publish/odd/en_US/about/bNimble-53062.stg Number: 19645
+05/27 19:43:38[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+05/27 19:43:40[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e" New Lowest Signaled
+During wait period.  Rechecking.
+05/27 19:43:40[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  peeking queue
+05/27 19:43:40[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Queue peeked
+05/27 19:43:40[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on Queue.
+Object /projects/publish/odd/en_US/about/bNimble-53062.stg Number: 19645
+05/27 19:43:40[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+05/27 19:43:42[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e" New Lowest Signaled
+During wait period.  Rechecking.
+05/27 19:43:42[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  peeking queue
+05/27 19:43:42[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Queue peeked
+05/27 19:43:42[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on Queue.
+Object /projects/publish/odd/en_US/about/bNimble-53062.stg Number: 19645
+05/27 19:43:42[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+05/27 19:43:44[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e" New Lowest Signaled
+During wait period.  Rechecking.
+05/27 19:43:44[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  peeking queue
+05/27 19:43:44[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Queue peeked
+05/27 19:43:44[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on Queue.
+Object /projects/publish/odd/en_US/about/bNimble-53062.stg Number: 19645
+05/27 19:43:44[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+
+
+As you can see every two seconds it pops out of an await thinking the signal
+has been thrown without any logging indicating a signal() call.  Do I
+misunderstand JUC signals and they don't get reset?  I know spurious wakeups
+and signals may occur but this goes beyond spurious into infinite.  Is there
+something obvious I am missing?
+
+
+Thanks,
+Brian
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070527/36788da4/attachment-0001.html 
+
+From dcholmes at optusnet.com.au  Sun May 27 18:21:45 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Mon, 28 May 2007 08:21:45 +1000
+Subject: [concurrency-interest] Backport: Signal Question?
+In-Reply-To: <ead4316b0705271341m7556524fo60aaae5a262bd2e5@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEDAHHAA.dcholmes@optusnet.com.au>
+
+Brian,
+
+Signals only affect threads waiting at the time of the signal.
+
+You are seeing a wakeup every two seconds and that is the timeout value you
+set.
+
+The problem seems to be that await() is returning true rather than false in
+that case.
+
+I would suggest inserting some debug code into the backport implementation
+code to see why it thinks await() should be returning true. Perhaps Dawid
+has other suggestions.
+
+It might be helpful to track down what patches have recently been applied.
+
+Cheers,
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Brian
+O'Connell
+  Sent: Monday, 28 May 2007 6:42 AM
+  To: concurrency-interest at cs.oswego.edu
+  Subject: [concurrency-interest] Backport: Signal Question?
+
+
+
+  I have code in a production system that is deployed on multiple nodes and
+has been executing unmodified for over a year.  Within the past few days I
+have detected multiple failures across all deployed nodes.  While the code
+has not changed the underlying systems are often patched with security
+fixes, etc.  The nodes of the system are linux running on powerpc.  A quick
+"sum" test tells me I am on backport 2.0_01 with java version "java full
+version "J2RE 1.4.2 IBM build cxppc32142-20050609".  I have narrowed the
+problem to a bug in my "OrderedQueue.java" which is composed with an
+underlying PriorityQueue from the backport library.    The OrderedQueue is
+supposed to act as a priority queue, except elements are expected to be
+added implementing an interface describing their number in a sequence.
+Consumers are blocked from taking an element until the next expected
+sequence number is available or the specified wait time elapses at which
+point they may return the next lowest sequence number for processing.  (In
+retrospect I should name my method something besides take since it in no way
+is true to the documentation for the Queue interface).  These queues may
+have multiple producers but are guaranteed to only have one consumer thread.
+By adding copious logging I have narrowed it further to an infinite loop in
+my take method.  I will attach both the take and processAddition method
+(called by offer).
+
+  Here is take:
+
+     public Object take(long timeout, TimeUnit timeUnit) throws
+InterruptedException {
+
+          final ReentrantLock lock = this.lock;
+
+          logger.log( Level.FINE, "Queue: \"" + this.toString() + "\".  take
+Acquiring Lock");
+
+          lock.lock();
+
+          try {
+          logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".  take
+Acquired Lock");
+
+              for (;;) {
+                  logger.log(Level.FINE, "Queue: \"" + this.toString() +
+"\".  peeking queue");
+
+                  NumberedElement element = (NumberedElement) queue.peek();
+
+                  logger.log(Level.FINE, "Queue: \"" + this.toString() +
+"\".  Queue peeked");
+
+                  if ( element != null ) {
+                      long elementNumber = element.getNumber();
+
+                      logger.log(Level.FINE, "Queue: \"" + this.toString() +
+"\".  Element on Queue.  Object " + element.toString() + " Number: " +
+elementNumber);
+
+                      if ( (elementNumber <= nextNumber)
+                              || (elementNumber ==
+NumberedElement.SIGNAL_NUMBER) ) {
+
+                          logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\".  Element on queue is the expected next element.
+Removing and returning" );
+
+                          queue.remove();
+                          removedObject( element );
+                          return element;
+
+                      }
+                      else {
+                          /* Element exists, just not right one */
+                          try {
+
+                              logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\".  Element on queue is not the expected next element.
+Waiting timeout on newLowest condition for  " + timeout + " for lower
+element");
+
+                              boolean signaled = newLowest.await( timeout,
+timeUnit );
+
+                              if ( signaled == false ) {
+                                  /* Timeout occurred. Take this element
+after a recheck */
+                                  logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\" not signaled for lower elment.");
+
+                                  logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\" Checking to make sure element still exists on queue
+and wasn't stolen during out signal await.");
+                                  element = (NumberedElement) queue.poll();
+                                  if ( element != null ) {
+                                      logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\" An element still exists.  Removed and returning");
+                                      removedObject( element );
+                                      return element;
+                                  }
+                                  else{
+                                      logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\" Element disappeared.. WTF?");
+                                  }
+                              }
+                              else{
+                                      logger.log (Level.FINE, "Queue: \"" +
+this.toString() + "\" New Lowest Signaled During wait period.
+Rechecking.");
+                              }
+                          }
+                          catch(InterruptedException exception) {
+                                 logger.log(Level.FINE, "Queue: \"" +
+this.toString() + "\" Interrupted exception.");
+                              notEmpty.signal();
+                              throw exception;
+                          }
+                      }
+                  }
+                  else {
+                      /* Queue is empty wait until it is not */
+                      logger.log(Level.FINE, "Queue: \"" + this.toString() +
+"\".  Queue empty awaiting notEmpty signal.");
+
+                      notEmpty.await();
+
+                      logger.log(Level.FINE, "Queue: \"" + this.toString() +
+"\".  notEmpty signaled.");
+                  }
+              }
+          }
+          finally {
+              lock.unlock();
+              logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+take Released Lock");
+          }
+
+      }
+
+
+
+  Here is processAddition:
+
+  private final void processAddition(Object queueElement) {
+
+
+          NumberedElement element = (NumberedElement) queueElement;
+          long number = element.getNumber();
+
+          logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+Processing Addition to queue.  Object " + queueElement.toString() + "
+Number: " + number);
+
+          /*
+           * Place object on queue. If object is next number up, notify
+dequeue If object is not next number up, set timer
+           * for dequeue
+           *
+           */
+          logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+processAddition Acquiring Lock");
+
+          final ReentrantLock lock = this.lock ;
+          lock.lock();
+
+          logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+processAddition Acquired Lock");
+
+          try {
+              queue.offer ( element );
+
+              logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+Added object to Priority Queue.  Object " + queueElement.toString() + "
+Number: " + number);
+
+              notEmpty.signal();
+
+              logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+Condition notEmpty signaled");
+
+              if ( number == Long.MAX_VALUE ) {
+                  newLowest.signal();
+                  removeNow.signal();
+
+                  logger.log(Level.FINE, "Queue: \"" + this.toString() +
+"\".  Condition newLowest and removeNow signaled");
+
+              }
+              else {
+                  if ( number <= lowestNumber ) {
+                      /* Notify to take off */
+                      lowestNumber = number;
+                      newLowest.signal();
+                      logger.log(Level.FINE, "Queue: \"" + this.toString() +
+"\".  Condition newLowest signaled");
+                  }
+                  if ( number <= nextNumber ) {
+                      removeNow.signal();
+                      logger.log(Level.FINE, "Queue: \"" + this.toString() +
+"\".  Condition removeNow signaled");
+                  }
+              }
+
+              inserted = true;
+          }
+          finally {
+              lock.unlock();
+              logger.log(Level.FINE, "Queue: \"" + this.toString() + "\".
+processAddition Released Lock");
+          }
+
+      }
+
+
+
+  Please note that the two entries in processAddition are the only place in
+which newLowest.signal() is called and they are surrounded by logging calls
+indicating such.  The behavior I have found is that occasionally an infinite
+loop occurs in take.  I was under the impression that that if a signal
+occurs an await(long,TimeUnit) would clear that signal before returning and
+therefore the next call to await(long, TimeUnit) would not return true
+unless another signal occurs either before or during the await call.  I do
+not actually see that specified in the Condition javadoc but based on the
+sample BoundedBuffer in the javadoc it seems that is likely the desired
+behavior..  Here is the log entries from a failure scenario:
+
+
+  05/27 19:43:32[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+  05/27 19:43:34[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e" New Lowest Signaled
+During wait period.  Rechecking.
+  05/27 19:43:34[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  peeking queue
+  05/27 19:43:34[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Queue peeked
+  05/27 19:43:34[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on Queue.
+Object /projects/publish/odd/en_US/about/bNimble-53062.stg Number: 19645
+  05/27 19:43:34[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+  05/27 19:43:36[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e" New Lowest Signaled
+During wait period.  Rechecking.
+  05/27 19:43:36[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  peeking queue
+  05/27 19:43:36[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Queue peeked
+  05/27 19:43:36[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on Queue.
+Object /projects/publish/odd/en_US/about/bNimble-53062.stg Number: 19645
+  05/27 19:43:36[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+  05/27 19:43:38[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e" New Lowest Signaled
+During wait period.  Rechecking.
+  05/27 19:43:38[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  peeking queue
+  05/27 19:43:38[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Queue peeked
+  05/27 19:43:38[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on Queue.
+Object /projects/publish/odd/en_US/about/bNimble-53062.stg Number: 19645
+  05/27 19:43:38[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+  05/27 19:43:40[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e" New Lowest Signaled
+During wait period.  Rechecking.
+  05/27 19:43:40[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  peeking queue
+  05/27 19:43:40[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Queue peeked
+  05/27 19:43:40[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on Queue.
+Object /projects/publish/odd/en_US/about/bNimble-53062.stg Number: 19645
+  05/27 19:43:40[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+  05/27 19:43:42[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e" New Lowest Signaled
+During wait period.  Rechecking.
+  05/27 19:43:42[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  peeking queue
+  05/27 19:43:42[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Queue peeked
+  05/27 19:43:42[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on Queue.
+Object /projects/publish/odd/en_US/about/bNimble-53062.stg Number: 19645
+  05/27 19:43:42[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+  05/27 19:43:44[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e" New Lowest Signaled
+During wait period.  Rechecking.
+  05/27 19:43:44[1010124611](      Fine)[OrderedQueue/take]Queue: "
+events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  peeking queue
+  05/27 19:43:44[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Queue peeked
+  05/27 19:43:44[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on Queue.
+Object /projects/publish/odd/en_US/about/bNimble-53062.stg Number: 19645
+  05/27 19:43:44[1010124611](      Fine)[OrderedQueue/take]Queue:
+"events.bnimble.plugin.endpoint.OrderedQueue at 36bd2e9e".  Element on queue is
+not the expected next element. Waiting timeout on newLowest condition for
+2000 for lower element
+
+
+
+  As you can see every two seconds it pops out of an await thinking the
+signal has been thrown without any logging indicating a signal() call.  Do I
+misunderstand JUC signals and they don't get reset?  I know spurious wakeups
+and signals may occur but this goes beyond spurious into infinite.  Is there
+something obvious I am missing?
+
+
+  Thanks,
+  Brian
+
+
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070528/9091c393/attachment-0001.html 
+
+From dl at cs.oswego.edu  Tue May 29 06:15:28 2007
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 29 May 2007 06:15:28 -0400
+Subject: [concurrency-interest] Java 7 preview code available
+Message-ID: <465BFD40.6070004@cs.oswego.edu>
+
+
+I finally checked in preliminary versions of some of the classes
+we are targetting for Java 7 as package jsr166y,
+mainly including the new lightweight
+parallel execution framework in package "forkjoin".
+
+See:
+    API specs:  http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/
+    jar file: http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166y.jar
+    Browsable CVS sources:
+       http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/jsr166y/
+    Browsable CVS test file sources:
+       http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/test/jsr166y/
+
+Notes:
+
+* I'll be out the rest of the week with only spotty connectivity,
+so probably won't be able to reply quickly to questions about it.
+
+* The test directory only has a few demo programs in it right
+now. Much more to come.
+
+* I'm still unhappy with a few of the class names and APIs, so
+expect some things to change.
+
+* We have a failing router here on campus which is causing
+various stalls and disconnects. Hopefully they will fix it
+while I'm out. In the mean time, sorry for any problems.
+
+-Doug
+
+
+
+
+From egordienko at yahoo.com  Wed May 30 16:19:11 2007
+From: egordienko at yahoo.com (Eugene Gordienko)
+Date: Wed, 30 May 2007 13:19:11 -0700 (PDT)
+Subject: [concurrency-interest] for_each parallel in java ?
+Message-ID: <129465.39148.qm@web33413.mail.mud.yahoo.com>
+
+Hi All,
+
+I have a quick question.
+ 
+ Does the javac compiler make a best effort to execute as much as it 
+ can be in parallel while generating code for 'for_each' statement?
+
+If no - are there any thoughts here - like 'for (String s : myList; parallel)' - which could give compiler a hint ?
+
+Thanks,
+Eugene
+
+
+ 
+____________________________________________________________________________________
+Bored stiff? Loosen up... 
+Download and play hundreds of games for free on Yahoo! Games.
+http://games.yahoo.com/games/front
+
+From eu at javatx.org  Wed May 30 16:50:58 2007
+From: eu at javatx.org (Eugene Kuleshov)
+Date: Wed, 30 May 2007 16:50:58 -0400
+Subject: [concurrency-interest] for_each parallel in java ?
+In-Reply-To: <129465.39148.qm@web33413.mail.mud.yahoo.com>
+References: <129465.39148.qm@web33413.mail.mud.yahoo.com>
+Message-ID: <465DE3B2.2090408@javatx.org>
+
+Eugene,
+
+  Your example is basically some form of closure. However things are bit 
+complicated, i.e. compiler will need to know about parallel accumulator.
+
+  See my recent blog post and comment from Neal Gafter about 
+synchronization issues at http://jroller.com/page/eu/20070529
+
+  regards,
+  Eugene
+ 
+
+Eugene Gordienko wrote:
+> Hi All,
+>
+> I have a quick question.
+>  
+>  Does the javac compiler make a best effort to execute as much as it 
+>  can be in parallel while generating code for 'for_each' statement?
+>
+> If no - are there any thoughts here - like 'for (String s : myList; parallel)' - which could give compiler a hint ?
+>
+> Thanks,
+> Eugene
+>
+>   
+
+
+From dcholmes at optusnet.com.au  Wed May 30 18:34:25 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Thu, 31 May 2007 08:34:25 +1000
+Subject: [concurrency-interest] for_each parallel in java ?
+In-Reply-To: <129465.39148.qm@web33413.mail.mud.yahoo.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIEDNHHAA.dcholmes@optusnet.com.au>
+
+Eugene Gordienko [egordienko at yahoo.com] writes:
+> I have a quick question.
+>
+>  Does the javac compiler make a best effort to execute as much as it
+>  can be in parallel while generating code for 'for_each' statement?
+
+No. javac knows nothing about parallelism, it generates sequential code.
+
+> If no - are there any thoughts here - like 'for (String s :
+> myList; parallel)' - which could give compiler a hint ?
+
+There have been lots of thoughts on adding parallel constructs to the Java
+language, mainly quite a few years ago - circa the JavaGrande years. I don't
+have any firm references though. I think such attempts have moved on to
+other languages now as it is extremely unlikely that explicit parallelism
+would ever be added to what we know as Java.
+
+I don't know if Fortress or Scala have explicit parallelism of this kind.
+
+Regards,
+David Holmes
+
+
+From dcholmes at optusnet.com.au  Wed May 30 19:40:43 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Thu, 31 May 2007 09:40:43 +1000
+Subject: [concurrency-interest] for_each parallel in java ?
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCIEDNHHAA.dcholmes@optusnet.com.au>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIEDPHHAA.dcholmes@optusnet.com.au>
+
+Regarding Fortress I've been informed:
+
+> Yes, Fortress's default for is parallel; sequential for's
+> must be explictly called out as such.
+
+Cheers,
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of David
+> Holmes
+> Sent: Thursday, 31 May 2007 8:34 AM
+> To: Eugene Gordienko; concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] for_each parallel in java ?
+>
+>
+> Eugene Gordienko [egordienko at yahoo.com] writes:
+> > I have a quick question.
+> >
+> >  Does the javac compiler make a best effort to execute as much as it
+> >  can be in parallel while generating code for 'for_each' statement?
+>
+> No. javac knows nothing about parallelism, it generates sequential code.
+>
+> > If no - are there any thoughts here - like 'for (String s :
+> > myList; parallel)' - which could give compiler a hint ?
+>
+> There have been lots of thoughts on adding parallel constructs to the Java
+> language, mainly quite a few years ago - circa the JavaGrande
+> years. I don't
+> have any firm references though. I think such attempts have moved on to
+> other languages now as it is extremely unlikely that explicit parallelism
+> would ever be added to what we know as Java.
+>
+> I don't know if Fortress or Scala have explicit parallelism of this kind.
+>
+> Regards,
+> David Holmes
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From dharrigan at gmail.com  Thu May 31 22:15:12 2007
+From: dharrigan at gmail.com (David Harrigan)
+Date: Thu, 31 May 2007 19:15:12 -0700 (PDT)
+Subject: [concurrency-interest] Synchronized between private methods in a
+	servlet
+Message-ID: <10905476.post@talk.nabble.com>
+
+
+Hi,
+
+I hope not too basic a question for this illustrious list...
+
+I'm using Java 6 update 1.
+
+I have 3 private methods. I want to ensure that I'm thread safe when these
+methods are called from the doPost in a servlet (I know servlets aren't
+threadsafe and I want to ensure that my little servlet is executing in the
+best way) thus:
+
+public void doPost(HttpServletRequest request, HttpServletResponse response)
+{
+   ...
+   List<String> list = ...;
+   A(list);
+   ...
+}
+
+private synchronized void A(List<String> list) {
+   ...
+   B(stringValue);
+   ...
+}
+
+private void B(final String stringValue) {
+   ...
+   C(stringValue);
+   ...
+}
+
+private void C(final String stringValue) {
+   ...
+   ...
+}
+
+My questions are:
+
+1. Is it sufficient just to put the synchronized on method A since methods B
+and C are only called from within A?
+2. Maybe I don't need to put synchronized on, since method A is only called
+from the doPost?
+3. Maybe I can use the lock...unlock in doPost, wrapped around the call to
+method A?
+4. If I have to use synchronized, would I get better performance using
+lock...unlock inside method A?
+
+Thanks everyone!
+
+-=david=-
+-- 
+View this message in context: http://www.nabble.com/Synchronized-between-private-methods-in-a-servlet-tf3849923.html#a10905476
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+

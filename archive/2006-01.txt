@@ -1,0 +1,3545 @@
+From brice.beard at gmail.com  Mon Jan  9 14:47:35 2006
+From: brice.beard at gmail.com (Brice Beard)
+Date: Mon Jan  9 14:48:42 2006
+Subject: [concurrency-interest] Re: Concurrency-interest Digest, Vol 11,
+	Issue 24
+In-Reply-To: <200512311700.jBVH09jD019817@altair.cs.oswego.edu>
+References: <200512311700.jBVH09jD019817@altair.cs.oswego.edu>
+Message-ID: <0BBEED22-897E-4F0E-88DF-F94323B5086F@gmail.com>
+
+
+Sorry if this question has been rehashed a few times, I have been  
+reading
+the list on and off and can't find a way to search the archive.
+
+We've started using ConcurrentHashMap in earnest on jvm1.5, and I  
+want to
+confirm my understanding is correct.
+
+In the code below, we want to limit contention on hashtable read  
+access to the
+minimum but still need synchronization on write.
+
+Looks dangerously like DCL but works because:
+- ConcurrentHashMap entry uses a volatile value
+- So if the get retrieve a value, that value is guaranteed to be  
+completely
+constructed
+- As a bonus, this would also work on previous jvms as long as the Uri
+itself is completely recursuvely built out of volatile data members ?
+
+Is there a standard idiom to do this, is there a way to have a finer
+grained synchronization for the put ?
+
+thanks,
+
+brice
+
+ConcurrentHashMap uriMap = ...
+
+Uri getUri(String key)
+{
+    Uri uri = uriMap.get(key);
+    if(uri == null) {
+       synchronized (uriCreationMonitor) {
+       uri = uriMap.get(key);
+       if(uri == null) {
+          uri = new UriImpl(...);
+          uriMap.put(key, uri);
+        }
+    }
+}
+
+From joe.bowbeer at gmail.com  Mon Jan  9 15:28:08 2006
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Mon Jan  9 15:29:06 2006
+Subject: [concurrency-interest] Re: Concurrency-interest Digest, Vol 11,
+	Issue 24
+In-Reply-To: <0BBEED22-897E-4F0E-88DF-F94323B5086F@gmail.com>
+References: <200512311700.jBVH09jD019817@altair.cs.oswego.edu>
+	<0BBEED22-897E-4F0E-88DF-F94323B5086F@gmail.com>
+Message-ID: <31f2a7bd0601091228s7710b348xb572ee17ac6ec57c@mail.gmail.com>
+
+On 1/9/06, Brice Beard <brice.beard@gmail.com> wrote:
+>
+> In the code below, we want to limit contention on hashtable read
+> access to the minimum but still need synchronization on write.
+>
+> Is there a standard idiom to do this, is there a way to have a finer
+> grained synchronization for the put ?
+>
+
+I think this may be an application for putIfAbsent -- a special
+feature of ConcurrentMap.
+
+See the javadoc
+
+http://java.sun.com/j2se/1.5.0/docs/api/java/util/concurrent/ConcurrentMap.html
+
+There are also a few slides about this in TS-3423:
+
+http://java.sun.com/javaone/sf/speaker_awards.jsp
+ -> http://developers.sun.com/learning/javaoneonline/2005/coreplatform/TS-3423.html
+
+Look for section on Memoize.
+
+
+>
+> ConcurrentHashMap uriMap = ...
+>
+> Uri getUri(String key)
+> {
+>     Uri uri = uriMap.get(key);
+>     if(uri == null) {
+>        synchronized (uriCreationMonitor) {
+>        uri = uriMap.get(key);
+>        if(uri == null) {
+>           uri = new UriImpl(...);
+>           uriMap.put(key, uri);
+>         }
+>     }
+> }
+>
+>
+
+From bsder at allcaps.org  Mon Jan  9 16:26:08 2006
+From: bsder at allcaps.org (Andrew Lentvorski)
+Date: Mon Jan  9 16:27:12 2006
+Subject: [concurrency-interest] BACKPORT - Deadlocks and FixedThreadPool
+	executors...
+In-Reply-To: <5184347f0512122211h3ec7d3bfu3879398b731bc3e0@mail.gmail.com>
+References: <5184347f0512122211h3ec7d3bfu3879398b731bc3e0@mail.gmail.com>
+Message-ID: <43C2D4F0.3090209@allcaps.org>
+
+Mark Derricutt wrote:
+
+> Slowly thou, I see each of the threads blocking inside a socket read/wait
+> from the JavaMail system, eventually all 5 threads block and I start pulling
+> my hair out.
+
+Email systems often use file system locks to avoid mail store 
+corruption.  You can create circular lock dependencies through these as 
+well.  You might want to see what locks exist in the mail store.
+
+The easiest solution is probably a timeout on your tasks.  Any thread 
+blocked longer than some amount of minutes should get smacked.  This 
+should work fairly easily since your problems are occurring on the order 
+of hours.
+
+You may have to make the task interruptible before putting it onto the 
+queue.  When you interrupt the task, the JVM will close your socket, though.
+
+-a
+From brian at quiotix.com  Mon Jan  9 16:54:19 2006
+From: brian at quiotix.com (Brian Goetz)
+Date: Mon Jan  9 16:55:22 2006
+Subject: [concurrency-interest] Re: Concurrency-interest Digest, Vol 11,
+	Issue 24
+In-Reply-To: <0BBEED22-897E-4F0E-88DF-F94323B5086F@gmail.com>
+References: <200512311700.jBVH09jD019817@altair.cs.oswego.edu>
+	<0BBEED22-897E-4F0E-88DF-F94323B5086F@gmail.com>
+Message-ID: <43C2DB8B.9020901@quiotix.com>
+
+> Is there a standard idiom to do this, is there a way to have a finer
+> grained synchronization for the put ?
+
+The standard idiom is putIfAbsent.
+
+If putIfAbsent doesn't work for your situation, you'll need to adhere to 
+a convention like "No one puts anything in the map without the foo 
+lock", as you suggested.  If that convention is uniformly adhered to, 
+what you are doing is OK, if a little fragile.
+
+But if you're doing a lot of put'ing, this could be a serious 
+scalability problem, because now every insertion must wait for a global, 
+map-wide lock (the CHM implementation uses lock striping to allow writes 
+to overlap), and performance may revert to something like that of 
+Hashtable.
+
+> ConcurrentHashMap uriMap = ...
+> 
+> Uri getUri(String key)
+> {
+>    Uri uri = uriMap.get(key);
+>    if(uri == null) {
+>       synchronized (uriCreationMonitor) {
+>       uri = uriMap.get(key);
+>       if(uri == null) {
+>          uri = new UriImpl(...);
+>          uriMap.put(key, uri);
+>        }
+>    }
+> }
+
+From sergemasse1 at yahoo.com  Tue Jan 10 15:55:26 2006
+From: sergemasse1 at yahoo.com (serge masse)
+Date: Tue Jan 10 15:56:28 2006
+Subject: [concurrency-interest] failing http request in the
+	concurrency-interest page
+Message-ID: <20060110205526.90544.qmail@web51403.mail.yahoo.com>
+
+This request fails: http://altair.cs.oswego.edu/pipermail/ 
+
+It is a URL in page http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+The request worked fine in December 2005 but has not worked since 2006.
+
+serge
+
+
+
+From dl at cs.oswego.edu  Tue Jan 10 16:24:32 2006
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue Jan 10 16:27:01 2006
+Subject: [concurrency-interest] failing http request in
+	the	concurrency-interest page
+In-Reply-To: <20060110205526.90544.qmail@web51403.mail.yahoo.com>
+References: <20060110205526.90544.qmail@web51403.mail.yahoo.com>
+Message-ID: <43C42610.50500@cs.oswego.edu>
+
+serge masse wrote:
+> This request fails: http://altair.cs.oswego.edu/pipermail/ 
+> 
+> It is a URL in page http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+> The request worked fine in December 2005 but has not worked since 2006.
+> 
+
+Sorry. A byproduct of a server crash last week. It should be OK now.
+
+-Doug
+
+From beard_brice at jpmorgan.com  Wed Jan 11 10:28:46 2006
+From: beard_brice at jpmorgan.com (beard_brice@jpmorgan.com)
+Date: Thu Jan 12 08:47:21 2006
+Subject: [concurrency-interest] ConcurrentHashMap again
+Message-ID: <OFD12D6EED.43F4BA5C-ON802570F3.00546694-802570F3.00550833@jpmchase.com>
+
+
+Brian said:
+
+# > Is there a standard idiom to do this, is there a way to have a finer
+# > grained synchronization for the put ?
+#
+# The standard idiom is putIfAbsent.
+#
+# If putIfAbsent doesn't work for your situation, you'll need to adhere to
+# a convention like "No one puts anything in the map without the foo
+# lock", as you suggested.  If that convention is uniformly adhered to,
+# what you are doing is OK, if a little fragile.
+#
+# But if you're doing a lot of put'ing, this could be a serious
+# scalability problem, because now every insertion must wait for a global,
+# map-wide lock (the CHM implementation uses lock striping to allow writes
+# to overlap), and performance may revert to something like that of
+# Hashtable.
+
+putIfAbsent is exactly what I need, thanks for pointing it out.
+Could you elaborate on which situtation it wouldn't cater for ?
+I had a stroll in the source for ConcurrentHashMap and understand the
+striped
+locking works at the Segment level.
+Would it be possible to implement an entry level locking provided we accept
+a created entry
+is never removed, only nulled.
+
+thanks,
+
+brice
+
+
+This communication is for informational purposes only. It is not intended
+as an offer or solicitation for the purchase or sale of any financial
+instrument or as an official confirmation of any transaction. All market prices,
+data and other information are not warranted as to completeness or accuracy and
+are subject to change without notice. Any comments or statements made herein 
+do not necessarily reflect those of JPMorgan Chase & Co., its subsidiaries 
+and affiliates
+
+From dl at cs.oswego.edu  Thu Jan 12 20:18:40 2006
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Thu Jan 12 20:21:12 2006
+Subject: [concurrency-interest] ConcurrentHashMap again
+In-Reply-To: <OFD12D6EED.43F4BA5C-ON802570F3.00546694-802570F3.00550833@jpmchase.com>
+References: <OFD12D6EED.43F4BA5C-ON802570F3.00546694-802570F3.00550833@jpmchase.com>
+Message-ID: <43C6FFF0.2020805@cs.oswego.edu>
+
+beard_brice@jpmorgan.com wrote:
+> 
+> 
+> putIfAbsent is exactly what I need, thanks for pointing it out.
+> Could you elaborate on which situtation it wouldn't cater for ?
+
+The common example is lazy initialization of a value if not present.
+But this is usually better done by causing the Value object to
+lazily initialize itself the first time it is accessed.
+
+> I had a stroll in the source for ConcurrentHashMap and understand the
+> striped
+> locking works at the Segment level.
+> Would it be possible to implement an entry level locking provided we accept
+> a created entry
+> is never removed, only nulled.
+> 
+
+You might be able to copy-paste-hack a class that does this, but
+there's no assurance that future releases of the java.util.concurrent
+version will even use the same synchronization strategy, so beware!
+
+-Doug
+
+From robertkuhar at yahoo.com  Sat Jan 14 14:41:38 2006
+From: robertkuhar at yahoo.com (Robert Kuhar)
+Date: Sat Jan 14 14:42:42 2006
+Subject: [concurrency-interest] Question porting CPiJ Examples to
+	java.util.concurrent
+Message-ID: <20060114194138.33965.qmail@web30608.mail.mud.yahoo.com>
+
+I am a member of a user group presently studying "Concurrent Programming in
+Java Second Edition" using the Nik Boyd study guide.  This is a great book for
+concepts, but the examples are all coded to the
+EDU.oswego.cs.dl.util.concurrent library not the JDK1.5 java.util.concurrent. 
+As an exercise each session, we typically port the examples from the book up to
+java.util.concurrent.  There are mismatches that are confusing us.  
+
+In particular, we often stumble around the mismatch between
+EDU.oswego.cs.dl.util.concurrent.Sync and java.util.concurrent.lock.Lock.  The
+methods that cause the most pain are the one's that don't throws
+InterruptedException: try() and lock().  What are we supposed to do when
+implementing lock() or tryLock() with InterruptedExceptions that come out of
+wait()?  Do we just swallow them and go back to waiting?
+
+Attached is the full source from the Semaphore example in 3.7.1 Acquire-Release
+Protocols.  Note the waitForAPermit() method exists only to avoid a bunch of
+duplicate code.  Here is an excerpt showing our lock() and lockInterruptibly()
+implementations:
+
+public void lock() {
+  synchronized (this) {
+    while (true) {
+      try {
+        waitForAPermit();
+        return;
+      } catch (InterruptedException ie) {
+        // swallow it.
+        // TODO: Do I have obligation to reraise Thread.interrupt()?
+        // TODO: InterruptedException to become some RuntimeException here. 
+That's not how lock() is supposed to behave, is it?
+      }
+    } // end while()
+  } // end synchronized(this)
+}
+
+public void lockInterruptibly() throws InterruptedException {
+  synchronized (this) {
+    waitForAPermit();
+  } // end synchronized(this)
+}
+
+private void waitForAPermit() throws InterruptedException {
+  try {
+    while (this.permits < 0) {
+      wait();
+    } // end while()
+    this.permits--;
+  } catch (InterruptedException ie) {
+    notify();
+    throw ie;
+  }
+}
+
+Are we doing the correct thing here "swallowing" InterruptedExceptions in our
+non interruptable implemenations of lock() and tryLock() (or did the group
+collectively forget something we learned earlier in the book)?
+
+One of our members always wants to throw some RuntimeException in the
+implementations that "swallow" the InterruptedExceptions.  That's not right, is
+it?  And, if so, why or why not?
+
+When we "swallow" an InterruptedException do we have an obligation to reraise
+the interrupt()?  That would just have the affect of coming back up to us as an
+InterruptedException, no?
+
+Any light you could shed is greatly appreciated.
+
+Bob
+
+__________________________________________________
+Do You Yahoo!?
+Tired of spam?  Yahoo! Mail has the best spam protection around 
+http://mail.yahoo.com 
+From robertkuhar at yahoo.com  Sat Jan 14 14:54:35 2006
+From: robertkuhar at yahoo.com (Robert Kuhar)
+Date: Sat Jan 14 14:55:38 2006
+Subject: [concurrency-interest] Re: Question porting CPiJ Examples to
+	java.util.concurrent
+Message-ID: <20060114195435.1319.qmail@web30612.mail.mud.yahoo.com>
+
+I hate when I do that.  This time I'll actually attach the source.
+
+--- Robert Kuhar <robertkuhar@yahoo.com> wrote:
+
+> I am a member of a user group presently studying "Concurrent Programming in
+> Java Second Edition" using the Nik Boyd study guide.  This is a great book
+> for
+> concepts, but the examples are all coded to the
+> EDU.oswego.cs.dl.util.concurrent library not the JDK1.5 java.util.concurrent.
+> 
+> As an exercise each session, we typically port the examples from the book up
+> to
+> java.util.concurrent.  There are mismatches that are confusing us.  
+> 
+> In particular, we often stumble around the mismatch between
+> EDU.oswego.cs.dl.util.concurrent.Sync and java.util.concurrent.lock.Lock. 
+> The
+> methods that cause the most pain are the one's that don't throws
+> InterruptedException: try() and lock().  What are we supposed to do when
+> implementing lock() or tryLock() with InterruptedExceptions that come out of
+> wait()?  Do we just swallow them and go back to waiting?
+> 
+> Attached is the full source from the Semaphore example in 3.7.1
+> Acquire-Release
+> Protocols.  Note the waitForAPermit() method exists only to avoid a bunch of
+> duplicate code.  Here is an excerpt showing our lock() and
+> lockInterruptibly()
+> implementations:
+> 
+> public void lock() {
+>   synchronized (this) {
+>     while (true) {
+>       try {
+>         waitForAPermit();
+>         return;
+>       } catch (InterruptedException ie) {
+>         // swallow it.
+>         // TODO: Do I have obligation to reraise Thread.interrupt()?
+>         // TODO: InterruptedException to become some RuntimeException here. 
+> That's not how lock() is supposed to behave, is it?
+>       }
+>     } // end while()
+>   } // end synchronized(this)
+> }
+> 
+> public void lockInterruptibly() throws InterruptedException {
+>   synchronized (this) {
+>     waitForAPermit();
+>   } // end synchronized(this)
+> }
+> 
+> private void waitForAPermit() throws InterruptedException {
+>   try {
+>     while (this.permits < 0) {
+>       wait();
+>     } // end while()
+>     this.permits--;
+>   } catch (InterruptedException ie) {
+>     notify();
+>     throw ie;
+>   }
+> }
+> 
+> Are we doing the correct thing here "swallowing" InterruptedExceptions in our
+> non interruptable implemenations of lock() and tryLock() (or did the group
+> collectively forget something we learned earlier in the book)?
+> 
+> One of our members always wants to throw some RuntimeException in the
+> implementations that "swallow" the InterruptedExceptions.  That's not right,
+> is
+> it?  And, if so, why or why not?
+> 
+> When we "swallow" an InterruptedException do we have an obligation to reraise
+> the interrupt()?  That would just have the affect of coming back up to us as
+> an
+> InterruptedException, no?
+> 
+> Any light you could shed is greatly appreciated.
+> 
+> Bob
+> 
+> __________________________________________________
+> Do You Yahoo!?
+> Tired of spam?  Yahoo! Mail has the best spam protection around 
+> http://mail.yahoo.com 
+> 
+
+__________________________________________________
+Do You Yahoo!?
+Tired of spam?  Yahoo! Mail has the best spam protection around 
+http://mail.yahoo.com 
+-------------- next part --------------
+package ch03_7_1;
+
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+
+public class CPiJSemaphore implements Lock {
+    private long permits;
+
+    public CPiJSemaphore(long permits) {
+        this.permits = permits;
+    }
+
+    public void lock() {
+        synchronized (this) {
+            while (true) {
+                try {
+                    waitForAPermit();
+                    return;
+                } catch (InterruptedException ie) {
+                    // swallow it.
+                    // TODO: Do I have obligation to reraise Thread.interrupt()?
+                    // TODO: Steve wants InterruptedException to become some RuntimeException here.
+                }
+            } // end while()
+        } // end synchronized(this)
+    }
+
+    public void lockInterruptibly() throws InterruptedException {
+        synchronized (this) {
+            waitForAPermit();
+        } // end synchronized(this)
+    }
+
+    private void waitForAPermit()
+        throws InterruptedException {
+        try {
+            while (this.permits < 0) {
+                wait();
+            } // end while()
+            this.permits--;
+        } catch (InterruptedException ie) {
+            notify();
+            throw ie;
+        }
+    }
+
+    public boolean tryLock() {
+        try {
+            return tryLock(0l, TimeUnit.MILLISECONDS);
+        } catch(InterruptedException ie) {
+            // swallow it.
+        }
+        return false;
+    }
+
+    public boolean tryLock(long time, TimeUnit unit) throws InterruptedException {
+        if (Thread.interrupted()) {
+            throw new InterruptedException();
+        }
+        synchronized (this) {
+            if (this.permits > 0) {
+                this.permits--;
+                return true;
+            } else if (time <= 0) {
+                // Quick out on "don't wait"...
+                return false;
+            } else {
+                try {
+                    long startWaitTime = System.currentTimeMillis();
+                    long waitTime = unit.toMillis(time);
+                    while (true) {
+                        wait(waitTime);
+                        if (this.permits > 0) {
+                            this.permits--;
+                            return true;
+                        } else {
+                            long now = System.currentTimeMillis();
+                            waitTime = unit.toMillis(time) - (now - startWaitTime);
+                            if (waitTime <= 0) {
+                                return false;
+                            }
+                        }
+                    } // end while()
+                } catch (InterruptedException ie) {
+                    notify();
+                    throw ie;
+                }
+            }
+        } // end synchronized(this)
+    }
+
+    public void unlock() {
+        this.permits++;
+        notify();
+    }
+
+    public Condition newCondition() {
+        throw new UnsupportedOperationException();
+    }
+
+}
+From dawidk at mathcs.emory.edu  Sat Jan 14 15:58:25 2006
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Sat Jan 14 15:59:32 2006
+Subject: [concurrency-interest] Question porting CPiJ Examples 
+	tojava.util.concurrent
+In-Reply-To: <20060114194138.33965.qmail@web30608.mail.mud.yahoo.com>
+References: <20060114194138.33965.qmail@web30608.mail.mud.yahoo.com>
+Message-ID: <43C965F1.6040207@mathcs.emory.edu>
+
+Robert Kuhar wrote:
+
+>I am a member of a user group presently studying "Concurrent Programming in
+>Java Second Edition" using the Nik Boyd study guide.  This is a great book for
+>concepts, but the examples are all coded to the
+>EDU.oswego.cs.dl.util.concurrent library not the JDK1.5 java.util.concurrent. 
+>As an exercise each session, we typically port the examples from the book up to
+>java.util.concurrent.  There are mismatches that are confusing us.  
+>
+>In particular, we often stumble around the mismatch between
+>EDU.oswego.cs.dl.util.concurrent.Sync and java.util.concurrent.lock.Lock.  The
+>methods that cause the most pain are the one's that don't throws
+>InterruptedException: try() and lock().  What are we supposed to do when
+>implementing lock() or tryLock() with InterruptedExceptions that come out of
+>wait()?  Do we just swallow them and go back to waiting?
+>
+>Attached is the full source from the Semaphore example in 3.7.1 Acquire-Release
+>Protocols.  Note the waitForAPermit() method exists only to avoid a bunch of
+>duplicate code.  Here is an excerpt showing our lock() and lockInterruptibly()
+>implementations:
+>
+>(...)
+>
+>Are we doing the correct thing here "swallowing" InterruptedExceptions in our
+>non interruptable implemenations of lock() and tryLock() (or did the group
+>collectively forget something we learned earlier in the book)?
+>  
+>
+Yes and no. You should re-raise the interrupt afterwards (see below).
+
+>One of our members always wants to throw some RuntimeException in the
+>implementations that "swallow" the InterruptedExceptions.  That's not right, is
+>it?  And, if so, why or why not?
+>  
+>
+I think not; the spec says that unchecked exceptions can be thrown upon 
+a detection of erroneous use of a lock. Arguably, interruption does not 
+qualify as such.
+
+>When we "swallow" an InterruptedException do we have an obligation to reraise
+>the interrupt()?  That would just have the affect of coming back up to us as an
+>InterruptedException, no?
+>
+>  
+>
+
+You should re-raise the interrupt when you are exiting from the method. 
+It may come back as an InterruptedException but later (on another 
+blocking operation); it won't affect the lock(). This is how it's done 
+in backport-util-concurrent (ReentrantLock):
+
+        
+
+        public void lock() {
+            Thread caller = Thread.currentThread();
+            synchronized (this) {
+                if (owner_ == null) {
+                    owner_ = caller;
+                    holds_ = 1;
+                    return;
+                }
+                else if (caller == owner_) {
+                    incHolds();
+                    return;
+                }
+                else {
+                    boolean wasInterrupted = Thread.interrupted();
+                    try {
+                        do {
+                            try {
+                                wait();
+                            }
+                            catch (InterruptedException e) {
+                                wasInterrupted = true;
+                                // no need to notify; if we were signalled, we
+                                // will act as signalled, ignoring the
+                                // interruption
+                            }
+                        }
+                        while (owner_ != null);
+
+                        owner_ = caller;
+                        holds_ = 1;
+                        return;
+                    }
+                    finally {
+                        if (wasInterrupted) Thread.currentThread().interrupt();
+                    }
+                }
+            }
+        }
+
+
+Kind regards,
+Dawid Kurzyniec
+
+From Ryan.LeCompte at pangonetworks.com  Mon Jan 16 16:48:16 2006
+From: Ryan.LeCompte at pangonetworks.com (Ryan LeCompte)
+Date: Tue Jan 17 08:23:22 2006
+Subject: [concurrency-interest] Invoking synchronized methods from
+	constructor
+Message-ID: <2F224C8C9A914A408E318BD1A1507DCB02B3E3@pangoserver.pangonetworks.com>
+
+Hello all,
+ 
+I was wondering if it's "safe" to invoke a synchronized method on a class within the constructor of that same class. For example, can one do:
+ 
+class Test {
+   Test() {
+       Utility util = new Utility(this);
+       util.m();
+    }
+    
+    synchronized void m() {
+    }
+}
+ 
+class Utility {
+   Test t;
+   Utility(Test t) {
+      this.t = t;
+    }
+ 
+    void m() {
+       t.m();  
+    }
+}
+ 
+I don't really see a problem with the above code. Anyone?
+ 
+Thanks,
+Ryan
+ 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060116/2b4bb5fa/attachment.html
+From tim at peierls.net  Tue Jan 17 12:56:12 2006
+From: tim at peierls.net (Tim Peierls)
+Date: Tue Jan 17 12:57:13 2006
+Subject: [concurrency-interest] Invoking synchronized methods from
+	constructor
+In-Reply-To: <2F224C8C9A914A408E318BD1A1507DCB02B3E3@pangoserver.pangonetworks.com>
+References: <2F224C8C9A914A408E318BD1A1507DCB02B3E3@pangoserver.pangonetworks.com>
+Message-ID: <63b4e4050601170956q3f884e25i4fb016bb5308a0a7@mail.gmail.com>
+
+Yes, the intrinsic lock associated with an object may be used in the control
+flow of its constructor. No, this code is not safe in general.
+
+First, Effective Java Item 15 says Constructors must not invoke overridable
+methods. There is nothing preventing any of these methods from being
+overridden.
+
+Second, even if you made the methods non-overridable, you are allowing a
+reference to the Test object to escape into potentially unknown code. What
+if Utility.m() was synchronized? Then you could get deadlock with concurrent
+calls to this additional Utility method:
+
+void risky() {
+    m();
+    synchronized (t) {
+        m();
+    }
+}
+
+OTOH, if access to Utility is restricted, i.e., if it is private,
+package-private, or an inner class of Test, then the code is OK, because the
+author of Test and Utility can enforce a consistent synchronization policy
+that avoids these pitfalls.
+
+--tim
+
+On 1/16/06, Ryan LeCompte <Ryan.LeCompte@pangonetworks.com> wrote:
+>
+> Hello all,
+>
+> I was wondering if it's "safe" to invoke a synchronized method on a class
+> within the constructor of that same class. For example, can one do:
+>
+> class Test {
+>    Test() {
+>        Utility util = new Utility(this);
+>        util.m();
+>     }
+>
+>     synchronized void m() {
+>     }
+> }
+>
+> class Utility {
+>    Test t;
+>    Utility(Test t) {
+>       this.t = t;
+>     }
+>
+>     void m() {
+>        t.m();
+>     }
+> }
+>
+> I don't really see a problem with the above code. Anyone?
+>
+> Thanks,
+> Ryan
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060117/09e42d6b/attachment.html
+From dawidk at mathcs.emory.edu  Tue Jan 17 12:59:23 2006
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Tue Jan 17 13:00:28 2006
+Subject: [concurrency-interest] Invoking synchronized methods 
+	fromconstructor
+In-Reply-To: <2F224C8C9A914A408E318BD1A1507DCB02B3E3@pangoserver.pangonetwor
+	ks.com>
+References: <2F224C8C9A914A408E318BD1A1507DCB02B3E3@pangoserver.pangonetwork
+	s.com>
+Message-ID: <43CD307B.8030406@mathcs.emory.edu>
+
+Ryan LeCompte wrote:
+
+> Hello all,
+>  
+> I was wondering if it's "safe" to invoke a synchronized method on a 
+> class within the constructor of that same class. For example, can one do:
+>  
+> class Test {
+>    Test() {
+>        Utility util = new Utility(this);
+>        util.m();
+>     }
+>    
+>     synchronized void m() {
+>     }
+> }
+>  
+> class Utility {
+>    Test t;
+>    Utility(Test t) {
+>       this.t = t;
+>     }
+>  
+>     void m() {
+>        t.m(); 
+>     }
+> }
+>  
+> I don't really see a problem with the above code. Anyone?
+>  
+
+
+It is very fragile. The code can break depending on what the m() method 
+does (whether m is synchronized or not is not very relevant at this 
+stage; it may be later if the object used concurrently). In general, the 
+rule is that you cannot allow "this" to become visible to other 
+*threads* before the constructor returns. For example, if m() publishes 
+"this" in a hashtable that is visible to other threads, then the code is 
+broken - the guarantees regarding final fields no longer hold, for 
+instance. The safest way to guard against it is to not let "this" escape 
+from the constructor at all. Sometimes it is not feasible; e.g. when 
+using non-static inner classes which internally keep reference to the 
+outer "this". But if you let "this" escape from the constructor, you 
+must meticiously guard it so that it is confined to the current thread 
+until the constructor returns.
+
+Another possible danger of letting "this" escape from the constructor is 
+with inheritance. Somebody may extend Test and override m(). Since m() 
+is invoked from base class constructor, it is going to be invoked before 
+the derived class constructor is executed, and so the overridden 
+implementation will see the object not properly initialized.
+
+In general, I prefer to use factory pattern to keep constructors simple 
+and avoid those problems. For instance:
+
+class Test() {
+
+   final Utility util;
+
+   public static Test newInstance() {
+      Test t = new Test();
+      t.util.m();
+      return t;
+   }
+
+   private Test() {
+      util = new Utility();
+      // don't invoke anything here
+   }
+
+   synchronized void m() { ... }
+
+   class Utility { // mine is non-static inner
+      Utility() { /* don't do anything nasty here */ }
+      void m() { Test.this.m(); }
+   }
+}
+
+or even:
+
+class Test() {
+   public static Test newInstance() {
+      Test t = new Test();
+      new Utility(t).m();
+      return t;
+   }
+
+   private Test() {}
+
+   synchronized void m() { ... }
+}
+
+
+Regards,
+Dawid
+
+From Ryan.LeCompte at pangonetworks.com  Tue Jan 17 13:17:52 2006
+From: Ryan.LeCompte at pangonetworks.com (Ryan LeCompte)
+Date: Tue Jan 17 13:22:31 2006
+Subject: [concurrency-interest] Invoking synchronized methods from
+	constructor
+References: <2F224C8C9A914A408E318BD1A1507DCB02B3E3@pangoserver.pangonetworks.com>
+	<63b4e4050601170956q3f884e25i4fb016bb5308a0a7@mail.gmail.com>
+Message-ID: <2F224C8C9A914A408E318BD1A1507DCB02B3E9@pangoserver.pangonetworks.com>
+
+Thanks for the responses.
+ 
+The code that I posted was really for demonstration purposes, and seems to work fine as is. In the example, I do have control over "Test" and "Utility". I know that the "m" method will not be overridden in "Test", and that the "m()" method of Utility is not synchronized. I know that in "general" the code isn't safe (and I'll rework it in the near future), but the code sample that I posted should work fine since "this" isn't exposed to other threads before the constructor completes, correct?
+ 
+Thanks,
+Ryan
+
+________________________________
+
+From: tpeierls@gmail.com on behalf of Tim Peierls
+Sent: Tue 1/17/2006 12:56 PM
+To: Ryan LeCompte
+Cc: concurrency-interest@cs.oswego.edu
+Subject: Re: [concurrency-interest] Invoking synchronized methods from constructor
+
+
+Yes, the intrinsic lock associated with an object may be used in the control flow of its constructor. No, this code is not safe in general.
+
+First, Effective Java Item 15 says Constructors must not invoke overridable methods. There is nothing preventing any of these methods from being overridden.
+
+Second, even if you made the methods non-overridable, you are allowing a reference to the Test object to escape into potentially unknown code. What if Utility.m() was synchronized? Then you could get deadlock with concurrent calls to this additional Utility method:
+
+
+void risky() {
+    m();
+    synchronized (t) {
+        m();
+    }
+}
+
+
+OTOH, if access to Utility is restricted, i.e., if it is private, package-private, or an inner class of Test, then the code is OK, because the author of Test and Utility can enforce a consistent synchronization policy that avoids these pitfalls. 
+
+--tim
+
+On 1/16/06, Ryan LeCompte <Ryan.LeCompte@pangonetworks.com> wrote: 
+
+	Hello all,
+	 
+	I was wondering if it's "safe" to invoke a synchronized method on a class within the constructor of that same class. For example, can one do:
+	 
+	class Test {
+	   Test() {
+	       Utility util = new Utility(this);
+	       util.m();
+	    }
+	    
+	    synchronized void m() {
+	    }
+	}
+	 
+	class Utility {
+	   Test t;
+	   Utility(Test t) {
+	      this.t = t;
+	    }
+	 
+	    void m() {
+	       t.m();  
+	    }
+	}
+	 
+	I don't really see a problem with the above code. Anyone?
+	 
+	Thanks,
+	
+	Ryan
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060117/ede0a246/attachment.html
+From Ryan.LeCompte at pangonetworks.com  Tue Jan 17 13:27:48 2006
+From: Ryan.LeCompte at pangonetworks.com (Ryan LeCompte)
+Date: Tue Jan 17 13:32:20 2006
+Subject: [concurrency-interest] Invoking synchronized methods
+	fromconstructor
+References: <2F224C8C9A914A408E318BD1A1507DCB02B3E3@pangoserver.pangonetworks.com>
+	<43CD307B.8030406@mathcs.emory.edu>
+Message-ID: <2F224C8C9A914A408E318BD1A1507DCB02B3EA@pangoserver.pangonetworks.com>
+
+Thanks for the response.
+ 
+Out of curiousity, what would happen if "this" was exposed and stored in a local variable of another thread, however the reference wasn't actually used until a later time when "this" was already fully constructed? Are there still any problems with that? So to be more concrete:
+ 
+Thread A's constructor creates thread B and passes a reference to itself (this).
+Thread B stores a reference to A in a variable of the class when it is constructed by Thread A.
+Thread B is invoked at a LATER time (after A has already been fully instantiated) and invokes a method on thread A using the reference that it stored.
+ 
+Thanks,
+Ryan
+
+________________________________
+
+From: Dawid Kurzyniec [mailto:dawidk@mathcs.emory.edu]
+Sent: Tue 1/17/2006 12:59 PM
+To: Ryan LeCompte
+Cc: concurrency-interest@cs.oswego.edu
+Subject: Re: [concurrency-interest] Invoking synchronized methods fromconstructor
+
+
+
+Ryan LeCompte wrote:
+
+> Hello all,
+> 
+> I was wondering if it's "safe" to invoke a synchronized method on a
+> class within the constructor of that same class. For example, can one do:
+> 
+> class Test {
+>    Test() {
+>        Utility util = new Utility(this);
+>        util.m();
+>     }
+>   
+>     synchronized void m() {
+>     }
+> }
+> 
+> class Utility {
+>    Test t;
+>    Utility(Test t) {
+>       this.t = t;
+>     }
+> 
+>     void m() {
+>        t.m();
+>     }
+> }
+> 
+> I don't really see a problem with the above code. Anyone?
+> 
+
+
+It is very fragile. The code can break depending on what the m() method
+does (whether m is synchronized or not is not very relevant at this
+stage; it may be later if the object used concurrently). In general, the
+rule is that you cannot allow "this" to become visible to other
+*threads* before the constructor returns. For example, if m() publishes
+"this" in a hashtable that is visible to other threads, then the code is
+broken - the guarantees regarding final fields no longer hold, for
+instance. The safest way to guard against it is to not let "this" escape
+from the constructor at all. Sometimes it is not feasible; e.g. when
+using non-static inner classes which internally keep reference to the
+outer "this". But if you let "this" escape from the constructor, you
+must meticiously guard it so that it is confined to the current thread
+until the constructor returns.
+
+Another possible danger of letting "this" escape from the constructor is
+with inheritance. Somebody may extend Test and override m(). Since m()
+is invoked from base class constructor, it is going to be invoked before
+the derived class constructor is executed, and so the overridden
+implementation will see the object not properly initialized.
+
+In general, I prefer to use factory pattern to keep constructors simple
+and avoid those problems. For instance:
+
+class Test() {
+
+   final Utility util;
+
+   public static Test newInstance() {
+      Test t = new Test();
+      t.util.m();
+      return t;
+   }
+
+   private Test() {
+      util = new Utility();
+      // don't invoke anything here
+   }
+
+   synchronized void m() { ... }
+
+   class Utility { // mine is non-static inner
+      Utility() { /* don't do anything nasty here */ }
+      void m() { Test.this.m(); }
+   }
+}
+
+or even:
+
+class Test() {
+   public static Test newInstance() {
+      Test t = new Test();
+      new Utility(t).m();
+      return t;
+   }
+
+   private Test() {}
+
+   synchronized void m() { ... }
+}
+
+
+Regards,
+Dawid
+
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060117/73ba5ded/attachment-0001.html
+From chris.purcell.39 at gmail.com  Tue Jan 17 14:29:13 2006
+From: chris.purcell.39 at gmail.com (Chris Purcell)
+Date: Tue Jan 17 14:30:18 2006
+Subject: [concurrency-interest] Invoking synchronized methods from
+	constructor
+In-Reply-To: <2F224C8C9A914A408E318BD1A1507DCB02B3EA@pangoserver.pangonetworks.com>
+References: <2F224C8C9A914A408E318BD1A1507DCB02B3E3@pangoserver.pangonetworks.com>
+	<43CD307B.8030406@mathcs.emory.edu>
+	<2F224C8C9A914A408E318BD1A1507DCB02B3EA@pangoserver.pangonetworks.com>
+Message-ID: <ecc16cc27f98501eca68d5cf2330fadc@gmail.com>
+
+> Out of curiousity, what would happen if "this" was exposed and stored 
+> in a local variable of another thread, however the reference wasn't 
+> actually used until a later time when "this" was already fully 
+> constructed? Are there still any problems with that? So to be more 
+> concrete:
+> ?
+> Thread A's constructor creates thread B and passes a reference to 
+> itself (this).
+> Thread B stores a reference to A in a variable of the class when it is 
+> constructed by Thread A.
+> Thread B is invoked at a LATER time (after A has already been fully 
+> instantiated) and invokes a method on thread A using the reference 
+> that it stored.
+
+If you ensure that the construction of the object happens-before the 
+use of it by thread B, you are fine. That means thread B cannot use the 
+object until it has been informed of the construction of the object by 
+thread A over a synchronized communication channel (e.g. a volatile). 
+So you may as well pass the object *after* it's been constructed, over 
+said synchronized communication channel, and not bother passing an 
+unusable and unsafe reference to it beforehand.
+
+Further, I'm not 100% sure that you wouldn't need to add extra 
+happens-before barriers into thread A somehow. The end of the 
+constructor may do that for you if you're lucky.
+
+Though I imagine there may be circumstances where having a unique 
+reference for an as-yet-to-be-constructed object would be useful, 
+perhaps a future would be a better ? and safer ? fit?
+
+Chris
+
+
+From jinsong.hu at oracle.com  Tue Jan 17 15:56:49 2006
+From: jinsong.hu at oracle.com (Hu, Jinsong)
+Date: Tue Jan 17 15:59:58 2006
+Subject: [concurrency-interest] transaction lock 
+Message-ID: <001001c61ba8$8955b8f0$770b10ac@glog.com>
+
+Hi All,
+
+ 
+
+How can I implement a transaction record lock (the transaction may cross
+multiple threads and due to suspension, its thread might be taken over by
+other transactions) based on current JDK's locking framework? 
+
+ 
+
+Thanks
+
+ 
+
+Best Regards
+
+Jinsong
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060117/da595b56/attachment.html
+From jinsong.hu at oracle.com  Tue Jan 17 18:07:37 2006
+From: jinsong.hu at oracle.com (Hu, Jinsong)
+Date: Tue Jan 17 18:11:13 2006
+Subject: [concurrency-interest] transaction lock 
+In-Reply-To: <001001c61ba8$8955b8f0$770b10ac@glog.com>
+Message-ID: <002201c61bba$cf5885f0$770b10ac@glog.com>
+
+Following is my implementation on this, can you comments on this?
+
+ 
+
+Thanks
+
+ 
+
+ 
+
+/*
+
+ * ExclusiveLockManager.java
+
+ *
+
+ * Created on January 17, 2006, 4:36 PM
+
+*/
+
+ 
+
+ 
+
+package com.huasys.server.locks;
+
+ 
+
+import java.util.*;
+
+import java.util.concurrent.*;
+
+import java.util.concurrent.locks.*;
+
+import java.util.concurrent.atomic.*;
+
+ 
+
+import com.huasys.server.transaction.*;
+
+ 
+
+/**
+
+ * ExclusiveLockManager implements an exclusive lock manager for record
+which can
+
+ * crosses multiple threads and it's based on transaction, the lock owner
+will be
+
+ * a transaction. The locks will be released after the owner transaction
+rolled
+
+ * back or committed.
+
+ *
+
+ * @author Jinsong Hu
+
+ */
+
+public class ExclusiveLockManager {
+
+ 
+
+    /**
+
+     * Read and write lock
+
+     */
+
+    private static ReadWriteLock rwLock = new ReentrantReadWriteLock();
+
+    
+
+    /**
+
+     * Global record lock map
+
+     */
+
+    private static Map<Long, LockEntry> lockMap = new HashMap<Long,
+LockEntry>();
+
+    
+
+    /**
+
+     * Lock a record in exclusive mode.
+
+     */
+
+    public static void lock(long recordId) throws LockException {
+
+        Transaction tx = TransactionManagerImpl.getCurrentTransaction();
+
+        assert tx != null;
+
+        TRID trid = tx.getId();
+
+        rwLock.readLock().lock();
+
+        LockEntry lockEntry = lockMap.get(recordId);
+
+        if (lockEntry == null) {
+
+            rwLock.readLock().unlock();
+
+            rwLock.writeLock().lock();
+
+            lockEntry = lockMap.get(recordId);
+
+            if (lockEntry == null) {
+
+                // still no lock entry found, we can create new lock entry
+which 
+
+                // set current transaction as owner.
+
+                lockEntry = new LockEntry(recordId, trid); 
+
+                lockMap.put(recordId, lockEntry);
+
+                // release write lock
+
+                rwLock.writeLock().unlock();
+
+                // we succeeded get the exclusive lock
+
+                return;
+
+            }
+
+            // found a lock entry, it is added later on by other transaction
+
+
+            // after we release the read lock but before we grab the write 
+
+            // lock on the lock manager
+
+            rwLock.writeLock().unlock();
+
+            // redo the lock
+
+            lock(recordId);
+
+            return;
+
+        }
+
+        // found lock entry
+
+        synchronized (lockEntry) {
+
+            TRID ownerTrid = lockEntry.getTrid();
+
+            if (ownerTrid != null && ownerTrid.equals(trid)) {
+
+                // since it's owned by current transaction, then we can move
+forward
+
+                rwLock.readLock().unlock();
+
+                return;
+
+            }
+
+            // not owned by current transaction, then we need add wait count
+
+
+            lockEntry.addWait();
+
+            if (lockEntry.getTrid() == null) {
+
+                // no owner, it might be released after we release the read 
+
+                // lock against lock manager
+
+                lockEntry.setTrid(trid);
+
+                lockEntry.decrementWait();
+
+                // release the read lock on the whole lock manager
+
+                rwLock.readLock().unlock();
+
+                return;
+
+            }
+
+            try {
+
+                lockEntry.wait();
+
+                lockEntry.setTrid(trid);
+
+                lockEntry.decrementWait();
+
+                // release the read lock on the whole lock manager
+
+                rwLock.readLock().unlock();
+
+            } catch (Throwable t) {
+
+                throw LockException.factory(t);
+
+            }
+
+        }
+
+    }
+
+    
+
+    /**
+
+     * Release a exclusive lock mode on a record.
+
+     */
+
+    public void unlock(long recordId, TRID trid) throws LockException {
+
+        rwLock.readLock().lock();
+
+        LockEntry lockEntry = lockMap.get(recordId);
+
+        assert lockEntry != null;
+
+        TRID currentTrid = lockEntry.getTrid();
+
+        assert trid == currentTrid;
+
+        boolean needCleanUp = false;
+
+        synchronized (lockEntry) {
+
+            lockEntry.setTrid(null);
+
+            needCleanUp = (lockEntry.getWaiter() == 0);
+
+            lockEntry.notify();
+
+        }
+
+        rwLock.readLock().unlock();     
+
+        if (needCleanUp) {
+
+            rwLock.writeLock().lock();
+
+            if (lockEntry.getTrid() == null && lockEntry.getWaiter() == 0) {
+
+                lockMap.remove(recordId);
+
+            }
+
+            rwLock.writeLock().unlock();
+
+        }
+
+    }
+
+ 
+
+    /**
+
+     * Lock Entry has locked record's id and owner transaction's trid.
+
+     */
+
+    static class LockEntry {
+
+        /**
+
+         * Locked record's id.
+
+         */
+
+        private long recordId;
+
+        
+
+        /**
+
+         * Owner transaction's trid.
+
+         */
+
+        private TRID trid;
+
+        
+
+        /**
+
+         * Lock wait count.
+
+         */
+
+        private AtomicInteger wait;
+
+        
+
+        public LockEntry(long recordId, TRID trid) {
+
+            this.recordId = recordId;
+
+            this.trid = trid;
+
+            this.wait = new AtomicInteger(0);
+
+        }
+
+        
+
+        /**
+
+         * Get the locked record's id.
+
+         */
+
+        public long getRecordId() {
+
+            return recordId;
+
+        }
+
+        
+
+        /**
+
+         * Get the lock's owner transaction's trid.
+
+         */
+
+        public TRID getTrid() {
+
+            return trid;
+
+        }
+
+        
+
+        /**
+
+         * Set trid.
+
+         */
+
+        public void setTrid(TRID trid) {
+
+            this.trid = trid;
+
+        }
+
+        
+
+        /**
+
+         * Add wait.
+
+         */
+
+        public void addWait() {
+
+            wait.incrementAndGet();
+
+        }
+
+        
+
+        /**
+
+         * Decrement wait.
+
+         */
+
+        public void decrementWait() {
+
+            wait.decrementAndGet();
+
+        }
+
+ 
+
+        public int getWaiter() {
+
+            return waiter;
+
+        }
+
+    }
+
+}
+
+ 
+
+-----Original Message-----
+From: concurrency-interest-bounces@cs.oswego.edu
+[mailto:concurrency-interest-bounces@cs.oswego.edu] On Behalf Of Hu, Jinsong
+Sent: Tuesday, January 17, 2006 3:57 PM
+To: concurrency-interest@cs.oswego.edu
+Subject: [concurrency-interest] transaction lock 
+
+ 
+
+Hi All,
+
+ 
+
+How can I implement a transaction record lock (the transaction may cross
+multiple threads and due to suspension, its thread might be taken over by
+other transactions) based on current JDK's locking framework? 
+
+ 
+
+Thanks
+
+ 
+
+Best Regards
+
+Jinsong
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060117/094c7e63/attachment-0001.html
+From joe.bowbeer at gmail.com  Tue Jan 17 19:19:05 2006
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Tue Jan 17 19:20:04 2006
+Subject: [concurrency-interest] transaction lock
+In-Reply-To: <002201c61bba$cf5885f0$770b10ac@glog.com>
+References: <001001c61ba8$8955b8f0$770b10ac@glog.com>
+	<002201c61bba$cf5885f0$770b10ac@glog.com>
+Message-ID: <31f2a7bd0601171619s537aa94em9bd93300cfa77351@mail.gmail.com>
+
+I haven't looked at your code closely enough to know if there's any
+overlap, but just in case you haven't seen it:
+
+http://jakarta.apache.org/commons/transaction/
+
+
+On 1/17/06, Hu, Jinsong <jinsong.hu@oracle.com> wrote:
+>
+> Following is my implementation on this, can you comments on this?
+>
+> Thanks
+>
+> /*
+>  * ExclusiveLockManager.java
+>  * Created on January 17, 2006, 4:36 PM
+>  */
+>
+> -----Original Message-----
+>  Sent: Tuesday, January 17, 2006 3:57 PM
+>  To: concurrency-interest@cs.oswego.edu
+>  Subject: [concurrency-interest] transaction lock
+>
+> Hi All,
+>
+> How can I implement a transaction record lock (the transaction may cross
+> multiple threads and due to suspension, its thread might be taken over by
+> other transactions) based on current JDK's locking framework?
+>
+> Thanks
+>
+> Best Regards
+> Jinsong
+>
+
+From jinsong.hu at oracle.com  Wed Jan 18 11:12:55 2006
+From: jinsong.hu at oracle.com (Hu, Jinsong)
+Date: Wed Jan 18 11:16:10 2006
+Subject: [concurrency-interest] transaction lock
+In-Reply-To: <31f2a7bd0601171619s537aa94em9bd93300cfa77351@mail.gmail.com>
+Message-ID: <000901c61c4a$0c04b2f0$84ce8f0a@glog.com>
+
+Joe,
+    
+    Thanks.
+ 
+    I think they may need look at the current JDK1.5's locking framework and
+reimplement this package, since Java 5 has introduced concurrent API and
+native library to support them, I just looked at their code, yes, from
+functionality perspective, it's very comprehensive, but, I worry about the
+concurrency. The core methods are synchronized, concurrency is not good. I
+want to make one change to my implementation is that I will use concurrent
+hash map instead of using has map plus read write lock, this will increase
+the concurrency a little bit, I think ConcurrentHashMap only lock certain
+segment when doing update, not the whole map. At this stage, I only need
+exclusive transaction level lock.
+
+Thanks
+
+Jinsong
+  
+
+-----Original Message-----
+From: Joe Bowbeer [mailto:joe.bowbeer@gmail.com] 
+Sent: Tuesday, January 17, 2006 7:19 PM
+To: jinsong.hu@oracle.com
+Cc: concurrency-interest@cs.oswego.edu
+Subject: Re: [concurrency-interest] transaction lock
+
+I haven't looked at your code closely enough to know if there's any
+overlap, but just in case you haven't seen it:
+
+http://jakarta.apache.org/commons/transaction/
+
+
+On 1/17/06, Hu, Jinsong <jinsong.hu@oracle.com> wrote:
+>
+> Following is my implementation on this, can you comments on this?
+>
+> Thanks
+>
+> /*
+>  * ExclusiveLockManager.java
+>  * Created on January 17, 2006, 4:36 PM
+>  */
+>
+> -----Original Message-----
+>  Sent: Tuesday, January 17, 2006 3:57 PM
+>  To: concurrency-interest@cs.oswego.edu
+>  Subject: [concurrency-interest] transaction lock
+>
+> Hi All,
+>
+> How can I implement a transaction record lock (the transaction may cross
+> multiple threads and due to suspension, its thread might be taken over by
+> other transactions) based on current JDK's locking framework?
+>
+> Thanks
+>
+> Best Regards
+> Jinsong
+>
+
+
+From chirag_r_shah at rediffmail.com  Wed Jan 18 21:05:28 2006
+From: chirag_r_shah at rediffmail.com (Chirag Shah)
+Date: Wed Jan 18 21:07:24 2006
+Subject: [concurrency-interest] ThreadPoolExecutor Problem
+Message-ID: <20060119020528.12810.qmail@webmail34.rediffmail.com>
+
+Skipped content of type multipart/alternative-------------- next part --------------
+"wm-pool-1-io_bound-thread-100" prio=1 tid=0x7962af90 nid=0x72f1 waiting on condition [0x7cb57000..0x7cb57658]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-99" prio=1 tid=0x79628ac0 nid=0x72f0 waiting on condition [0x7cb16000..0x7cb165d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-98" prio=1 tid=0x79627e08 nid=0x72ef waiting on condition [0x7cad5000..0x7cad5558]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-97" prio=1 tid=0x79627570 nid=0x72ee waiting on condition [0x7ca94000..0x7ca944d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-96" prio=1 tid=0x79626408 nid=0x72ed waiting on condition [0x7ca53000..0x7ca53458]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-95" prio=1 tid=0x79625ee8 nid=0x72ec waiting on condition [0x7ca12000..0x7ca127d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-94" prio=1 tid=0x796267a8 nid=0x72eb waiting on condition [0x7c9d1000..0x7c9d1758]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-93" prio=1 tid=0x79624840 nid=0x72ea waiting on condition [0x7c990000..0x7c9906d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-92" prio=1 tid=0x79624368 nid=0x72e9 waiting on condition [0x7c94f000..0x7c94f658]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-91" prio=1 tid=0x79623d70 nid=0x72e8 waiting on condition [0x7c90e000..0x7c90e5d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-90" prio=1 tid=0x0832ea88 nid=0x72e7 waiting on condition [0x7c8cd000..0x7c8cd558]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-89" prio=1 tid=0x0824b240 nid=0x72e6 waiting on condition [0x7c88c000..0x7c88c4d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-88" prio=1 tid=0x0824a2c0 nid=0x72e5 waiting on condition [0x7c84b000..0x7c84b458]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(AbstractQueuedSynchronizer.java:681)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.doAcquireInterruptibly(AbstractQueuedSynchronizer.java:736)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireInterruptibly(AbstractQueuedSynchronizer.java:1064)
+	at java.util.concurrent.locks.ReentrantLock.lockInterruptibly(ReentrantLock.java:307)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:337)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-87" prio=1 tid=0x08249340 nid=0x72e4 waiting on condition [0x7c80a000..0x7c80a7d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-86" prio=1 tid=0x086e7fd0 nid=0x72e3 waiting on condition [0x7c7c9000..0x7c7c9758]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-85" prio=1 tid=0x086e7008 nid=0x72e2 waiting on condition [0x7c788000..0x7c7886d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-84" prio=1 tid=0x086e6480 nid=0x72e1 waiting on condition [0x7c747000..0x7c747658]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-83" prio=1 tid=0x086e5d10 nid=0x72e0 waiting on condition [0x7c706000..0x7c7065d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(AbstractQueuedSynchronizer.java:681)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.doAcquireInterruptibly(AbstractQueuedSynchronizer.java:736)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireInterruptibly(AbstractQueuedSynchronizer.java:1064)
+	at java.util.concurrent.locks.ReentrantLock.lockInterruptibly(ReentrantLock.java:307)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:337)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-82" prio=1 tid=0x083afc40 nid=0x72df waiting on condition [0x7c6c5000..0x7c6c5558]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-81" prio=1 tid=0x083b02a0 nid=0x72de waiting on condition [0x7c684000..0x7c6844d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-80" prio=1 tid=0x082623a0 nid=0x72dd waiting on condition [0x7c643000..0x7c643458]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-79" prio=1 tid=0x083ab438 nid=0x72dc waiting on condition [0x7c602000..0x7c6027d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-78" prio=1 tid=0x083aa508 nid=0x72db waiting on condition [0x7c5c1000..0x7c5c1758]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-77" prio=1 tid=0x083a99a0 nid=0x72da waiting on condition [0x7c580000..0x7c5806d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-76" prio=1 tid=0x082cc228 nid=0x72d9 waiting on condition [0x7c53f000..0x7c53f658]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-75" prio=1 tid=0x082cbae0 nid=0x72d8 waiting on condition [0x7c4fe000..0x7c4fe5d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-74" prio=1 tid=0x082cab18 nid=0x72d7 waiting on condition [0x7c4bd000..0x7c4bd558]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-73" prio=1 tid=0x082ca350 nid=0x72d6 waiting on condition [0x7c47c000..0x7c47c4d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-72" prio=1 tid=0x082c93a0 nid=0x72d5 waiting on condition [0x7c43b000..0x7c43b458]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(AbstractQueuedSynchronizer.java:681)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.doAcquireInterruptibly(AbstractQueuedSynchronizer.java:736)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireInterruptibly(AbstractQueuedSynchronizer.java:1064)
+	at java.util.concurrent.locks.ReentrantLock.lockInterruptibly(ReentrantLock.java:307)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:337)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-71" prio=1 tid=0x082c7f28 nid=0x72d4 waiting on condition [0x7c3fa000..0x7c3fa7d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-70" prio=1 tid=0x082c73d8 nid=0x72d3 waiting on condition [0x7c3b9000..0x7c3b9758]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-69" prio=1 tid=0x082c63d8 nid=0x72d2 waiting on condition [0x7c378000..0x7c3786d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-68" prio=1 tid=0x082c54d0 nid=0x72d1 waiting on condition [0x7c337000..0x7c337658]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-67" prio=1 tid=0x082c4a18 nid=0x72d0 waiting on condition [0x7c2f6000..0x7c2f65d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-66" prio=1 tid=0x082fe0f8 nid=0x72cf waiting on condition [0x7c2b5000..0x7c2b5558]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-65" prio=1 tid=0x083436f0 nid=0x72ce waiting on condition [0x7c274000..0x7c2744d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-64" prio=1 tid=0x08344220 nid=0x72cd waiting on condition [0x7c233000..0x7c233458]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-63" prio=1 tid=0x08343a70 nid=0x72cc waiting on condition [0x7c1f2000..0x7c1f27d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-62" prio=1 tid=0x086e8c08 nid=0x72cb waiting on condition [0x7c1b1000..0x7c1b1758]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-61" prio=1 tid=0x08341d40 nid=0x72ca waiting on condition [0x7c170000..0x7c1706d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-60" prio=1 tid=0x08340dc0 nid=0x72c9 waiting on condition [0x7c12f000..0x7c12f658]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-59" prio=1 tid=0x0833fe78 nid=0x72c8 waiting on condition [0x7c0ee000..0x7c0ee5d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-58" prio=1 tid=0x0833eeb0 nid=0x72c7 waiting on condition [0x7c0ad000..0x7c0ad558]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-57" prio=1 tid=0x0833e038 nid=0x72c6 waiting on condition [0x7c06c000..0x7c06c4d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-56" prio=1 tid=0x08279a60 nid=0x72c5 waiting on condition [0x7c02b000..0x7c02b458]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-55" prio=1 tid=0x08278f20 nid=0x72c4 waiting on condition [0x7bfea000..0x7bfea7d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-54" prio=1 tid=0x082787c8 nid=0x72c3 waiting on condition [0x7bfa9000..0x7bfa9758]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-53" prio=1 tid=0x08277f80 nid=0x72c2 waiting on condition [0x7bf68000..0x7bf686d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-52" prio=1 tid=0x08275a48 nid=0x72c1 waiting on condition [0x7bf27000..0x7bf27658]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-51" prio=1 tid=0x086ecac8 nid=0x72c0 waiting on condition [0x7bee6000..0x7bee65d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-50" prio=1 tid=0x086eb820 nid=0x72bf waiting on condition [0x7bea5000..0x7bea5558]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-49" prio=1 tid=0x086ebfd0 nid=0x72be waiting on condition [0x7be64000..0x7be644d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-48" prio=1 tid=0x086eb020 nid=0x72bd waiting on condition [0x7be23000..0x7be23458]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-47" prio=1 tid=0x086ea498 nid=0x72bc waiting on condition [0x7bde2000..0x7bde27d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-46" prio=1 tid=0x086e9cc0 nid=0x72bb waiting on condition [0x7bda1000..0x7bda1758]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-45" prio=1 tid=0x086e9530 nid=0x72ba waiting on condition [0x7bd60000..0x7bd606d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-44" prio=1 tid=0x0841ffb0 nid=0x72b9 waiting on condition [0x7bd1f000..0x7bd1f658]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-43" prio=1 tid=0x0841efe8 nid=0x72b8 waiting on condition [0x7bcde000..0x7bcde5d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-42" prio=1 tid=0x0841e048 nid=0x72b7 waiting on condition [0x7bc9d000..0x7bc9d558]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-41" prio=1 tid=0x0841d0b8 nid=0x72b6 waiting on condition [0x7bc5c000..0x7bc5c4d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-40" prio=1 tid=0x0862ad18 nid=0x72b5 waiting on condition [0x7bc1b000..0x7bc1b458]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-39" prio=1 tid=0x0862a588 nid=0x72b4 waiting on condition [0x7bbda000..0x7bbda7d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-38" prio=1 tid=0x08629df8 nid=0x72b3 waiting on condition [0x7bb99000..0x7bb99758]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-37" prio=1 tid=0x081a5b98 nid=0x72b2 waiting on condition [0x7bb58000..0x7bb586d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-36" prio=1 tid=0x081a6258 nid=0x72b1 waiting on condition [0x7bb17000..0x7bb17658]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-35" prio=1 tid=0x0829b5c0 nid=0x72b0 waiting on condition [0x7bad6000..0x7bad65d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-34" prio=1 tid=0x0829aeb0 nid=0x72af waiting on condition [0x7ba95000..0x7ba95558]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-33" prio=1 tid=0x0829a7e8 nid=0x72ae waiting on condition [0x7ba54000..0x7ba544d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(AbstractQueuedSynchronizer.java:681)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.doAcquireInterruptibly(AbstractQueuedSynchronizer.java:736)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireInterruptibly(AbstractQueuedSynchronizer.java:1064)
+	at java.util.concurrent.locks.ReentrantLock.lockInterruptibly(ReentrantLock.java:307)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:337)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-32" prio=1 tid=0x085a7878 nid=0x72ad waiting on condition [0x7ba13000..0x7ba13458]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-31" prio=1 tid=0x08264440 nid=0x72ac waiting on condition [0x7b9d2000..0x7b9d27d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-30" prio=1 tid=0x081a2f80 nid=0x72ab waiting on condition [0x7b991000..0x7b991758]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-29" prio=1 tid=0x081a1ff0 nid=0x72aa waiting on condition [0x7b950000..0x7b9506d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-28" prio=1 tid=0x081a1040 nid=0x72a9 waiting on condition [0x7b90f000..0x7b90f658]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-27" prio=1 tid=0x081a0120 nid=0x72a8 waiting on condition [0x7b8ce000..0x7b8ce5d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-26" prio=1 tid=0x0830b130 nid=0x72a7 waiting on condition [0x7b88d000..0x7b88d558]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-25" prio=1 tid=0x0830a1a0 nid=0x72a6 waiting on condition [0x7b84c000..0x7b84c4d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-24" prio=1 tid=0x083091d8 nid=0x72a5 waiting on condition [0x7b80b000..0x7b80b458]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-23" prio=1 tid=0x08308290 nid=0x72a4 waiting on condition [0x7b7ca000..0x7b7ca7d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-22" prio=1 tid=0x08307740 nid=0x72a3 waiting on condition [0x7b789000..0x7b789758]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(AbstractQueuedSynchronizer.java:681)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.doAcquireInterruptibly(AbstractQueuedSynchronizer.java:736)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireInterruptibly(AbstractQueuedSynchronizer.java:1064)
+	at java.util.concurrent.locks.ReentrantLock.lockInterruptibly(ReentrantLock.java:307)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:337)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-21" prio=1 tid=0x08307058 nid=0x72a2 waiting on condition [0x7b748000..0x7b7486d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-20" prio=1 tid=0x08306980 nid=0x72a1 waiting on condition [0x7b707000..0x7b707658]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-19" prio=1 tid=0x08385850 nid=0x72a0 waiting on condition [0x7b6c6000..0x7b6c65d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-18" prio=1 tid=0x08385008 nid=0x729f waiting on condition [0x7b685000..0x7b685558]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-17" prio=1 tid=0x08383a90 nid=0x729e waiting on condition [0x7b644000..0x7b6444d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-16" prio=1 tid=0x08383338 nid=0x729d waiting on condition [0x7b603000..0x7b603458]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-15" prio=1 tid=0x08383fc8 nid=0x729c waiting on condition [0x7b5c2000..0x7b5c27d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-14" prio=1 tid=0x08314c20 nid=0x729b waiting on condition [0x7b581000..0x7b581758]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-13" prio=1 tid=0x083151c8 nid=0x729a waiting on condition [0x7b540000..0x7b5406d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-12" prio=1 tid=0x083972b0 nid=0x7299 waiting on condition [0x7b2c2000..0x7b2c2658]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-11" prio=1 tid=0x08396d60 nid=0x7298 waiting on condition [0x7b281000..0x7b2815d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-10" prio=1 tid=0x0829c470 nid=0x7297 waiting on condition [0x7b240000..0x7b240558]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-9" prio=1 tid=0x083963d0 nid=0x7296 waiting on condition [0x7a6c2000..0x7a6c24d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-8" prio=1 tid=0x0820b8e8 nid=0x7295 waiting on condition [0x7a681000..0x7a681458]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-7" prio=1 tid=0x08395a20 nid=0x7294 waiting on condition [0x7a640000..0x7a6407d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-6" prio=1 tid=0x08242850 nid=0x7293 waiting on condition [0x79dea000..0x79dea758]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-5" prio=1 tid=0x0824d1e0 nid=0x7292 waiting on condition [0x799d4000..0x799d46d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-4" prio=1 tid=0x0824d808 nid=0x7291 waiting on condition [0x79993000..0x79993658]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-3" prio=1 tid=0x08399010 nid=0x7290 waiting on condition [0x79952000..0x799525d8]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-2" prio=1 tid=0x083892f0 nid=0x728f waiting on condition [0x795e2000..0x795e2558]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"Thread-13" daemon prio=1 tid=0x08393100 nid=0x728e waiting on condition [0x79c64000..0x79c644d8]
+	at java.lang.Thread.sleep(Native Method)
+	at com.bitmechanic.sql.ConnectionPoolManager.run(ConnectionPoolManager.java:280)
+	at java.lang.Thread.run(Thread.java:595)
+
+"wm-pool-1-io_bound-thread-1" prio=1 tid=0x0831cd28 nid=0x728d waiting on condition [0x79b03000..0x79b03458]
+	at sun.misc.Unsafe.park(Native Method)
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:118)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(AbstractQueuedSynchronizer.java:1772)
+	at java.util.concurrent.ArrayBlockingQueue.take(ArrayBlockingQueue.java:341)
+	at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:470)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:674)
+	at java.lang.Thread.run(Thread.java:595)
+
+"Thread-0" daemon prio=1 tid=0x79623850 nid=0x720c runnable [0x79da9000..0x79da9758]
+	at java.net.PlainSocketImpl.socketAccept(Native Method)
+	at java.net.PlainSocketImpl.accept(PlainSocketImpl.java:384)
+	- locked <0x4a7e7fb8> (a java.net.SocksSocketImpl)
+	at java.net.ServerSocket.implAccept(ServerSocket.java:450)
+	at java.net.ServerSocket.accept(ServerSocket.java:421)
+	at com.wm.gc.l2.WMQLRequestBroker.run(WMQLRequestBroker.java:52)
+
+"Timer-9" prio=1 tid=0x79625760 nid=0x720b in Object.wait() [0x79d68000..0x79d686d8]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x74a7edf0> (a java.util.TaskQueue)
+	at java.util.TimerThread.mainLoop(Timer.java:509)
+	- locked <0x74a7edf0> (a java.util.TaskQueue)
+	at java.util.TimerThread.run(Timer.java:462)
+
+"Timer-8" prio=1 tid=0x79625158 nid=0x720a in Object.wait() [0x79d27000..0x79d27658]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x74a7f160> (a java.util.TaskQueue)
+	at java.util.TimerThread.mainLoop(Timer.java:509)
+	- locked <0x74a7f160> (a java.util.TaskQueue)
+	at java.util.TimerThread.run(Timer.java:462)
+
+"Timer-7" prio=1 tid=0x79622a98 nid=0x7209 in Object.wait() [0x79ec2000..0x79ec25d8]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x74a7ffc8> (a java.util.TaskQueue)
+	at java.util.TimerThread.mainLoop(Timer.java:509)
+	- locked <0x74a7ffc8> (a java.util.TaskQueue)
+	at java.util.TimerThread.run(Timer.java:462)
+
+"Timer-6" prio=1 tid=0x796205e0 nid=0x7208 in Object.wait() [0x79e81000..0x79e81558]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x75947178> (a java.util.TaskQueue)
+	at java.util.TimerThread.mainLoop(Timer.java:509)
+	- locked <0x75947178> (a java.util.TaskQueue)
+	at java.util.TimerThread.run(Timer.java:462)
+
+"Timer-5" prio=1 tid=0x7961f918 nid=0x7207 in Object.wait() [0x79e40000..0x79e404d8]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x75947228> (a java.util.TaskQueue)
+	at java.util.TimerThread.mainLoop(Timer.java:509)
+	- locked <0x75947228> (a java.util.TaskQueue)
+	at java.util.TimerThread.run(Timer.java:462)
+
+"Timer-4" prio=1 tid=0x7961ec78 nid=0x7206 in Object.wait() [0x79ce6000..0x79ce6458]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x75947898> (a java.util.TaskQueue)
+	at java.util.TimerThread.mainLoop(Timer.java:509)
+	- locked <0x75947898> (a java.util.TaskQueue)
+	at java.util.TimerThread.run(Timer.java:462)
+
+"Timer-3" prio=1 tid=0x7963e748 nid=0x7205 in Object.wait() [0x79ca5000..0x79ca57d8]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x75948638> (a java.util.TaskQueue)
+	at java.util.TimerThread.mainLoop(Timer.java:509)
+	- locked <0x75948638> (a java.util.TaskQueue)
+	at java.util.TimerThread.run(Timer.java:462)
+
+"Timer-2" prio=1 tid=0x7963f200 nid=0x7204 in Object.wait() [0x79bcb000..0x79bcb758]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x74a68b50> (a java.util.TaskQueue)
+	at java.util.TimerThread.mainLoop(Timer.java:509)
+	- locked <0x74a68b50> (a java.util.TaskQueue)
+	at java.util.TimerThread.run(Timer.java:462)
+
+"Timer-1" prio=1 tid=0x7963edf8 nid=0x7203 in Object.wait() [0x79b44000..0x79b446d8]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x74a68f08> (a java.util.TaskQueue)
+	at java.util.TimerThread.mainLoop(Timer.java:509)
+	- locked <0x74a68f08> (a java.util.TaskQueue)
+	at java.util.TimerThread.run(Timer.java:462)
+
+"RMI LeaseChecker" daemon prio=1 tid=0x08413498 nid=0x7200 waiting on condition [0x795a1000..0x795a1558]
+	at java.lang.Thread.sleep(Native Method)
+	at sun.rmi.transport.DGCImpl$LeaseChecker.run(DGCImpl.java:310)
+	at java.lang.Thread.run(Thread.java:595)
+
+"RMI RenewClean-[172.28.76.206:60113]" daemon prio=1 tid=0x082801e8 nid=0x71fd in Object.wait() [0x79c23000..0x79c23458]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x7594b438> (a java.lang.ref.ReferenceQueue$Lock)
+	at java.lang.ref.ReferenceQueue.remove(ReferenceQueue.java:116)
+	- locked <0x7594b438> (a java.lang.ref.ReferenceQueue$Lock)
+	at sun.rmi.transport.DGCClient$EndpointEntry$RenewCleanThread.run(DGCClient.java:500)
+	at java.lang.Thread.run(Thread.java:595)
+
+"GC Daemon" daemon prio=1 tid=0x7960f0f0 nid=0x71fb in Object.wait() [0x79ac2000..0x79ac2758]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x4a736530> (a sun.misc.GC$LatencyLock)
+	at sun.misc.GC$Daemon.run(GC.java:100)
+	- locked <0x4a736530> (a sun.misc.GC$LatencyLock)
+
+"RMI Reaper" prio=1 tid=0x7960eb30 nid=0x71fa in Object.wait() [0x79a81000..0x79a816d8]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x4a7cc418> (a java.lang.ref.ReferenceQueue$Lock)
+	at java.lang.ref.ReferenceQueue.remove(ReferenceQueue.java:116)
+	- locked <0x4a7cc418> (a java.lang.ref.ReferenceQueue$Lock)
+	at java.lang.ref.ReferenceQueue.remove(ReferenceQueue.java:132)
+	at sun.rmi.transport.ObjectTable$Reaper.run(ObjectTable.java:336)
+	at java.lang.Thread.run(Thread.java:595)
+
+"RMI TCP Accept-0" daemon prio=1 tid=0x7963f7f8 nid=0x71f9 runnable [0x79a40000..0x79a40658]
+	at java.net.PlainSocketImpl.socketAccept(Native Method)
+	at java.net.PlainSocketImpl.accept(PlainSocketImpl.java:384)
+	- locked <0x4a7cba68> (a java.net.SocksSocketImpl)
+	at java.net.ServerSocket.implAccept(ServerSocket.java:450)
+	at java.net.ServerSocket.accept(ServerSocket.java:421)
+	at sun.rmi.transport.tcp.TCPTransport.run(TCPTransport.java:334)
+	at java.lang.Thread.run(Thread.java:595)
+
+"RMI TCP Accept-9098" daemon prio=1 tid=0x081d76a0 nid=0x71f6 runnable [0x79560000..0x795605d8]
+	at java.net.PlainSocketImpl.socketAccept(Native Method)
+	at java.net.PlainSocketImpl.accept(PlainSocketImpl.java:384)
+	- locked <0x4a7cbb50> (a java.net.SocksSocketImpl)
+	at java.net.ServerSocket.implAccept(ServerSocket.java:450)
+	at java.net.ServerSocket.accept(ServerSocket.java:421)
+	at sun.rmi.transport.tcp.TCPTransport.run(TCPTransport.java:334)
+	at java.lang.Thread.run(Thread.java:595)
+
+"Timer-0" daemon prio=1 tid=0x081d4208 nid=0x71f5 in Object.wait() [0x41ffa000..0x41ffa558]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x4a7cbd30> (a java.util.TaskQueue)
+	at java.lang.Object.wait(Object.java:474)
+	at java.util.TimerThread.mainLoop(Timer.java:483)
+	- locked <0x4a7cbd30> (a java.util.TaskQueue)
+	at java.util.TimerThread.run(Timer.java:462)
+
+"Low Memory Detector" daemon prio=1 tid=0x081059d8 nid=0x71f2 runnable [0x00000000..0x00000000]
+
+"CompilerThread1" daemon prio=1 tid=0x08104560 nid=0x71f1 waiting on condition [0x00000000..0x41c81a00]
+
+"CompilerThread0" daemon prio=1 tid=0x08103510 nid=0x71f0 waiting on condition [0x00000000..0x41c00980]
+
+"AdapterThread" daemon prio=1 tid=0x081023e0 nid=0x71ef waiting on condition [0x00000000..0x00000000]
+
+"Signal Dispatcher" daemon prio=1 tid=0x08101570 nid=0x71ee waiting on condition [0x00000000..0x00000000]
+
+"Finalizer" daemon prio=1 tid=0x080f7aa8 nid=0x71ed in Object.wait() [0x4177b000..0x4177b5d8]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x4a7f3f90> (a java.lang.ref.ReferenceQueue$Lock)
+	at java.lang.ref.ReferenceQueue.remove(ReferenceQueue.java:116)
+	- locked <0x4a7f3f90> (a java.lang.ref.ReferenceQueue$Lock)
+	at java.lang.ref.ReferenceQueue.remove(ReferenceQueue.java:132)
+	at java.lang.ref.Finalizer$FinalizerThread.run(Finalizer.java:159)
+
+"Reference Handler" daemon prio=1 tid=0x080f71d0 nid=0x71ec in Object.wait() [0x4173a000..0x4173a558]
+	at java.lang.Object.wait(Native Method)
+	- waiting on <0x4a720310> (a java.lang.ref.Reference$Lock)
+	at java.lang.Object.wait(Object.java:474)
+	at java.lang.ref.Reference$ReferenceHandler.run(Reference.java:116)
+	- locked <0x4a720310> (a java.lang.ref.Reference$Lock)
+
+"main" prio=1 tid=0x0805d230 nid=0x71e7 runnable [0xbfffb000..0xbfffba88]
+	at java.net.PlainSocketImpl.socketAccept(Native Method)
+	at java.net.PlainSocketImpl.accept(PlainSocketImpl.java:384)
+	- locked <0x7597a200> (a java.net.SocksSocketImpl)
+	at java.net.ServerSocket.implAccept(ServerSocket.java:450)
+	at java.net.ServerSocket.accept(ServerSocket.java:421)
+	at com.wm.gc.l2.L2Console.listen(L2Console.java:169)
+	at com.wm.gc.l2.WMQLRequestBroker.main(WMQLRequestBroker.java:132)
+
+"VM Thread" prio=1 tid=0x080f4dc8 nid=0x71eb runnable 
+
+"GC task thread#0 (ParallelGC)" prio=1 tid=0x080e3db0 nid=0x71ea runnable 
+
+"VM Periodic Task Thread" prio=1 tid=0x08106e68 nid=0x71f3 waiting on condition 
+From dcholmes at optusnet.com.au  Wed Jan 18 21:44:16 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed Jan 18 21:45:24 2006
+Subject: [concurrency-interest] ThreadPoolExecutor Problem
+Message-ID: <200601190244.k0J2iG41027583@mail08.syd.optusnet.com.au>
+
+> Chirag Shah <chirag_r_shah@rediffmail.com> wrote:
+> but after couple of minutes, our java application receive request from 
+> web server and passing it to executor. but none of the thread got 
+> notified and accept the request. this way our java application got 
+> hanged. (we can not decreased our queue size as there are thoushands of 
+> request in seconds) . 
+
+How did you verify that the request came in and was processed?
+
+All your pool threads are waiting for work to come in and that doesn't seem to be happening.
+
+David Holmes 
+From chirag_r_shah at rediffmail.com  Thu Jan 19 01:41:05 2006
+From: chirag_r_shah at rediffmail.com (Chirag Shah)
+Date: Thu Jan 19 01:42:23 2006
+Subject: [concurrency-interest] RE: ThreadPoolExecutor problem
+Message-ID: <20060119064105.30216.qmail@webmail34.rediffmail.com>
+
+  
+
+The log which I have attached is, when my middle tier (Java Application is not responding to Web Server). Before that thousands of requests were successfully processed. b'cos it make a call to Database read result, write it to IO and then return result to web server and finally in any case close socket. otherwise web server will not be able to display page. (so request processed, request queued, exception throwned) everything gets printed.
+but that given time, when all threads are in waiting condition. i have many requests in queued status. and none of the thread is processing this request.
+
+As for example,
+
+Statistics for Thread Pool 1, IO_BOUND
+     Total queued requests: 15
+     Total accepted requests: 5241
+     Total completed requests: 5241
+     Total uncaught exceptions: 0
+     Total rejected requests: 0
+     Average execution time: 1092 ms
+Active Count : 0
+ActiveObjects in L2WorkerObjectPool: 15
+InActiveObjects in L2WorkerObjectPool: 17
+ 
+
+(so queued request and my worker class (implements runnable) which is active object) are 15) now if i send one more request both will be 16.
+here worker object, i am not creating object everytime, instead i am storing those objects into arraylist (synchronized) and then picking those object and then serving for each request.
+
+Thanks,
+Chirag
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060119/0f0526cd/attachment.html
+From dcholmes at optusnet.com.au  Thu Jan 19 05:22:56 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Thu Jan 19 05:24:11 2006
+Subject: [concurrency-interest] RE: ThreadPoolExecutor problem
+In-Reply-To: <20060119064105.30216.qmail@webmail34.rediffmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMEDBGLAA.dcholmes@optusnet.com.au>
+
+Sorry but there's no way to diagnose things from this information. You need
+to trace what happens as a request arrives and tries to submit to the
+executor.
+
+Was changing the thread pool the only change you made?
+
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-bounces@cs.oswego.edu
+[mailto:concurrency-interest-bounces@cs.oswego.edu]On Behalf Of Chirag Shah
+  Sent: Thursday, 19 January 2006 4:41 PM
+  To: concurrency-interest@cs.oswego.edu
+  Subject: [concurrency-interest] RE: ThreadPoolExecutor problem
+
+
+
+
+  The log which I have attached is, when my middle tier (Java Application is
+not responding to Web Server). Before that thousands of requests were
+successfully processed. b'cos it make a call to Database read result, write
+it to IO and then return result to web server and finally in any case close
+socket. otherwise web server will not be able to display page. (so request
+processed, request queued, exception throwned) everything gets printed.
+  but that given time, when all threads are in waiting condition. i have
+many requests in queued status. and none of the thread is processing this
+request.
+
+  As for example,
+
+  Statistics for Thread Pool 1, IO_BOUND
+      Total queued requests: 15
+      Total accepted requests: 5241
+      Total completed requests: 5241
+      Total uncaught exceptions: 0
+      Total rejected requests: 0
+      Average execution time: 1092 ms
+  Active Count : 0
+  ActiveObjects in L2WorkerObjectPool: 15
+  InActiveObjects in L2WorkerObjectPool: 17
+
+
+  (so queued request and my worker class (implements runnable) which is
+active object) are 15) now if i send one more request both will be 16.
+  here worker object, i am not creating object everytime, instead i am
+storing those objects into arraylist (synchronized) and then picking those
+object and then serving for each request.
+
+  Thanks,
+  Chirag
+
+
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060119/06592738/attachment.html
+From ankag.k at poczta.fm  Wed Jan 25 18:46:58 2006
+From: ankag.k at poczta.fm (=?ISO-8859-1?Q?Anna_G=F3rowska-Kurzyniec?=)
+Date: Wed Jan 25 19:21:21 2006
+Subject: [concurrency-interest] Serialization + thread safety
+Message-ID: <43D80DF2.3050504@poczta.fm>
+
+Is this safe by any chance:
+
+class A implements Serializable {
+  transient B b; // never changed
+  A() { b = new B(); }
+  private void readObject() { b = new B(); }
+}
+
+And what about in 1.4?
+
+Thanks,
+Dawid
+
+
+From pugh at cs.umd.edu  Wed Jan 25 21:20:34 2006
+From: pugh at cs.umd.edu (Bill Pugh)
+Date: Wed Jan 25 21:21:00 2006
+Subject: [concurrency-interest] Serialization + thread safety
+In-Reply-To: <43D80DF2.3050504@poczta.fm>
+References: <43D80DF2.3050504@poczta.fm>
+Message-ID: <AB463078-B13A-46FA-9A7A-13DA7FA6671F@cs.umd.edu>
+
+You can't really tell if something is thread safe unless you see the  
+entire
+context of how it is being used.
+
+However, in almost every case, object deserialization is like object  
+construction: the
+program should be designed so that no other thread can see an object  
+until it is completely
+constructed/deserialized. Given that, the code fragment should be safe.
+
+	Bill
+
+
+On Jan 25, 2006, at 6:46 PM, Anna G?rowska-Kurzyniec wrote:
+
+> Is this safe by any chance:
+>
+> class A implements Serializable {
+>  transient B b; // never changed
+>  A() { b = new B(); }
+>  private void readObject() { b = new B(); }
+> }
+>
+> And what about in 1.4?
+>
+> Thanks,
+> Dawid
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From dcholmes at optusnet.com.au  Wed Jan 25 21:21:46 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed Jan 25 21:22:07 2006
+Subject: [concurrency-interest] Serialization + thread safety
+Message-ID: <200601260221.k0Q2LkcW008910@mail04.syd.optusnet.com.au>
+
+> Dawid (impersonating Anna Górowska-Kurzyniec <ankag.k@poczta.fm>) wrote:
+> 
+> Is this safe by any chance:
+> 
+> class A implements Serializable {
+>   transient B b; // never changed
+>   A() { b = new B(); }
+>   private void readObject() { b = new B(); }
+> }
+
+Safe from what? :) Until deserialization is complete no reference to the deserialized object exists. If you then share the new object across multiple threads then you must safely publish the reference to the object. Of course safe publication is required for shared freshly constructed A's too.
+
+> And what about in 1.4?
+
+No difference that I'm aware of.
+
+Cheers,
+David Holmes
+
+From dawidk at mathcs.emory.edu  Wed Jan 25 22:29:45 2006
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Wed Jan 25 22:29:53 2006
+Subject: [concurrency-interest] Serialization + thread safety
+In-Reply-To: <200601260221.k0Q2LkcW008910@mail04.syd.optusnet.com.au>
+References: <200601260221.k0Q2LkcW008910@mail04.syd.optusnet.com.au>
+Message-ID: <43D84229.5020400@mathcs.emory.edu>
+
+David Holmes wrote:
+>> Dawid (impersonating Anna G?rowska-Kurzyniec <ankag.k@poczta.fm>) wrote:
+>>
+>> Is this safe by any chance:
+>>
+>> class A implements Serializable {
+>>   transient B b; // never changed
+>>   A() { b = new B(); }
+>>   private void readObject() { b = new B(); }
+>> }
+>>     
+>
+> Safe from what? :) Until deserialization is complete no reference to the deserialized object exists. If you then share the new object across multiple threads then you must safely publish the reference to the object. Of course safe publication is required for shared freshly constructed A's too.
+>   
+
+David, Bill,
+
+Sorry I was not clear enough. I meant, is it safe to use A.b afterwards 
+*without* explicit memory synchronization.
+
+Here is what I need. Suppose B is immutable or thread safe. If I have this:
+
+class A implements Serializable {
+   final B b;
+   A() { b = new B(); }
+   void foo() { b.foo(); }
+}
+
+
+Then A is thread-safe and it can be published without extra 
+synchronization because B is thread-safe and b is final. But now I would 
+like to remove b from the serialized state by making it transient and 
+re-creating it in readObject:
+
+class A implements Serializable {
+   final transient B b;
+   A() { b = new B(); }
+   private void readObject(OIS in) { in.defaultReadObject(); b = new B(); }
+   void foo() { b.foo(); }
+}
+
+But this of course does not compile, since I cannot assign value to a 
+final variable in readObject. My question is, if I remove the "final" 
+modifier, can I still publish A without explicit memory synchronization. 
+My understanding, which seems consistent with David's response, is that 
+"no", because the special rules for visibility of constructed objects 
+apply only for fields that are final. Alternatively, can I keep "final", 
+use reflection "magic" to set the value of b, and still enjoy 
+publication safety.
+
+The context: I am trying to make some changes in backported 
+ReentrantReadWriteLock (to make it more consistent with the original) 
+without breaking backward serial compatibility, but at this point I am 
+close to giving up. Who serializes locks anyway? ;)
+
+Thanks,
+Dawid
+
+From dawidk at mathcs.emory.edu  Wed Jan 25 23:19:15 2006
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Wed Jan 25 23:19:23 2006
+Subject: [concurrency-interest] RFE in ReentrantReadWriteLock
+Message-ID: <43D84DC3.60504@mathcs.emory.edu>
+
+ReentrantLock has two methods relevant to exclusive locking:
+
+        boolean isHeldByCurrentThread()
+        int getHoldCount()
+
+Analogous two methods can be found in ReentrantReadWriteLock for the 
+write lock:
+
+        boolean isWriteLockedByCurrentThread()
+        int getWriteHoldCount()
+
+But no such thing is directly available in the public inner class 
+ReentrantReadWriteLock.WriteLock. How about adding such two methods, so 
+that the functionality is available to code to which the write lock 
+solely was passed, and not the whole RRWL?
+
+Regards,
+Dawid
+
+From giuliano at ime.usp.br  Thu Jan 26 08:30:01 2006
+From: giuliano at ime.usp.br (Giuliano Mega)
+Date: Thu Jan 26 08:30:07 2006
+Subject: [concurrency-interest] RFE in ReentrantReadWriteLock
+In-Reply-To: <43D84DC3.60504@mathcs.emory.edu>
+References: <43D84DC3.60504@mathcs.emory.edu>
+Message-ID: <7547a9ff0601260530y9a4e860r97a56893020d5fce@mail.gmail.com>
+
+Hi Dawid,
+
+I think the problem is that you don't have an interface for write
+locks - all you have is java.util.concurrent.locks.Lock. Since read
+locks have no ownership, it wouldn't make sense to add those methods
+to the interface. I suppose those methods could be added to the inner
+classes if you're willing to live with the type casts, but I guess it
+would be straightforward to create a wrapper class for write locks
+that does what you want to do, wouldn't it? Since you're the one
+passing the reference to the WL, you could just wrap it and then pass
+it along.
+
+Best,
+
+Giuliano
+
+On 1/26/06, Dawid Kurzyniec <dawidk@mathcs.emory.edu> wrote:
+> ReentrantLock has two methods relevant to exclusive locking:
+>
+>         boolean isHeldByCurrentThread()
+>         int getHoldCount()
+>
+> Analogous two methods can be found in ReentrantReadWriteLock for the
+> write lock:
+>
+>         boolean isWriteLockedByCurrentThread()
+>         int getWriteHoldCount()
+>
+> But no such thing is directly available in the public inner class
+> ReentrantReadWriteLock.WriteLock. How about adding such two methods, so
+> that the functionality is available to code to which the write lock
+> solely was passed, and not the whole RRWL?
+>
+> Regards,
+> Dawid
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+--
+Giuliano Mega <giuliano@ime.usp.br>
+
+From dawidk at mathcs.emory.edu  Thu Jan 26 12:27:30 2006
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Thu Jan 26 12:27:43 2006
+Subject: [concurrency-interest] RFE in ReentrantReadWriteLock
+In-Reply-To: <7547a9ff0601260530y9a4e860r97a56893020d5fce@mail.gmail.com>
+References: <43D84DC3.60504@mathcs.emory.edu>
+	<7547a9ff0601260530y9a4e860r97a56893020d5fce@mail.gmail.com>
+Message-ID: <43D90682.8040202@mathcs.emory.edu>
+
+Giuliano Mega wrote:
+> Hi Dawid,
+>
+> I think the problem is that you don't have an interface for write
+> locks - all you have is java.util.concurrent.locks.Lock. Since read
+> locks have no ownership, it wouldn't make sense to add those methods
+> to the interface. 
+
+I fully agree about the interface part. Actually I wouldn't dare asking 
+for the interface changes at this point even if I thought they made sense :)
+
+Yet in fact, read locks in RRWL do have a thread ownership (read lock 
+can only be released by the same thread that acquired it), only it is 
+non-exclusive. The two methods in question aren't specific to 
+*exclusive* ownership - they relate to ownership and reentrancy in 
+general, which are both supported by RRWL.ReadLock - so they *could* be 
+added to RRWL.ReadLock as well. Note that an equivalent method, 
+getReadHoldCount(), has been added to RRWL in 1.6. So I am extending my 
+RFE to ReadLock :)
+
+> I suppose those methods could be added to the inner
+> classes if you're willing to live with the type casts, but I guess it
+> would be straightforward to create a wrapper class for write locks
+> that does what you want to do, wouldn't it? Since you're the one
+> passing the reference to the WL, you could just wrap it and then pass
+> it along.
+>
+>   
+
+Note though that those two inner classes are public, and that the 
+appropriate RRWL signatures in j.u.c. are:
+
+public ReentrantReadWriteLock.ReadLock readLock()
+public ReentrantReadWriteLock.WriteLock writeLock()
+
+so you don't need type casts. (Unless you are talking about the 
+backport, which does indeed need casting here).
+
+So I am thinking, since those two classes are already exposed to API 
+users, and since they bear resemblances to the ReentrantLock (i.e. 
+reentrancy and thread ownership, exclusive for WriteLock and shared for 
+ReadLock), why not give them the two extra public methods that exist in 
+ReentrantLock? It is not a critical feature, that's for sure, but it 
+might be useful, I'd argue that it improves consistency a little bit, 
+and it is trivial to implement - it is already there, almost :)
+
+Regards,
+Dawid
+
+From anton at atlassian.com  Thu Jan 26 20:20:55 2006
+From: anton at atlassian.com (Anton Mazkovoi)
+Date: Thu Jan 26 20:21:06 2006
+Subject: [concurrency-interest] Potential Bug in
+	EDU.oswego.cs.dl.util.concurrent.PooledExecutor
+Message-ID: <1138324855.27301.282.camel@localhost.localdomain>
+
+Hi,
+
+We are using the EDU.oswego.cs.dl.util.concurrent package to
+concurrently process tasks. As our application needs to stay JDK 1.3
+compliant we have to use the EDU.oswego.cs.dl.util.concurrent package.
+
+Please accept my apologies if I am contacting the wrong list. If I am,
+please let me know where I should post my query.
+
+We have noticed that sometimes tasks added to the PooledExecutor for
+execution are lost (never processed).
+
+To replicate the problem please compile and run the attached
+com.atlassian.PooledExecutorTest.java against the concurrent-1.3.4.jar
+(downloaded from
+http://www.ibiblio.org/maven/concurrent/jars/concurrent-1.3.4.jar).
+
+The test should stop with error in a few minutes (or seconds). The test
+fails much faster on a multi-CPU (or HT) machine. 
+
+I believe the problem is in the PoolExecutor.workerDone method:
+
+      try {
+         Runnable r = (Runnable)(handOff_.poll(0));
+         if (r != null && !shutdown_) // just consume task if shut down
+           addThread(r);
+      } catch(InterruptedException ie) {
+        return;
+      }
+
+The problem is that the Runnable is removed from the queue (handOff) and
+if shutdown has been set to true, the Runnable is 'lost'. The comment
+"just consume task if shut down" seems to indicate that this is the
+desired behaviour.
+
+We need to ensure that all Runnables are processed. Changing the code
+to:
+      try {
+         Runnable r = (Runnable)(handOff_.poll(0));
+         // Atlassian change - process the task even if we are shutting
+         // down
+         // All tasks must be processed!
+         if (r != null)
+           addThread(r);
+      } catch(InterruptedException ie) {
+        return;
+      }
+
+seems to fix the problem. Running the attached
+com.atlassian.PooledExecutorTest.java against the concurrent-1.3.4.jar
+does not report any errors after executing for quite a long time (5
+mins).
+
+It appears that in JDK 5.0 it may have been fixed using the above
+approach. The code in 5.0 is quite different however, so I am not 100%
+sure about this. Unfortunately, we cannot migrate to JDK 5.0, as we have
+to support JDK 1.3.
+
+May I ask if losing the Runnable during the shutdown stage is a design
+decision? If yes, then what is the reason behind it? Is there a way to
+get all Runnables processed?
+
+If this is a bug, is the above fix the correct solution?
+
+Please find the patch to the
+EDU.oswego.cs.dl.util.concurrent.PooledExecutor attached.
+
+Thanks,
+Anton
+
+
+-- 
+ATLASSIAN - http://www.atlassian.com
+Australia's Fastest Growing Software Company 2002-05 [BRW Magazine]
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: PooledExecutorTest.java
+Type: text/x-java
+Size: 2385 bytes
+Desc: not available
+Url : /pipermail/attachments/20060126/25c50710/PooledExecutorTest.bin
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: PooledExecutor.diff
+Type: text/x-patch
+Size: 353 bytes
+Desc: not available
+Url : /pipermail/attachments/20060126/25c50710/PooledExecutor.bin
+From giuliano.mega at gmail.com  Fri Jan 27 14:02:37 2006
+From: giuliano.mega at gmail.com (Giuliano Mega)
+Date: Fri Jan 27 14:02:41 2006
+Subject: [concurrency-interest] RFE in ReentrantReadWriteLock
+In-Reply-To: <7547a9ff0601261235o7f379f0draba6b712b8854a44@mail.gmail.com>
+References: <43D84DC3.60504@mathcs.emory.edu>
+	<7547a9ff0601260530y9a4e860r97a56893020d5fce@mail.gmail.com>
+	<43D90682.8040202@mathcs.emory.edu>
+	<7547a9ff0601261235o7f379f0draba6b712b8854a44@mail.gmail.com>
+Message-ID: <7547a9ff0601271102n2e84c5d4mdd84c8e5c3dff85e@mail.gmail.com>
+
+Ooops, just realized I hadn't forwarded this message to the list... :-)
+
+> Yet in fact, read locks in RRWL do have a thread ownership (read lock
+> can only be released by the same thread that acquired it), only it is
+> non-exclusive. The two methods in question aren't specific to
+> *exclusive* ownership - they relate to ownership and reentrancy in
+> general, which are both supported by RRWL.ReadLock - so they *could* be
+> added to RRWL.ReadLock as well.
+
+That would seem to be the case, but the documentation for
+ReentrantReadWriteLock states that its Java 1.5.0 implementation of
+ReadLock does not enforce ownership at all. I had a bitter taste of
+that when my threads started deadlocking with a fair
+ReentrantReadWriteLock because (I assume) the lock couldn't tell the
+difference between a reader thread trying to reenter and a reader
+thread trying to acquire the read lock for the first time. So they'd
+all just block on reentrance whenever there was a writer waiting.
+
+> Note that an equivalent method,
+> getReadHoldCount(), has been added to RRWL in 1.6. So I am extending my
+> RFE to ReadLock :)
+
+I always thought those classes were meant to be accessed by their
+general lock interface, but since they're public I just got confused.
+Anyway, if they're supposed to be accessed by the general lock
+interface and if ReadLocks don't have ownership (as the documentation
+states), than I think this enhancement might be complicated after all.
+:-)
+
+> > I suppose those methods could be added to the inner
+> > classes if you're willing to live with the type casts, but I guess it
+> > would be straightforward to create a wrapper class for write locks
+> > that does what you want to do, wouldn't it? Since you're the one
+> > passing the reference to the WL, you could just wrap it and then pass
+> > it along.
+>
+> Note though that those two inner classes are public, and that the
+> appropriate RRWL signatures in j.u.c. are:
+>
+> public ReentrantReadWriteLock.ReadLock readLock()
+> public ReentrantReadWriteLock.WriteLock writeLock()
+>
+> so you don't need type casts. (Unless you are talking about the
+> backport, which does indeed need casting here).
+
+I was actually thinking that those classes were meant to be accessed
+by the general Lock interface, but I wouldn't be surprised if I missed
+the point alltogether. :-)
+
+> So I am thinking, since those two classes are already exposed to API
+> users, and since they bear resemblances to the ReentrantLock (i.e.
+> reentrancy and thread ownership, exclusive for WriteLock and shared for
+> ReadLock), why not give them the two extra public methods that exist in
+> ReentrantLock? It is not a critical feature, that's for sure, but it
+> might be useful, I'd argue that it improves consistency a little bit,
+> and it is trivial to implement - it is already there, almost :)
+
+Perhaps someone could shed some more light into this? :-)
+
+Best regards,
+
+--
+Giuliano Mega <giuliano@ime.usp.br>
+
+
+--
+Giuliano Mega <giuliano@ime.usp.br>
+
+From dl at cs.oswego.edu  Sat Jan 28 18:57:58 2006
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sat Jan 28 19:10:12 2006
+Subject: [concurrency-interest] Potential Bug
+	in	EDU.oswego.cs.dl.util.concurrent.PooledExecutor
+In-Reply-To: <1138324855.27301.282.camel@localhost.localdomain>
+References: <1138324855.27301.282.camel@localhost.localdomain>
+Message-ID: <43DC0506.8010806@cs.oswego.edu>
+
+Anton Mazkovoi wrote:
+> 
+> It appears that in JDK 5.0 it may have been fixed using the above
+> approach. The code in 5.0 is quite different however, so I am not 100%
+> sure about this. Unfortunately, we cannot migrate to JDK 5.0, as we have
+> to support JDK 1.3.
+
+In which case, please use the backport -- see
+http://www.mathcs.emory.edu/dcl/util/backport-util-concurrent/
+
+> 
+> May I ask if losing the Runnable during the shutdown stage is a design
+> decision? 
+
+Some aspects of shutdown handling weren't very consistent in the
+dl.util.concurrent version. This was overhauled in the Tiger/Java-5
+versions. Since I'm doing everything possible to get people to migrate
+to java.util.concurrent, I don't foresee changing the dl.util.concurrent
+ones. (Sorry!)
+
+-Doug
+
+From dl at cs.oswego.edu  Sat Jan 28 19:25:58 2006
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sat Jan 28 19:26:01 2006
+Subject: [concurrency-interest] RFE in ReentrantReadWriteLock
+In-Reply-To: <43D84DC3.60504@mathcs.emory.edu>
+References: <43D84DC3.60504@mathcs.emory.edu>
+Message-ID: <43DC0B96.5090009@cs.oswego.edu>
+
+Dawid Kurzyniec wrote:
+> ReentrantLock has two methods relevant to exclusive locking:
+> 
+> boolean isHeldByCurrentThread() int getHoldCount()
+> 
+> Analogous two methods can be found in ReentrantReadWriteLock for the write
+> lock:
+> 
+> boolean isWriteLockedByCurrentThread() int getWriteHoldCount()
+> 
+> But no such thing is directly available in the public inner class 
+> ReentrantReadWriteLock.WriteLock. How about adding such two methods, so that
+> the functionality is available to code to which the write lock solely was
+> passed, and not the whole RRWL?
+> 
+
+and also wrote...
+
+> 
+> So I am thinking, since those two classes are already exposed to API users,
+> and since they bear resemblances to the ReentrantLock (i.e. reentrancy and
+> thread ownership, exclusive for WriteLock and shared for ReadLock), why not
+> give them the two extra public methods that exist in ReentrantLock? It is not
+> a critical feature, that's for sure, but it might be useful, I'd argue that
+> it improves consistency a little bit, and it is trivial to implement - it is
+> already there, almost :)
+> 
+
+This is a pretty reasonable request; thanks. It's always worth making APIs
+more consistent. And is indeed trivial to implement. I'll see what we can do.
+
+-Doug
+From giuliano.mega at gmail.com  Sun Jan 29 17:00:08 2006
+From: giuliano.mega at gmail.com (Giuliano Mega)
+Date: Sun Jan 29 17:00:10 2006
+Subject: [concurrency-interest] ReentrantReadWriteLock question.
+Message-ID: <7547a9ff0601291400v3793f07et267d98ef162e51b8@mail.gmail.com>
+
+Hello everyone,
+
+The previous discussion on APIs just made me realize I don't know as
+much about ReentrantReadWriteLock as I'd like. :-) I really don't know
+if this would be the right place to post this, and I'd be glad if
+someone would just point me to a list that is better suited for this
+kind of question.
+
+Anyway, I'm using a ReentrantReadWriteLock with fairness turned on.
+The following scenario causes my threads to deadlock:
+
+- Reader thread A acquires the read lock;
+- writer thread B tries to acquire the write lock and then blocks
+(because A has the read lock);
+- reader thread A tries to acquire the read lock for the second time.
+I thought it should succeed (the lock is reentrant), but it blocks as
+well and my program doesn't terminate.
+
+If I turn the fairness flag off, everything works fine. After thinking
+for a while and reading through the documentation, I thought this was
+happening because ReentrantReadWriteLock.ReadLock doesn't define
+ownership (and hence the read lock can't distinguish between a new
+reader thread and an "old" reader thread trying to reenter). But,
+after the last discussion, I just got really lost. What have I missed?
+
+Thank you for your time.
+
+Best,
+
+--
+Giuliano Mega <giuliano@ime.usp.br>
+
+From dcholmes at optusnet.com.au  Sun Jan 29 23:33:36 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Sun Jan 29 23:33:47 2006
+Subject: [concurrency-interest] ReentrantReadWriteLock question.
+In-Reply-To: <7547a9ff0601291400v3793f07et267d98ef162e51b8@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEGEGLAA.dcholmes@optusnet.com.au>
+
+Giuliano,
+
+> If I turn the fairness flag off, everything works fine. After thinking
+> for a while and reading through the documentation, I thought this was
+> happening because ReentrantReadWriteLock.ReadLock doesn't define
+> ownership (and hence the read lock can't distinguish between a new
+> reader thread and an "old" reader thread trying to reenter). But,
+> after the last discussion, I just got really lost. What have I missed?
+
+The behaviour you observed is what you get in Java 5. In Java 6 (Mustang)
+the behaviour has been changed so that a read-lock now tracks ownership.
+
+Cheers,
+David Holmes
+
+From giuliano.mega at gmail.com  Mon Jan 30 08:56:00 2006
+From: giuliano.mega at gmail.com (Giuliano Mega)
+Date: Mon Jan 30 08:56:03 2006
+Subject: [concurrency-interest] ReentrantReadWriteLock question.
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCEEGEGLAA.dcholmes@optusnet.com.au>
+References: <7547a9ff0601291400v3793f07et267d98ef162e51b8@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCEEGEGLAA.dcholmes@optusnet.com.au>
+Message-ID: <7547a9ff0601300556h74e7a029s52f4472dd6208370@mail.gmail.com>
+
+> The behaviour you observed is what you get in Java 5. In Java 6 (Mustang)
+> the behaviour has been changed so that a read-lock now tracks ownership.
+
+That pretty much explains it. Thanks.
+
+Best,
+
+--
+Giuliano Mega <giuliano@ime.usp.br>
+

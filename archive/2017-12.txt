@@ -1,0 +1,1068 @@
+From notcarl at google.com  Fri Dec  1 02:18:53 2017
+From: notcarl at google.com (Carl Mastrangelo)
+Date: Thu, 30 Nov 2017 23:18:53 -0800
+Subject: [concurrency-interest] LongAdder with custom behavior?
+Message-ID: <CAAcqB+tntDdr6NP0M=FWE45jTav4-jBDBA074WTLRYkUin+LEQ@mail.gmail.com>
+
+While looking at LongAdder as a possible candidate for a concurrent
+counter, I noticed three things that made it seem surprising.  I am
+wondering what the rationale is for these since they don't make sense to me:
+
+1.  LongAdder.sumThenReset seems to not be thread-safe.  If concurrent
+writes happen between reading and resetting of each Cell, then the write
+could get dropped.    This matches the behavior described in reset(), but
+makes the class less useful.   For instance, I would like sumThenReset to
+tally up all the mutations, and reset the counter back to zero without
+dropping mutations.  This would make it so I call sumThenReset later, and
+pick up any mutations I missed.
+
+2.  Following up on the first point, the implementation of sumThenReset
+does two volatile operations on each Cell.value.  First it reads, followed
+by setting it to zero.  Why doesn't it use getAndSet on the value?  On the
+surface it would appear to be fewer synchronization points.   Also, it
+would nicely solve the first item.
+
+3.   In the case that the LongAdder only ever increases in value (no
+resets), it would be possible to provide a means to see if it's equal to
+zero.  I believe this would be cheaper to implement than summing across all
+Cells.  The list of cells could be walked until there was a single nonzero
+cell, at which point it could return early.  This would be similar to the
+isEmpty() method on ConcurrentLinkedQueue, which doesn't need to walk the
+whole list.
+
+The reason I bring this up is that although the LongAdder class is
+non-final, there is no way to provide an isEmpty() myself.  All the access
+to the Cells and value are package private.  If I did implement this, I
+would have to give up the nice contention features.
+
+Is LongAdder reusable or should I try making my own counter?  Also, were
+the issues I bring up now brought up during the design?
+
+Carl
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20171130/2e33f09d/attachment.html>
+
+From peter.levart at gmail.com  Fri Dec  1 03:07:46 2017
+From: peter.levart at gmail.com (Peter Levart)
+Date: Fri, 1 Dec 2017 09:07:46 +0100
+Subject: [concurrency-interest] LongAdder with custom behavior?
+In-Reply-To: <CAAcqB+tntDdr6NP0M=FWE45jTav4-jBDBA074WTLRYkUin+LEQ@mail.gmail.com>
+References: <CAAcqB+tntDdr6NP0M=FWE45jTav4-jBDBA074WTLRYkUin+LEQ@mail.gmail.com>
+Message-ID: <5dc171dd-faae-2c56-84e5-a8e6ed7ccf9a@gmail.com>
+
+Hi Carl,
+
+On 12/01/2017 08:18 AM, Carl Mastrangelo via Concurrency-interest wrote:
+> While looking at LongAdder as a possible candidate for a concurrent 
+> counter, I noticed three things that made it seem surprising.  I am 
+> wondering what the rationale is for these since they don't make sense 
+> to me:
+>
+> 1.  LongAdder.sumThenReset seems to not be thread-safe.  If concurrent 
+> writes happen between reading and resetting of each Cell, then the 
+> write could get dropped.    This matches the behavior described in 
+> reset(), but makes the class less useful.   For instance, I would like 
+> sumThenReset to tally up all the mutations, and reset the counter back 
+> to zero without dropping mutations.  This would make it so I call 
+> sumThenReset later, and pick up any mutations I missed.
+>
+> 2.  Following up on the first point, the implementation of 
+> sumThenReset does two volatile operations on each Cell.value. First it 
+> reads, followed by setting it to zero.  Why doesn't it use getAndSet 
+> on the value?  On the surface it would appear to be fewer 
+> synchronization points.   Also, it would nicely solve the first item.
+
+You can achieve similar observable effect in the following way:
+
+     public static long sumThenResetAtomic(LongAdder adder) {
+         long sum = adder.sum();
+         adder.add(-sum);
+         return sum;
+     }
+
+This has better performance, because it does N reads and potentially 
+only a single CAS which presents less disturbance to concurrent ongoing 
+additions than N getAndSet(s) would.
+
+>
+> 3.   In the case that the LongAdder only ever increases in value (no 
+> resets), it would be possible to provide a means to see if it's equal 
+> to zero.  I believe this would be cheaper to implement than summing 
+> across all Cells.  The list of cells could be walked until there was a 
+> single nonzero cell, at which point it could return early.  This would 
+> be similar to the isEmpty() method on ConcurrentLinkedQueue, which 
+> doesn't need to walk the whole list.
+
+if you are talking about adder.isEmpty() being a cheaper variant of 
+(adder.sum() == 0L), then all cells have to be summed in any case. 
+Imagine an adder with 2 cells:
+
+cell[0] == 42L
+cell[1] == -42L
+
+Regards, Peter
+
+>
+> The reason I bring this up is that although the LongAdder class is 
+> non-final, there is no way to provide an isEmpty() myself.  All the 
+> access to the Cells and value are package private.  If I did implement 
+> this, I would have to give up the nice contention features.
+>
+> Is LongAdder reusable or should I try making my own counter?  Also, 
+> were the issues I bring up now brought up during the design?
+>
+> Carl
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20171201/ee61d7ca/attachment.html>
+
+From notcarl at google.com  Fri Dec  1 14:12:52 2017
+From: notcarl at google.com (Carl Mastrangelo)
+Date: Fri, 1 Dec 2017 11:12:52 -0800
+Subject: [concurrency-interest] LongAdder with custom behavior?
+In-Reply-To: <5dc171dd-faae-2c56-84e5-a8e6ed7ccf9a@gmail.com>
+References: <CAAcqB+tntDdr6NP0M=FWE45jTav4-jBDBA074WTLRYkUin+LEQ@mail.gmail.com>
+ <5dc171dd-faae-2c56-84e5-a8e6ed7ccf9a@gmail.com>
+Message-ID: <CAAcqB+tX+h2p0j4eUnOOn8ZGsK=XjnR3WyGqu5GeNPA2UUcmEw@mail.gmail.com>
+
+Hi,
+
+responses inline:
+
+
+
+On Fri, Dec 1, 2017 at 12:07 AM, Peter Levart <peter.levart at gmail.com>
+wrote:
+
+> Hi Carl,
+>
+> On 12/01/2017 08:18 AM, Carl Mastrangelo via Concurrency-interest wrote:
+>
+> While looking at LongAdder as a possible candidate for a concurrent
+> counter, I noticed three things that made it seem surprising.  I am
+> wondering what the rationale is for these since they don't make sense to
+> me:
+>
+> 1.  LongAdder.sumThenReset seems to not be thread-safe.  If concurrent
+> writes happen between reading and resetting of each Cell, then the write
+> could get dropped.    This matches the behavior described in reset(), but
+> makes the class less useful.   For instance, I would like sumThenReset to
+> tally up all the mutations, and reset the counter back to zero without
+> dropping mutations.  This would make it so I call sumThenReset later, and
+> pick up any mutations I missed.
+>
+> 2.  Following up on the first point, the implementation of sumThenReset
+> does two volatile operations on each Cell.value.  First it reads, followed
+> by setting it to zero.  Why doesn't it use getAndSet on the value?  On the
+> surface it would appear to be fewer synchronization points.   Also, it
+> would nicely solve the first item.
+>
+>
+> You can achieve similar observable effect in the following way:
+>
+>     public static long sumThenResetAtomic(LongAdder adder) {
+>         long sum = adder.sum();
+>         adder.add(-sum);
+>         return sum;
+>     }
+>
+> This has better performance, because it does N reads and potentially only
+> a single CAS which presents less disturbance to concurrent ongoing
+> additions than N getAndSet(s) would.
+>
+
+This approach would work, but why wouldn't sumThenReset implement it that
+way?     It isn't clear to me that two volatile accesses is faster than a
+single CAS.
+
+
+
+>
+>
+>
+> 3.   In the case that the LongAdder only ever increases in value (no
+> resets), it would be possible to provide a means to see if it's equal to
+> zero.  I believe this would be cheaper to implement than summing across all
+> Cells.  The list of cells could be walked until there was a single nonzero
+> cell, at which point it could return early.  This would be similar to the
+> isEmpty() method on ConcurrentLinkedQueue, which doesn't need to walk the
+> whole list.
+>
+>
+> if you are talking about adder.isEmpty() being a cheaper variant of
+> (adder.sum() == 0L), then all cells have to be summed in any case. Imagine
+> an adder with 2 cells:
+>
+> cell[0] == 42L
+> cell[1] == -42L
+>
+
+
+Right.  I tried to clarify that the value only ever goes up (by throwing on
+increment() and negative arguments to add().  If positive numbers only ever
+go in, and there is no overflow, then this would be a safe assumption.   I
+realize LongAdder can't make this assumption generally, but it isn't even
+possible for me to extend the class to enforce it myself.
+
+
+
+
+
+>
+> Regards, Peter
+>
+>
+> The reason I bring this up is that although the LongAdder class is
+> non-final, there is no way to provide an isEmpty() myself.  All the access
+> to the Cells and value are package private.  If I did implement this, I
+> would have to give up the nice contention features.
+>
+> Is LongAdder reusable or should I try making my own counter?  Also, were
+> the issues I bring up now brought up during the design?
+>
+> Carl
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing listConcurrency-interest at cs.oswego.eduhttp://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20171201/4323dd9e/attachment.html>
+
+From martinrb at google.com  Fri Dec  1 14:18:06 2017
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 1 Dec 2017 11:18:06 -0800
+Subject: [concurrency-interest] LongAdder with custom behavior?
+In-Reply-To: <CAAcqB+tntDdr6NP0M=FWE45jTav4-jBDBA074WTLRYkUin+LEQ@mail.gmail.com>
+References: <CAAcqB+tntDdr6NP0M=FWE45jTav4-jBDBA074WTLRYkUin+LEQ@mail.gmail.com>
+Message-ID: <CA+kOe08AT8ogkrNxdun=doLQaO5CQGi6fC2tJ2-x-mwq3mC8yQ@mail.gmail.com>
+
+It seems straightforward to use VarHandle getAndSet methods in LongAdder
+(and Striped64) and should be strictly more efficient.   I would
+write sumThenReset like this:
+
+    /**
+     * Equivalent in effect to {@link #sum} followed by {@link #reset}.
+     * This method may apply for example during quiescent points
+     * between multithreaded computations.  If there are updates
+     * concurrent with this method, the returned value is <em>not</em>
+     * guaranteed to be the final value occurring before the reset.
+     *
+     * @return the sum
+     */
+    public long sumThenReset() {
+        final Cell[] cells = this.cells;
+        long sum = getAndSetBase(0L);
+        if (cells != null)
+            for (Cell cell : cells)
+                if (cell != null)
+                    sum += cell.getAndSet(0L);
+        return sum;
+    }
+
+With the use of getAndSet, we can then consider using sumThenReset for
+concurrency control.  A consumer can "harvest" counts that have collected
+in the LongAdder in Semaphore style, without losing any concurrent counts.
+The hard part is writing the spec!  Unfortunately the name sumThenReset
+becomes a bit of a misnomer as it strongly implies non-thread-safety and
+use of reset().
+
+
+On Thu, Nov 30, 2017 at 11:18 PM, Carl Mastrangelo via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+
+> While looking at LongAdder as a possible candidate for a concurrent
+> counter, I noticed three things that made it seem surprising.  I am
+> wondering what the rationale is for these since they don't make sense to me:
+>
+> 1.  LongAdder.sumThenReset seems to not be thread-safe.  If concurrent
+> writes happen between reading and resetting of each Cell, then the write
+> could get dropped.    This matches the behavior described in reset(), but
+> makes the class less useful.   For instance, I would like sumThenReset to
+> tally up all the mutations, and reset the counter back to zero without
+> dropping mutations.  This would make it so I call sumThenReset later, and
+> pick up any mutations I missed.
+>
+> 2.  Following up on the first point, the implementation of sumThenReset
+> does two volatile operations on each Cell.value.  First it reads, followed
+> by setting it to zero.  Why doesn't it use getAndSet on the value?  On the
+> surface it would appear to be fewer synchronization points.   Also, it
+> would nicely solve the first item.
+>
+> 3.   In the case that the LongAdder only ever increases in value (no
+> resets), it would be possible to provide a means to see if it's equal to
+> zero.  I believe this would be cheaper to implement than summing across all
+> Cells.  The list of cells could be walked until there was a single nonzero
+> cell, at which point it could return early.  This would be similar to the
+> isEmpty() method on ConcurrentLinkedQueue, which doesn't need to walk the
+> whole list.
+>
+> The reason I bring this up is that although the LongAdder class is
+> non-final, there is no way to provide an isEmpty() myself.  All the access
+> to the Cells and value are package private.  If I did implement this, I
+> would have to give up the nice contention features.
+>
+> Is LongAdder reusable or should I try making my own counter?  Also, were
+> the issues I bring up now brought up during the design?
+>
+> Carl
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20171201/74e4df2f/attachment.html>
+
+From martinrb at google.com  Fri Dec  1 14:27:28 2017
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 1 Dec 2017 11:27:28 -0800
+Subject: [concurrency-interest] LongAdder with custom behavior?
+In-Reply-To: <CA+kOe08AT8ogkrNxdun=doLQaO5CQGi6fC2tJ2-x-mwq3mC8yQ@mail.gmail.com>
+References: <CAAcqB+tntDdr6NP0M=FWE45jTav4-jBDBA074WTLRYkUin+LEQ@mail.gmail.com>
+ <CA+kOe08AT8ogkrNxdun=doLQaO5CQGi6fC2tJ2-x-mwq3mC8yQ@mail.gmail.com>
+Message-ID: <CA+kOe0-BHE4QFBDeBesU4YS+EUoOCbJJS8AD6HLQ5oad4xV6aA@mail.gmail.com>
+
+It looks like we should be taking advantage of other VarHandle features,
+e.g. calling getAndAddRelease
+
+On Fri, Dec 1, 2017 at 11:18 AM, Martin Buchholz <martinrb at google.com>
+wrote:
+
+> It seems straightforward to use VarHandle getAndSet methods in LongAdder
+> (and Striped64) and should be strictly more efficient.   I would
+> write sumThenReset like this:
+>
+>     /**
+>      * Equivalent in effect to {@link #sum} followed by {@link #reset}.
+>      * This method may apply for example during quiescent points
+>      * between multithreaded computations.  If there are updates
+>      * concurrent with this method, the returned value is <em>not</em>
+>      * guaranteed to be the final value occurring before the reset.
+>      *
+>      * @return the sum
+>      */
+>     public long sumThenReset() {
+>         final Cell[] cells = this.cells;
+>         long sum = getAndSetBase(0L);
+>         if (cells != null)
+>             for (Cell cell : cells)
+>                 if (cell != null)
+>                     sum += cell.getAndSet(0L);
+>         return sum;
+>     }
+>
+> With the use of getAndSet, we can then consider using sumThenReset for
+> concurrency control.  A consumer can "harvest" counts that have collected
+> in the LongAdder in Semaphore style, without losing any concurrent counts.
+> The hard part is writing the spec!  Unfortunately the name sumThenReset
+> becomes a bit of a misnomer as it strongly implies non-thread-safety and
+> use of reset().
+>
+>
+> On Thu, Nov 30, 2017 at 11:18 PM, Carl Mastrangelo via
+> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>
+>> While looking at LongAdder as a possible candidate for a concurrent
+>> counter, I noticed three things that made it seem surprising.  I am
+>> wondering what the rationale is for these since they don't make sense to me:
+>>
+>> 1.  LongAdder.sumThenReset seems to not be thread-safe.  If concurrent
+>> writes happen between reading and resetting of each Cell, then the write
+>> could get dropped.    This matches the behavior described in reset(), but
+>> makes the class less useful.   For instance, I would like sumThenReset to
+>> tally up all the mutations, and reset the counter back to zero without
+>> dropping mutations.  This would make it so I call sumThenReset later, and
+>> pick up any mutations I missed.
+>>
+>> 2.  Following up on the first point, the implementation of sumThenReset
+>> does two volatile operations on each Cell.value.  First it reads, followed
+>> by setting it to zero.  Why doesn't it use getAndSet on the value?  On the
+>> surface it would appear to be fewer synchronization points.   Also, it
+>> would nicely solve the first item.
+>>
+>> 3.   In the case that the LongAdder only ever increases in value (no
+>> resets), it would be possible to provide a means to see if it's equal to
+>> zero.  I believe this would be cheaper to implement than summing across all
+>> Cells.  The list of cells could be walked until there was a single nonzero
+>> cell, at which point it could return early.  This would be similar to the
+>> isEmpty() method on ConcurrentLinkedQueue, which doesn't need to walk the
+>> whole list.
+>>
+>> The reason I bring this up is that although the LongAdder class is
+>> non-final, there is no way to provide an isEmpty() myself.  All the access
+>> to the Cells and value are package private.  If I did implement this, I
+>> would have to give up the nice contention features.
+>>
+>> Is LongAdder reusable or should I try making my own counter?  Also, were
+>> the issues I bring up now brought up during the design?
+>>
+>> Carl
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20171201/ff1eef41/attachment-0001.html>
+
+From martinrb at google.com  Fri Dec  1 14:45:31 2017
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 1 Dec 2017 11:45:31 -0800
+Subject: [concurrency-interest] LongAdder with custom behavior?
+In-Reply-To: <CA+kOe0-BHE4QFBDeBesU4YS+EUoOCbJJS8AD6HLQ5oad4xV6aA@mail.gmail.com>
+References: <CAAcqB+tntDdr6NP0M=FWE45jTav4-jBDBA074WTLRYkUin+LEQ@mail.gmail.com>
+ <CA+kOe08AT8ogkrNxdun=doLQaO5CQGi6fC2tJ2-x-mwq3mC8yQ@mail.gmail.com>
+ <CA+kOe0-BHE4QFBDeBesU4YS+EUoOCbJJS8AD6HLQ5oad4xV6aA@mail.gmail.com>
+Message-ID: <CA+kOe0_E9s9979a-eK1etGrUefVz_sG3THeRzLKHRTs=a+dCsw@mail.gmail.com>
+
+On Fri, Dec 1, 2017 at 11:27 AM, Martin Buchholz <martinrb at google.com>
+wrote:
+
+> It looks like we should be taking advantage of other VarHandle features,
+> e.g. calling getAndAddRelease
+>
+
+Hmmm, that's won't work because we use cas failure as a signal to create
+more cells.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20171201/ad822eab/attachment.html>
+
+From peter.levart at gmail.com  Sat Dec  2 07:00:34 2017
+From: peter.levart at gmail.com (Peter Levart)
+Date: Sat, 2 Dec 2017 13:00:34 +0100
+Subject: [concurrency-interest] LongAdder with custom behavior?
+In-Reply-To: <CAAcqB+tX+h2p0j4eUnOOn8ZGsK=XjnR3WyGqu5GeNPA2UUcmEw@mail.gmail.com>
+References: <CAAcqB+tntDdr6NP0M=FWE45jTav4-jBDBA074WTLRYkUin+LEQ@mail.gmail.com>
+ <5dc171dd-faae-2c56-84e5-a8e6ed7ccf9a@gmail.com>
+ <CAAcqB+tX+h2p0j4eUnOOn8ZGsK=XjnR3WyGqu5GeNPA2UUcmEw@mail.gmail.com>
+Message-ID: <48835c6c-4b70-eef8-46f7-fdd8bf072283@gmail.com>
+
+Hi Carl,
+
+Carl Mastrangelo je 01. 12. 2017 ob 20:12 napisal:
+>
+>
+>
+>     On 12/01/2017 08:18 AM, Carl Mastrangelo via Concurrency-interest
+>     wrote:
+>>     While looking at LongAdder as a possible candidate for a
+>>     concurrent counter, I noticed three things that made it seem
+>>     surprising.  I am wondering what the rationale is for these since
+>>     they don't make sense to me:
+>>
+>>     1.  LongAdder.sumThenReset seems to not be thread-safe.  If
+>>     concurrent writes happen between reading and resetting of each
+>>     Cell, then the write could get dropped.    This matches the
+>>     behavior described in reset(), but makes the class less useful. 
+>>      For instance, I would like sumThenReset to tally up all the
+>>     mutations, and reset the counter back to zero without dropping
+>>     mutations.  This would make it so I call sumThenReset later, and
+>>     pick up any mutations I missed.
+>>
+>>     2.  Following up on the first point, the implementation of
+>>     sumThenReset does two volatile operations on each Cell.value. 
+>>     First it reads, followed by setting it to zero.  Why doesn't it
+>>     use getAndSet on the value?  On the surface it would appear to be
+>>     fewer synchronization points.   Also, it would nicely solve the
+>>     first item.
+>
+>     You can achieve similar observable effect in the following way:
+>
+>         public static long sumThenResetAtomic(LongAdder adder) {
+>             long sum = adder.sum();
+>             adder.add(-sum);
+>             return sum;
+>         }
+>
+>     This has better performance, because it does N reads and
+>     potentially only a single CAS which presents less disturbance to
+>     concurrent ongoing additions than N getAndSet(s) would.
+>
+>
+> This approach would work, but why wouldn't sumThenReset implement it 
+> that way?     It isn't clear to me that two volatile accesses is 
+> faster than a single CAS.
+
+The name I gave - 'sumThenResetAtomic' is not correct. There's nothing 
+atomic about the method. If one wanted to use it as is in a concurrent 
+environment it should at least be synchronized so that concurrent 
+threads calling it do the right thing - to support your use case.
+
+So my answer is speculative: probably because it would require 
+synchronization and LongAdder was designed to not use any locks. If one 
+wants to do it that way, (s)he can. LongAdder is just a low-level 
+primitive with which you can build your concurrent logic.
+
+I'm wondering why you need a fail-fast isEmpty() method though. Do you 
+need to call it frequently? Why?
+
+Regards, Peter
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20171202/64d1c8ea/attachment.html>
+
+From dl at cs.oswego.edu  Sat Dec  2 08:41:30 2017
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sat, 2 Dec 2017 08:41:30 -0500
+Subject: [concurrency-interest] LongAdder with custom behavior?
+In-Reply-To: <CAAcqB+tntDdr6NP0M=FWE45jTav4-jBDBA074WTLRYkUin+LEQ@mail.gmail.com>
+References: <CAAcqB+tntDdr6NP0M=FWE45jTav4-jBDBA074WTLRYkUin+LEQ@mail.gmail.com>
+Message-ID: <85b3597b-9320-d38a-42db-8ed91f860dc1@cs.oswego.edu>
+
+On 12/01/2017 02:18 AM, Carl Mastrangelo via Concurrency-interest wrote:
+
+> 
+> I would like sumThenReset to tally up all the mutations, and reset
+> the counter back to zero without dropping mutations.  This would make
+> it so I call sumThenReset later, and pick up any mutations I missed.
+
+It sounds like you are looking for a SNZI (scalable non-zero indicator).
+(Google it). We ought to consider supplying one.
+
+> 
+> the implementation of sumThenReset does two volatile operations on
+> each Cell.value.  First it reads, followed by setting it to zero.
+> Why doesn't it use getAndSet on the value?
+
+Yes; thanks. This should usually be faster. Changes are now in jsr166
+CVS and should some day propagate.
+
+-Doug
+
+
+From martinrb at google.com  Sat Dec  2 15:17:03 2017
+From: martinrb at google.com (Martin Buchholz)
+Date: Sat, 2 Dec 2017 12:17:03 -0800
+Subject: [concurrency-interest] LongAdder with custom behavior?
+In-Reply-To: <85b3597b-9320-d38a-42db-8ed91f860dc1@cs.oswego.edu>
+References: <CAAcqB+tntDdr6NP0M=FWE45jTav4-jBDBA074WTLRYkUin+LEQ@mail.gmail.com>
+ <85b3597b-9320-d38a-42db-8ed91f860dc1@cs.oswego.edu>
+Message-ID: <CA+kOe0-oreQ0zQiNgkj0YcjQUiSCD6wFDsz_ayFXyQH9ARXBHQ@mail.gmail.com>
+
+On Sat, Dec 2, 2017 at 5:41 AM, Doug Lea via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> On 12/01/2017 02:18 AM, Carl Mastrangelo via Concurrency-interest wrote:
+>
+> >
+> > I would like sumThenReset to tally up all the mutations, and reset
+> > the counter back to zero without dropping mutations.  This would make
+> > it so I call sumThenReset later, and pick up any mutations I missed.
+>
+> It sounds like you are looking for a SNZI (scalable non-zero indicator).
+> (Google it). We ought to consider supplying one.
+>
+> >
+> > the implementation of sumThenReset does two volatile operations on
+> > each Cell.value.  First it reads, followed by setting it to zero.
+> > Why doesn't it use getAndSet on the value?
+>
+> Yes; thanks. This should usually be faster. Changes are now in jsr166
+> CVS and should some day propagate.
+>
+
+So we've implemented this optimization and it might provide the concurrency
+control Carl is looking for, but we're reluctant to promise anything in the
+spec along these lines.  After these changes, sumThenReset can be used to
+"drain" a "queue" where there is no data associated with each queue
+element, only a total count of elements.  But the name of the method is
+wrong for that use case, and it is likely to be misused - most queue
+elements do actually need to provide some data.  I'm reminded of the Unix
+signal fiasco - signals were originally designed to be data free, and
+duplicates could be discarded, but I think that was a mistaken design, and
+now we have siginfos that could be lost if signals arrive concurrently.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20171202/1135b0cd/attachment.html>
+
+From notcarl at google.com  Mon Dec  4 14:58:30 2017
+From: notcarl at google.com (Carl Mastrangelo)
+Date: Mon, 4 Dec 2017 11:58:30 -0800
+Subject: [concurrency-interest] LongAdder with custom behavior?
+In-Reply-To: <48835c6c-4b70-eef8-46f7-fdd8bf072283@gmail.com>
+References: <CAAcqB+tntDdr6NP0M=FWE45jTav4-jBDBA074WTLRYkUin+LEQ@mail.gmail.com>
+ <5dc171dd-faae-2c56-84e5-a8e6ed7ccf9a@gmail.com>
+ <CAAcqB+tX+h2p0j4eUnOOn8ZGsK=XjnR3WyGqu5GeNPA2UUcmEw@mail.gmail.com>
+ <48835c6c-4b70-eef8-46f7-fdd8bf072283@gmail.com>
+Message-ID: <CAAcqB+v9Be4rerOtv0vX5d1+nu+YQN9H6qHOs01Dfsb7pV92zg@mail.gmail.com>
+
+Inline responses
+
+On Sat, Dec 2, 2017 at 4:00 AM, Peter Levart <peter.levart at gmail.com> wrote:
+
+> Hi Carl,
+>
+> Carl Mastrangelo je 01. 12. 2017 ob 20:12 napisal:
+>
+>
+>>
+>> On 12/01/2017 08:18 AM, Carl Mastrangelo via Concurrency-interest wrote:
+>>
+>> While looking at LongAdder as a possible candidate for a concurrent
+>> counter, I noticed three things that made it seem surprising.  I am
+>> wondering what the rationale is for these since they don't make sense to
+>> me:
+>>
+>> 1.  LongAdder.sumThenReset seems to not be thread-safe.  If concurrent
+>> writes happen between reading and resetting of each Cell, then the write
+>> could get dropped.    This matches the behavior described in reset(), but
+>> makes the class less useful.   For instance, I would like sumThenReset to
+>> tally up all the mutations, and reset the counter back to zero without
+>> dropping mutations.  This would make it so I call sumThenReset later, and
+>> pick up any mutations I missed.
+>>
+>> 2.  Following up on the first point, the implementation of sumThenReset
+>> does two volatile operations on each Cell.value.  First it reads, followed
+>> by setting it to zero.  Why doesn't it use getAndSet on the value?  On the
+>> surface it would appear to be fewer synchronization points.   Also, it
+>> would nicely solve the first item.
+>>
+>>
+>> You can achieve similar observable effect in the following way:
+>>
+>>     public static long sumThenResetAtomic(LongAdder adder) {
+>>         long sum = adder.sum();
+>>         adder.add(-sum);
+>>         return sum;
+>>     }
+>>
+>> This has better performance, because it does N reads and potentially only
+>> a single CAS which presents less disturbance to concurrent ongoing
+>> additions than N getAndSet(s) would.
+>>
+>
+> This approach would work, but why wouldn't sumThenReset implement it that
+> way?     It isn't clear to me that two volatile accesses is faster than a
+> single CAS.
+>
+>
+> The name I gave - 'sumThenResetAtomic' is not correct. There's nothing
+> atomic about the method. If one wanted to use it as is in a concurrent
+> environment it should at least be synchronized so that  concurrent threads
+> calling it do the right thing - to support your use case.
+>
+
+> So my answer is speculative: probably because it would require
+> synchronization and LongAdder was designed to not use any locks. If one
+> wants to do it that way, (s)he can. LongAdder is just a low-level primitive
+> with which you can build your concurrent logic.
+>
+
+Adding locks would be tantamount to just not using LongAdder at all.
+
+
+>
+> I'm wondering why you need a fail-fast isEmpty() method though. Do you
+> need to call it frequently? Why?
+>
+
+Well, I would like to call it frequently.  I'm playing around with SPSC and
+MPSC queues, and I need an approximate size of the queue.  In the MPSC
+queue case (so called Vyukov queue) its possible for the queue to appear
+empty briefly while being updated, so having a size counter would be nice.
+There may be better ways of doing what I want, but it seemed reasonably
+fast enough to use LongAdder.
+
+As for speed, I would like to call sumThenReset as much as 10 million times
+per second, so it should be not so expensive.
+
+
+>
+> Regards, Peter
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20171204/28c2c58d/attachment.html>
+
+From akarnokd at gmail.com  Wed Dec  6 10:03:19 2017
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Wed, 6 Dec 2017 16:03:19 +0100
+Subject: [concurrency-interest] j.u.c.Flow Javadoc example of
+ OneShotPublisher incorrect: onSubscribe not called if subscribed == true
+Message-ID: <CAAWwtm-F7di7v-KKvsMEcb5Z77aV2yJD7Eag_W+7AOSp5FRwxQ@mail.gmail.com>
+
+Hi. The example OneShotPublisher violates the specification for the second
+or later Subscribers because onSubscribe is not called before invoking the
+onError(new IllegalStateException()).
+
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/Flow.java?revision=1.32&view=markup
+
+ *   public synchronized void subscribe(Subscriber<? super Boolean>
+subscriber) {
+ *     if (subscribed)
+ *       subscriber.onError(new IllegalStateException()); // only one allowed
+ *     else {
+ *       subscribed = true;
+ *       subscriber.onSubscribe(new OneShotSubscription(subscriber, executor));
+ *     }
+ *   }
+
+
+Could be:
+
+enum EmptySubscription implements Flow.Subscription {
+   INSTANCE;
+   @Override public void request(long n) { }
+   @Override public void cancel() { }
+}
+
+public synchronized void subscribe(Flow.Subscriber<? super Boolean>
+subscriber) {
+  if (subscribed) {
+    subscriber.onSubscribe(EmptySubscription.INSTANCE);
+    subscriber.onError(new IllegalStateException()); // only one allowed
+  } else {
+    subscriber = true;
+    subscriber.onSubscribe(new OneShotSubscription(subscriber, executor));
+  }
+}
+
+
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20171206/e9db7e77/attachment.html>
+
+From valentin.male.kovalenko at gmail.com  Thu Dec 14 03:47:32 2017
+From: valentin.male.kovalenko at gmail.com (Valentin Kovalenko)
+Date: Thu, 14 Dec 2017 11:47:32 +0300
+Subject: [concurrency-interest] shouldn't data race be specified in JMM for
+ non-volatile conflicting accesses only?
+Message-ID: <CAO-wXw+D5yOckom+AK1g+XcrBw9Y9=xev9ZtdOesj1-V2LW2sw@mail.gmail.com>
+
+Hi everyone,
+
+The way "data race" and "correctly synchronized" programs are defined in
+JMM continue bothering me. It makes completely legit programs producing
+consistent results with all shared variables declared volatile (see
+Example2 below) to be "incorrectly synchronized" because data race
+definition is equally applicable to plain and volatile accesses.
+
+So my question is: shouldn't data race be specified in JMM for non-volatile
+conflicting accesses only?
+
+----------Explanation of my reasoning
+JMM defines data race as follows:
+*a) Two accesses to (reads of or writes to) the same variable are said to
+be conflicting if at least one of the accesses is a write.*
+*b) When a program [my remark: wrong; not a program, but an execution]
+contains two conflicting accesses that are not ordered by a happens-before
+relationship, it is said to contain a data race.*
+(note how this is equally applicable to plain and volatile accesses.)
+
+JMM defines a correctly synchronized program as follows:
+*A program is correctly synchronized if and only if all sequentially
+consistent executions are free of data races.*
+
+--------------------Example1
+May help with understanding Example2, but you can skip it if Example2 is
+clear right away.
+Let's consider the following program with two concurrently running threads
+(t1 and t2):
+
+static volatile int s = 0;// w0
+t1: r = s;// r
+t2: s = 1;// w1
+
+Executions (e1 and e2) with the following two synchronization orders (SO)
+are allowed by JMM (and there can't be any other SO orders):
+
+SO1: w0, r, w1; which gives notHB(r, w1), notHB(w1, r), r == 0
+SO2: w0, w1, r; which gives HB(w1, r), r == 1
+
+Both executions are sequentially consistent by definition because all
+actions are synchronization actions, hence ordered in a total order SO
+which is consistent with program order (PO). But e1 has a data race because
+r and w1 are not ordered by HB. Hence this program is not correctly
+synchronized by definition despite the only shared variable we have here is
+volatile s.
+
+--------------------Example2
+Now let's change the example a bit by forcing t1 to wait for w1 before
+making a read r:
+
+static volatile int s = 0 // w0
+t1: while (s == 0);// r_i, where i is from [1, k], and k >= 1 and is finite
+      r = s;// r
+t2: s = 1 // w1
+
+For this program, JMM allows the following execution e1 and a set of
+analogous executions E2 with the following SO orders respectively (and
+there can't be any other SO orders):
+
+SO1: w0, w1, r_1, r; which gives HB(w1, r), r == 1
+SO2: w0, r_1, ..., w1, ... r_k, r; which gives notHB(r_1, w1), notHB(w1,
+r_1), HB(w1, r), r == 1
+
+e1 and every execution from E2 are sequentially consistent by definition
+because all actions are synchronization actions, hence ordered in a total
+order SO which is consistent with program order (PO). But any execution
+from E2 has a data race because at least r_1 and w1 are not ordered by
+HB. *Hence
+this program is not correctly synchronized by definition despite the only
+shared variable we have here is volatile s, and all the outcomes of the
+program are the same (r == 1).*
+
+Regards,
+Valentin
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20171214/2431111e/attachment.html>
+
+From joe.bowbeer at gmail.com  Thu Dec 14 05:55:58 2017
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Thu, 14 Dec 2017 10:55:58 +0000
+Subject: [concurrency-interest] shouldn't data race be specified in JMM
+ for non-volatile conflicting accesses only?
+In-Reply-To: <CAO-wXw+D5yOckom+AK1g+XcrBw9Y9=xev9ZtdOesj1-V2LW2sw@mail.gmail.com>
+References: <CAO-wXw+D5yOckom+AK1g+XcrBw9Y9=xev9ZtdOesj1-V2LW2sw@mail.gmail.com>
+Message-ID: <CAHzJPEo8rcD5YgdseG_=+-Kva=LuXJrj4q5jf16iKXqkJTp4=Q@mail.gmail.com>
+
+Yes, only non-volatile conflicting accesses
+
+https://stackoverflow.com/a/16615355/901597
+=>
+http://cs.oswego.edu/pipermail/concurrency-interest/2012-January/008927.html
+==> http://www.cs.umd.edu/~pugh/java/memoryModel/archive/2483.html
+
+It looks like it was agreed that a change was needed, but then what
+happened?
+
+On Thu, Dec 14, 2017 at 12:49 AM Valentin Kovalenko via
+Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+
+> Hi everyone,
+>
+> The way "data race" and "correctly synchronized" programs are defined in
+> JMM continue bothering me. It makes completely legit programs producing
+> consistent results with all shared variables declared volatile (see
+> Example2 below) to be "incorrectly synchronized" because data race
+> definition is equally applicable to plain and volatile accesses.
+>
+> So my question is: shouldn't data race be specified in JMM for
+> non-volatile conflicting accesses only?
+>
+> ----------Explanation of my reasoning
+> JMM defines data race as follows:
+> *a) Two accesses to (reads of or writes to) the same variable are said to
+> be conflicting if at least one of the accesses is a write.*
+> *b) When a program [my remark: wrong; not a program, but an execution]
+> contains two conflicting accesses that are not ordered by a happens-before
+> relationship, it is said to contain a data race.*
+> (note how this is equally applicable to plain and volatile accesses.)
+>
+> JMM defines a correctly synchronized program as follows:
+> *A program is correctly synchronized if and only if all sequentially
+> consistent executions are free of data races.*
+>
+> --------------------Example1
+> May help with understanding Example2, but you can skip it if Example2 is
+> clear right away.
+> Let's consider the following program with two concurrently running threads
+> (t1 and t2):
+>
+> static volatile int s = 0;// w0
+> t1: r = s;// r
+> t2: s = 1;// w1
+>
+> Executions (e1 and e2) with the following two synchronization orders (SO)
+> are allowed by JMM (and there can't be any other SO orders):
+>
+> SO1: w0, r, w1; which gives notHB(r, w1), notHB(w1, r), r == 0
+> SO2: w0, w1, r; which gives HB(w1, r), r == 1
+>
+> Both executions are sequentially consistent by definition because all
+> actions are synchronization actions, hence ordered in a total order SO
+> which is consistent with program order (PO). But e1 has a data race because
+> r and w1 are not ordered by HB. Hence this program is not correctly
+> synchronized by definition despite the only shared variable we have here is
+> volatile s.
+>
+> --------------------Example2
+> Now let's change the example a bit by forcing t1 to wait for w1 before
+> making a read r:
+>
+> static volatile int s = 0 // w0
+> t1: while (s == 0);// r_i, where i is from [1, k], and k >= 1 and is finite
+>       r = s;// r
+> t2: s = 1 // w1
+>
+> For this program, JMM allows the following execution e1 and a set of
+> analogous executions E2 with the following SO orders respectively (and
+> there can't be any other SO orders):
+>
+> SO1: w0, w1, r_1, r; which gives HB(w1, r), r == 1
+> SO2: w0, r_1, ..., w1, ... r_k, r; which gives notHB(r_1, w1), notHB(w1,
+> r_1), HB(w1, r), r == 1
+>
+> e1 and every execution from E2 are sequentially consistent by definition
+> because all actions are synchronization actions, hence ordered in a total
+> order SO which is consistent with program order (PO). But any execution
+> from E2 has a data race because at least r_1 and w1 are not ordered by HB. *Hence
+> this program is not correctly synchronized by definition despite the only
+> shared variable we have here is volatile s, and all the outcomes of the
+> program are the same (r == 1).*
+>
+> Regards,
+> Valentin
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20171214/b1c71ea5/attachment.html>
+
+From valentin.male.kovalenko at gmail.com  Thu Dec 14 06:55:57 2017
+From: valentin.male.kovalenko at gmail.com (Valentin Kovalenko)
+Date: Thu, 14 Dec 2017 14:55:57 +0300
+Subject: [concurrency-interest] shouldn't data race be specified in JMM
+ for non-volatile conflicting accesses only?
+In-Reply-To: <CAHzJPEo8rcD5YgdseG_=+-Kva=LuXJrj4q5jf16iKXqkJTp4=Q@mail.gmail.com>
+References: <CAO-wXw+D5yOckom+AK1g+XcrBw9Y9=xev9ZtdOesj1-V2LW2sw@mail.gmail.com>
+ <CAHzJPEo8rcD5YgdseG_=+-Kva=LuXJrj4q5jf16iKXqkJTp4=Q@mail.gmail.com>
+Message-ID: <CAO-wXwJxirpBYdHxxtXRC-tkz-_qYQnAbkQbJT5UR7E7WGTFTg@mail.gmail.com>
+
+Joe,
+
+Thank you for the reply! It's a relief to know I am not the only one who
+noticed this.
+
+But if this issue with JMM has been well known for so long (and it is not
+the only problem) why haven't JMM been ever reworked since Java 1.5? I
+hoped there were plans to rework JMM for Java 9, but this did not happen
+even despite the introduction of VarHandle access modes. It feels like such
+a refactoring will never happen.
+
+Regards,
+Valentin
+
+
+
+On Thu, Dec 14, 2017 at 1:55 PM, Joe Bowbeer <joe.bowbeer at gmail.com> wrote:
+
+> Yes, only non-volatile conflicting accesses
+>
+> https://stackoverflow.com/a/16615355/901597
+> => http://cs.oswego.edu/pipermail/concurrency-
+> interest/2012-January/008927.html
+> ==> http://www.cs.umd.edu/~pugh/java/memoryModel/archive/2483.html
+>
+> It looks like it was agreed that a change was needed, but then what
+> happened?
+>
+> On Thu, Dec 14, 2017 at 12:49 AM Valentin Kovalenko via
+> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>
+>> Hi everyone,
+>>
+>> The way "data race" and "correctly synchronized" programs are defined in
+>> JMM continue bothering me. It makes completely legit programs producing
+>> consistent results with all shared variables declared volatile (see
+>> Example2 below) to be "incorrectly synchronized" because data race
+>> definition is equally applicable to plain and volatile accesses.
+>>
+>> So my question is: shouldn't data race be specified in JMM for
+>> non-volatile conflicting accesses only?
+>>
+>> ----------Explanation of my reasoning
+>> JMM defines data race as follows:
+>> *a) Two accesses to (reads of or writes to) the same variable are said to
+>> be conflicting if at least one of the accesses is a write.*
+>> *b) When a program [my remark: wrong; not a program, but an execution]
+>> contains two conflicting accesses that are not ordered by a happens-before
+>> relationship, it is said to contain a data race.*
+>> (note how this is equally applicable to plain and volatile accesses.)
+>>
+>> JMM defines a correctly synchronized program as follows:
+>> *A program is correctly synchronized if and only if all sequentially
+>> consistent executions are free of data races.*
+>>
+>> --------------------Example1
+>> May help with understanding Example2, but you can skip it if Example2 is
+>> clear right away.
+>> Let's consider the following program with two concurrently running
+>> threads (t1 and t2):
+>>
+>> static volatile int s = 0;// w0
+>> t1: r = s;// r
+>> t2: s = 1;// w1
+>>
+>> Executions (e1 and e2) with the following two synchronization orders (SO)
+>> are allowed by JMM (and there can't be any other SO orders):
+>>
+>> SO1: w0, r, w1; which gives notHB(r, w1), notHB(w1, r), r == 0
+>> SO2: w0, w1, r; which gives HB(w1, r), r == 1
+>>
+>> Both executions are sequentially consistent by definition because all
+>> actions are synchronization actions, hence ordered in a total order SO
+>> which is consistent with program order (PO). But e1 has a data race because
+>> r and w1 are not ordered by HB. Hence this program is not correctly
+>> synchronized by definition despite the only shared variable we have here is
+>> volatile s.
+>>
+>> --------------------Example2
+>> Now let's change the example a bit by forcing t1 to wait for w1 before
+>> making a read r:
+>>
+>> static volatile int s = 0 // w0
+>> t1: while (s == 0);// r_i, where i is from [1, k], and k >= 1 and is
+>> finite
+>>       r = s;// r
+>> t2: s = 1 // w1
+>>
+>> For this program, JMM allows the following execution e1 and a set of
+>> analogous executions E2 with the following SO orders respectively (and
+>> there can't be any other SO orders):
+>>
+>> SO1: w0, w1, r_1, r; which gives HB(w1, r), r == 1
+>> SO2: w0, r_1, ..., w1, ... r_k, r; which gives notHB(r_1, w1), notHB(w1,
+>> r_1), HB(w1, r), r == 1
+>>
+>> e1 and every execution from E2 are sequentially consistent by definition
+>> because all actions are synchronization actions, hence ordered in a total
+>> order SO which is consistent with program order (PO). But any execution
+>> from E2 has a data race because at least r_1 and w1 are not ordered by HB. *Hence
+>> this program is not correctly synchronized by definition despite the only
+>> shared variable we have here is volatile s, and all the outcomes of the
+>> program are the same (r == 1).*
+>>
+>> Regards,
+>> Valentin
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20171214/cef9870d/attachment-0001.html>
+

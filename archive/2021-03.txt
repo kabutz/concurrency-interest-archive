@@ -1,0 +1,71 @@
+Subject: [concurrency-interest] Theoretical race condition in ECJ enum switches
+From: Jonas Konrad via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-03-19, 14:55
+To: concurrency-interest <Concurrency-interest@cs.oswego.edu>
+Reply-To: Jonas Konrad <me@yawk.at>
+
+Hi everyone,
+
+I found a potential race condition in how ECJ generates enum switch tables. It's not serious, and I'm wondering if it can be triggered at all, which is why I'm asking here, and not on the eclipse bug tracker 🙂
+
+In particular, in this code:
+
+public class Main {
+    private static final E e = E.A;
+
+    void test() {
+        switch (e) {
+            default:
+                throw new AssertionError();
+            case A:
+        }
+    }
+
+    enum E {
+        A
+    }
+}
+
+The Main class desugars to:
+
+public class Main {
+    private static final E e = E.A;
+    private static /* synthetic */ int[] $SWITCH_TABLE$Main$E;
+
+    void test() {
+        switch ($SWITCH_TABLE$Main$E()[Main.e.ordinal()]) {
+            default: {
+                throw new AssertionError();
+            }
+            case 1: {}
+        }
+    }
+
+    static /* synthetic */ int[] $SWITCH_TABLE$Main$E() {
+        final int[] $switch_TABLE$Main$E = Main.$SWITCH_TABLE$Main$E;
+        if ($switch_TABLE$Main$E != null) {
+            return $switch_TABLE$Main$E;
+        }
+        final int[] $switch_TABLE$Main$E2 = new int[E.values().length];
+        try {
+            $switch_TABLE$Main$E2[E.A.ordinal()] = 1;
+        }
+        catch (NoSuchFieldError noSuchFieldError) {}
+        return Main.$SWITCH_TABLE$Main$E = $switch_TABLE$Main$E2;
+    }
+}
+
+(full code at https://javap.yawk.at/#YCwS2S/procyon )
+
+As you can see, ECJ uses a lazy initialization pattern without any synchronization. If two threads call test() at roughly the same time, the first thread might write the Main.$SWITCH_TABLE$Main$E field, and the second thread might read it back as the proper array, returning it normally. However, because there is no HB edge between the write and the read, the second thread may not observe the values in the array. It could still see the default 0 values, which would then trigger the AssertionError in test().
+
+Now, it's pretty clear that this is technically a race condition, but I wonder if it is possible to trigger it at all in the real world. The race condition can only happen on the first few invocations of the method after the class has been loaded. Additionally, the test() method will not be hot at that point, so JIT artifacts are out (maybe -Xcomp or graal could work, though). Another idea would be to exploit the CPU semantics.
+
+Can anyone trigger this bug?
+
+Cheers,
+- Jonas
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest

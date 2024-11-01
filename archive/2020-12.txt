@@ -1,0 +1,481 @@
+From volkan.yazici at gmail.com  Mon Dec 14 05:24:46 2020
+From: volkan.yazici at gmail.com (=?UTF-8?B?Vm9sa2FuIFlhesSxY8Sx?=)
+Date: Mon, 14 Dec 2020 11:24:46 +0100
+Subject: [concurrency-interest] Continuously re-spawning a stopped/killed
+ thread
+Message-ID: <CAP7pH7tmmx1DW4k942drLObeQVaXb6JiKaLuXo+8B6ut+AMK7A@mail.gmail.com>
+
+Hello,
+
+In Log4j, we need to run a background task and keep it alive — unless JVM
+is stopped or our *while (!stopped)* condition fails after an interrupt.
+That is, if the task fails for some reason (e.g., by means of throwing an
+exception, interruption, or *ThreadDeath* due to *Thread#stop()*), it needs
+to be re-spawned. What is the most robust/decent way to implement this?
+
+For the records, this is the problem I am dealing with in Log4j:
+https://github.com/apache/logging-log4j2/commit/56436ad2176eac000d2821690e4373f097b76670#r44892412
+
+In a nutshell, we have a wrapper running in the background that calls Log4j
+*Layout*s to render *LogEvent*s. Though certain layouts can do really
+strange things from calling *Thread.currentThread().stop()* to throwing an
+*Error*. These cause the wrapper thread to get killed.
+
+I have found work arounds using uncaught exception handlers
+<https://howtodoinjava.com/java/multi-threading/restart-thread-uncaughtexceptionhandler/>,
+though I couldn't be sure if this is the right way to do it.
+
+Kind regards.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201214/4aa5cc70/attachment.htm>
+
+From martinrb at google.com  Tue Dec 15 15:44:21 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Tue, 15 Dec 2020 12:44:21 -0800
+Subject: [concurrency-interest] Continuously re-spawning a
+ stopped/killed thread
+In-Reply-To: <CAP7pH7tmmx1DW4k942drLObeQVaXb6JiKaLuXo+8B6ut+AMK7A@mail.gmail.com>
+References: <CAP7pH7tmmx1DW4k942drLObeQVaXb6JiKaLuXo+8B6ut+AMK7A@mail.gmail.com>
+Message-ID: <CA+kOe0_dS11ZmG8ZFFcUeCe5kV-z0qfB9JfCJUqnanaS6rJO=w@mail.gmail.com>
+
+Why not just try { ... } catch (...) { handle ... } in your thread's main
+method?
+
+On Mon, Dec 14, 2020 at 2:27 AM Volkan Yazıcı via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Hello,
+>
+> In Log4j, we need to run a background task and keep it alive — unless JVM
+> is stopped or our *while (!stopped)* condition fails after an interrupt.
+> That is, if the task fails for some reason (e.g., by means of throwing an
+> exception, interruption, or *ThreadDeath* due to *Thread#stop()*), it
+> needs to be re-spawned. What is the most robust/decent way to implement
+> this?
+>
+> For the records, this is the problem I am dealing with in Log4j:
+> https://github.com/apache/logging-log4j2/commit/56436ad2176eac000d2821690e4373f097b76670#r44892412
+>
+> In a nutshell, we have a wrapper running in the background that calls
+> Log4j *Layout*s to render *LogEvent*s. Though certain layouts can do
+> really strange things from calling *Thread.currentThread().stop()* to
+> throwing an *Error*. These cause the wrapper thread to get killed.
+>
+> I have found work arounds using uncaught exception handlers
+> <https://howtodoinjava.com/java/multi-threading/restart-thread-uncaughtexceptionhandler/>,
+> though I couldn't be sure if this is the right way to do it.
+>
+> Kind regards.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201215/b317d26d/attachment.htm>
+
+From volkan.yazici at gmail.com  Fri Dec 18 06:05:13 2020
+From: volkan.yazici at gmail.com (=?UTF-8?B?Vm9sa2FuIFlhesSxY8Sx?=)
+Date: Fri, 18 Dec 2020 12:05:13 +0100
+Subject: [concurrency-interest] Continuously re-spawning a
+ stopped/killed thread
+In-Reply-To: <CAP7pH7tmmx1DW4k942drLObeQVaXb6JiKaLuXo+8B6ut+AMK7A@mail.gmail.com>
+References: <CAP7pH7tmmx1DW4k942drLObeQVaXb6JiKaLuXo+8B6ut+AMK7A@mail.gmail.com>
+Message-ID: <CAP7pH7trS+wMA1QyeR8FgP=0jM8AYQ8BMrFzYwXTknC8JVm3rA@mail.gmail.com>
+
+*[Today while checking the mailing-list archives to share the link of my
+question with a friend, I noticed Martin Buchholz's response, which I could
+find neither in my inbox, nor in spam folders. Maybe missed during the
+recent Google outage?]*
+
+On Tue Dec 15 15:44:21 EST 2020 Martin Buchholz wrote:
+> Why not just try { ... } catch (...) { handle ... } in your thread's main
+method?
+
+That is what I had in mind initially:
+
+try { delegate(); }
+catch (ThreadDeath ...) { ... }
+catch (Throwable ...) { ... }
+
+But is this it? These sort of blacklists always make me nervous. I did not
+know about ThreadDeath until a user complaint. Maybe there are more such
+corner cases that I need to prevent against, hence my question to this list.
+
+
+On Mon, Dec 14, 2020 at 11:24 AM Volkan Yazıcı <volkan.yazici at gmail.com>
+wrote:
+
+> Hello,
+>
+> In Log4j, we need to run a background task and keep it alive — unless JVM
+> is stopped or our *while (!stopped)* condition fails after an interrupt.
+> That is, if the task fails for some reason (e.g., by means of throwing an
+> exception, interruption, or *ThreadDeath* due to *Thread#stop()*), it
+> needs to be re-spawned. What is the most robust/decent way to implement
+> this?
+>
+> For the records, this is the problem I am dealing with in Log4j:
+> https://github.com/apache/logging-log4j2/commit/56436ad2176eac000d2821690e4373f097b76670#r44892412
+>
+> In a nutshell, we have a wrapper running in the background that calls
+> Log4j *Layout*s to render *LogEvent*s. Though certain layouts can do
+> really strange things from calling *Thread.currentThread().stop()* to
+> throwing an *Error*. These cause the wrapper thread to get killed.
+>
+> I have found work arounds using uncaught exception handlers
+> <https://howtodoinjava.com/java/multi-threading/restart-thread-uncaughtexceptionhandler/>,
+> though I couldn't be sure if this is the right way to do it.
+>
+> Kind regards.
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201218/a79f713e/attachment.htm>
+
+From davidcholmes at aapt.net.au  Fri Dec 18 06:34:38 2020
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Fri, 18 Dec 2020 21:34:38 +1000
+Subject: [concurrency-interest] Continuously re-spawning a
+ stopped/killed thread
+In-Reply-To: <CAP7pH7trS+wMA1QyeR8FgP=0jM8AYQ8BMrFzYwXTknC8JVm3rA@mail.gmail.com>
+References: <CAP7pH7tmmx1DW4k942drLObeQVaXb6JiKaLuXo+8B6ut+AMK7A@mail.gmail.com>
+ <CAP7pH7trS+wMA1QyeR8FgP=0jM8AYQ8BMrFzYwXTknC8JVm3rA@mail.gmail.com>
+Message-ID: <00cc01d6d531$dbd98db0$938ca910$@aapt.net.au>
+
+Catching ThreadDeath is the “easy” part. But if random threads are calling Thread.stop on your thread at unknown timers then whatever your thread is trying to do can be left in a corrupt and potentially unrecoverable state. If another part of the application calls Thread.stop on your library thread then that is their stupidity – why should you care? Libraries can’t be expected to deal with a hostile environment.
+
+ 
+
+Cheers,
+
+David
+
+ 
+
+From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> On Behalf Of Volkan Yazici via Concurrency-interest
+Sent: Friday, 18 December 2020 9:05 PM
+To: concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] Continuously re-spawning a stopped/killed thread
+
+ 
+
+[Today while checking the mailing-list archives to share the link of my question with a friend, I noticed Martin Buchholz's response, which I could find neither in my inbox, nor in spam folders. Maybe missed during the recent Google outage?]
+
+ 
+
+On Tue Dec 15 15:44:21 EST 2020 Martin Buchholz wrote:
+
+> Why not just try { ... } catch (...) { handle ... } in your thread's main method?
+
+ 
+
+That is what I had in mind initially:
+
+ 
+
+try { delegate(); }
+
+catch (ThreadDeath ...) { ... }
+
+catch (Throwable ...) { ... }
+
+ 
+
+But is this it? These sort of blacklists always make me nervous. I did not know about ThreadDeath until a user complaint. Maybe there are more such corner cases that I need to prevent against, hence my question to this list.
+
+ 
+
+ 
+
+On Mon, Dec 14, 2020 at 11:24 AM Volkan Yazıcı <volkan.yazici at gmail.com <mailto:volkan.yazici at gmail.com> > wrote:
+
+Hello,
+
+ 
+
+In Log4j, we need to run a background task and keep it alive — unless JVM is stopped or our while (!stopped) condition fails after an interrupt. That is, if the task fails for some reason (e.g., by means of throwing an exception, interruption, or ThreadDeath due to Thread#stop()), it needs to be re-spawned. What is the most robust/decent way to implement this?
+
+For the records, this is the problem I am dealing with in Log4j: https://github.com/apache/logging-log4j2/commit/56436ad2176eac000d2821690e4373f097b76670#r44892412
+
+In a nutshell, we have a wrapper running in the background that calls Log4j Layouts to render LogEvents. Though certain layouts can do really strange things from calling Thread.currentThread().stop() to throwing an Error. These cause the wrapper thread to get killed.
+
+ 
+
+I have found work arounds using uncaught exception handlers <https://howtodoinjava.com/java/multi-threading/restart-thread-uncaughtexceptionhandler/> , though I couldn't be sure if this is the right way to do it.
+
+ 
+
+Kind regards.
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201218/b017d679/attachment.htm>
+
+From tg at freigmbh.de  Fri Dec 18 06:45:15 2020
+From: tg at freigmbh.de (Thorsten)
+Date: Fri, 18 Dec 2020 12:45:15 +0100
+Subject: [concurrency-interest] Continuously re-spawning a
+ stopped/killed thread
+In-Reply-To: <CAP7pH7trS+wMA1QyeR8FgP=0jM8AYQ8BMrFzYwXTknC8JVm3rA@mail.gmail.com>
+References: <CAP7pH7tmmx1DW4k942drLObeQVaXb6JiKaLuXo+8B6ut+AMK7A@mail.gmail.com>
+ <CAP7pH7trS+wMA1QyeR8FgP=0jM8AYQ8BMrFzYwXTknC8JVm3rA@mail.gmail.com>
+Message-ID: <1e580b9d-5ed8-e17e-d67b-721c3e82d207@freigmbh.de>
+
+Hello,
+
+ThreadDeath is part of the Thread#stop  mechanism. This whole concept 
+has been deprecated for over 10 Years or so. If you "need"/"want" to 
+implement according to the deprecated/broken Thread#stop specification : 
+Yes you need to add a special catch Handler for ThreadDeath.
+
+However this doesn't really make the world a much better place. Why 
+would a user call Thread.stop? To shutdown your service. But you already 
+have implemented a better shutdown mechanism, as has been described in 
+the Thread.stop javadoc:
+
+  Many uses of stop should be replaced by code that simply modifies some 
+variable to indicate that the target thread should stop running. The 
+target thread should check this variable regularly, and return from its 
+run method in an orderly fashion if the variable indicates that it is to 
+stop running.
+
+So adding a ThreadDeathHandler only does something if somebody is using 
+the API wrong in the first place, and it's not really clear if that 
+something is good.
+
+Best Regards,
+
+Thorsten
+
+
+Am 18/12/2020 um 12:05 schrieb Volkan Yazıcı via Concurrency-interest:
+> /[Today while checking the mailing-list archives to share the link of 
+> my question with a friend, I noticed Martin Buchholz's response, which 
+> I could find neither in my inbox, nor in spam folders. Maybe missed 
+> during the recent Google outage?]/
+>
+> On Tue Dec 15 15:44:21 EST 2020 Martin Buchholz wrote:
+> > Why not just try { ... } catch (...) { handle ... } in your thread's 
+> main method?
+>
+> That is what I had in mind initially:
+>
+> try { delegate(); }
+> catch (ThreadDeath ...) { ... }
+> catch (Throwable ...) { ... }
+>
+> But is this it? These sort of blacklists always make me nervous. I did 
+> not know about ThreadDeath until a user complaint. Maybe there are 
+> more such corner cases that I need to prevent against, hence my 
+> question to this list.
+>
+>
+> On Mon, Dec 14, 2020 at 11:24 AM Volkan Yazıcı 
+> <volkan.yazici at gmail.com <mailto:volkan.yazici at gmail.com>> wrote:
+>
+>     Hello,
+>
+>     In Log4j, we need to run a background task and keep it alive —
+>     unless JVM is stopped or our *while (!stopped)* condition fails
+>     after an interrupt. That is, if the task fails for some reason
+>     (e.g., by means of throwing an exception, interruption, or
+>     *ThreadDeath* due to *Thread#stop()*), it needs to be re-spawned.
+>     What is the most robust/decent way to implement this?
+>
+>     For the records, this is the problem I am dealing with in Log4j:
+>     https://github.com/apache/logging-log4j2/commit/56436ad2176eac000d2821690e4373f097b76670#r44892412
+>     <https://github.com/apache/logging-log4j2/commit/56436ad2176eac000d2821690e4373f097b76670#r44892412>
+>
+>     In a nutshell, we have a wrapper running in the background that
+>     calls Log4j *Layout*s to render *LogEvent*s. Though certain
+>     layouts can do really strange things from calling
+>     *Thread.currentThread().stop()* to throwing an *Error*. These
+>     cause the wrapper thread to get killed.
+>
+>     I have found work arounds using uncaught exception handlers
+>     <https://howtodoinjava.com/java/multi-threading/restart-thread-uncaughtexceptionhandler/>,
+>     though I couldn't be sure if this is the right way to do it.
+>
+>     Kind regards.
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201218/e0fbe6f6/attachment-0001.htm>
+
+From volkan.yazici at gmail.com  Fri Dec 18 07:15:40 2020
+From: volkan.yazici at gmail.com (=?UTF-8?B?Vm9sa2FuIFlhesSxY8Sx?=)
+Date: Fri, 18 Dec 2020 13:15:40 +0100
+Subject: [concurrency-interest] Continuously re-spawning a
+ stopped/killed thread
+In-Reply-To: <1e580b9d-5ed8-e17e-d67b-721c3e82d207@freigmbh.de>
+References: <CAP7pH7tmmx1DW4k942drLObeQVaXb6JiKaLuXo+8B6ut+AMK7A@mail.gmail.com>
+ <CAP7pH7trS+wMA1QyeR8FgP=0jM8AYQ8BMrFzYwXTknC8JVm3rA@mail.gmail.com>
+ <1e580b9d-5ed8-e17e-d67b-721c3e82d207@freigmbh.de>
+Message-ID: <CAP7pH7tQVXf_jkn-FBP71jMPfuzZkT2N-Af_MCLk-41yn3zejg@mail.gmail.com>
+
+Indeed I don't want to deal with hostile interruptions of my thread, though
+I want to keep it alive.
+
+Maybe some historical context would help to express my problem better. In
+the beginning, we had the following form:
+
+try { delegate(); }
+catch (Exception ...) { ... }
+
+Though later on we figured
+<https://github.com/vy/log4j2-redis-appender/issues/11#issue-721272982> it
+is pretty common to get harmless(?) Throwables that are not Exceptions,
+e.g., ExceptionInInitializerError. Hence I happened to change the code as
+follows:
+
+try { delegate(); }
+catch (Throwable ...) { ... }
+
+Then we received the complaint regarding ThreadDeath. Rather than trying to
+engineer a smart try-catch block, I want to return back to the first simple
+form where I only catch Exceptions, but then I need to get the thread
+automatically respawned on unintended deaths. I thought of leveraging the
+"unhandled exception handler" mechanism of Executors for this automatic
+respawning. What do you think?
+
+On Fri, Dec 18, 2020 at 12:45 PM Thorsten <tg at freigmbh.de> wrote:
+
+> Hello,
+>
+> ThreadDeath is part of the Thread#stop  mechanism. This whole concept has
+> been deprecated for over 10 Years or so. If you "need"/"want" to implement
+> according to the deprecated/broken Thread#stop specification : Yes you need
+> to add a special catch Handler for ThreadDeath.
+>
+> However this doesn't really make the world a much better place. Why would
+> a user call Thread.stop? To shutdown your service. But you already have
+> implemented a better shutdown mechanism, as has been described in the
+> Thread.stop javadoc:
+>
+>  Many uses of stop should be replaced by code that simply modifies some
+> variable to indicate that the target thread should stop running. The target
+> thread should check this variable regularly, and return from its run method
+> in an orderly fashion if the variable indicates that it is to stop running.
+>
+> So adding a ThreadDeathHandler only does something if somebody is using
+> the API wrong in the first place, and it's not really clear if that
+> something is good.
+>
+> Best Regards,
+>
+> Thorsten
+>
+>
+> Am 18/12/2020 um 12:05 schrieb Volkan Yazıcı via Concurrency-interest:
+>
+> *[Today while checking the mailing-list archives to share the link of my
+> question with a friend, I noticed Martin Buchholz's response, which I could
+> find neither in my inbox, nor in spam folders. Maybe missed during the
+> recent Google outage?]*
+>
+> On Tue Dec 15 15:44:21 EST 2020 Martin Buchholz wrote:
+> > Why not just try { ... } catch (...) { handle ... } in your thread's
+> main method?
+>
+> That is what I had in mind initially:
+>
+> try { delegate(); }
+> catch (ThreadDeath ...) { ... }
+> catch (Throwable ...) { ... }
+>
+> But is this it? These sort of blacklists always make me nervous. I did not
+> know about ThreadDeath until a user complaint. Maybe there are more such
+> corner cases that I need to prevent against, hence my question to this list.
+>
+>
+> On Mon, Dec 14, 2020 at 11:24 AM Volkan Yazıcı <volkan.yazici at gmail.com>
+> wrote:
+>
+>> Hello,
+>>
+>> In Log4j, we need to run a background task and keep it alive — unless JVM
+>> is stopped or our *while (!stopped)* condition fails after an interrupt.
+>> That is, if the task fails for some reason (e.g., by means of throwing an
+>> exception, interruption, or *ThreadDeath* due to *Thread#stop()*), it
+>> needs to be re-spawned. What is the most robust/decent way to implement
+>> this?
+>>
+>> For the records, this is the problem I am dealing with in Log4j:
+>> https://github.com/apache/logging-log4j2/commit/56436ad2176eac000d2821690e4373f097b76670#r44892412
+>>
+>> In a nutshell, we have a wrapper running in the background that calls
+>> Log4j *Layout*s to render *LogEvent*s. Though certain layouts can do
+>> really strange things from calling *Thread.currentThread().stop()* to
+>> throwing an *Error*. These cause the wrapper thread to get killed.
+>>
+>> I have found work arounds using uncaught exception handlers
+>> <https://howtodoinjava.com/java/multi-threading/restart-thread-uncaughtexceptionhandler/>,
+>> though I couldn't be sure if this is the right way to do it.
+>>
+>> Kind regards.
+>>
+>
+> _______________________________________________
+> Concurrency-interest mailing listConcurrency-interest at cs.oswego.eduhttp://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201218/55c778b5/attachment.htm>
+
+From tg at freigmbh.de  Fri Dec 18 07:42:26 2020
+From: tg at freigmbh.de (Thorsten)
+Date: Fri, 18 Dec 2020 13:42:26 +0100
+Subject: [concurrency-interest] Continuously re-spawning a
+ stopped/killed thread
+In-Reply-To: <CAP7pH7tQVXf_jkn-FBP71jMPfuzZkT2N-Af_MCLk-41yn3zejg@mail.gmail.com>
+References: <CAP7pH7tmmx1DW4k942drLObeQVaXb6JiKaLuXo+8B6ut+AMK7A@mail.gmail.com>
+ <CAP7pH7trS+wMA1QyeR8FgP=0jM8AYQ8BMrFzYwXTknC8JVm3rA@mail.gmail.com>
+ <1e580b9d-5ed8-e17e-d67b-721c3e82d207@freigmbh.de>
+ <CAP7pH7tQVXf_jkn-FBP71jMPfuzZkT2N-Af_MCLk-41yn3zejg@mail.gmail.com>
+Message-ID: <b5318340-8a76-f3b9-f204-042bae87fc5b@freigmbh.de>
+
+Am 18/12/2020 um 13:15 schrieb Volkan Yazıcı:
+> Then we received the complaint regarding ThreadDeath. Rather than 
+> trying to engineer a smart try-catch block, I want to return back to 
+> the first simple form where I only catch Exceptions, but then I need 
+> to get the thread automatically respawned on unintended deaths. I 
+> thought of leveraging the "unhandled exception handler" mechanism of 
+> Executors for this automatic respawning. What do you think?
+
+Hello,
+
+I think that's overengineering for a use case that probably never 
+existed. What is this 'complain' about?  Why does someone call 
+Thread#stop instead of the official API and what does he expect do 
+happen?  If you ignore ThreadDeath, your Thread might continue running. 
+If you handle it, your Thread will die, and the rest of you library 
+might run into problems because your Thread ist gone. If you respawn 
+your Thread, it could be the opposite of what the user wanted, because 
+he tried to 'stop' the tread and its immediatly back. So any 'solution' 
+is just a hack with sideeffects.
+
+
+Best Regards,
+
+Thorsten
+<https://en.wikipedia.org/wiki/Overengineering>
+
+
+
+      <https://en.wikipedia.org/wiki/Overengineering>
+
+<https://en.wikipedia.org/wiki/Overengineering>
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201218/39b5e4ea/attachment.htm>
+

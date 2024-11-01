@@ -1,0 +1,2464 @@
+From heinz at javaspecialists.eu  Tue Jul 23 09:44:19 2019
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Tue, 23 Jul 2019 16:44:19 +0300
+Subject: [concurrency-interest] Idiom of Local Final Variables for Locks
+Message-ID: <5D370F33.9090501@javaspecialists.eu>
+
+Good afternoon,
+
+in the java.util.concurrent.* classes, the idiom for using ReentrantLock 
+seems to be:
+
+public void foo() {
+final ReentrantLock lock = this.lock;
+lock.lock();
+try {
+... do something
+} finally {
+lock.unlock();
+}
+}
+
+e.g. ArrayBlockingQueue.offer(e)
+
+In other parts of the JDK, we don't see that idiom at all, and instead see:
+
+public void foo() {
+lock.lock();
+try {
+... do something
+} finally {
+lock.unlock();
+}
+}
+
+e.g. ServerSocketChannelImpl.accept()
+
+I've always seen this as a style idiom, rather than for pure 
+performance. Am I correct? I looked at the generated assembly code with 
+JITWatch, but didn't really see anything that would give a big edge, 
+especially in comparison to all the other things going on.
+
+Would love to hear your views on this.
+
+Regards
+
+Heinz
+-- 
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java™ Specialists' Newsletter" - www.javaspecialists.eu
+Java Champion - www.javachampions.org
+JavaOne Rock Star Speaker
+Tel: +30 69 75 595 262
+Skype: kabutz
+
+
+From joe.bowbeer at gmail.com  Tue Jul 23 10:09:21 2019
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Tue, 23 Jul 2019 07:09:21 -0700
+Subject: [concurrency-interest] Idiom of Local Final Variables for Locks
+In-Reply-To: <5D370F33.9090501@javaspecialists.eu>
+References: <5D370F33.9090501@javaspecialists.eu>
+Message-ID: <CAHzJPEpBAHENv9Ng3Bn=VRF31rqy3H0frbt5f+o9fFLAGEFiWA@mail.gmail.com>
+
+This idiom may have originated in a 2003 workaround for a hotspot behavior:
+
+Doug Lea writes to concurrency-jsr list in 2003:
+
+---
+I figured out from an exchange with hotspot folks that hotspot does
+not reliably cache final fields in the presence of volatile/atomic
+operations -- that is, if there are two references to a final field in a
+method using volatiles, it loads it twice even though it need not
+under JSR133 JMM. This can hurt in some uses of Lock objects, where
+I've changed our code to manually cache, as below.  Hopefully hotspot
+will start doing this automatically sometime soon so other people
+aren't tempted to manually tweak, but for us, and for now, doing this
+is worthwhile. (Automation inside a JVM is slightly trickier than it
+looks because you need to be careful about aliasing.)
+
+   class X {
+      final ReentrantLock lock = new ReentrantLock();
+      void f() {
+   +    ReentrantLock lock = this.lock; // now added
+        lock.lock();
+        try { ... }
+        finally { lock.unlock(); }
+      }
+   }
+---
+
+On Tue, Jul 23, 2019 at 6:46 AM Dr Heinz M. Kabutz via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+
+> Good afternoon,
+>
+> in the java.util.concurrent.* classes, the idiom for using ReentrantLock
+> seems to be:
+>
+> public void foo() {
+> final ReentrantLock lock = this.lock;
+> lock.lock();
+> try {
+> ... do something
+> } finally {
+> lock.unlock();
+> }
+> }
+>
+> e.g. ArrayBlockingQueue.offer(e)
+>
+> In other parts of the JDK, we don't see that idiom at all, and instead see:
+>
+> public void foo() {
+> lock.lock();
+> try {
+> ... do something
+> } finally {
+> lock.unlock();
+> }
+> }
+>
+> e.g. ServerSocketChannelImpl.accept()
+>
+> I've always seen this as a style idiom, rather than for pure
+> performance. Am I correct? I looked at the generated assembly code with
+> JITWatch, but didn't really see anything that would give a big edge,
+> especially in comparison to all the other things going on.
+>
+> Would love to hear your views on this.
+>
+> Regards
+>
+> Heinz
+> --
+> Dr Heinz M. Kabutz (PhD CompSci)
+> Author of "The Java™ Specialists' Newsletter" - www.javaspecialists.eu
+> Java Champion - www.javachampions.org
+> JavaOne Rock Star Speaker
+> Tel: +30 69 75 595 262
+> Skype: kabutz
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190723/1f403ae3/attachment.html>
+
+From joe.bowbeer at gmail.com  Tue Jul 23 10:13:07 2019
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Tue, 23 Jul 2019 07:13:07 -0700
+Subject: [concurrency-interest] Idiom of Local Final Variables for Locks
+In-Reply-To: <CAHzJPEpBAHENv9Ng3Bn=VRF31rqy3H0frbt5f+o9fFLAGEFiWA@mail.gmail.com>
+References: <5D370F33.9090501@javaspecialists.eu>
+ <CAHzJPEpBAHENv9Ng3Bn=VRF31rqy3H0frbt5f+o9fFLAGEFiWA@mail.gmail.com>
+Message-ID: <CAHzJPErBHrpx0JczfsK_-G2H6EtU7cPu0QU8E3=nYKjtW+VgwQ@mail.gmail.com>
+
+Sent Dec. 23, 2003
+
+On Tue, Jul 23, 2019 at 7:09 AM Joe Bowbeer <joe.bowbeer at gmail.com> wrote:
+
+> This idiom may have originated in a 2003 workaround for a hotspot behavior:
+>
+> Doug Lea writes to concurrency-jsr list in 2003:
+>
+> ---
+> I figured out from an exchange with hotspot folks that hotspot does
+> not reliably cache final fields in the presence of volatile/atomic
+> operations -- that is, if there are two references to a final field in a
+> method using volatiles, it loads it twice even though it need not
+> under JSR133 JMM. This can hurt in some uses of Lock objects, where
+> I've changed our code to manually cache, as below.  Hopefully hotspot
+> will start doing this automatically sometime soon so other people
+> aren't tempted to manually tweak, but for us, and for now, doing this
+> is worthwhile. (Automation inside a JVM is slightly trickier than it
+> looks because you need to be careful about aliasing.)
+>
+>    class X {
+>       final ReentrantLock lock = new ReentrantLock();
+>       void f() {
+>    +    ReentrantLock lock = this.lock; // now added
+>         lock.lock();
+>         try { ... }
+>         finally { lock.unlock(); }
+>       }
+>    }
+> ---
+>
+> On Tue, Jul 23, 2019 at 6:46 AM Dr Heinz M. Kabutz via
+> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>
+>> Good afternoon,
+>>
+>> in the java.util.concurrent.* classes, the idiom for using ReentrantLock
+>> seems to be:
+>>
+>> public void foo() {
+>> final ReentrantLock lock = this.lock;
+>> lock.lock();
+>> try {
+>> ... do something
+>> } finally {
+>> lock.unlock();
+>> }
+>> }
+>>
+>> e.g. ArrayBlockingQueue.offer(e)
+>>
+>> In other parts of the JDK, we don't see that idiom at all, and instead
+>> see:
+>>
+>> public void foo() {
+>> lock.lock();
+>> try {
+>> ... do something
+>> } finally {
+>> lock.unlock();
+>> }
+>> }
+>>
+>> e.g. ServerSocketChannelImpl.accept()
+>>
+>> I've always seen this as a style idiom, rather than for pure
+>> performance. Am I correct? I looked at the generated assembly code with
+>> JITWatch, but didn't really see anything that would give a big edge,
+>> especially in comparison to all the other things going on.
+>>
+>> Would love to hear your views on this.
+>>
+>> Regards
+>>
+>> Heinz
+>> --
+>> Dr Heinz M. Kabutz (PhD CompSci)
+>> Author of "The Java™ Specialists' Newsletter" - www.javaspecialists.eu
+>> Java Champion - www.javachampions.org
+>> JavaOne Rock Star Speaker
+>> Tel: +30 69 75 595 262
+>> Skype: kabutz
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190723/bfa451c4/attachment-0001.html>
+
+From heinz at javaspecialists.eu  Tue Jul 23 11:09:02 2019
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Tue, 23 Jul 2019 18:09:02 +0300
+Subject: [concurrency-interest] Idiom of Local Final Variables for Locks
+In-Reply-To: <CAHzJPEpBAHENv9Ng3Bn=VRF31rqy3H0frbt5f+o9fFLAGEFiWA@mail.gmail.com>
+References: <5D370F33.9090501@javaspecialists.eu>
+ <CAHzJPEpBAHENv9Ng3Bn=VRF31rqy3H0frbt5f+o9fFLAGEFiWA@mail.gmail.com>
+Message-ID: <5D37230E.9070507@javaspecialists.eu>
+
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190723/1978747d/attachment.html>
+
+From mr.chrisvest at gmail.com  Wed Jul 24 09:01:17 2019
+From: mr.chrisvest at gmail.com (Chris Vest)
+Date: Wed, 24 Jul 2019 15:01:17 +0200
+Subject: [concurrency-interest] ThreadGroups and ForkJoinPools
+Message-ID: <CAHXi_0da1WnL2Fdsx-tB4736L=TK4Cc6MOHonTicODs+HyjmKA@mail.gmail.com>
+
+Hello,
+
+We use ThreadGroups to aide in debugging, and to make sure that we don't
+accidentally forget to terminate any threads when things go through their
+life cycle.
+
+We manage this with a job scheduler that distributes tasks according to
+their group, to various executors - we have one executor per group.
+
+There are two problems that we are running into. One is that
+ForkJoinWorkerThreads cannot be directly assigned a ThreadGroup when they
+are constructed. We currently work around this by creating a normal thread,
+with the right thread group, for the sole purpose of creating the
+ForkJoinWorkerThread such that it will inherit the correct thread group
+from its short-livel parent thread.
+
+Another problem is that the threads in our scheduler, may run tasks that
+interact, directly or indirectly, with the ForkJoinPool.commonPool(), and
+in doing so may cause the common pool to start new threads, which will then
+inherit whatever thread group the submitting thread might have.
+We wish to `destroy` our thread groups when we shut down our scheduler, but
+the destroy method will throw if there are still running threads in the
+group.
+
+To solve this, I think the common pool threads should always be created
+with a specific, dedicated thread group.
+
+This can sometimes be worked around by always using fork join pools as
+executors and relying on the hack above, but this is not always possible.
+In particular, some of our executors need to be running custom thread
+types, such as the `FastThreadLocalThread` from Netty, which do not extend
+ForkJoinWorkerThread.
+
+We will be leaking thread groups, since we can't destroy the ones we
+create, if we can't get this fixed somehow.
+
+Cheers,
+Chris
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190724/eff3e864/attachment.html>
+
+From dl at cs.oswego.edu  Wed Jul 24 15:16:32 2019
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 24 Jul 2019 15:16:32 -0400
+Subject: [concurrency-interest] ThreadGroups and ForkJoinPools
+In-Reply-To: <CAHXi_0da1WnL2Fdsx-tB4736L=TK4Cc6MOHonTicODs+HyjmKA@mail.gmail.com>
+References: <CAHXi_0da1WnL2Fdsx-tB4736L=TK4Cc6MOHonTicODs+HyjmKA@mail.gmail.com>
+Message-ID: <dd9e11d4-e0a1-9986-ffe2-a94a44123f03@cs.oswego.edu>
+
+On 7/24/19 9:01 AM, Chris Vest via Concurrency-interest wrote:
+> 
+> We use ThreadGroups to aide in debugging, and to make sure that we don't
+> accidentally forget to terminate any threads when things go through
+> their life cycle.
+
+Given all their problems, it's not especially nice to provide more
+integration with ThreadGroups, but some of these usages don't have
+plausible alternatives, so it's probably worth doing.
+
+> We manage this with a job scheduler that distributes tasks according to
+> their group, to various executors - we have one executor per group.
+> 
+> There are two problems that we are running into. One is that
+> ForkJoinWorkerThreads cannot be directly assigned a ThreadGroup when
+> they are constructed. 
+
+We already have an alternative constructor with a ThreadGroup argument
+used for InnocuousForkJoinWorkerThreads. We could easily change this to
+be "protected" vs package private, so it could be used by a custom
+ForkJoinWorkerThreadFactory.
+
+> 
+> Another problem is that the threads in our scheduler, may run tasks that
+> interact, directly or indirectly, with the ForkJoinPool.commonPool(),
+> and in doing so may cause the common pool to start new threads, which
+> will then inherit whatever thread group the submitting thread might have.
+> We wish to `destroy` our thread groups when we shut down our scheduler,
+> but the destroy method will throw if there are still running threads in
+> the group.
+> 
+> To solve this, I think the common pool threads should always be created
+> with a specific, dedicated thread group.
+
+Seems reasonable. This is also already done in the case of
+InnocuousForkJoinWorkerThreads, so would be easy.
+
+-Doug
+
+
+
+From dl at cs.oswego.edu  Wed Jul 24 15:41:44 2019
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 24 Jul 2019 15:41:44 -0400
+Subject: [concurrency-interest] AQS and lock classes refresh
+Message-ID: <741339af-18c4-12c9-0915-a3d9bca63096@cs.oswego.edu>
+
+
+The java.util.concurrent.locks classes were among the first classes
+written for j.u.c, and were in increasing need of attention as new
+low-level support and new techniques became available. I did a
+reimplementation of most internals, keeping most of the same basic
+algorithms. Among other improvements, most locks (including
+ReentrantLock) and Conditions are now a bit faster, which also makes
+most BlockingQueues etc faster. Even StampedLock got a refresh; it is
+still our fastest and in many cases best lock. On the other hand,
+prospects for improving  ReentrantReadWriteLock are not good, mainly
+because the read-reentrancy requirements. (Even if you cannot replace
+usages with StampedLock, you may be able to use: ReadWriteLock r = new
+StampedLock().asReadWriteLock()).
+
+We'd like to leave these uncommitted from openjdk for a while just to
+make sure there are no surprises. Please help test them by following the
+instructions at
+http://gee.cs.oswego.edu/dl/concurrency-interest/index.html also pasted
+below. Feedback would be welcome.
+
+You may be able to use these versions now, without waiting for JDK
+releases, by obtaining jsr166 jar, then running java using the option
+java --patch-module java.base="$DIR/jsr166.jar", where DIR is the full
+file prefix.
+
+-Doug
+
+
+From martinrb at google.com  Wed Jul 24 19:42:46 2019
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 24 Jul 2019 16:42:46 -0700
+Subject: [concurrency-interest] Idiom of Local Final Variables for Locks
+In-Reply-To: <5D37230E.9070507@javaspecialists.eu>
+References: <5D370F33.9090501@javaspecialists.eu>
+ <CAHzJPEpBAHENv9Ng3Bn=VRF31rqy3H0frbt5f+o9fFLAGEFiWA@mail.gmail.com>
+ <5D37230E.9070507@javaspecialists.eu>
+Message-ID: <CA+kOe08tNEd_K7P_vL6a-o-upb5FKOFL6tVFije0CxCDbPZ-1Q@mail.gmail.com>
+
+On Tue, Jul 23, 2019 at 8:10 AM Dr Heinz M. Kabutz via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+
+> Thanks so much Joe.  So there was a performance gain at some point, but
+> hopefully HotSpot fixed that, I guess :-)
+>
+
+Sorry, no.
+
+https://openjdk.markmail.org/message/2tldq6t3ihhxskz5?q=from:rose+%40Stable+list:net%2Ejava%2Eopenjdk%2Ecore-libs-dev&page=1
+
+But even if we could totally trust hotspot, it's such a good practice (for
+correctness and performance) to copy fields into locals in concurrency
+libraries that we would probably keep on doing it.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190724/95448c5f/attachment.html>
+
+From forax at univ-mlv.fr  Wed Jul 24 20:24:44 2019
+From: forax at univ-mlv.fr (Remi Forax)
+Date: Thu, 25 Jul 2019 02:24:44 +0200 (CEST)
+Subject: [concurrency-interest] Idiom of Local Final Variables for Locks
+In-Reply-To: <CA+kOe08tNEd_K7P_vL6a-o-upb5FKOFL6tVFije0CxCDbPZ-1Q@mail.gmail.com>
+References: <5D370F33.9090501@javaspecialists.eu>
+ <CAHzJPEpBAHENv9Ng3Bn=VRF31rqy3H0frbt5f+o9fFLAGEFiWA@mail.gmail.com>
+ <5D37230E.9070507@javaspecialists.eu>
+ <CA+kOe08tNEd_K7P_vL6a-o-upb5FKOFL6tVFije0CxCDbPZ-1Q@mail.gmail.com>
+Message-ID: <619264531.1263626.1564014284041.JavaMail.zimbra@u-pem.fr>
+
+Furthermore, the JLS 17.5.3 said 
+"In some cases, such as deserialization, the system will need to change the final fields of an object after construction. final fields can be changed via reflection and other implementation-dependent means." 
+
+so if a JIT want to optimize a subsequent read of a final field, it has to prove that there is not access to reflection, JNI, Unsafe, MethodHandle, in between. 
+Given that Reentrant.lock() can call park() which is a C call, i doubt Hotspot will be ever be able to optimize that code apart if park() is artificially marked has "this is a pure function". 
+
+regards, 
+Rémi 
+
+> De: "concurrency-interest" <concurrency-interest at cs.oswego.edu>
+> À: "Dr Heinz M. Kabutz" <heinz at javaspecialists.eu>
+> Cc: "Joe Bowbeer" <joe.bowbeer at gmail.com>, "concurrency-interest"
+> <concurrency-interest at cs.oswego.edu>
+> Envoyé: Jeudi 25 Juillet 2019 01:42:46
+> Objet: Re: [concurrency-interest] Idiom of Local Final Variables for Locks
+
+> On Tue, Jul 23, 2019 at 8:10 AM Dr Heinz M. Kabutz via Concurrency-interest < [
+> mailto:concurrency-interest at cs.oswego.edu | concurrency-interest at cs.oswego.edu
+> ] > wrote:
+
+>> Thanks so much Joe. So there was a performance gain at some point, but hopefully
+>> HotSpot fixed that, I guess :-)
+
+> Sorry, no.
+
+> [
+> https://openjdk.markmail.org/message/2tldq6t3ihhxskz5?q=from:rose+%40Stable+list:net%2Ejava%2Eopenjdk%2Ecore-libs-dev&page=1
+> |
+> https://openjdk.markmail.org/message/2tldq6t3ihhxskz5?q=from:rose+%40Stable+list:net%2Ejava%2Eopenjdk%2Ecore-libs-dev&page=1
+> ]
+
+> But even if we could totally trust hotspot, it's such a good practice (for
+> correctness and performance) to copy fields into locals in concurrency
+> libraries that we would probably keep on doing it.
+
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190725/1ebf77cf/attachment.html>
+
+From gil at azul.com  Wed Jul 24 21:20:36 2019
+From: gil at azul.com (Gil Tene)
+Date: Thu, 25 Jul 2019 01:20:36 +0000
+Subject: [concurrency-interest] Idiom of Local Final Variables for Locks
+In-Reply-To: <619264531.1263626.1564014284041.JavaMail.zimbra@u-pem.fr>
+References: <5D370F33.9090501@javaspecialists.eu>
+ <CAHzJPEpBAHENv9Ng3Bn=VRF31rqy3H0frbt5f+o9fFLAGEFiWA@mail.gmail.com>
+ <5D37230E.9070507@javaspecialists.eu>
+ <CA+kOe08tNEd_K7P_vL6a-o-upb5FKOFL6tVFije0CxCDbPZ-1Q@mail.gmail.com>
+ <619264531.1263626.1564014284041.JavaMail.zimbra@u-pem.fr>
+Message-ID: <E2EA94AD-5C77-4675-BDFF-BCA1F0956DEB@azul.com>
+
+
+> On Jul 24, 2019, at 5:24 PM, Remi Forax via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+> Furthermore, the JLS 17.5.3 said
+> "In some cases, such as deserialization, the system will need to change the final fields of an object after construction. final fields can be changed via reflection and other implementation-dependent means."
+> 
+> so if a JIT want to optimize a subsequent read of a final field, it has to prove that there is not access to reflection, JNI, Unsafe, MethodHandle, in between.
+> Given that Reentrant.lock() can call park() which is a C call, i doubt Hotspot will be ever be able to optimize that code apart if park() is artificially marked has "this is a pure function".
+
+Actually, this is optimize-able. And doing so turns out to be a win in some surprisingly common code idioms
+
+We optimize instance-final fields in Zing (with Falcon) with our "Truly Final" speculative optimization. I.e. we speculate that instance fields declared final are actually and truly final, and deal with the exceptional cases where they are not. The JIT speculatively assumes that instance final fields will not be modified, and optimizes based the (registered) assumption (much like unguarded inlining of monomorphic non-final methods works). The JVM enforces the assumption by intercepting any changes to instance final fields by e.g. reflection, Unsafe, JNI, or MethodHandles, and will de-optimize assumption-dependent methods before any changes to the fields that they assume are final can take hold.
+
+My favorite example of this (surprisingly) taking hold comes from code that looks like this, and is quite common in the wild:
+
+class FastDoof {
+    private final long[] buf = new int[MAX_BUFLEN];
+    private long residual;
+    …
+
+    public long doSomethingFast(int val) {
+      for (int i = 0; i < buf.length; i++) {
+        computeResidual(buf[i], residual);
+      }
+      return residual;
+    }
+    …
+}
+
+It turns how that (without the Truly Final optimization) the following code is measurably faster on HotSpot:
+
+    public long doSomethingFast(int val) {
+      final localBuf = buf;
+      for (int val : buf) {
+        computeResidual(val, residual);
+      }
+      return residual;
+    }
+
+That is because the loop above is actually the semantic equivalent of this code:
+
+    public long doSomethingFast(int val) {
+      final localBuf = buf;
+      for (int i = 0; i < localBuf.length; i++) {
+        computeResidual(localBuf[i], residual);
+      }
+      return residual;
+    }
+
+Which allows the hoisting of the array range check out of the loop (since localBuf is actually known to remain final during the loop execution).
+
+With the Truly Final optimizations (which Zing does right now), all the loop versions above end up doing the same thing...
+
+You can see more on this in Nistan Wakart's blog entry here: http://psy-lob-saw.blogspot.com/2014/02/when-i-say-final-i-mean-final.html
+
+But, with all that said, I agree that the idiom itself is "much better" for the writing of lock code in methods, because it insolates the locking code's correctness from the potential of the lock field itself being (mistakenly declared non-final, or made practically-non-final for any reason...
+
+
+> 
+> regards,
+> Rémi
+> 
+> De: "concurrency-interest" <concurrency-interest at cs.oswego.edu>
+> À: "Dr Heinz M. Kabutz" <heinz at javaspecialists.eu>
+> Cc: "Joe Bowbeer" <joe.bowbeer at gmail.com>, "concurrency-interest" <concurrency-interest at cs.oswego.edu>
+> Envoyé: Jeudi 25 Juillet 2019 01:42:46
+> Objet: Re: [concurrency-interest] Idiom of Local Final Variables for Locks
+> 
+> 
+> On Tue, Jul 23, 2019 at 8:10 AM Dr Heinz M. Kabutz via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+> Thanks so much Joe.  So there was a performance gain at some point, but hopefully HotSpot fixed that, I guess :-)
+> 
+> Sorry, no.
+> 
+> https://openjdk.markmail.org/message/2tldq6t3ihhxskz5?q=from:rose+%40Stable+list:net%2Ejava%2Eopenjdk%2Ecore-libs-dev&page=1 <https://openjdk.markmail.org/message/2tldq6t3ihhxskz5?q=from:rose+%40Stable+list:net%2Ejava%2Eopenjdk%2Ecore-libs-dev&page=1>
+> 
+> But even if we could totally trust hotspot, it's such a good practice (for correctness and performance) to copy fields into locals in concurrency libraries that we would probably keep on doing it.
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190725/b659aa02/attachment-0001.html>
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 833 bytes
+Desc: Message signed with OpenPGP
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190725/b659aa02/attachment-0001.sig>
+
+From oleksandr.otenko at gmail.com  Thu Jul 25 01:58:39 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Thu, 25 Jul 2019 06:58:39 +0100
+Subject: [concurrency-interest] Idiom of Local Final Variables for Locks
+In-Reply-To: <E2EA94AD-5C77-4675-BDFF-BCA1F0956DEB@azul.com>
+References: <5D370F33.9090501@javaspecialists.eu>
+ <CAHzJPEpBAHENv9Ng3Bn=VRF31rqy3H0frbt5f+o9fFLAGEFiWA@mail.gmail.com>
+ <5D37230E.9070507@javaspecialists.eu>
+ <CA+kOe08tNEd_K7P_vL6a-o-upb5FKOFL6tVFije0CxCDbPZ-1Q@mail.gmail.com>
+ <619264531.1263626.1564014284041.JavaMail.zimbra@u-pem.fr>
+ <E2EA94AD-5C77-4675-BDFF-BCA1F0956DEB@azul.com>
+Message-ID: <CANkgWKhED9L7wiRuPdt8h15VmB=2g2N9pkqKUPjCfE4Mu4Qtcg@mail.gmail.com>
+
+This is a very good idea. I even wonder if there can be bug-free code that
+modifies final fields after first use at all. That is, breaking the
+assumption of immutability can be allowed to be expensive. For example I
+cannot see how a loop with the buffer can remain correct, if the final
+buffer were allowed to change during the loop. Or how the mutual exclusion
+be guaranteed, if the lock instance were allowed to change while any thread
+has access to a different instance (even if it is saved in a method local).
+
+Alex
+
+On Thu, 25 Jul 2019, 02:22 Gil Tene via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+>
+> On Jul 24, 2019, at 5:24 PM, Remi Forax via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+> Furthermore, the JLS 17.5.3 said
+> "In some cases, such as deserialization, the system will need to change
+> the final fields of an object after construction. final fields can be
+> changed via reflection and other implementation-dependent means."
+>
+> so if a JIT want to optimize a subsequent read of a final field, it has to
+> prove that there is not access to reflection, JNI, Unsafe, MethodHandle, in
+> between.
+> Given that Reentrant.lock() can call park() which is a C call, i doubt
+> Hotspot will be ever be able to optimize that code apart if park() is
+> artificially marked has "this is a pure function".
+>
+>
+> Actually, this is optimize-able. And doing so turns out to be a win in
+> some surprisingly common code idioms
+>
+> We optimize instance-final fields in Zing (with Falcon) with our "Truly
+> Final" speculative optimization. I.e. we speculate that instance fields
+> declared final are actually and truly final, and deal with the exceptional
+> cases where they are not. The JIT speculatively assumes that instance final
+> fields will not be modified, and optimizes based the (registered)
+> assumption (much like unguarded inlining of monomorphic non-final methods
+> works). The JVM enforces the assumption by intercepting any changes to
+> instance final fields by e.g. reflection, Unsafe, JNI, or MethodHandles,
+> and will de-optimize assumption-dependent methods before any changes to the
+> fields that they assume are final can take hold.
+>
+> My favorite example of this (surprisingly) taking hold comes from code
+> that looks like this, and is quite common in the wild:
+>
+> class FastDoof {
+>     private final long[] buf = new int[MAX_BUFLEN];
+>     private long residual;
+>     …
+>
+>     public long doSomethingFast(int val) {
+>       for (int i = 0; i < buf.length; i++) {
+>         computeResidual(buf[i], residual);
+>       }
+>       return residual;
+>     }
+>     …
+> }
+>
+> It turns how that (without the Truly Final optimization) the following
+> code is measurably faster on HotSpot:
+>
+>     public long doSomethingFast(int val) {
+>       final localBuf = buf;
+>       for (int val : buf) {
+>         computeResidual(val, residual);
+>       }
+>       return residual;
+>     }
+>
+> That is because the loop above is actually the semantic equivalent of this
+> code:
+>
+>     public long doSomethingFast(int val) {
+>       final localBuf = buf;
+>       for (int i = 0; i < localBuf.length; i++) {
+>         computeResidual(localBuf[i], residual);
+>       }
+>       return residual;
+>     }
+>
+> Which allows the hoisting of the array range check out of the loop (since
+> localBuf is actually known to remain final during the loop execution).
+>
+> With the Truly Final optimizations (which Zing does right now), all the
+> loop versions above end up doing the same thing...
+>
+> You can see more on this in Nistan Wakart's blog entry here:
+> http://psy-lob-saw.blogspot.com/2014/02/when-i-say-final-i-mean-final.html
+>
+> But, with all that said, I agree that the idiom itself is "much better"
+> for the writing of lock code in methods, because it insolates the locking
+> code's correctness from the potential of the lock field itself being
+> (mistakenly declared non-final, or made practically-non-final for any
+> reason...
+>
+>
+>
+> regards,
+> Rémi
+>
+> ------------------------------
+>
+> *De: *"concurrency-interest" <concurrency-interest at cs.oswego.edu>
+> *À: *"Dr Heinz M. Kabutz" <heinz at javaspecialists.eu>
+> *Cc: *"Joe Bowbeer" <joe.bowbeer at gmail.com>, "concurrency-interest" <
+> concurrency-interest at cs.oswego.edu>
+> *Envoyé: *Jeudi 25 Juillet 2019 01:42:46
+> *Objet: *Re: [concurrency-interest] Idiom of Local Final Variables for
+> Locks
+>
+>
+>
+> On Tue, Jul 23, 2019 at 8:10 AM Dr Heinz M. Kabutz via
+> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>
+>> Thanks so much Joe.  So there was a performance gain at some point, but
+>> hopefully HotSpot fixed that, I guess :-)
+>>
+>
+> Sorry, no.
+>
+>
+> https://openjdk.markmail.org/message/2tldq6t3ihhxskz5?q=from:rose+%40Stable+list:net%2Ejava%2Eopenjdk%2Ecore-libs-dev&page=1
+>
+> But even if we could totally trust hotspot, it's such a good practice (for
+> correctness and performance) to copy fields into locals in concurrency
+> libraries that we would probably keep on doing it.
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190725/053e1453/attachment.html>
+
+From akarnokd at gmail.com  Thu Jul 25 02:10:04 2019
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Thu, 25 Jul 2019 08:10:04 +0200
+Subject: [concurrency-interest] Idiom of Local Final Variables for Locks
+In-Reply-To: <CANkgWKhED9L7wiRuPdt8h15VmB=2g2N9pkqKUPjCfE4Mu4Qtcg@mail.gmail.com>
+References: <5D370F33.9090501@javaspecialists.eu>
+ <CAHzJPEpBAHENv9Ng3Bn=VRF31rqy3H0frbt5f+o9fFLAGEFiWA@mail.gmail.com>
+ <5D37230E.9070507@javaspecialists.eu>
+ <CA+kOe08tNEd_K7P_vL6a-o-upb5FKOFL6tVFije0CxCDbPZ-1Q@mail.gmail.com>
+ <619264531.1263626.1564014284041.JavaMail.zimbra@u-pem.fr>
+ <E2EA94AD-5C77-4675-BDFF-BCA1F0956DEB@azul.com>
+ <CANkgWKhED9L7wiRuPdt8h15VmB=2g2N9pkqKUPjCfE4Mu4Qtcg@mail.gmail.com>
+Message-ID: <CAAWwtm99FbU6eQYeX50swPCK5VZ=7r0UsU80-6=qAu0rqpBPVA@mail.gmail.com>
+
+We've been doing this in RxJava for years. However, there is another end to
+the optimization spectrum we found: loading up too many fields into local
+variables. At this point, some spill onto the stack, sometimes the most
+frequently needed ones, so we are back at square one.
+
+Alex Otenko via Concurrency-interest <concurrency-interest at cs.oswego.edu>
+ezt írta (időpont: 2019. júl. 25., Cs, 8:00):
+
+> This is a very good idea. I even wonder if there can be bug-free code that
+> modifies final fields after first use at all. That is, breaking the
+> assumption of immutability can be allowed to be expensive. For example I
+> cannot see how a loop with the buffer can remain correct, if the final
+> buffer were allowed to change during the loop. Or how the mutual exclusion
+> be guaranteed, if the lock instance were allowed to change while any thread
+> has access to a different instance (even if it is saved in a method local).
+>
+> Alex
+>
+> On Thu, 25 Jul 2019, 02:22 Gil Tene via Concurrency-interest, <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>>
+>> On Jul 24, 2019, at 5:24 PM, Remi Forax via Concurrency-interest <
+>> concurrency-interest at cs.oswego.edu> wrote:
+>>
+>> Furthermore, the JLS 17.5.3 said
+>> "In some cases, such as deserialization, the system will need to change
+>> the final fields of an object after construction. final fields can be
+>> changed via reflection and other implementation-dependent means."
+>>
+>> so if a JIT want to optimize a subsequent read of a final field, it has
+>> to prove that there is not access to reflection, JNI, Unsafe, MethodHandle,
+>> in between.
+>> Given that Reentrant.lock() can call park() which is a C call, i doubt
+>> Hotspot will be ever be able to optimize that code apart if park() is
+>> artificially marked has "this is a pure function".
+>>
+>>
+>> Actually, this is optimize-able. And doing so turns out to be a win in
+>> some surprisingly common code idioms
+>>
+>> We optimize instance-final fields in Zing (with Falcon) with our "Truly
+>> Final" speculative optimization. I.e. we speculate that instance fields
+>> declared final are actually and truly final, and deal with the exceptional
+>> cases where they are not. The JIT speculatively assumes that instance final
+>> fields will not be modified, and optimizes based the (registered)
+>> assumption (much like unguarded inlining of monomorphic non-final methods
+>> works). The JVM enforces the assumption by intercepting any changes to
+>> instance final fields by e.g. reflection, Unsafe, JNI, or MethodHandles,
+>> and will de-optimize assumption-dependent methods before any changes to the
+>> fields that they assume are final can take hold.
+>>
+>> My favorite example of this (surprisingly) taking hold comes from code
+>> that looks like this, and is quite common in the wild:
+>>
+>> class FastDoof {
+>>     private final long[] buf = new int[MAX_BUFLEN];
+>>     private long residual;
+>>     …
+>>
+>>     public long doSomethingFast(int val) {
+>>       for (int i = 0; i < buf.length; i++) {
+>>         computeResidual(buf[i], residual);
+>>       }
+>>       return residual;
+>>     }
+>>     …
+>> }
+>>
+>> It turns how that (without the Truly Final optimization) the following
+>> code is measurably faster on HotSpot:
+>>
+>>     public long doSomethingFast(int val) {
+>>       final localBuf = buf;
+>>       for (int val : buf) {
+>>         computeResidual(val, residual);
+>>       }
+>>       return residual;
+>>     }
+>>
+>> That is because the loop above is actually the semantic equivalent of
+>> this code:
+>>
+>>     public long doSomethingFast(int val) {
+>>       final localBuf = buf;
+>>       for (int i = 0; i < localBuf.length; i++) {
+>>         computeResidual(localBuf[i], residual);
+>>       }
+>>       return residual;
+>>     }
+>>
+>> Which allows the hoisting of the array range check out of the loop (since
+>> localBuf is actually known to remain final during the loop execution).
+>>
+>> With the Truly Final optimizations (which Zing does right now), all the
+>> loop versions above end up doing the same thing...
+>>
+>> You can see more on this in Nistan Wakart's blog entry here:
+>> http://psy-lob-saw.blogspot.com/2014/02/when-i-say-final-i-mean-final.html
+>>
+>> But, with all that said, I agree that the idiom itself is "much better"
+>> for the writing of lock code in methods, because it insolates the locking
+>> code's correctness from the potential of the lock field itself being
+>> (mistakenly declared non-final, or made practically-non-final for any
+>> reason...
+>>
+>>
+>>
+>> regards,
+>> Rémi
+>>
+>> ------------------------------
+>>
+>> *De: *"concurrency-interest" <concurrency-interest at cs.oswego.edu>
+>> *À: *"Dr Heinz M. Kabutz" <heinz at javaspecialists.eu>
+>> *Cc: *"Joe Bowbeer" <joe.bowbeer at gmail.com>, "concurrency-interest" <
+>> concurrency-interest at cs.oswego.edu>
+>> *Envoyé: *Jeudi 25 Juillet 2019 01:42:46
+>> *Objet: *Re: [concurrency-interest] Idiom of Local Final Variables for
+>> Locks
+>>
+>>
+>>
+>> On Tue, Jul 23, 2019 at 8:10 AM Dr Heinz M. Kabutz via
+>> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>>
+>>> Thanks so much Joe.  So there was a performance gain at some point, but
+>>> hopefully HotSpot fixed that, I guess :-)
+>>>
+>>
+>> Sorry, no.
+>>
+>>
+>> https://openjdk.markmail.org/message/2tldq6t3ihhxskz5?q=from:rose+%40Stable+list:net%2Ejava%2Eopenjdk%2Ecore-libs-dev&page=1
+>>
+>> But even if we could totally trust hotspot, it's such a good practice
+>> (for correctness and performance) to copy fields into locals in concurrency
+>> libraries that we would probably keep on doing it.
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190725/4f7b8ee3/attachment-0001.html>
+
+From martinrb at google.com  Thu Jul 25 09:55:15 2019
+From: martinrb at google.com (Martin Buchholz)
+Date: Thu, 25 Jul 2019 06:55:15 -0700
+Subject: [concurrency-interest] Idiom of Local Final Variables for Locks
+In-Reply-To: <CANkgWKhED9L7wiRuPdt8h15VmB=2g2N9pkqKUPjCfE4Mu4Qtcg@mail.gmail.com>
+References: <5D370F33.9090501@javaspecialists.eu>
+ <CAHzJPEpBAHENv9Ng3Bn=VRF31rqy3H0frbt5f+o9fFLAGEFiWA@mail.gmail.com>
+ <5D37230E.9070507@javaspecialists.eu>
+ <CA+kOe08tNEd_K7P_vL6a-o-upb5FKOFL6tVFije0CxCDbPZ-1Q@mail.gmail.com>
+ <619264531.1263626.1564014284041.JavaMail.zimbra@u-pem.fr>
+ <E2EA94AD-5C77-4675-BDFF-BCA1F0956DEB@azul.com>
+ <CANkgWKhED9L7wiRuPdt8h15VmB=2g2N9pkqKUPjCfE4Mu4Qtcg@mail.gmail.com>
+Message-ID: <CA+kOe08oVCTTbV_tpsrpm2x09SX95aZ9yKVARPhK3bi0qnwZYA@mail.gmail.com>
+
+On Wed, Jul 24, 2019 at 10:58 PM Alex Otenko <oleksandr.otenko at gmail.com>
+wrote:
+
+> This is a very good idea. I even wonder if there can be bug-free code that
+> modifies final fields after first use at all. That is, breaking the
+> assumption of immutability can be allowed to be expensive. For example I
+> cannot see how a loop with the buffer can remain correct, if the final
+> buffer were allowed to change during the loop. Or how the mutual exclusion
+> be guaranteed, if the lock instance were allowed to change while any thread
+> has access to a different instance (even if it is saved in a method local).
+>
+
+Whether a field is __declared__ final can be mostly irrelevant to the JIT.
+Effective finality can often be deduced from the code.
+
+In practice, final fields are often modified in pseudo-constructors, e.g.
+via CopyOnWriteArrayList.resetLock, while the object is still
+thread-confined.  Java's object construction design bug.
+
+---
+
+Our own ArrayDeque is full of
+        final Object[] es = elements;
+so that we can access the backing array more efficiently.  Here it would be
+tougher for Zing to optimize because "elements" is not final and is in fact
+often modified.  BUT ArrayDeque is not thread-safe and if another thread
+modifies "elements" while an ArrayDeque method executes, that's a user's
+race bug!
+
+Zing could speculatively optimize an arbitrary loop over any array field,
+but it would have to deoptimize on concurrent modification of the field,
+and detecting concurrent access (reliably!) seems expensive.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190725/46cd8c54/attachment.html>
+
+From gil at azul.com  Thu Jul 25 11:29:34 2019
+From: gil at azul.com (Gil Tene)
+Date: Thu, 25 Jul 2019 15:29:34 +0000
+Subject: [concurrency-interest] Idiom of Local Final Variables for Locks
+In-Reply-To: <CA+kOe08oVCTTbV_tpsrpm2x09SX95aZ9yKVARPhK3bi0qnwZYA@mail.gmail.com>
+References: <5D370F33.9090501@javaspecialists.eu>
+ <CAHzJPEpBAHENv9Ng3Bn=VRF31rqy3H0frbt5f+o9fFLAGEFiWA@mail.gmail.com>
+ <5D37230E.9070507@javaspecialists.eu>
+ <CA+kOe08tNEd_K7P_vL6a-o-upb5FKOFL6tVFije0CxCDbPZ-1Q@mail.gmail.com>
+ <619264531.1263626.1564014284041.JavaMail.zimbra@u-pem.fr>
+ <E2EA94AD-5C77-4675-BDFF-BCA1F0956DEB@azul.com>
+ <CANkgWKhED9L7wiRuPdt8h15VmB=2g2N9pkqKUPjCfE4Mu4Qtcg@mail.gmail.com>,
+ <CA+kOe08oVCTTbV_tpsrpm2x09SX95aZ9yKVARPhK3bi0qnwZYA@mail.gmail.com>
+Message-ID: <CAF92E55-C822-4AD1-ACB5-B62BF50C5547@azul.com>
+
+
+
+Sent from my iPad
+
+On Jul 25, 2019, at 6:55 AM, Martin Buchholz <martinrb at google.com<mailto:martinrb at google.com>> wrote:
+
+
+
+On Wed, Jul 24, 2019 at 10:58 PM Alex Otenko <oleksandr.otenko at gmail.com<mailto:oleksandr.otenko at gmail.com>> wrote:
+This is a very good idea. I even wonder if there can be bug-free code that modifies final fields after first use at all. That is, breaking the assumption of immutability can be allowed to be expensive. For example I cannot see how a loop with the buffer can remain correct, if the final buffer were allowed to change during the loop. Or how the mutual exclusion be guaranteed, if the lock instance were allowed to change while any thread has access to a different instance (even if it is saved in a method local).
+
+Whether a field is __declared__ final can be mostly irrelevant to the JIT.  Effective finality can often be deduced from the code.
+
+The “Truly Final” optimization deals [only] with declare-as-final fields. The fact that the language will prevent java code from doing any modifications (to a decayed final field) outside of the specific mechanisms noted before (reflection, methodhandles, unsafe and JNI) makes it easy both for analysis and intercepts. And truly final picks up optimizations on idiomatic truly final uses (which are quite common) where, without it, other optimizations are prevented when e.g. volatile access or method calls occur in loops. The range check elimination on a private instance-final buffer is a common example of this.
+
+Zing also has an “Effectively Final” optimization coming out, which applies the same benefits to fields that are not declared final, but can be proven to be [currently] following the same behavior. We make no attempt to speculate about lack of concurrent modification for this, and instead apply it only to fields for which code analysis and other speculations can together prove “effective finality”. The scope of cases for which we can actually prove this is growing over time. Where started simply with declared-private fields that are modified exactly once, and only in constructors. This could then be expand with more code analysis, e.g. to modified-once but outside a constructor (a common case found in idiomatic code when multiple constructors call a common init method that is only called from constructors, and only once from each constructor), or to multiple possible modifications of private fields  but speculating that hey don’t happen (e.g. a setter method does exist, but was never actually called). It can be expanded to protected fields (requires analysis across all current subclasses, and re-analysis on class loading), and even to public fields (requires analysis across all classes and upon each class load). But with each scope extension (beyond private fields), the amount of additional common idiomatic code that the optimization would provide benefits to tend to drops, as the likelihood of finding a public field that is effectively final in modern, idiomatic java code that is also “hot” enough to cate about seems to be pretty low. [they do exist, but they are generally more rare that private fields that are effectively final].
+
+
+In practice, final fields are often modified in pseudo-constructors, e.g. via CopyOnWriteArrayList.resetLock, while the object is still thread-confined.  Java's object construction design bug.
+
+---
+
+Our own ArrayDeque is full of
+        final Object[] es = elements;
+so that we can access the backing array more efficiently.  Here it would be tougher for Zing to optimize because "elements" is not final and is in fact often modified.  BUT ArrayDeque is not thread-safe and if another thread modifies "elements" while an ArrayDeque method executes, that's a user's race bug!
+
+Yup. Zing would not attempt this sort of thing (where the elements field is actually often modified). At least not with the current Truly Final or Effectively Final optimizations. They are aimed at other fish in the sea, and there are plenty of those in common code...
+
+Code like the above, which samples an actually modifiable (and in practice modified)  field into a local variable for speed is solving a real problem (and taking responsibility for correctness when concurrent of the field exists). When the same pattern is used purely to get speed for truly final or effectively final fields (compensating fur the compiler not recognizing those situations), the Truly Final and Effectively Final optimizations make it unnneccesary.
+
+
+Zing could speculatively optimize an arbitrary loop over any array field, but it would have to deoptimize on concurrent modification of the field, and detecting concurrent access (reliably!) seems expensive.
+
+Correct. Detecting concurrent modification when it cannot be disproved based on other assumptions is “hard”, and we don’t try to do that.
+
+But making some (speculative) assumptions on other things and provably deducing no concurrent modification from those assumptions (as long as the assumptions hold) works. Truly final optimizations prove that there is no concurrent modification is possible as long as the field remains truly final. The same goes for Effectively Final. There is plenty of code out there where people haven’t identified the speed deficiencies and compensated for them by caching into a local variable, and even more code where such caching would probably be incorrect (e.g. wrong to do for some external use cases of the same code), but the speculative assumptions can prove it to be “correct right now” in a lasting way for specific executions or applications.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190725/b563f0d1/attachment.html>
+
+From akstheking at gmail.com  Mon Jul 29 04:45:15 2019
+From: akstheking at gmail.com (akhilpratap1991)
+Date: Mon, 29 Jul 2019 01:45:15 -0700 (MST)
+Subject: [concurrency-interest] Using custom ThreadPool inside
+	parallelstream causing deadlock
+Message-ID: <1564389915465-0.post@n7.nabble.com>
+
+The following code is causing the deadlock. In the sample code, I am
+processing a list of String  calling processString method in parallel using
+parallelStream (using Default common ForkJoin pool). The processString
+method in turn calls the processCharacter in parallel using parallelStream
+but this time in custom ThreadPool. The code gets deadlocked but not always.
+Only once in 5-6 runs it gets deadlocked.
+
+In parallelStream, using custom Thread, processCharacter is executing on 2
+threads of custom ExecutorService (as obvious from output logs), so I am not
+able to understand why it is getting deadlocked. 3 threads of
+Common-ForkJoinPool are occupied by processString but 2 Threads of
+CustomerPool should be able to complete processing of each character. So,
+processing should not be blocked. It looks like I am missing something when
+parallelStream is using custom ThreadPool as deadlock never happens if I am
+using ForkJoinPool instead of FixedThreadPool.
+
+My initial conjecture is that is something to do with calling future.get()
+on outer parallelStream which is blocking ForkJoinThreads but why it is not
+happening always and only once in 5-6 runs.
+
+*Code: *
+    public class ForkJoinTest {
+      static final ExecutorService originalExecutor =
+Executors.newFixedThreadPool(2);
+      static final ExecutorService EXECUTOR =
+MoreExecutors.getExitingExecutorService(
+            (ThreadPoolExecutor) originalExecutor, 5, TimeUnit.SECONDS);
+
+      public static void main(String[] args) {
+        System.out
+                .println("Forkjoin pool size: " +
+(Runtime.getRuntime().availableProcessors() - 1));
+        final List<String> strings = listOfRandomString(10000);
+        strings.parallelStream().forEach(str -> processString(str));
+      }
+
+      private static void processString(final String string) {
+        try {
+            System.out.println("Processing string pause: " + string + ": " +
+Thread.currentThread()
+                    .getName());
+            System.out.println("Processing string resume: " + string);
+            final List<Character> chars = new ArrayList<>();
+            for (Character ch : string.toCharArray()) {
+                chars.add(ch);
+            }
+            final Runnable updateTask = () -> {
+                chars.parallelStream().forEach(ch ->
+processCharacter(string,
+                        ch));
+            };
+            Future future = EXECUTOR.submit(updateTask);
+            System.out.println("Wait of Future on Thread: " +
+Thread.currentThread().getName());
+            future.get();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static void processCharacter(final String str, final Character
+character) {
+        try {
+            System.out
+                    .println("processing character: " + character +
+"Processing string pause: " + str + ": " + Thread
+                            .currentThread()
+                            .getName());
+            Thread.sleep(2);
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+      }
+
+      private static List<String> listOfRandomString(final int size) {
+        final List<String> list = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            list.add(UUID.randomUUID().toString());
+        }
+        return list;
+      }
+    }
+
+
+*When the code runs with deadlock, it produces following output:*
+
+    Forkjoin pool size: 3
+    Processing string pause: 706fdcc5-235d-4513-aa73-ccc5ff3b7c96:
+ForkJoinPool.commonPool-worker-2
+    Processing string pause: 19814b98-8326-4531-b9f3-535c5a646076:
+ForkJoinPool.commonPool-worker-3
+    Processing string resume: 19814b98-8326-4531-b9f3-535c5a646076
+    Processing string pause: 2f2a3e3f-3def-4663-b024-0560f374e5fb:
+ForkJoinPool.commonPool-worker-1
+    Processing string resume: 2f2a3e3f-3def-4663-b024-0560f374e5fb
+    Processing string pause: 21c38331-7010-479b-bf8a-67e0557fee22: main
+    Processing string resume: 706fdcc5-235d-4513-aa73-ccc5ff3b7c96
+    Processing string resume: 21c38331-7010-479b-bf8a-67e0557fee22
+    Wait of Future on Thread: ForkJoinPool.commonPool-worker-2
+    Wait of Future on Thread: ForkJoinPool.commonPool-worker-3
+    Wait of Future on Thread: main
+    Wait of Future on Thread: ForkJoinPool.commonPool-worker-1
+    processing character: 3Processing string pause:
+19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+    processing character: 4Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: -Processing string pause:
+19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+    processing character: -Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 5Processing string pause:
+19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+    processing character: eProcessing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 3Processing string pause:
+19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+    processing character: fProcessing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 5Processing string pause:
+19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+    processing character: 3Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: dProcessing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 2Processing string pause:
+19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+    processing character: 6Processing string pause:
+19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+    processing character: 4Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: eProcessing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 4Processing string pause:
+19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+    processing character: 0Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 6Processing string pause:
+19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+    processing character: 2Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 9Processing string pause:
+19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+    processing character: 0Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: fProcessing string pause:
+19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+    processing character: 5Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: -Processing string pause:
+19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+    processing character: bProcessing string pause:
+19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+    processing character: 6Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: -Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: bProcessing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 3Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: eProcessing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 3Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: fProcessing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: -Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 2Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: aProcessing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 2Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: fProcessing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 6Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 6Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 3Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: -Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+    processing character: 4Processing string pause:
+2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+
+
+*When code does not deadlocks, output is something like this:*
+
+    Forkjoin pool size: 3
+    Processing string pause: 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68:
+ForkJoinPool.commonPool-worker-1
+    Processing string pause: a1311746-ba82-4541-9fbd-37d25857944d:
+ForkJoinPool.commonPool-worker-3
+    Processing string resume: a1311746-ba82-4541-9fbd-37d25857944d
+    Processing string pause: 4e5f6b79-bd48-4328-8d5c-252781bf9359:
+ForkJoinPool.commonPool-worker-2
+    Processing string resume: 4e5f6b79-bd48-4328-8d5c-252781bf9359
+    Processing string pause: 48ebca74-2fa9-486b-9467-8b40b3f2617f: main
+    Processing string resume: 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68
+    Processing string resume: 48ebca74-2fa9-486b-9467-8b40b3f2617f
+    Wait of Future on Thread: ForkJoinPool.commonPool-worker-1
+    Wait of Future on Thread: ForkJoinPool.commonPool-worker-3
+    Wait of Future on Thread: ForkJoinPool.commonPool-worker-2
+    Wait of Future on Thread: main
+    processing character: cProcessing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 7Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: -Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: -Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 2Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: bProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: bProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 5Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 9Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 2Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: dProcessing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: fProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 5Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: bProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: -Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: -Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 8Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 8Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: fProcessing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 0Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 9Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 5Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: eProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 3Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 6Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 5Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 8Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 9Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 1Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: cProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: fProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: bProcessing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 7Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 7Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 8Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: cProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 4Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: fProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 8Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 8Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: bProcessing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: fProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: dProcessing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: bProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 3Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: dProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 2Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 8Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 8Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 0Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: -Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: -Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 4Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 4Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 6Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: eProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: bProcessing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: bProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: aProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 7Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 8Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 9Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: -Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: -Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 5Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 8Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: aProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: fProcessing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: 8Processing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: 4Processing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    processing character: cProcessing string pause:
+8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+    processing character: eProcessing string pause:
+4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+    Processing string pause: 58fa7ebd-6f4a-4ec0-8515-84148d870b0c:
+ForkJoinPool.commonPool-worker-1
+    Processing string resume: 58fa7ebd-6f4a-4ec0-8515-84148d870b0c
+    processing character: dProcessing string pause:
+a1311746-ba82-4541-9fbd-37d25857944d: pool-1-thread-1
+    Wait of Future on Thread: ForkJoinPool.commonPool-worker-1
+    Processing string pause: b941108a-c7a9-499e-b951-e94206ffa553:
+ForkJoinPool.commonPool-worker-2
+    Processing string resume: b941108a-c7a9-499e-b951-e94206ffa553
+    Wait of Future on Thread: ForkJoinPool.commonPool-worker-2
+    ....
+
+*Thread dump for the deadlocked run:*
+
+    "main" #1 prio=5 os_prio=31 tid=0x00007fba84002000 nid=0x1b03 waiting on
+condition [0x000070000b253000]
+       java.lang.Thread.State: WAITING (parking)
+    	at sun.misc.Unsafe.park(Native Method)
+    	- parking to wait for  <0x000000076d8bc370> (a
+java.util.concurrent.FutureTask)
+    	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:175)
+    	at java.util.concurrent.FutureTask.awaitDone(FutureTask.java:429)
+    	at java.util.concurrent.FutureTask.get(FutureTask.java:191)
+    	at com.amazon.ForkJoinTest.processString(ForkJoinTest.java:46)
+    	at com.amazon.ForkJoinTest.lambda$main$0(ForkJoinTest.java:29)
+    	at com.amazon.ForkJoinTest$$Lambda$1/806353501.accept(Unknown Source)
+    	at
+java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:184)
+    	at
+java.util.ArrayList$ArrayListSpliterator.forEachRemaining(ArrayList.java:1382)
+    	at
+java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:481)
+    	at java.util.stream.ForEachOps$ForEachTask.compute(ForEachOps.java:291)
+    	at
+java.util.concurrent.CountedCompleter.exec(CountedCompleter.java:731)
+    	at java.util.concurrent.ForkJoinTask.doExec(ForkJoinTask.java:289)
+    	at java.util.concurrent.ForkJoinTask.doInvoke(ForkJoinTask.java:401)
+    	at java.util.concurrent.ForkJoinTask.invoke(ForkJoinTask.java:734)
+    	at
+java.util.stream.ForEachOps$ForEachOp.evaluateParallel(ForEachOps.java:160)
+    	at
+java.util.stream.ForEachOps$ForEachOp$OfRef.evaluateParallel(ForEachOps.java:174)
+    	at
+java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:233)
+    	at
+java.util.stream.ReferencePipeline.forEach(ReferencePipeline.java:418)
+    	at
+java.util.stream.ReferencePipeline$Head.forEach(ReferencePipeline.java:583)
+    	at com.amazon.ForkJoinTest.main(ForkJoinTest.java:29)
+    
+    
+    "pool-1-thread-2" #15 daemon prio=5 os_prio=31 tid=0x00007fba831a0000
+nid=0x5703 in Object.wait() [0x000070000c58c000]
+       java.lang.Thread.State: WAITING (on object monitor)
+    	at java.lang.Object.wait(Native Method)
+    	- waiting on <0x000000076db792e8> (a
+java.util.stream.ForEachOps$ForEachTask)
+    	at
+java.util.concurrent.ForkJoinTask.externalAwaitDone(ForkJoinTask.java:334)
+    	- locked <0x000000076db792e8> (a
+java.util.stream.ForEachOps$ForEachTask)
+    	at java.util.concurrent.ForkJoinTask.doInvoke(ForkJoinTask.java:405)
+    	at java.util.concurrent.ForkJoinTask.invoke(ForkJoinTask.java:734)
+    	at
+java.util.stream.ForEachOps$ForEachOp.evaluateParallel(ForEachOps.java:160)
+    	at
+java.util.stream.ForEachOps$ForEachOp$OfRef.evaluateParallel(ForEachOps.java:174)
+    	at
+java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:233)
+    	at
+java.util.stream.ReferencePipeline.forEach(ReferencePipeline.java:418)
+    	at
+java.util.stream.ReferencePipeline$Head.forEach(ReferencePipeline.java:583)
+    	at com.amazon.ForkJoinTest.lambda$processString$2(ForkJoinTest.java:43)
+    	at com.amazon.ForkJoinTest$$Lambda$2/581138573.run(Unknown Source)
+    	at
+java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+    	at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+    	at
+java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    	at
+java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    	at java.lang.Thread.run(Thread.java:748)
+    
+    
+    "pool-1-thread-1" #14 daemon prio=5 os_prio=31 tid=0x00007fba83199800
+nid=0x5503 in Object.wait() [0x000070000c489000]
+       java.lang.Thread.State: WAITING (on object monitor)
+    	at java.lang.Object.wait(Native Method)
+    	- waiting on <0x000000076dad5480> (a
+java.util.stream.ForEachOps$ForEachTask)
+    	at
+java.util.concurrent.ForkJoinTask.externalAwaitDone(ForkJoinTask.java:334)
+    	- locked <0x000000076dad5480> (a
+java.util.stream.ForEachOps$ForEachTask)
+    	at java.util.concurrent.ForkJoinTask.doInvoke(ForkJoinTask.java:405) 
+    	at java.util.concurrent.ForkJoinTask.invoke(ForkJoinTask.java:734)
+    	at
+java.util.stream.ForEachOps$ForEachOp.evaluateParallel(ForEachOps.java:160)
+    	at
+java.util.stream.ForEachOps$ForEachOp$OfRef.evaluateParallel(ForEachOps.java:174)
+    	at
+java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:233)
+    	at
+java.util.stream.ReferencePipeline.forEach(ReferencePipeline.java:418)
+    	at
+java.util.stream.ReferencePipeline$Head.forEach(ReferencePipeline.java:583)
+    	at com.amazon.ForkJoinTest.lambda$processString$2(ForkJoinTest.java:43)
+    	at com.amazon.ForkJoinTest$$Lambda$2/581138573.run(Unknown Source)
+    	at
+java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+    	at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+    	at
+java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    	at
+java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    	at java.lang.Thread.run(Thread.java:748)
+    
+    
+    "ForkJoinPool.commonPool-worker-3" #13 daemon prio=5 os_prio=31
+tid=0x00007fba83197000 nid=0x5303 waiting on condition [0x000070000c386000]
+       java.lang.Thread.State: WAITING (parking)
+    	at sun.misc.Unsafe.park(Native Method)
+    	- parking to wait for  <0x000000076da34ad0> (a
+java.util.concurrent.FutureTask)
+    	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:175)
+    	at java.util.concurrent.FutureTask.awaitDone(FutureTask.java:429)
+    	at java.util.concurrent.FutureTask.get(FutureTask.java:191)
+    	at com.amazon.ForkJoinTest.processString(ForkJoinTest.java:46)
+    	at com.amazon.ForkJoinTest.lambda$main$0(ForkJoinTest.java:29)
+    	at com.amazon.ForkJoinTest$$Lambda$1/806353501.accept(Unknown Source)
+    	at
+java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:184)
+    	at
+java.util.ArrayList$ArrayListSpliterator.forEachRemaining(ArrayList.java:1382)
+    	at
+java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:481)
+    	at java.util.stream.ForEachOps$ForEachTask.compute(ForEachOps.java:291)
+    	at
+java.util.concurrent.CountedCompleter.exec(CountedCompleter.java:731)
+    	at java.util.concurrent.ForkJoinTask.doExec(ForkJoinTask.java:289)
+    	at
+java.util.concurrent.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1056)
+    	at java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1692)
+    	at
+java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:157)
+    
+    
+    "ForkJoinPool.commonPool-worker-2" #12 daemon prio=5 os_prio=31
+tid=0x00007fba83831000 nid=0x5103 waiting on condition [0x000070000c283000]
+       java.lang.Thread.State: WAITING (parking)
+    	at sun.misc.Unsafe.park(Native Method)
+    	- parking to wait for  <0x000000076d985fd0> (a
+java.util.concurrent.FutureTask)
+    	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:175)
+    	at java.util.concurrent.FutureTask.awaitDone(FutureTask.java:429)
+    	at java.util.concurrent.FutureTask.get(FutureTask.java:191)
+    	at com.amazon.ForkJoinTest.processString(ForkJoinTest.java:46)
+    	at com.amazon.ForkJoinTest.lambda$main$0(ForkJoinTest.java:29)
+    	at com.amazon.ForkJoinTest$$Lambda$1/806353501.accept(Unknown Source)
+    	at
+java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:184)
+    	at
+java.util.ArrayList$ArrayListSpliterator.forEachRemaining(ArrayList.java:1382)
+    	at
+java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:481)
+    	at java.util.stream.ForEachOps$ForEachTask.compute(ForEachOps.java:291)
+    	at
+java.util.concurrent.CountedCompleter.exec(CountedCompleter.java:731)
+    	at java.util.concurrent.ForkJoinTask.doExec(ForkJoinTask.java:289)
+    	at
+java.util.concurrent.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1056)
+    	at java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1692)
+    	at
+java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:157)
+    
+    
+    "ForkJoinPool.commonPool-worker-1" #11 daemon prio=5 os_prio=31
+tid=0x00007fba8395c000 nid=0x4f03 waiting on condition [0x000070000c180000]
+       java.lang.Thread.State: WAITING (parking)
+    	at sun.misc.Unsafe.park(Native Method)
+    	- parking to wait for  <0x000000076d8da2d0> (a
+java.util.concurrent.FutureTask)
+    	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:175)
+    	at java.util.concurrent.FutureTask.awaitDone(FutureTask.java:429)
+    	at java.util.concurrent.FutureTask.get(FutureTask.java:191)
+    	at com.amazon.ForkJoinTest.processString(ForkJoinTest.java:46)
+    	at com.amazon.ForkJoinTest.lambda$main$0(ForkJoinTest.java:29)
+    	at com.amazon.ForkJoinTest$$Lambda$1/806353501.accept(Unknown Source)
+    	at
+java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:184)
+    	at
+java.util.ArrayList$ArrayListSpliterator.forEachRemaining(ArrayList.java:1382)
+    	at
+java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:481)
+    	at java.util.stream.ForEachOps$ForEachTask.compute(ForEachOps.java:291)
+    	at
+java.util.concurrent.CountedCompleter.exec(CountedCompleter.java:731)
+    	at java.util.concurrent.ForkJoinTask.doExec(ForkJoinTask.java:289)
+    	at
+java.util.concurrent.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1056)
+    	at java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1692)
+    	at
+java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:157)
+    
+    
+    "Monitor Ctrl-Break" #5 daemon prio=5 os_prio=31 tid=0x00007fba840c9000
+nid=0x4303 runnable [0x000070000bb6e000]
+       java.lang.Thread.State: RUNNABLE
+    	at java.net.SocketInputStream.socketRead0(Native Method)
+    	at java.net.SocketInputStream.socketRead(SocketInputStream.java:116)
+    	at java.net.SocketInputStream.read(SocketInputStream.java:171)
+    	at java.net.SocketInputStream.read(SocketInputStream.java:141)
+    	at sun.nio.cs.StreamDecoder.readBytes(StreamDecoder.java:284)
+    	at sun.nio.cs.StreamDecoder.implRead(StreamDecoder.java:326)
+    	at sun.nio.cs.StreamDecoder.read(StreamDecoder.java:178)
+    	- locked <0x000000076eb0e968> (a java.io.InputStreamReader)
+    	at java.io.InputStreamReader.read(InputStreamReader.java:184)
+    	at java.io.BufferedReader.fill(BufferedReader.java:161)
+    	at java.io.BufferedReader.readLine(BufferedReader.java:324)
+    	- locked <0x000000076eb0e968> (a java.io.InputStreamReader)
+    	at java.io.BufferedReader.readLine(BufferedReader.java:389)
+    	at
+com.intellij.rt.execution.application.AppMainV2$1.run(AppMainV2.java:64
+    
+
+    
+
+
+
+--
+Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+
+From heinz at javaspecialists.eu  Mon Jul 29 06:25:28 2019
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Mon, 29 Jul 2019 11:25:28 +0100
+Subject: [concurrency-interest] Using custom ThreadPool
+ inside	parallelstream causing deadlock
+In-Reply-To: <1564389915465-0.post@n7.nabble.com>
+References: <1564389915465-0.post@n7.nabble.com>
+Message-ID: <5D3EC998.6000704@javaspecialists.eu>
+
+Hi Akhil,
+
+as far as I can see, it is a classical resource deadlock.  We are 
+calling "get()" inside the parallel code, which blocks the common FJ 
+pool thread.
+
+If instead of a Fixed Thread Pool we use a ForkJoinPool for the 
+originalExecutor, then there is a special mechanism to create additional 
+threads to keep the parallelism high, similarly to how the 
+ManagedBlocker works in Phaser and CompletableFuture.
+
+If you add this at the top of main() you will see the difference:
+
+    Runtime.getRuntime().addShutdownHook(new Thread(() ->
+        System.out.println("ForkJoinPool.commonPool() = " + 
+ForkJoinPool.commonPool())));
+
+
+With FixedThreadPool, size == parallelism.  No additional threads were 
+created during the blocking get() operations.
+
+ForkJoinPool.commonPool() = 
+java.util.concurrent.ForkJoinPool at 682a0b20[Running, parallelism = 3, 
+size = 3, active = 3, running = 0, steals = 0, tasks = 4, submissions = 9]
+
+With ForkJoinPool, size >= parallelism.  If one of the parallel stream 
+threads blocks, another is created to keep the parallelism high:
+
+ForkJoinPool.commonPool() = 
+java.util.concurrent.ForkJoinPool at 1b28cdfa[Running, parallelism = 3, 
+size = 15, active = 0, running = 0, steals = 0, tasks = 0, submissions = 0]
+
+Regards
+
+Heinz
+-- 
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java™ Specialists' Newsletter" - www.javaspecialists.eu
+Java Champion - www.javachampions.org
+JavaOne Rock Star Speaker
+Tel: +30 69 75 595 262
+Skype: kabutz
+
+
+
+akhilpratap1991 via Concurrency-interest wrote:
+> The following code is causing the deadlock. In the sample code, I am
+> processing a list of String  calling processString method in parallel using
+> parallelStream (using Default common ForkJoin pool). The processString
+> method in turn calls the processCharacter in parallel using parallelStream
+> but this time in custom ThreadPool. The code gets deadlocked but not always.
+> Only once in 5-6 runs it gets deadlocked.
+>
+> In parallelStream, using custom Thread, processCharacter is executing on 2
+> threads of custom ExecutorService (as obvious from output logs), so I am not
+> able to understand why it is getting deadlocked. 3 threads of
+> Common-ForkJoinPool are occupied by processString but 2 Threads of
+> CustomerPool should be able to complete processing of each character. So,
+> processing should not be blocked. It looks like I am missing something when
+> parallelStream is using custom ThreadPool as deadlock never happens if I am
+> using ForkJoinPool instead of FixedThreadPool.
+>
+> My initial conjecture is that is something to do with calling future.get()
+> on outer parallelStream which is blocking ForkJoinThreads but why it is not
+> happening always and only once in 5-6 runs.
+>
+> *Code: *
+>     public class ForkJoinTest {
+>       static final ExecutorService originalExecutor =
+> Executors.newFixedThreadPool(2);
+>       static final ExecutorService EXECUTOR =
+> MoreExecutors.getExitingExecutorService(
+>             (ThreadPoolExecutor) originalExecutor, 5, TimeUnit.SECONDS);
+>
+>       public static void main(String[] args) {
+>         System.out
+>                 .println("Forkjoin pool size: " +
+> (Runtime.getRuntime().availableProcessors() - 1));
+>         final List<String> strings = listOfRandomString(10000);
+>         strings.parallelStream().forEach(str -> processString(str));
+>       }
+>
+>       private static void processString(final String string) {
+>         try {
+>             System.out.println("Processing string pause: " + string + ": " +
+> Thread.currentThread()
+>                     .getName());
+>             System.out.println("Processing string resume: " + string);
+>             final List<Character> chars = new ArrayList<>();
+>             for (Character ch : string.toCharArray()) {
+>                 chars.add(ch);
+>             }
+>             final Runnable updateTask = () -> {
+>                 chars.parallelStream().forEach(ch ->
+> processCharacter(string,
+>                         ch));
+>             };
+>             Future future = EXECUTOR.submit(updateTask);
+>             System.out.println("Wait of Future on Thread: " +
+> Thread.currentThread().getName());
+>             future.get();
+>         } catch (Exception e) {
+>             e.printStackTrace();
+>         }
+>     }
+>
+>     private static void processCharacter(final String str, final Character
+> character) {
+>         try {
+>             System.out
+>                     .println("processing character: " + character +
+> "Processing string pause: " + str + ": " + Thread
+>                             .currentThread()
+>                             .getName());
+>             Thread.sleep(2);
+>
+>         } catch (Exception e) {
+>             e.printStackTrace();
+>         }
+>       }
+>
+>       private static List<String> listOfRandomString(final int size) {
+>         final List<String> list = new ArrayList<>(size);
+>         for (int i = 0; i < size; i++) {
+>             list.add(UUID.randomUUID().toString());
+>         }
+>         return list;
+>       }
+>     }
+>
+>
+> *When the code runs with deadlock, it produces following output:*
+>
+>     Forkjoin pool size: 3
+>     Processing string pause: 706fdcc5-235d-4513-aa73-ccc5ff3b7c96:
+> ForkJoinPool.commonPool-worker-2
+>     Processing string pause: 19814b98-8326-4531-b9f3-535c5a646076:
+> ForkJoinPool.commonPool-worker-3
+>     Processing string resume: 19814b98-8326-4531-b9f3-535c5a646076
+>     Processing string pause: 2f2a3e3f-3def-4663-b024-0560f374e5fb:
+> ForkJoinPool.commonPool-worker-1
+>     Processing string resume: 2f2a3e3f-3def-4663-b024-0560f374e5fb
+>     Processing string pause: 21c38331-7010-479b-bf8a-67e0557fee22: main
+>     Processing string resume: 706fdcc5-235d-4513-aa73-ccc5ff3b7c96
+>     Processing string resume: 21c38331-7010-479b-bf8a-67e0557fee22
+>     Wait of Future on Thread: ForkJoinPool.commonPool-worker-2
+>     Wait of Future on Thread: ForkJoinPool.commonPool-worker-3
+>     Wait of Future on Thread: main
+>     Wait of Future on Thread: ForkJoinPool.commonPool-worker-1
+>     processing character: 3Processing string pause:
+> 19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+>     processing character: 4Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: -Processing string pause:
+> 19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+>     processing character: -Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 5Processing string pause:
+> 19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+>     processing character: eProcessing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 3Processing string pause:
+> 19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+>     processing character: fProcessing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 5Processing string pause:
+> 19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+>     processing character: 3Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: dProcessing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 2Processing string pause:
+> 19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+>     processing character: 6Processing string pause:
+> 19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+>     processing character: 4Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: eProcessing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 4Processing string pause:
+> 19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+>     processing character: 0Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 6Processing string pause:
+> 19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+>     processing character: 2Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 9Processing string pause:
+> 19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+>     processing character: 0Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: fProcessing string pause:
+> 19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+>     processing character: 5Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: -Processing string pause:
+> 19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+>     processing character: bProcessing string pause:
+> 19814b98-8326-4531-b9f3-535c5a646076: pool-1-thread-1
+>     processing character: 6Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: -Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: bProcessing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 3Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: eProcessing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 3Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: fProcessing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: -Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 2Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: aProcessing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 2Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: fProcessing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 6Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 6Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 3Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: -Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>     processing character: 4Processing string pause:
+> 2f2a3e3f-3def-4663-b024-0560f374e5fb: pool-1-thread-2
+>
+>
+> *When code does not deadlocks, output is something like this:*
+>
+>     Forkjoin pool size: 3
+>     Processing string pause: 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68:
+> ForkJoinPool.commonPool-worker-1
+>     Processing string pause: a1311746-ba82-4541-9fbd-37d25857944d:
+> ForkJoinPool.commonPool-worker-3
+>     Processing string resume: a1311746-ba82-4541-9fbd-37d25857944d
+>     Processing string pause: 4e5f6b79-bd48-4328-8d5c-252781bf9359:
+> ForkJoinPool.commonPool-worker-2
+>     Processing string resume: 4e5f6b79-bd48-4328-8d5c-252781bf9359
+>     Processing string pause: 48ebca74-2fa9-486b-9467-8b40b3f2617f: main
+>     Processing string resume: 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68
+>     Processing string resume: 48ebca74-2fa9-486b-9467-8b40b3f2617f
+>     Wait of Future on Thread: ForkJoinPool.commonPool-worker-1
+>     Wait of Future on Thread: ForkJoinPool.commonPool-worker-3
+>     Wait of Future on Thread: ForkJoinPool.commonPool-worker-2
+>     Wait of Future on Thread: main
+>     processing character: cProcessing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 7Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: -Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: -Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 2Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: bProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: bProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 5Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 9Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 2Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: dProcessing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: fProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 5Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: bProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: -Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: -Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 8Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 8Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: fProcessing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 0Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 9Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 5Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: eProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 3Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 6Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 5Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 8Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 9Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 1Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: cProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: fProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: bProcessing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 7Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 7Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 8Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: cProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 4Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: fProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 8Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 8Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: bProcessing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: fProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: dProcessing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: bProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 3Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: dProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 2Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 8Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 8Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 0Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: -Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: -Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 4Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 4Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 6Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: eProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: bProcessing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: bProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: aProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 7Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 8Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 9Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: -Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: -Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 5Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 8Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: aProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: fProcessing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: 8Processing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: 4Processing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     processing character: cProcessing string pause:
+> 8c8aeba8-fbf8-4d80-8fb7-bb97ccf05e68: pool-1-thread-1
+>     processing character: eProcessing string pause:
+> 4e5f6b79-bd48-4328-8d5c-252781bf9359: pool-1-thread-2
+>     Processing string pause: 58fa7ebd-6f4a-4ec0-8515-84148d870b0c:
+> ForkJoinPool.commonPool-worker-1
+>     Processing string resume: 58fa7ebd-6f4a-4ec0-8515-84148d870b0c
+>     processing character: dProcessing string pause:
+> a1311746-ba82-4541-9fbd-37d25857944d: pool-1-thread-1
+>     Wait of Future on Thread: ForkJoinPool.commonPool-worker-1
+>     Processing string pause: b941108a-c7a9-499e-b951-e94206ffa553:
+> ForkJoinPool.commonPool-worker-2
+>     Processing string resume: b941108a-c7a9-499e-b951-e94206ffa553
+>     Wait of Future on Thread: ForkJoinPool.commonPool-worker-2
+>     ....
+>
+> *Thread dump for the deadlocked run:*
+>
+>     "main" #1 prio=5 os_prio=31 tid=0x00007fba84002000 nid=0x1b03 waiting on
+> condition [0x000070000b253000]
+>        java.lang.Thread.State: WAITING (parking)
+>     	at sun.misc.Unsafe.park(Native Method)
+>     	- parking to wait for  <0x000000076d8bc370> (a
+> java.util.concurrent.FutureTask)
+>     	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:175)
+>     	at java.util.concurrent.FutureTask.awaitDone(FutureTask.java:429)
+>     	at java.util.concurrent.FutureTask.get(FutureTask.java:191)
+>     	at com.amazon.ForkJoinTest.processString(ForkJoinTest.java:46)
+>     	at com.amazon.ForkJoinTest.lambda$main$0(ForkJoinTest.java:29)
+>     	at com.amazon.ForkJoinTest$$Lambda$1/806353501.accept(Unknown Source)
+>     	at
+> java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:184)
+>     	at
+> java.util.ArrayList$ArrayListSpliterator.forEachRemaining(ArrayList.java:1382)
+>     	at
+> java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:481)
+>     	at java.util.stream.ForEachOps$ForEachTask.compute(ForEachOps.java:291)
+>     	at
+> java.util.concurrent.CountedCompleter.exec(CountedCompleter.java:731)
+>     	at java.util.concurrent.ForkJoinTask.doExec(ForkJoinTask.java:289)
+>     	at java.util.concurrent.ForkJoinTask.doInvoke(ForkJoinTask.java:401)
+>     	at java.util.concurrent.ForkJoinTask.invoke(ForkJoinTask.java:734)
+>     	at
+> java.util.stream.ForEachOps$ForEachOp.evaluateParallel(ForEachOps.java:160)
+>     	at
+> java.util.stream.ForEachOps$ForEachOp$OfRef.evaluateParallel(ForEachOps.java:174)
+>     	at
+> java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:233)
+>     	at
+> java.util.stream.ReferencePipeline.forEach(ReferencePipeline.java:418)
+>     	at
+> java.util.stream.ReferencePipeline$Head.forEach(ReferencePipeline.java:583)
+>     	at com.amazon.ForkJoinTest.main(ForkJoinTest.java:29)
+>     
+>     
+>     "pool-1-thread-2" #15 daemon prio=5 os_prio=31 tid=0x00007fba831a0000
+> nid=0x5703 in Object.wait() [0x000070000c58c000]
+>        java.lang.Thread.State: WAITING (on object monitor)
+>     	at java.lang.Object.wait(Native Method)
+>     	- waiting on <0x000000076db792e8> (a
+> java.util.stream.ForEachOps$ForEachTask)
+>     	at
+> java.util.concurrent.ForkJoinTask.externalAwaitDone(ForkJoinTask.java:334)
+>     	- locked <0x000000076db792e8> (a
+> java.util.stream.ForEachOps$ForEachTask)
+>     	at java.util.concurrent.ForkJoinTask.doInvoke(ForkJoinTask.java:405)
+>     	at java.util.concurrent.ForkJoinTask.invoke(ForkJoinTask.java:734)
+>     	at
+> java.util.stream.ForEachOps$ForEachOp.evaluateParallel(ForEachOps.java:160)
+>     	at
+> java.util.stream.ForEachOps$ForEachOp$OfRef.evaluateParallel(ForEachOps.java:174)
+>     	at
+> java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:233)
+>     	at
+> java.util.stream.ReferencePipeline.forEach(ReferencePipeline.java:418)
+>     	at
+> java.util.stream.ReferencePipeline$Head.forEach(ReferencePipeline.java:583)
+>     	at com.amazon.ForkJoinTest.lambda$processString$2(ForkJoinTest.java:43)
+>     	at com.amazon.ForkJoinTest$$Lambda$2/581138573.run(Unknown Source)
+>     	at
+> java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+>     	at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+>     	at
+> java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+>     	at
+> java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+>     	at java.lang.Thread.run(Thread.java:748)
+>     
+>     
+>     "pool-1-thread-1" #14 daemon prio=5 os_prio=31 tid=0x00007fba83199800
+> nid=0x5503 in Object.wait() [0x000070000c489000]
+>        java.lang.Thread.State: WAITING (on object monitor)
+>     	at java.lang.Object.wait(Native Method)
+>     	- waiting on <0x000000076dad5480> (a
+> java.util.stream.ForEachOps$ForEachTask)
+>     	at
+> java.util.concurrent.ForkJoinTask.externalAwaitDone(ForkJoinTask.java:334)
+>     	- locked <0x000000076dad5480> (a
+> java.util.stream.ForEachOps$ForEachTask)
+>     	at java.util.concurrent.ForkJoinTask.doInvoke(ForkJoinTask.java:405) 
+>     	at java.util.concurrent.ForkJoinTask.invoke(ForkJoinTask.java:734)
+>     	at
+> java.util.stream.ForEachOps$ForEachOp.evaluateParallel(ForEachOps.java:160)
+>     	at
+> java.util.stream.ForEachOps$ForEachOp$OfRef.evaluateParallel(ForEachOps.java:174)
+>     	at
+> java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:233)
+>     	at
+> java.util.stream.ReferencePipeline.forEach(ReferencePipeline.java:418)
+>     	at
+> java.util.stream.ReferencePipeline$Head.forEach(ReferencePipeline.java:583)
+>     	at com.amazon.ForkJoinTest.lambda$processString$2(ForkJoinTest.java:43)
+>     	at com.amazon.ForkJoinTest$$Lambda$2/581138573.run(Unknown Source)
+>     	at
+> java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+>     	at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+>     	at
+> java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+>     	at
+> java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+>     	at java.lang.Thread.run(Thread.java:748)
+>     
+>     
+>     "ForkJoinPool.commonPool-worker-3" #13 daemon prio=5 os_prio=31
+> tid=0x00007fba83197000 nid=0x5303 waiting on condition [0x000070000c386000]
+>        java.lang.Thread.State: WAITING (parking)
+>     	at sun.misc.Unsafe.park(Native Method)
+>     	- parking to wait for  <0x000000076da34ad0> (a
+> java.util.concurrent.FutureTask)
+>     	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:175)
+>     	at java.util.concurrent.FutureTask.awaitDone(FutureTask.java:429)
+>     	at java.util.concurrent.FutureTask.get(FutureTask.java:191)
+>     	at com.amazon.ForkJoinTest.processString(ForkJoinTest.java:46)
+>     	at com.amazon.ForkJoinTest.lambda$main$0(ForkJoinTest.java:29)
+>     	at com.amazon.ForkJoinTest$$Lambda$1/806353501.accept(Unknown Source)
+>     	at
+> java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:184)
+>     	at
+> java.util.ArrayList$ArrayListSpliterator.forEachRemaining(ArrayList.java:1382)
+>     	at
+> java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:481)
+>     	at java.util.stream.ForEachOps$ForEachTask.compute(ForEachOps.java:291)
+>     	at
+> java.util.concurrent.CountedCompleter.exec(CountedCompleter.java:731)
+>     	at java.util.concurrent.ForkJoinTask.doExec(ForkJoinTask.java:289)
+>     	at
+> java.util.concurrent.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1056)
+>     	at java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1692)
+>     	at
+> java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:157)
+>     
+>     
+>     "ForkJoinPool.commonPool-worker-2" #12 daemon prio=5 os_prio=31
+> tid=0x00007fba83831000 nid=0x5103 waiting on condition [0x000070000c283000]
+>        java.lang.Thread.State: WAITING (parking)
+>     	at sun.misc.Unsafe.park(Native Method)
+>     	- parking to wait for  <0x000000076d985fd0> (a
+> java.util.concurrent.FutureTask)
+>     	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:175)
+>     	at java.util.concurrent.FutureTask.awaitDone(FutureTask.java:429)
+>     	at java.util.concurrent.FutureTask.get(FutureTask.java:191)
+>     	at com.amazon.ForkJoinTest.processString(ForkJoinTest.java:46)
+>     	at com.amazon.ForkJoinTest.lambda$main$0(ForkJoinTest.java:29)
+>     	at com.amazon.ForkJoinTest$$Lambda$1/806353501.accept(Unknown Source)
+>     	at
+> java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:184)
+>     	at
+> java.util.ArrayList$ArrayListSpliterator.forEachRemaining(ArrayList.java:1382)
+>     	at
+> java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:481)
+>     	at java.util.stream.ForEachOps$ForEachTask.compute(ForEachOps.java:291)
+>     	at
+> java.util.concurrent.CountedCompleter.exec(CountedCompleter.java:731)
+>     	at java.util.concurrent.ForkJoinTask.doExec(ForkJoinTask.java:289)
+>     	at
+> java.util.concurrent.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1056)
+>     	at java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1692)
+>     	at
+> java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:157)
+>     
+>     
+>     "ForkJoinPool.commonPool-worker-1" #11 daemon prio=5 os_prio=31
+> tid=0x00007fba8395c000 nid=0x4f03 waiting on condition [0x000070000c180000]
+>        java.lang.Thread.State: WAITING (parking)
+>     	at sun.misc.Unsafe.park(Native Method)
+>     	- parking to wait for  <0x000000076d8da2d0> (a
+> java.util.concurrent.FutureTask)
+>     	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:175)
+>     	at java.util.concurrent.FutureTask.awaitDone(FutureTask.java:429)
+>     	at java.util.concurrent.FutureTask.get(FutureTask.java:191)
+>     	at com.amazon.ForkJoinTest.processString(ForkJoinTest.java:46)
+>     	at com.amazon.ForkJoinTest.lambda$main$0(ForkJoinTest.java:29)
+>     	at com.amazon.ForkJoinTest$$Lambda$1/806353501.accept(Unknown Source)
+>     	at
+> java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:184)
+>     	at
+> java.util.ArrayList$ArrayListSpliterator.forEachRemaining(ArrayList.java:1382)
+>     	at
+> java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:481)
+>     	at java.util.stream.ForEachOps$ForEachTask.compute(ForEachOps.java:291)
+>     	at
+> java.util.concurrent.CountedCompleter.exec(CountedCompleter.java:731)
+>     	at java.util.concurrent.ForkJoinTask.doExec(ForkJoinTask.java:289)
+>     	at
+> java.util.concurrent.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1056)
+>     	at java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1692)
+>     	at
+> java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:157)
+>     
+>     
+>     "Monitor Ctrl-Break" #5 daemon prio=5 os_prio=31 tid=0x00007fba840c9000
+> nid=0x4303 runnable [0x000070000bb6e000]
+>        java.lang.Thread.State: RUNNABLE
+>     	at java.net.SocketInputStream.socketRead0(Native Method)
+>     	at java.net.SocketInputStream.socketRead(SocketInputStream.java:116)
+>     	at java.net.SocketInputStream.read(SocketInputStream.java:171)
+>     	at java.net.SocketInputStream.read(SocketInputStream.java:141)
+>     	at sun.nio.cs.StreamDecoder.readBytes(StreamDecoder.java:284)
+>     	at sun.nio.cs.StreamDecoder.implRead(StreamDecoder.java:326)
+>     	at sun.nio.cs.StreamDecoder.read(StreamDecoder.java:178)
+>     	- locked <0x000000076eb0e968> (a java.io.InputStreamReader)
+>     	at java.io.InputStreamReader.read(InputStreamReader.java:184)
+>     	at java.io.BufferedReader.fill(BufferedReader.java:161)
+>     	at java.io.BufferedReader.readLine(BufferedReader.java:324)
+>     	- locked <0x000000076eb0e968> (a java.io.InputStreamReader)
+>     	at java.io.BufferedReader.readLine(BufferedReader.java:389)
+>     	at
+> com.intellij.rt.execution.application.AppMainV2$1.run(AppMainV2.java:64
+>     
+>
+>     
+>
+>
+>
+> --
+> Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>   
+
+From akstheking at gmail.com  Mon Jul 29 07:26:22 2019
+From: akstheking at gmail.com (akhilpratap1991)
+Date: Mon, 29 Jul 2019 04:26:22 -0700 (MST)
+Subject: [concurrency-interest] Using custom ThreadPool
+	inside	parallelstream causing deadlock
+In-Reply-To: <5D3EC998.6000704@javaspecialists.eu>
+References: <1564389915465-0.post@n7.nabble.com>
+ <5D3EC998.6000704@javaspecialists.eu>
+Message-ID: <1564399582493-0.post@n7.nabble.com>
+
+Heinz,
+
+I know and understand using the ForkJoinPool would solve the porblem. But my
+concern here is why my code is getting deadlocked as I see two threads from
+Custom Fixed ThreadPool are free to take care of inner parallelStream. And
+why it is not always getting deadlocked.
+
+
+
+--
+Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+
+From heinz at javaspecialists.eu  Mon Jul 29 12:06:01 2019
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Mon, 29 Jul 2019 17:06:01 +0100
+Subject: [concurrency-interest] Using custom
+ ThreadPool	inside	parallelstream causing deadlock
+In-Reply-To: <1564399582493-0.post@n7.nabble.com>
+References: <1564389915465-0.post@n7.nabble.com>
+ <5D3EC998.6000704@javaspecialists.eu> <1564399582493-0.post@n7.nabble.com>
+Message-ID: <5D3F1969.5070101@javaspecialists.eu>
+
+Hi Akhil,
+
+you might be onto something.  I would also expect that the two threads 
+should just carry on doing the work themselves if the common FJP is 
+occupied.  All my experiments have shown such behaviour.
+
+I've reduced the code a bit to show this effect more consistently and to 
+remove as many distractions as possible:
+
+import java.util.concurrent.*;
+import java.util.stream.*;
+
+public class ForkJoinTestBasic {
+  static final ExecutorService pool = Executors.newFixedThreadPool(2);
+
+  public static void main(String... args) throws InterruptedException {
+    ForkJoinPool common = ForkJoinPool.commonPool();
+    System.out.println("Forkjoin pool size: " + 
+ForkJoinPool.getCommonPoolParallelism());
+    parallelStream().forEach(val -> process());
+    pool.shutdown();
+  }
+
+  private static void process() {
+    try {
+      System.out.println("Processing: " + Thread.currentThread().getName());
+      Runnable updateTask = () -> parallelStream().forEach(val -> { });
+      Future<?> future = pool.submit(updateTask);
+      System.out.println("Waiting: " + Thread.currentThread().getName());
+      future.get(10, TimeUnit.HOURS);
+    } catch (TimeoutException e) {
+      System.err.println("Threads timed out");
+    } catch (InterruptedException e) {
+      e.printStackTrace();
+    } catch (ExecutionException e) {
+      throw new IllegalStateException(e.getCause());
+    }
+  }
+
+  private static IntStream parallelStream() {
+    return IntStream.range(0, Runtime.getRuntime().availableProcessors() 
+* 8)
+        .parallel();
+  }
+}
+
+Both threads are stuck waiting on "externalAwaitDone()" after calling 
+invoke().
+
+  java.lang.Thread.State: WAITING
+      at java.lang.Object.wait(Object.java:-1)
+      at 
+java.util.concurrent.ForkJoinTask.externalAwaitDone(ForkJoinTask.java:330)
+      at java.util.concurrent.ForkJoinTask.doInvoke(ForkJoinTask.java:412)
+      at java.util.concurrent.ForkJoinTask.invoke(ForkJoinTask.java:736)
+      at 
+java.util.stream.ForEachOps$ForEachOp.evaluateParallel(ForEachOps.java:159)
+      at 
+java.util.stream.ForEachOps$ForEachOp$OfInt.evaluateParallel(ForEachOps.java:188)
+      at 
+java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:233)
+      at java.util.stream.IntPipeline.forEach(IntPipeline.java:439)
+      at java.util.stream.IntPipeline$Head.forEach(IntPipeline.java:596)
+      at ForkJoinTestBasic.lambda$process$2(ForkJoinTestBasic.java:17)
+
+In both cases, the state of the ForkJoinTask is 65536, meaning SIGNAL.
+
+Regards
+
+Heinz
+-- 
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java™ Specialists' Newsletter" - www.javaspecialists.eu
+Java Champion - www.javachampions.org
+JavaOne Rock Star Speaker
+Tel: +30 69 75 595 262
+Skype: kabutz
+
+
+
+akhilpratap1991 via Concurrency-interest wrote:
+> Heinz,
+>
+> I know and understand using the ForkJoinPool would solve the porblem. But my
+> concern here is why my code is getting deadlocked as I see two threads from
+> Custom Fixed ThreadPool are free to take care of inner parallelStream. And
+> why it is not always getting deadlocked.
+>
+>
+>
+> --
+> Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>   
+
+From heinz at javaspecialists.eu  Wed Jul 31 15:34:58 2019
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Wed, 31 Jul 2019 20:34:58 +0100
+Subject: [concurrency-interest] Using custom
+ ThreadPool	inside	parallelstream causing deadlock
+In-Reply-To: <1564399582493-0.post@n7.nabble.com>
+References: <1564389915465-0.post@n7.nabble.com>
+ <5D3EC998.6000704@javaspecialists.eu> <1564399582493-0.post@n7.nabble.com>
+Message-ID: <5D41ED62.9090204@javaspecialists.eu>
+
+Hi Akhil,
+
+I've been looking at this off-and-on over the last few days, whenever I 
+had a few minutes.  It is indeed interesting.  Of course we should not 
+block in tasks within a parallel stream.  But it should still work, and 
+usually does.  On my 1-2-2 machine, it fails rarely in Java 8 - about 
+1/1000.  Java 9 and 10 is more often, about a dozen times per 1000.  And 
+then it seems to get even more often since Java 11.
+
+Obviously the FJP would have changed between Java 8 and 9 with the 
+addition of VarHandles and fences and opaque.
+
+I have not found the "smoking gun" yet, but am going to look at this 
+particular problem in my webinar tomorrow at 16:00 UTC - 
+https://www.javaspecialists.eu/webinars
+
+We have some very smart people joining the webinar and perhaps we'll 
+figure it out collectively.
+
+Regards
+
+Heinz
+-- 
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java™ Specialists' Newsletter" - www.javaspecialists.eu
+Java Champion - www.javachampions.org
+JavaOne Rock Star Speaker
+Tel: +30 69 75 595 262
+Skype: kabutz
+
+
+
+akhilpratap1991 via Concurrency-interest wrote:
+> Heinz,
+>
+> I know and understand using the ForkJoinPool would solve the porblem. But my
+> concern here is why my code is getting deadlocked as I see two threads from
+> Custom Fixed ThreadPool are free to take care of inner parallelStream. And
+> why it is not always getting deadlocked.
+>
+>
+>
+> --
+> Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>   
+

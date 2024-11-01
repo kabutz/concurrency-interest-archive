@@ -1,0 +1,645 @@
+From ndkoval at ya.ru  Sun Nov 22 19:43:35 2020
+From: ndkoval at ya.ru (Nikita Koval)
+Date: Mon, 23 Nov 2020 03:43:35 +0300
+Subject: [concurrency-interest] ConcurrentLinkedDeque is non-linearizable
+Message-ID: <33521606087847@mail.yandex.ru>
+
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201123/d488365f/attachment.htm>
+
+From ndkoval at ya.ru  Sun Nov 22 19:49:35 2020
+From: ndkoval at ya.ru (Nikita Koval)
+Date: Mon, 23 Nov 2020 03:49:35 +0300
+Subject: [concurrency-interest] ConcurrentLinkedDeque is non-linearizable
+In-Reply-To: <33521606087847@mail.yandex.ru>
+References: <33521606087847@mail.yandex.ru>
+Message-ID: <8391131606092510@mail.yandex.ru>
+
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201123/92dd9cd1/attachment-0001.htm>
+
+From martinrb at google.com  Sun Nov 22 21:01:18 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Sun, 22 Nov 2020 18:01:18 -0800
+Subject: [concurrency-interest] ConcurrentLinkedDeque is non-linearizable
+In-Reply-To: <8391131606092510@mail.yandex.ru>
+References: <33521606087847@mail.yandex.ru> <8391131606092510@mail.yandex.ru>
+Message-ID: <CA+kOe087gcaYaAXKBOakPCPaG6DkMZR9E=KSo_fLyTMit7w5Kw@mail.gmail.com>
+
+I'm the right guy for linearizability.
+I hope to have time to look at this, but not soon.
+I filed JDK-8256833 <https://bugs.openjdk.java.net/browse/JDK-8256833>
+
+On Sun, Nov 22, 2020 at 4:51 PM Nikita Koval via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Something got wrong with the formatting, here is the link to the code and
+> the test output:
+> https://gist.github.com/ndkoval/56ff3b83d2d39e0afd3a08900e1499d4
+>
+> 23.11.2020, 03:43, "Nikita Koval" <ndkoval at ya.ru>:
+>
+> Hi,
+>
+> ConcurrentLinkedDeque was known as non-linearizable in case of concurrent
+> operations on the head for a while — that is because the original paper
+> with the algorithm was buggy. Nevertheless, there were two attempts about
+> ~2 years ago (first <https://bugs.openjdk.java.net/browse/JDK-8196529>,
+> second <https://bugs.openjdk.java.net/browse/JDK-8189387>) to make it
+> linearizable in Java 9; that was impressive! Unfortunately, I just found a
+> new non-linearizable interleaving with Lincheck
+> <https://github.com/Kotlin/kotlinx-lincheck> framework.
+>
+> = Invalid execution results =
+> Parallel part:
+> | addFirst(10): void [-,1] | addFirst(4): void       |
+> | getLast():    4    [1,1] | pollFirst(): 4    [-,1] |
+> ---
+> values in "[..]" brackets indicate the number of completed operations
+> in each of the parallel threads seen at the beginning of the current
+> operation
+> ---
+>
+> = The following interleaving leads to the error =
+> Parallel part trace:
+> |                      | addFirst(4): void
+>                                                       |
+> |                      | pollFirst()
+>                                                       |
+> |                      |   first(): Node at 1 at
+> ConcurrentLinkedDeque.pollFirst(ConcurrentLinkedDeque.java:915)
+>        |
+> |                      |   item.READ: 4 at
+> ConcurrentLinkedDeque.pollFirst(ConcurrentLinkedDeque.java:917)
+>           |
+> |                      |   prev.READ: null at
+> ConcurrentLinkedDeque.pollFirst(ConcurrentLinkedDeque.java:919)
+>        |
+> |                      |   switch
+>                                                        |
+> | addFirst(10): void   |
+>                                                       |
+> | getLast(): 4         |
+>                                                       |
+> |   thread is finished |
+>                                                       |
+> |                      |   compareAndSet(Node at 1,4,null): true at
+> ConcurrentLinkedDeque.pollFirst(ConcurrentLinkedDeque.java:920) |
+> |                      |   unlink(Node at 1) at
+> ConcurrentLinkedDeque.pollFirst(ConcurrentLinkedDeque.java:921)
+>         |
+> |                      |   result: 4
+>                                                       |
+> |                      |   thread is finished
+>                                                        |
+>
+> Here is the Lincheck <https://github.com/Kotlin/kotlinx-lincheck> test
+> code that reproduces the error:
+> class ConcurrentLinkedDequeTest : VerifierState() {    private val d =
+> ConcurrentLinkedDeque<Int>()    @Operation fun addFirst(value: Int) = d.addFirst(value)
+>    @Operation fun addLast(value: Int) = d.addLast(value)    @Operation fun
+> getFirst() = d.peekFirst()    @Operation fun getLast() = d.peekLast()    @Operation
+> fun pollFirst() = d.pollFirst()    @Operation fun pollLast() = d.pollLast()
+>    override fun extractState() = d.*toList*() *// to determine same
+> logical states in LTS construction *    @Test    fun test() =
+> ModelCheckingOptions()        .actorsBefore(0)        .actorsAfter(0)
+>    .*check*(this::class) }
+>
+> I hope this will help to make it correct! I would also suggest using
+> Lincheck <https://github.com/Kotlin/kotlinx-lincheck> for testing all
+> concurrent data structures from the standard concurrency library. It is
+> also possible to support blocking operations like Thread.park() (now we
+> support blocking operations for Kotlin Coroutines, and the approach can be
+> scaled) to test synchronization primitives, like locks or semaphores, as
+> well — just let me know if you are interested in this.
+>
+> Best regards,
+> Nikita Koval
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201122/3e094d0f/attachment.htm>
+
+From pavel.rappo at gmail.com  Wed Nov 25 10:48:15 2020
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Wed, 25 Nov 2020 15:48:15 +0000
+Subject: [concurrency-interest] Code snippets in documentation
+Message-ID: <CAChcVunin4VKBKohMK54K07JdOBfEiBrqKKtiKNpmVXurB1_7g@mail.gmail.com>
+
+Hello,
+
+I'm currently looking into use of code snippets in doc comments in
+various codebases, one of which is `java.util.concurrent.**`. While
+looking at snippets there I found a few places that could be improved;
+I created a patch with these improvements.
+
+This patch is merely a collection of suggestions that can be applied
+selectively. I can provide the rationale for every change in that
+patch, but for now, I'd just say that those changes improve uniformity
+and correctness (where sensible).
+
+I used `cvs -q diff -U 2 --minimal > snippets.patch` to produce this
+patch. If you prefer some other form, I can produce it too.
+
+Thanks,
+-Pavel
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: snippets.patch
+Type: application/octet-stream
+Size: 16074 bytes
+Desc: not available
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201125/cacbd3f5/attachment.obj>
+
+From pavel.rappo at gmail.com  Thu Nov 26 06:25:29 2020
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Thu, 26 Nov 2020 11:25:29 +0000
+Subject: [concurrency-interest] Code snippets in documentation
+In-Reply-To: <CAChcVunin4VKBKohMK54K07JdOBfEiBrqKKtiKNpmVXurB1_7g@mail.gmail.com>
+References: <CAChcVunin4VKBKohMK54K07JdOBfEiBrqKKtiKNpmVXurB1_7g@mail.gmail.com>
+Message-ID: <CAChcVumTqK_5FHnE7tQ54mTLrW+guis5Ex7EW4LHkqEbMrmm9g@mail.gmail.com>
+
+Welp, the "snippets.patch" file was scrubbed by the mailing list.
+Although it is available via the web interface (
+http://cs.oswego.edu/pipermail/concurrency-interest/2020-November/017264.html
+), let me also include it inline for the reader's convenience.
+
+---
+
+Index: src/main/java/util/concurrent/AbstractExecutorService.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/AbstractExecutorService.java,v
+retrieving revision 1.53
+diff -U 2 -d -r1.53 AbstractExecutorService.java
+--- src/main/java/util/concurrent/AbstractExecutorService.java 24 Jul
+2020 20:54:37 -0000 1.53
++++ src/main/java/util/concurrent/AbstractExecutorService.java 25 Nov
+2020 15:45:53 -0000
+@@ -26,5 +26,5 @@
+  * {@code FutureTask}.
+  *
+- * <p><b>Extension example</b>. Here is a sketch of a class
++ * <p><b>Extension example.</b> Here is a sketch of a class
+  * that customizes {@link ThreadPoolExecutor} to use
+  * a {@code CustomTask} class instead of the default {@code FutureTask}:
+@@ -32,5 +32,5 @@
+  * public class CustomThreadPoolExecutor extends ThreadPoolExecutor {
+  *
+- *   static class CustomTask<V> implements RunnableFuture<V> {...}
++ *   static class CustomTask<V> implements RunnableFuture<V> { ... }
+  *
+  *   protected <V> RunnableFuture<V> newTaskFor(Callable<V> c) {
+Index: src/main/java/util/concurrent/CopyOnWriteArraySet.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/CopyOnWriteArraySet.java,v
+retrieving revision 1.74
+diff -U 2 -d -r1.74 CopyOnWriteArraySet.java
+--- src/main/java/util/concurrent/CopyOnWriteArraySet.java 1 Oct 2018
+00:10:53 -0000 1.74
++++ src/main/java/util/concurrent/CopyOnWriteArraySet.java 25 Nov 2020
+15:45:53 -0000
+@@ -41,5 +41,5 @@
+  *
+  * <pre> {@code
+- * class Handler { void handle(); ... }
++ * class Handler { void handle() { ... } }
+  *
+  * class X {
+Index: src/main/java/util/concurrent/CountDownLatch.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/CountDownLatch.java,v
+retrieving revision 1.44
+diff -U 2 -d -r1.44 CountDownLatch.java
+--- src/main/java/util/concurrent/CountDownLatch.java 17 Feb 2015
+18:55:39 -0000 1.44
++++ src/main/java/util/concurrent/CountDownLatch.java 25 Nov 2020 15:45:53 -0000
+@@ -90,5 +90,5 @@
+  *   void main() throws InterruptedException {
+  *     CountDownLatch doneSignal = new CountDownLatch(N);
+- *     Executor e = ...
++ *     Executor e = ...;
+  *
+  *     for (int i = 0; i < N; ++i) // create and start threads
+@@ -107,8 +107,6 @@
+  *   }
+  *   public void run() {
+- *     try {
+- *       doWork(i);
+- *       doneSignal.countDown();
+- *     } catch (InterruptedException ex) {} // return;
++ *     doWork();
++ *     doneSignal.countDown();
+  *   }
+  *
+Index: src/main/java/util/concurrent/CountedCompleter.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/CountedCompleter.java,v
+retrieving revision 1.68
+diff -U 2 -d -r1.68 CountedCompleter.java
+--- src/main/java/util/concurrent/CountedCompleter.java 20 Jan 2020
+15:51:54 -0000 1.68
++++ src/main/java/util/concurrent/CountedCompleter.java 25 Nov 2020
+15:45:53 -0000
+@@ -329,5 +329,5 @@
+  * this task or other completed tasks.
+  *
+- * <p><b>Completion Traversals</b>. If using {@code onCompletion} to
++ * <p><b>Completion Traversals.</b> If using {@code onCompletion} to
+  * process completions is inapplicable or inconvenient, you can use
+  * methods {@link #firstComplete} and {@link #nextComplete} to create
+Index: src/main/java/util/concurrent/CyclicBarrier.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/CyclicBarrier.java,v
+retrieving revision 1.61
+diff -U 2 -d -r1.61 CyclicBarrier.java
+--- src/main/java/util/concurrent/CyclicBarrier.java 2 Feb 2019
+04:09:54 -0000 1.61
++++ src/main/java/util/concurrent/CyclicBarrier.java 25 Nov 2020 15:45:53 -0000
+@@ -66,5 +66,7 @@
+  *     // wait until done
+  *     for (Thread thread : threads)
+- *       thread.join();
++ *       try {
++ *         thread.join();
++ *       } catch (InterruptedException ex) { }
+  *   }
+  * }}</pre>
+Index: src/main/java/util/concurrent/Exchanger.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/Exchanger.java,v
+retrieving revision 1.84
+diff -U 2 -d -r1.84 Exchanger.java
+--- src/main/java/util/concurrent/Exchanger.java 22 Nov 2018 00:47:00 -0000 1.84
++++ src/main/java/util/concurrent/Exchanger.java 25 Nov 2020 15:45:53 -0000
+@@ -29,6 +29,6 @@
+  * class FillAndEmpty {
+  *   Exchanger<DataBuffer> exchanger = new Exchanger<>();
+- *   DataBuffer initialEmptyBuffer = ... a made-up type
+- *   DataBuffer initialFullBuffer = ...
++ *   DataBuffer initialEmptyBuffer = ...; // a made-up type
++ *   DataBuffer initialFullBuffer = ...;
+  *
+  *   class FillingLoop implements Runnable {
+@@ -41,5 +41,5 @@
+  *             currentBuffer = exchanger.exchange(currentBuffer);
+  *         }
+- *       } catch (InterruptedException ex) { ... handle ... }
++ *       } catch (InterruptedException ex) { ... handle ...}
+  *     }
+  *   }
+Index: src/main/java/util/concurrent/ExecutorService.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/ExecutorService.java,v
+retrieving revision 1.64
+diff -U 2 -d -r1.64 ExecutorService.java
+--- src/main/java/util/concurrent/ExecutorService.java 7 Mar 2019
+00:50:36 -0000 1.64
++++ src/main/java/util/concurrent/ExecutorService.java 25 Nov 2020
+15:45:53 -0000
+@@ -89,5 +89,5 @@
+  *           System.err.println("Pool did not terminate");
+  *     }
+- *   } catch (InterruptedException ie) {
++ *   } catch (InterruptedException ex) {
+  *     // (Re-)Cancel if current thread also interrupted
+  *     pool.shutdownNow();
+Index: src/main/java/util/concurrent/ForkJoinPool.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/ForkJoinPool.java,v
+retrieving revision 1.385
+diff -U 2 -d -r1.385 ForkJoinPool.java
+--- src/main/java/util/concurrent/ForkJoinPool.java 13 Nov 2020
+15:24:36 -0000 1.385
++++ src/main/java/util/concurrent/ForkJoinPool.java 25 Nov 2020 15:45:54 -0000
+@@ -138,5 +138,5 @@
+  * cause unjoined tasks to never be executed.
+  *
+- * <p><b>Implementation notes</b>: This implementation restricts the
++ * <p><b>Implementation notes:</b> This implementation restricts the
+  * maximum number of running threads to 32767. Attempts to create
+  * pools with greater than the maximum number result in
+Index: src/main/java/util/concurrent/Future.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/Future.java,v
+retrieving revision 1.42
+diff -U 2 -d -r1.42 Future.java
+--- src/main/java/util/concurrent/Future.java 18 Sep 2020 14:33:57 -0000 1.42
++++ src/main/java/util/concurrent/Future.java 25 Nov 2020 15:45:54 -0000
+@@ -28,6 +28,6 @@
+  * interface ArchiveSearcher { String search(String target); }
+  * class App {
+- *   ExecutorService executor = ...
+- *   ArchiveSearcher searcher = ...
++ *   ExecutorService executor = ...;
++ *   ArchiveSearcher searcher = ...;
+  *   void showSearch(String target) throws InterruptedException {
+  *     Callable<String> task = () -> searcher.search(target);
+Index: src/main/java/util/concurrent/Phaser.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/Phaser.java,v
+retrieving revision 1.95
+diff -U 2 -d -r1.95 Phaser.java
+--- src/main/java/util/concurrent/Phaser.java 12 Aug 2019 22:05:32 -0000 1.95
++++ src/main/java/util/concurrent/Phaser.java 25 Nov 2020 15:45:54 -0000
+@@ -217,5 +217,5 @@
+  * high rates), or up to hundreds for extremely large ones.
+  *
+- * <p><b>Implementation notes</b>: This implementation restricts the
++ * <p><b>Implementation notes:</b> This implementation restricts the
+  * maximum number of parties to 65535. Attempts to register additional
+  * parties result in {@code IllegalStateException}. However, you can and
+@@ -891,5 +891,5 @@
+      * Phaser phaser = new Phaser() {
+      *   protected boolean onAdvance(int phase, int parties) { return false; }
+-     * }}</pre>
++     * };}</pre>
+      *
+      * @param phase the current phase number on entry to this method,
+Index: src/main/java/util/concurrent/PriorityBlockingQueue.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/PriorityBlockingQueue.java,v
+retrieving revision 1.145
+diff -U 2 -d -r1.145 PriorityBlockingQueue.java
+--- src/main/java/util/concurrent/PriorityBlockingQueue.java 24 Jul
+2020 20:57:26 -0000 1.145
++++ src/main/java/util/concurrent/PriorityBlockingQueue.java 25 Nov
+2020 15:45:54 -0000
+@@ -59,5 +59,5 @@
+  * class FIFOEntry<E extends Comparable<? super E>>
+  *     implements Comparable<FIFOEntry<E>> {
+- *   static final AtomicLong seq = new AtomicLong(0);
++ *   static final AtomicLong seq = new AtomicLong();
+  *   final long seqNum;
+  *   final E entry;
+Index: src/main/java/util/concurrent/Semaphore.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/Semaphore.java,v
+retrieving revision 1.77
+diff -U 2 -d -r1.77 Semaphore.java
+--- src/main/java/util/concurrent/Semaphore.java 19 Apr 2017 23:45:51 -0000 1.77
++++ src/main/java/util/concurrent/Semaphore.java 25 Nov 2020 15:45:54 -0000
+@@ -38,5 +38,5 @@
+  *   // Not a particularly efficient data structure; just for demo
+  *
+- *   protected Object[] items = ... whatever kinds of items being managed
++ *   protected Object[] items = ...; // whatever kinds of items being managed
+  *   protected boolean[] used = new boolean[MAX_AVAILABLE];
+  *
+Index: src/main/java/util/concurrent/ThreadPoolExecutor.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/ThreadPoolExecutor.java,v
+retrieving revision 1.193
+diff -U 2 -d -r1.193 ThreadPoolExecutor.java
+--- src/main/java/util/concurrent/ThreadPoolExecutor.java 31 Jul 2020
+17:18:14 -0000 1.193
++++ src/main/java/util/concurrent/ThreadPoolExecutor.java 25 Nov 2020
+15:45:54 -0000
+@@ -249,5 +249,5 @@
+  * </dl>
+  *
+- * <p><b>Extension example</b>. Most extensions of this class
++ * <p><b>Extension example.</b> Most extensions of this class
+  * override one or more of the protected hook methods. For example,
+  * here is a subclass that adds a simple pause/resume feature:
+Index: src/main/java/util/concurrent/atomic/AtomicReferenceFieldUpdater.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/atomic/AtomicReferenceFieldUpdater.java,v
+retrieving revision 1.86
+diff -U 2 -d -r1.86 AtomicReferenceFieldUpdater.java
+--- src/main/java/util/concurrent/atomic/AtomicReferenceFieldUpdater.java
+14 Oct 2018 10:37:12 -0000 1.86
++++ src/main/java/util/concurrent/atomic/AtomicReferenceFieldUpdater.java
+25 Nov 2020 15:45:55 -0000
+@@ -34,5 +34,5 @@
+  *   private static final AtomicReferenceFieldUpdater<Node, Node> leftUpdater =
+  *     AtomicReferenceFieldUpdater.newUpdater(Node.class, Node.class, "left");
+- *   private static AtomicReferenceFieldUpdater<Node, Node> rightUpdater =
++ *   private static final AtomicReferenceFieldUpdater<Node, Node>
+rightUpdater =
+  *     AtomicReferenceFieldUpdater.newUpdater(Node.class, Node.class, "right");
+  *
+Index: src/main/java/util/concurrent/atomic/package-info.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/atomic/package-info.java,v
+retrieving revision 1.20
+diff -U 2 -d -r1.20 package-info.java
+--- src/main/java/util/concurrent/atomic/package-info.java 24 Sep 2016
+15:21:54 -0000 1.20
++++ src/main/java/util/concurrent/atomic/package-info.java 25 Nov 2020
+15:45:55 -0000
+@@ -26,5 +26,5 @@
+  * class Sequencer {
+  *   private final AtomicLong sequenceNumber
+- *     = new AtomicLong(0);
++ *     = new AtomicLong(17);
+  *   public long next() {
+  *     return sequenceNumber.getAndIncrement();
+Index: src/main/java/util/concurrent/locks/AbstractQueuedSynchronizer.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/locks/AbstractQueuedSynchronizer.java,v
+retrieving revision 1.183
+diff -U 2 -d -r1.183 AbstractQueuedSynchronizer.java
+--- src/main/java/util/concurrent/locks/AbstractQueuedSynchronizer.java
+21 Sep 2019 18:00:23 -0000 1.183
++++ src/main/java/util/concurrent/locks/AbstractQueuedSynchronizer.java
+25 Nov 2020 15:45:55 -0000
+@@ -109,5 +109,5 @@
+  *
+  * <pre>
+- * Acquire:
++ * <em>Acquire:</em>
+  *     while (!tryAcquire(arg)) {
+  *        <em>enqueue thread if it is not already queued</em>;
+@@ -115,5 +115,5 @@
+  *     }
+  *
+- * Release:
++ * <em>Release:</em>
+  *     if (tryRelease(arg))
+  *        <em>unblock the first queued thread</em>;
+Index: src/main/java/util/concurrent/locks/ReentrantLock.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/locks/ReentrantLock.java,v
+retrieving revision 1.121
+diff -U 2 -d -r1.121 ReentrantLock.java
+--- src/main/java/util/concurrent/locks/ReentrantLock.java 26 Apr 2020
+16:43:22 -0000 1.121
++++ src/main/java/util/concurrent/locks/ReentrantLock.java 25 Nov 2020
+15:45:55 -0000
+@@ -522,5 +522,5 @@
+      * <pre> {@code
+      * class X {
+-     *   ReentrantLock lock = new ReentrantLock();
++     *   final ReentrantLock lock = new ReentrantLock();
+      *   // ...
+      *   public void m() {
+@@ -552,5 +552,5 @@
+      * <pre> {@code
+      * class X {
+-     *   ReentrantLock lock = new ReentrantLock();
++     *   final ReentrantLock lock = new ReentrantLock();
+      *   // ...
+      *
+@@ -566,5 +566,5 @@
+      * <pre> {@code
+      * class X {
+-     *   ReentrantLock lock = new ReentrantLock();
++     *   final ReentrantLock lock = new ReentrantLock();
+      *   // ...
+      *
+Index: src/main/java/util/concurrent/locks/ReentrantReadWriteLock.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/locks/ReentrantReadWriteLock.java,v
+retrieving revision 1.137
+diff -U 2 -d -r1.137 ReentrantReadWriteLock.java
+--- src/main/java/util/concurrent/locks/ReentrantReadWriteLock.java 7
+Mar 2019 00:50:36 -0000 1.137
++++ src/main/java/util/concurrent/locks/ReentrantReadWriteLock.java 25
+Nov 2020 15:45:56 -0000
+@@ -100,5 +100,5 @@
+  * its state when serialized.
+  *
+- * <p><b>Sample usages</b>. Here is a code sketch showing how to perform
++ * <p><b>Sample usages.</b> Here is a code sketch showing how to perform
+  * lock downgrading after updating a cache (exception handling is
+  * particularly tricky when handling multiple locks in a non-nested
+@@ -121,5 +121,5 @@
+  *         // acquired write lock and changed state before we did.
+  *         if (!cacheValid) {
+- *           data = ...
++ *           data = ...;
+  *           cacheValid = true;
+  *         }
+Index: src/main/java/util/concurrent/locks/StampedLock.java
+===================================================================
+RCS file: /home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/locks/StampedLock.java,v
+retrieving revision 1.116
+diff -U 2 -d -r1.116 StampedLock.java
+--- src/main/java/util/concurrent/locks/StampedLock.java 16 Jul 2020
+22:58:59 -0000 1.116
++++ src/main/java/util/concurrent/locks/StampedLock.java 25 Nov 2020
+15:45:56 -0000
+@@ -184,6 +184,6 @@
+  *   }
+  *
+- *   // Upgrade read lock to write lock
+- *   void moveIfAtOrigin(double newX, double newY) {
++ *   // upgrade read lock to write lock
++ *   void moveIfAtOrigin2(double newX, double newY) {
+  *     long stamp = sl.readLock();
+  *     try {
+
+On Wed, Nov 25, 2020 at 3:48 PM Pavel Rappo <pavel.rappo at gmail.com> wrote:
+>
+> Hello,
+>
+> I'm currently looking into use of code snippets in doc comments in
+> various codebases, one of which is `java.util.concurrent.**`. While
+> looking at snippets there I found a few places that could be improved;
+> I created a patch with these improvements.
+>
+> This patch is merely a collection of suggestions that can be applied
+> selectively. I can provide the rationale for every change in that
+> patch, but for now, I'd just say that those changes improve uniformity
+> and correctness (where sensible).
+>
+> I used `cvs -q diff -U 2 --minimal > snippets.patch` to produce this
+> patch. If you prefer some other form, I can produce it too.
+>
+> Thanks,
+> -Pavel
+
+From dl at cs.oswego.edu  Fri Nov 27 12:40:26 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 27 Nov 2020 12:40:26 -0500
+Subject: [concurrency-interest] Code snippets in documentation
+In-Reply-To: <CAChcVunin4VKBKohMK54K07JdOBfEiBrqKKtiKNpmVXurB1_7g@mail.gmail.com>
+References: <CAChcVunin4VKBKohMK54K07JdOBfEiBrqKKtiKNpmVXurB1_7g@mail.gmail.com>
+Message-ID: <be21ce7f-a73b-a5e9-f3e8-20e97d5ec876@cs.oswego.edu>
+
+Thanks very much! These are all helpful; a couple slightly arguable, but 
+none make anything worse, so I'm committing them into our sources. We 
+hope to soon integrate the largish backlog into CVS. For now you can see 
+updated javadocs at: http://gee.cs.oswego.edu/dl/jsr166/dist/docs/
+
+On 11/25/20 10:48 AM, Pavel Rappo via Concurrency-interest wrote:
+> Hello,
+>
+> I'm currently looking into use of code snippets in doc comments in
+> various codebases, one of which is `java.util.concurrent.**`. While
+> looking at snippets there I found a few places that could be improved;
+> I created a patch with these improvements.
+>
+> This patch is merely a collection of suggestions that can be applied
+> selectively. I can provide the rationale for every change in that
+> patch, but for now, I'd just say that those changes improve uniformity
+> and correctness (where sensible).
+>
+> I used `cvs -q diff -U 2 --minimal > snippets.patch` to produce this
+> patch. If you prefer some other form, I can produce it too.
+>
+> Thanks,
+> -Pavel
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201127/bb96de5f/attachment.htm>
+
+From pavel.rappo at gmail.com  Fri Nov 27 15:48:15 2020
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Fri, 27 Nov 2020 20:48:15 +0000
+Subject: [concurrency-interest] Code snippets in documentation
+In-Reply-To: <be21ce7f-a73b-a5e9-f3e8-20e97d5ec876@cs.oswego.edu>
+References: <CAChcVunin4VKBKohMK54K07JdOBfEiBrqKKtiKNpmVXurB1_7g@mail.gmail.com>
+ <be21ce7f-a73b-a5e9-f3e8-20e97d5ec876@cs.oswego.edu>
+Message-ID: <CAChcVu=m=01F49MLpzcL4ku=aUT4Jhu1OXATM9qsigUB7DLjZA@mail.gmail.com>
+
+Thanks, Doug. I hope one of these days JavaDoc will provide better
+support for code snippets.
+
+On Fri, Nov 27, 2020 at 5:42 PM Doug Lea via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+>
+> Thanks very much! These are all helpful; a couple slightly arguable, but none make anything worse, so I'm committing them into our sources. We hope to soon integrate the largish backlog into CVS. For now you can see updated javadocs at:  http://gee.cs.oswego.edu/dl/jsr166/dist/docs/
+>
+> On 11/25/20 10:48 AM, Pavel Rappo via Concurrency-interest wrote:
+>
+> Hello,
+>
+> I'm currently looking into use of code snippets in doc comments in
+> various codebases, one of which is `java.util.concurrent.**`. While
+> looking at snippets there I found a few places that could be improved;
+> I created a patch with these improvements.
+>
+> This patch is merely a collection of suggestions that can be applied
+> selectively. I can provide the rationale for every change in that
+> patch, but for now, I'd just say that those changes improve uniformity
+> and correctness (where sensible).
+>
+> I used `cvs -q diff -U 2 --minimal > snippets.patch` to produce this
+> patch. If you prefer some other form, I can produce it too.
+>
+> Thanks,
+> -Pavel
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+

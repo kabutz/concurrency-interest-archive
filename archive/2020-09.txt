@@ -1,0 +1,501 @@
+From shevek at anarres.org  Thu Sep 24 20:01:30 2020
+From: shevek at anarres.org (Shevek)
+Date: Thu, 24 Sep 2020 17:01:30 -0700
+Subject: [concurrency-interest] Battles with CountedCompleter
+Message-ID: <af73d270-9c74-2bf7-741f-a5c54d944f97@anarres.org>
+
+I have been doing battle with CountedCompleter, and I'm stuck at a point 
+where I'm doing something like this:
+
+doInParallel(Iterable<thing> tasks) {
+   CountedCompleter joinTask = new CountedCompleter();
+   for (some unknown number of things)
+       pool.submit(new CountedCompleter(parent, ...));
+   joinTask.tryComplete();
+   joinTask.join();
+}
+
+The objective is to have a recursively-safe construct like:
+try (ForkJoinScope scope = new ForkJoinScope(pool, ...)) {
+     for (whatever)
+         scope.execute(task);
+} // close() calls join()
+
+Any subtask may itself repeat this pattern. The trouble I'm having is 
+that sometimes I get a lot of threads blocked here:
+
+"ForkJoinPool-1-worker-6" #19 daemon prio=5 os_prio=0 
+tid=0x00007f39e5075800 nid=0xd0c in Object.wait() [0x00007f39515f7000] 
+  java.lang.Thread.State: WAITING (on object monitor)
+at java.lang.Object.wait(Native Method)
+at java.util.concurrent.ForkJoinTask.internalWait(ForkJoinTask.java:311) 
+         - locked <0x0000000477c78528> (a 
+org.compilerworks.common.util.concurrent.ForkJoinScope$JoinTask) 
+at java.util.concurrent.ForkJoinPool.awaitJoin(ForkJoinPool.java:2058) 
+       at 
+java.util.concurrent.ForkJoinTask.doJoin(ForkJoinTask.java:390) 
+at java.util.concurrent.ForkJoinTask.join(ForkJoinTask.java:719)
+
+What I can't work out is why these blocked threads aren't helping? 6 of 
+the threads in my 12-thread pool are blocked, and 6 are working. 
+Eventually, every so often, one of them seems to unblock. I'm trying to 
+trace the logic in the code to work out why the blocked threads don't 
+simply steal other work and do it. I've tried unit testing my 
+wrapper/controller code twenty ways up and it doesn't block in tests, 
+but it fails in application.
+
+Inspection of the heap of a blocked task shows (for example)
+
+* joinTask.pending=32
+* 33 ForkJoinTask instances have a pointer to this joinTask as the 
+completer.
+* joinTask and its children are in the correct ForkJoinPool
+* Java 1.8.0_252
+
+Can anybody please help? I'm happy to submit exact code as there are a 
+couple of nuances to what I'm doing which might be relevant.
+
+I'm willing to be polite, but not effusive about the documentation of 
+CountedCompleter and similar, so it's entirely possible that I'm using 
+an API wrong.
+
+Code is attached.
+
+Thank you.
+
+S.
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: ForkJoinScope.java
+Type: text/x-java
+Size: 9717 bytes
+Desc: not available
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200924/b50f94cd/attachment.java>
+
+From kineolyan at protonmail.com  Sun Sep 27 10:28:40 2020
+From: kineolyan at protonmail.com (Olivier Peyrusse)
+Date: Sun, 27 Sep 2020 14:28:40 +0000
+Subject: [concurrency-interest] Battles with CountedCompleter
+In-Reply-To: <af73d270-9c74-2bf7-741f-a5c54d944f97@anarres.org>
+References: <af73d270-9c74-2bf7-741f-a5c54d944f97@anarres.org>
+Message-ID: <_Kc7vfHVNaoSSQmi9-hg7TS62pfvpTSbArbpQxs7yxbKlrk_LsW6m6GQVsaPLh9-mS-Sqt2RiFCpEUSikxYbUEbohVA_O9xHSyHPBrasEC8=@protonmail.com>
+
+Looking at the attached code, I don't see any obvious mistake.
+I don't like the call to `complete` in `ManagedAction#compute`. I understand that your ManagedAction don't have children, so it may not cause harm, but I would prefer using the API "correctly", calling first `setRawResult` then `tryComplete`.
+
+Can you share more details about the context when the error occurs? Or link to a gist reproducing your issue.
+Do you have mutiple - nested - ForkJoinScopes? Your code depends on the number of cores, how many do you have? Are there exceptions?
+
+Cheers
+Olivier
+
+‐‐‐‐‐‐‐ Original Message ‐‐‐‐‐‐‐
+Le vendredi 25 septembre 2020 02:01, Shevek via Concurrency-interest <concurrency-interest at cs.oswego.edu> a écrit :
+
+> I have been doing battle with CountedCompleter, and I'm stuck at a point
+> where I'm doing something like this:
+>
+> doInParallel(Iterable<thing> tasks) {
+> CountedCompleter joinTask = new CountedCompleter();
+> for (some unknown number of things)
+> pool.submit(new CountedCompleter(parent, ...));
+> joinTask.tryComplete();
+> joinTask.join();
+> }
+>
+> The objective is to have a recursively-safe construct like:
+> try (ForkJoinScope scope = new ForkJoinScope(pool, ...)) {
+> for (whatever)
+> scope.execute(task);
+> } // close() calls join()
+>
+> Any subtask may itself repeat this pattern. The trouble I'm having is
+> that sometimes I get a lot of threads blocked here:
+>
+> "ForkJoinPool-1-worker-6" #19 daemon prio=5 os_prio=0
+> tid=0x00007f39e5075800 nid=0xd0c in Object.wait() [0x00007f39515f7000]
+> java.lang.Thread.State: WAITING (on object monitor)
+> at java.lang.Object.wait(Native Method)
+> at java.util.concurrent.ForkJoinTask.internalWait(ForkJoinTask.java:311)
+> - locked <0x0000000477c78528> (a
+> org.compilerworks.common.util.concurrent.ForkJoinScope$JoinTask)
+> at java.util.concurrent.ForkJoinPool.awaitJoin(ForkJoinPool.java:2058)
+> at
+> java.util.concurrent.ForkJoinTask.doJoin(ForkJoinTask.java:390)
+> at java.util.concurrent.ForkJoinTask.join(ForkJoinTask.java:719)
+>
+> What I can't work out is why these blocked threads aren't helping? 6 of
+> the threads in my 12-thread pool are blocked, and 6 are working.
+> Eventually, every so often, one of them seems to unblock. I'm trying to
+> trace the logic in the code to work out why the blocked threads don't
+> simply steal other work and do it. I've tried unit testing my
+> wrapper/controller code twenty ways up and it doesn't block in tests,
+> but it fails in application.
+>
+> Inspection of the heap of a blocked task shows (for example)
+>
+> -   joinTask.pending=32
+> -   33 ForkJoinTask instances have a pointer to this joinTask as the
+>     completer.
+>
+> -   joinTask and its children are in the correct ForkJoinPool
+> -   Java 1.8.0_252
+>
+>     Can anybody please help? I'm happy to submit exact code as there are a
+>     couple of nuances to what I'm doing which might be relevant.
+>
+>     I'm willing to be polite, but not effusive about the documentation of
+>     CountedCompleter and similar, so it's entirely possible that I'm using
+>     an API wrong.
+>
+>     Code is attached.
+>
+>     Thank you.
+>
+>     S.
+>
+>
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+From martinrb at google.com  Mon Sep 28 14:54:37 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Mon, 28 Sep 2020 11:54:37 -0700
+Subject: [concurrency-interest] Battles with CountedCompleter
+In-Reply-To: <af73d270-9c74-2bf7-741f-a5c54d944f97@anarres.org>
+References: <af73d270-9c74-2bf7-741f-a5c54d944f97@anarres.org>
+Message-ID: <CA+kOe09NmcS6CF7jkjzc9HbujD=C-F7Saq9ODyu2J41O+cEymQ@mail.gmail.com>
+
+CountedCompleter is indeed hard to use, even for me, though I worked on
+some of the tests.
+It might be helpful to look at CountedCompleter8Test.java
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200928/f032727c/attachment.htm>
+
+From kineolyan at protonmail.com  Tue Sep 29 04:40:53 2020
+From: kineolyan at protonmail.com (Olivier Peyrusse)
+Date: Tue, 29 Sep 2020 08:40:53 +0000
+Subject: [concurrency-interest] Battles with CountedCompleter
+In-Reply-To: <CA+kOe09NmcS6CF7jkjzc9HbujD=C-F7Saq9ODyu2J41O+cEymQ@mail.gmail.com>
+References: <af73d270-9c74-2bf7-741f-a5c54d944f97@anarres.org>
+ <CA+kOe09NmcS6CF7jkjzc9HbujD=C-F7Saq9ODyu2J41O+cEymQ@mail.gmail.com>
+Message-ID: <YhXuVmwFBWjps4a2YQPucHTqCSuT0plx6_wh00v4hHyLIFpprtnEwwURUAlb9I8Xv7Ri7ak9w39z-0fBTUGiDSCJDBJRiZKAfR4HAmr3umw=@protonmail.com>
+
+You mention that a class CountedCompleter8Test, but I don't know where to find it.
+Do you have an attachement not sent, or missed adding a link to a repository or gist?
+
+‐‐‐‐‐‐‐ Original Message ‐‐‐‐‐‐‐
+Le lundi, septembre 28, 2020 8:54 PM, Martin Buchholz via Concurrency-interest <concurrency-interest at cs.oswego.edu> a écrit :
+
+> CountedCompleter is indeed hard to use, even for me, though I worked on some of the tests.
+> It might be helpful to look at CountedCompleter8Test.java
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200929/9e855de8/attachment.htm>
+
+From bartwiegmans at gmail.com  Tue Sep 29 06:18:46 2020
+From: bartwiegmans at gmail.com (Bart Wiegmans)
+Date: Tue, 29 Sep 2020 12:18:46 +0200
+Subject: [concurrency-interest] Battles with CountedCompleter
+In-Reply-To: <YhXuVmwFBWjps4a2YQPucHTqCSuT0plx6_wh00v4hHyLIFpprtnEwwURUAlb9I8Xv7Ri7ak9w39z-0fBTUGiDSCJDBJRiZKAfR4HAmr3umw=@protonmail.com>
+References: <af73d270-9c74-2bf7-741f-a5c54d944f97@anarres.org>
+ <CA+kOe09NmcS6CF7jkjzc9HbujD=C-F7Saq9ODyu2J41O+cEymQ@mail.gmail.com>
+ <YhXuVmwFBWjps4a2YQPucHTqCSuT0plx6_wh00v4hHyLIFpprtnEwwURUAlb9I8Xv7Ri7ak9w39z-0fBTUGiDSCJDBJRiZKAfR4HAmr3umw=@protonmail.com>
+Message-ID: <CADc7B-KbAVpmGj6jdyaj4QDp6pmhK-CNaN-xN+63N3_O8MUn2g@mail.gmail.com>
+
+It's in the openjdk source code (
+https://github.com/openjdk/jdk/blob/master/test/jdk/java/util/concurrent/tck/CountedCompleter8Test.java
+)
+
+Op di 29 sep. 2020 om 10:43 schreef Olivier Peyrusse via
+Concurrency-interest <concurrency-interest at cs.oswego.edu>:
+
+> You mention that a class CountedCompleter8Test, but I don't know where to
+> find it.
+> Do you have an attachement not sent, or missed adding a link to a
+> repository or gist?
+>
+>
+>
+> ‐‐‐‐‐‐‐ Original Message ‐‐‐‐‐‐‐
+> Le lundi, septembre 28, 2020 8:54 PM, Martin Buchholz via
+> Concurrency-interest <concurrency-interest at cs.oswego.edu> a écrit :
+>
+> CountedCompleter is indeed hard to use, even for me, though I worked on
+> some of the tests.
+> It might be helpful to look at CountedCompleter8Test.java
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200929/0a906dfb/attachment.htm>
+
+From rco at activeviam.com  Tue Sep 29 06:34:28 2020
+From: rco at activeviam.com (Romain Colle)
+Date: Tue, 29 Sep 2020 12:34:28 +0200
+Subject: [concurrency-interest] Battles with CountedCompleter
+In-Reply-To: <CAJp3eRBgBHiU0TH54-ZzUVwZ73NBWHvYNU2xvDaT9VKGnDqeHg@mail.gmail.com>
+References: <af73d270-9c74-2bf7-741f-a5c54d944f97@anarres.org>
+ <CAJp3eRBgBHiU0TH54-ZzUVwZ73NBWHvYNU2xvDaT9VKGnDqeHg@mail.gmail.com>
+Message-ID: <CAJp3eRANQ16Uo9wELpNSPz3KKTs93aWUpJ5EeB=yo85OOM5TzQ@mail.gmail.com>
+
+Sorry I sent the email with the wrongly subscribed address :-(
+See my answer below.
+
+I hope it helps!
+
+Romain Colle
+atoti R&D Director at ActiveViam
+
+On Tue, Sep 29, 2020 at 11:03 AM Romain Colle <rco at activeviam.com> wrote:
+
+> Hi Shevek,
+>
+> It might help to perform the recursive split as a fork() within the parent
+> task code instead of using external submits.
+>
+> Looking at ForkJoinPool.awaitJoin(), it seems that a waiting task only
+> tries to steal from queues at odd indexes (worker internal queues), which
+> makes sense since they are the only queues where they should be able to
+> find subtasks.
+> Therefore a running task will never try to steal from a submission queue,
+> and the only way to achieve parallelism is for them to compensate and park
+> themselves.
+>
+> For more details see:
+>
+> https://github.com/openjdk/jdk/blob/6bddeb709d1d263d0d753909cabce7e755e7e27d/src/java.base/share/classes/java/util/concurrent/ForkJoinPool.java#L356-L360
+>
+> https://github.com/openjdk/jdk/blob/6bddeb709d1d263d0d753909cabce7e755e7e27d/src/java.base/share/classes/java/util/concurrent/ForkJoinPool.java#L1699
+>
+> Let me know if this helps.
+> Thanks,
+> Romain
+>
+>
+> On Fri, Sep 25, 2020 at 2:04 AM Shevek via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>> I have been doing battle with CountedCompleter, and I'm stuck at a point
+>> where I'm doing something like this:
+>>
+>> doInParallel(Iterable<thing> tasks) {
+>>    CountedCompleter joinTask = new CountedCompleter();
+>>    for (some unknown number of things)
+>>        pool.submit(new CountedCompleter(parent, ...));
+>>    joinTask.tryComplete();
+>>    joinTask.join();
+>> }
+>>
+>> The objective is to have a recursively-safe construct like:
+>> try (ForkJoinScope scope = new ForkJoinScope(pool, ...)) {
+>>      for (whatever)
+>>          scope.execute(task);
+>> } // close() calls join()
+>>
+>> Any subtask may itself repeat this pattern. The trouble I'm having is
+>> that sometimes I get a lot of threads blocked here:
+>>
+>> "ForkJoinPool-1-worker-6" #19 daemon prio=5 os_prio=0
+>> tid=0x00007f39e5075800 nid=0xd0c in Object.wait() [0x00007f39515f7000]
+>>   java.lang.Thread.State: WAITING (on object monitor)
+>> at java.lang.Object.wait(Native Method)
+>> at java.util.concurrent.ForkJoinTask.internalWait(ForkJoinTask.java:311)
+>>          - locked <0x0000000477c78528> (a
+>> org.compilerworks.common.util.concurrent.ForkJoinScope$JoinTask)
+>> at java.util.concurrent.ForkJoinPool.awaitJoin(ForkJoinPool.java:2058)
+>>        at
+>> java.util.concurrent.ForkJoinTask.doJoin(ForkJoinTask.java:390)
+>> at java.util.concurrent.ForkJoinTask.join(ForkJoinTask.java:719)
+>>
+>> What I can't work out is why these blocked threads aren't helping? 6 of
+>> the threads in my 12-thread pool are blocked, and 6 are working.
+>> Eventually, every so often, one of them seems to unblock. I'm trying to
+>> trace the logic in the code to work out why the blocked threads don't
+>> simply steal other work and do it. I've tried unit testing my
+>> wrapper/controller code twenty ways up and it doesn't block in tests,
+>> but it fails in application.
+>>
+>> Inspection of the heap of a blocked task shows (for example)
+>>
+>> * joinTask.pending=32
+>> * 33 ForkJoinTask instances have a pointer to this joinTask as the
+>> completer.
+>> * joinTask and its children are in the correct ForkJoinPool
+>> * Java 1.8.0_252
+>>
+>> Can anybody please help? I'm happy to submit exact code as there are a
+>> couple of nuances to what I'm doing which might be relevant.
+>>
+>> I'm willing to be polite, but not effusive about the documentation of
+>> CountedCompleter and similar, so it's entirely possible that I'm using
+>> an API wrong.
+>>
+>> Code is attached.
+>>
+>> Thank you.
+>>
+>> S.
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200929/a4b3af10/attachment.htm>
+
+From shevek at anarres.org  Tue Sep 29 15:03:01 2020
+From: shevek at anarres.org (Shevek)
+Date: Tue, 29 Sep 2020 12:03:01 -0700
+Subject: [concurrency-interest] Battles with CountedCompleter
+In-Reply-To: <CAJp3eRBgBHiU0TH54-ZzUVwZ73NBWHvYNU2xvDaT9VKGnDqeHg@mail.gmail.com>
+References: <af73d270-9c74-2bf7-741f-a5c54d944f97@anarres.org>
+ <CAJp3eRBgBHiU0TH54-ZzUVwZ73NBWHvYNU2xvDaT9VKGnDqeHg@mail.gmail.com>
+Message-ID: <1c797384-cea4-44b5-8fc7-ebd2f2167342@anarres.org>
+
+On 9/29/20 2:03 AM, Romain Colle wrote:
+> Hi Shevek,
+> 
+> It might help to perform the recursive split as a fork() within the 
+> parent task code instead of using external submits.
+> 
+> Looking at ForkJoinPool.awaitJoin(), it seems that a waiting task only 
+> tries to steal from queues at odd indexes (worker internal queues), 
+> which makes sense since they are the only queues where they should be 
+> able to find subtasks.
+> Therefore a running task will never try to steal from a submission 
+> queue, and the only way to achieve parallelism is for them to compensate 
+> and park themselves.
+
+I think this was indeed it, and an excellent explanation of why. We now 
+have:
+
+     private static boolean isCurrentForkJoinPool(@Nonnull Executor 
+executor) {
+         Thread t = Thread.currentThread();
+         if (!(t instanceof ForkJoinWorkerThread))
+             return false;
+         return ((ForkJoinWorkerThread) t).getPool() == executor;
+     }
+
+     @Nonnull
+     private <V, T extends ManagedAction<V>> T submit(@Nonnull T task) {
+         joinTask.addToPendingCount(1);
+         if (joinTask.getPendingCount() > callerRunsPendingCountThreshold) {
+             // joinTask.helpComplete(2);
+             task.invoke();
+         } else if (isCurrentForkJoinPool(executor)) {
+             task.fork(); // NEW CODE HERE
+         } else {
+             executor.execute(task);
+         }
+         return task;
+     }
+
+which seems to resolve the issue. I wasn't sure until now why, and I 
+think you just reminded me of something I knew once in distant history, 
+but forgot.
+
+This is all in the interests of attempting to create backpressure within 
+a heavily contended FJP - I've considered using an additional call to 
+something like helpComplete(1) when we hit backpressure, to reduce 
+maximum latency, but we're not latency critical, we're a throughput 
+application. Is there any other advice?
+
+Thank you.
+
+S.
+
+> For more details see:
+> https://github.com/openjdk/jdk/blob/6bddeb709d1d263d0d753909cabce7e755e7e27d/src/java.base/share/classes/java/util/concurrent/ForkJoinPool.java#L356-L360
+> https://github.com/openjdk/jdk/blob/6bddeb709d1d263d0d753909cabce7e755e7e27d/src/java.base/share/classes/java/util/concurrent/ForkJoinPool.java#L1699
+> 
+> Let me know if this helps.
+> Thanks,
+> Romain
+> 
+> 
+> On Fri, Sep 25, 2020 at 2:04 AM Shevek via Concurrency-interest 
+> <concurrency-interest at cs.oswego.edu 
+> <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+> 
+>     I have been doing battle with CountedCompleter, and I'm stuck at a
+>     point
+>     where I'm doing something like this:
+> 
+>     doInParallel(Iterable<thing> tasks) {
+>         CountedCompleter joinTask = new CountedCompleter();
+>         for (some unknown number of things)
+>             pool.submit(new CountedCompleter(parent, ...));
+>         joinTask.tryComplete();
+>         joinTask.join();
+>     }
+> 
+>     The objective is to have a recursively-safe construct like:
+>     try (ForkJoinScope scope = new ForkJoinScope(pool, ...)) {
+>           for (whatever)
+>               scope.execute(task);
+>     } // close() calls join()
+> 
+>     Any subtask may itself repeat this pattern. The trouble I'm having is
+>     that sometimes I get a lot of threads blocked here:
+> 
+>     "ForkJoinPool-1-worker-6" #19 daemon prio=5 os_prio=0
+>     tid=0x00007f39e5075800 nid=0xd0c in Object.wait() [0x00007f39515f7000]
+>        java.lang.Thread.State: WAITING (on object monitor)
+>     at java.lang.Object.wait(Native Method)
+>     at
+>     java.util.concurrent.ForkJoinTask.internalWait(ForkJoinTask.java:311)
+>               - locked <0x0000000477c78528> (a
+>     org.compilerworks.common.util.concurrent.ForkJoinScope$JoinTask)
+>     at java.util.concurrent.ForkJoinPool.awaitJoin(ForkJoinPool.java:2058)
+>             at
+>     java.util.concurrent.ForkJoinTask.doJoin(ForkJoinTask.java:390)
+>     at java.util.concurrent.ForkJoinTask.join(ForkJoinTask.java:719)
+> 
+>     What I can't work out is why these blocked threads aren't helping? 6 of
+>     the threads in my 12-thread pool are blocked, and 6 are working.
+>     Eventually, every so often, one of them seems to unblock. I'm trying to
+>     trace the logic in the code to work out why the blocked threads don't
+>     simply steal other work and do it. I've tried unit testing my
+>     wrapper/controller code twenty ways up and it doesn't block in tests,
+>     but it fails in application.
+> 
+>     Inspection of the heap of a blocked task shows (for example)
+> 
+>     * joinTask.pending=32
+>     * 33 ForkJoinTask instances have a pointer to this joinTask as the
+>     completer.
+>     * joinTask and its children are in the correct ForkJoinPool
+>     * Java 1.8.0_252
+> 
+>     Can anybody please help? I'm happy to submit exact code as there are a
+>     couple of nuances to what I'm doing which might be relevant.
+> 
+>     I'm willing to be polite, but not effusive about the documentation of
+>     CountedCompleter and similar, so it's entirely possible that I'm using
+>     an API wrong.
+> 
+>     Code is attached.
+> 
+>     Thank you.
+> 
+>     S.
+>     _______________________________________________
+>     Concurrency-interest mailing list
+>     Concurrency-interest at cs.oswego.edu
+>     <mailto:Concurrency-interest at cs.oswego.edu>
+>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+

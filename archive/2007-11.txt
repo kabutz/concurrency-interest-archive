@@ -1,0 +1,3556 @@
+From kevinb at google.com  Thu Nov  1 13:56:42 2007
+From: kevinb at google.com (kevin bourrillion)
+Date: Thu, 1 Nov 2007 10:56:42 -0700
+Subject: [concurrency-interest] Annotations for declaring thread-safety
+	properties of Java elements
+In-Reply-To: <63b4e4050710301200s7b077b2pec6e34758f472164@mail.gmail.com>
+References: <108fcdeb0710301054l3ea5a266g5eeb78ade7091f01@mail.gmail.com>
+	<63b4e4050710301200s7b077b2pec6e34758f472164@mail.gmail.com>
+Message-ID: <108fcdeb0711011056k462b49ddp65f1916b30128067@mail.gmail.com>
+
+Thanks for the 308 reminder; I had forgotten about that.  Your
+response was helpful; thanks again.
+
+
+On Oct 30, 2007 12:00 PM, Tim Peierls <tim at peierls.net> wrote:
+> Kevin,
+>
+> The JCiP annotations are deliberately few. We were tempted to try to capture
+> a more complete semantics, and I vaguely recall that we even sketched out
+> something along these lines based on Doug Lea's concurrency property
+> "checklist", but our primary concern was to present a simple enough system
+> that absolutely anyone could hope to use it, not just motivated and talented
+> library designers such as yourself.
+>
+> But that's no excuse, and you still want to document your library. If you
+> haven't already, take a look at the most recent proposal from the ministry
+> for putting things on top of other things (JSR 308). I think it goes a long
+> way towards answering your needs. For example, imagine that Immutable were
+> declared as follows:
+>
+>  @Documented
+>  @Target({TYPE, TYPEREF})  // currently only @Target(TYPE)
+>  @Retention(RUNTIME)
+> public @interface Immutable {}
+>
+> Then you have no need of @ReturnsThreadSafe, because you can annotate the
+> return type directly:
+>
+>   static <E> @Immutable Set<E> immutableSet() { ... }
+>
+> The JSR 308 proposal also includes hints about annotations like @ReadOnly,
+> though its scope does not extend to defining the semantics of these.
+>
+> The big problem with all of this, of course, is that you can't annotate your
+> library with it, at least not officially, until Java 7 at the earliest. But
+> it might help guide you in devising an interim measure that stands a chance
+> of harmonizing with any later developments.
+>
+> --tim
+>
+>
+>
+> On 10/30/07, kevin bourrillion < kevinb at google.com> wrote:
+> >
+> >
+> >
+> > Hi folks.
+> >
+> > I'm interested in cultivating best practices for documenting the
+> > concurrency-related behavior of types, methods, and fields in a very
+> > clear and precise way.  I really like the concept behind the
+> > annotations described in JCIP, but has anyone put any thought and/or
+> > work into fleshing out a more complete set of annotations?
+> >
+> > @Immutable, @ThreadSafe and @NotThreadSafe are nice, but can only be
+> > applied to types.  So they can't, for example, make any distinction
+> > between a plain HashSet and a Collections.synchronizedSet() because
+> > both are of type Set.
+> >
+> > So I find myself wishing for annotations such as @ReturnsImmutable,
+> > @ReturnsThreadSafe and @ReturnsNotThreadSafe, which could be applied
+> > to a method to describe the properties of whatever object that method
+> > returns.  This annotation could match or strengthen whatever
+> > thread-safety assertion is made by the returned type (weakening the
+> > guarantee would be nonsensical and an analyzer should probably emit a
+> > warning).  Would these be good to have?
+> >
+> > Next, consider a method which returns some result based on at least
+> > one mutable parameter. Suppose the method is thread-safe, in that it
+> > won't corrupt the state of any object.  It still feels necessary to
+> > document in some clear way how this method behaves when any of its
+> > parameters are being concurrently modified.  Is it...
+> >
+> > - Safe? (will produce a reasonably 'correct' answer according to its spec)
+> > - Unsafe? (might throw an exception, as documented in its
+> > specification, but at least won't return a bad answer)
+> > - Dangerous? (might give corrupted answer; its spec uses the "results
+> > are undefined" weasel words)
+> > - others....?
+> >
+> > Is there value in being able to annotate method such as
+> > ConcurrentHashMap.put() as @Atomic, and ConcurrentHashMap.putAll() as
+> > @NotAtomic?  (I'm specifically asking about concurrent atomicity, but
+> > there is the other issue of failure atomicity....)
+> >
+> > If you could annotate methods which are allowed to mutate the state of
+> > the instance as @Mutates, would this help in recognizing situations
+> > where it may be safe to assume thread-safety via "effective
+> > immutability"?  What about a method of a mutable type which is based
+> > only on immutable data -- method which will always return the same
+> > value/instance no matter what?  @Fixed?
+> >
+> > I'll stop there.  I don't want to propose a slew of annotations just
+> > for the fun of it; I really just want to find what feels like the
+> > right level of precision at which I should annotate my own libraries
+> > like the google collections, so that with tool support our users could
+> > get some really helpful warnings.  I feel like it's quite a challenge
+> > for even strong, intermediate developers to grasp the nuances of
+> > "concurrency stuff", and by having clearly defined and documented
+> > annotations used -- in good taste of course -- we can really help them
+> > out.
+> >
+> > Would love to hear ideas from the list.
+> >
+> >
+> >
+> > On 10/23/07, kevin bourrillion <kevinb at google.com > wrote:
+> > > Hello,
+> > >
+> > > I'm undertaking to rigorously document the API of the Google
+> > > Collections Library (Java) to convey its concurrency-related
+> > > guarantees in clear and precise terms.  I'd like to develop a set of
+> > > annotations I can use for this, so that one day, our users can get
+> > > informed by their static analysis tools of any suspicious code they
+> > > write using our API.
+> > >
+> > > Background:  Java Concurrency In Practice.
+> > > -----------------------------------------------------
+> > >
+> > > The idea came first from the book, "Java Concurrency In Practice."  In
+> > > fact, the authors published their annotations in a JAR, which I
+> > > checked in to third_party, before I realized that these only barely
+> > > scratch the surface of what is really needed.  Let me quickly explain
+> > > what these do before I move on to propose what else I think we need.
+> > >
+> > > The three primary JCIP annotations @Immutable, @ThreadSafe and
+> > > @NotThreadSafe can be applied to any type (class, interface or enum).
+> > > The meanings are:
+> > >
+> > >   * @Immutable: Any instance of this type is expected to be immutable.
+> > > (Stateless counts as immutable, and is probably not worth
+> > > distinguishing.)
+> > >
+> > >   * @ThreadSafe: Any instance of this type is expected to be
+> > > thread-safe, but may or may not additionally be immutable.
+> > >
+> > >   * @NotThreadSafe: I assert nothing, but I want you to know that I at
+> > > least thought about it.  (Static analysis tools should always treat
+> > > @NotThreadSafe and the no-annotation case the same -- that is, aside
+> > > from possibly recommending when there is no annotation that one be
+> > > added!)
+> > >
+> > > When these annotations are applied to a *final* class, they take on a
+> > > stronger meaning: they are a claim by the developer that the
+> > > implementation *does* fulfill the criteria, not simply an expression
+> > > that any subtype *should* fulfill them.
+> > >
+> > > Note that a non-instantiable class containing only static members is
+> > > arguably a "type" all; I do not believe that any annotations are
+> > > called for in this case.  The class should be final and have a
+> > > private, do-nothing constructor.
+> > >
+> > > What's the use?
+> > > --------------------
+> > >
+> > > We can already do a few things with only these annotations.  Our
+> > > hypothetical static analyzer should raise a warning for any of the
+> > > following scenarios:
+> > >
+> > >   * A class is marked @NotThreadSafe, or has no thread-safety
+> > > annotation, but at least one supertype of this class is marked either
+> > > @ThreadSafe or @Immutable.
+> > >
+> > >   * A class is marked @ThreadSafe, but at least one supertype is
+> > > marked @Immutable.
+> > >
+> > > In short, a subtype cannot weaken the guarantee of a supertype,
+> > > without producing a warning.  Adding a claim such as @Immutable to a
+> > > type has a cascading effect to all subtypes; they must also add the
+> > > same or stronger claim to avoid a warning.
+> > >
+> > > Then what?
+> > > ------------------
+> > >
+> > > Well... that's it!  That's just about where the usefulness of the JCIP
+> > > annotations runs out (there is also a @GuardedBy annotation, but this
+> > > is used to document implementation, not API).
+> > >
+> > > I'd like to say "now the static analysis tools can warn if an instance
+> > > not known to be thread-safe is published to multiple threads."
+> > > However, this doesn't work; the analyzer has no way of knowing that
+> > > 'new HashSet()' is unsafe while both Collections.synchronizedSet () and
+> > > Collections.unmodifiableSet() are safe, because these all share the
+> > > same type, Set.
+> > >
+> > > The same goes for a public static final field in CONSTANT_CASE; we'd
+> > > like to make sure people don't do this for a mutable object, but we
+> > > really can't.
+> > >
+> > > (I'm sure I'm missing some things that really can be done.)
+> > >
+> > > So now what?
+> > >
+> > > Method annotations
+> > > ---------------------------
+> > >
+> > > To be used for methods with non-void, non-primitive return types:
+> > >
+> > >   * @ReturnsImmutable: Declares that the instance returned by any
+> > > implementation of this method is expected to be immutable.
+> > >
+> > >   * @ReturnsThreadSafe: Declares that the instance returned by any
+> > > implementation of this method is expected to be thread-safe, possibly
+> > > immutable.
+> > >
+> > >   * @ReturnsNotThreadSafe: Declares nothing of the sort, thank you
+> > > very much; don't spread it around.
+> > >
+> > > A method may not weaken the guarantee of a method it implements or
+> > > overrides; only match it or strengthen it.  It also may strengthen any
+> > > guarantee made by the *type* being returned (this is key to resolving
+> > > the problem in the Set example above).  It makes no sense for it to
+> > > claim to weaken the guarantee made by the type, so this should be
+> > > flagged as a warning and fixed to avoid confusion.
+> > >
+> > > Just as the meaning of a type annotation is stronger when applied to a
+> > > final class, the meaning of a method annotation becomes stronger when
+> > > applied to a static method, final method, or method of a final class.
+> > >
+> > >   * @ThreadSafe.  Same annotation as above, but a slightly different
+> > > meaning when applied to a method.  It's easiest to start by
+> > > considering only what this annotation means when applied to a *static*
+> > > method.  It means that the method will perform correctly regardless of
+> > > any concurrent modifications happening to any of its *parameters*.
+> > > Obviously, if all parameters are primitive or of @Immutable types,
+> > > then the method is categorically @ThreadSafe (undecided whether the
+> > > annotation should be used or elided in this case).  However, even one
+> > > non- at Immutable parameter raises the question -- even if the parameter
+> > > type is @ThreadSafe!  A simple example:
+> > >
+> > >   public static Object getLastElement(CopyOnWriteArrayList list) {
+> > >     return list.get(list.size() - 1);
+> > >   }
+> > >
+> > > COWAL is thread-safe, but the method is not.
+> > >
+> > > Considering how @ThreadSafe applies to instance methods is trickier,
+> > > and I'll punt on it for now.
+> > >
+> > >   * @Atomic.  On a write operation, signifies that other threads are
+> > > guaranteed not to observe the object in an intermediate state with
+> > > part of the work of the method completed.  For example,
+> > > ConcurrentHashMap.put(K,V) is atomic because no thread will ever
+> > > observe a partially-created entry, such as one having the key set but
+> > > the value still null.   ConcurrentHashMap.putAll(Map) is not atomic;
+> > > another thread may observe only 42 of the entries having been added.
+> > > [The term 'atomic' also carries implications for behavior in the face
+> > > of an exception; you expect a failed atomic method call to leave the
+> > > data in an untouched state, while a failed non-atomic call may have
+> > > left the data corrupted. I'm not sure whether we want to incorporate
+> > > or steer clear of that meaning for purposes of this annotation.]
+> > >
+> > >   * @Read, @Write. (Or to be precise, @WillNotModifyState and
+> > > @MightModifyState.)  Obviously an @Immutable type may not have @Write
+> > > methods, and a method may not be @Write if the method it overrides or
+> > > implements is @Read.  These could potentially be used to understand
+> > > when it's safe to exploit the "effective immutability" of a factually
+> > > mutable instance; but I'm not sure.
+> > >
+> > > -------------
+> > >
+> > > You know, I've been typing this email all day, so let me just leave it
+> > > at this for now, and see if any discussion comes of it.  dinner time!
+> > >
+> > > thanks for reading.
+> > >
+> > >
+> > >
+> > > --
+> > > Kevin Bourrillion @ Google
+> > > go/javalibraries
+> > > google-collections.googlecode.com
+> > > google-guice.googlecode.com
+> > > jsr-310.dev.java.net
+> > >
+> >
+> >
+> > --
+> > Kevin Bourrillion @ Google
+> > go/javalibraries
+> > google-collections.googlecode.com
+> > google-guice.googlecode.com
+> > jsr-310.dev.java.net
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at altair.cs.oswego.edu
+> > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+>
+>
+
+
+
+-- 
+Kevin Bourrillion @ Google
+go/javalibraries
+google-collections.googlecode.com
+google-guice.googlecode.com
+jsr-310.dev.java.net
+
+From crazybob at crazybob.org  Thu Nov  1 14:21:04 2007
+From: crazybob at crazybob.org (Bob Lee)
+Date: Thu, 1 Nov 2007 11:21:04 -0700
+Subject: [concurrency-interest] Annotations for declaring thread-safety
+	properties of Java elements
+In-Reply-To: <63b4e4050710301200s7b077b2pec6e34758f472164@mail.gmail.com>
+References: <108fcdeb0710301054l3ea5a266g5eeb78ade7091f01@mail.gmail.com>
+	<63b4e4050710301200s7b077b2pec6e34758f472164@mail.gmail.com>
+Message-ID: <a74683f90711011121v337e4eaci7eadf97d9e11becc@mail.gmail.com>
+
+That's so cool. We need TYPEREF for binding annotations in Guice.
+
+Bob
+
+On 10/30/07, Tim Peierls <tim at peierls.net> wrote:
+>
+> Kevin,
+>
+> The JCiP annotations are deliberately few. We were tempted to try to
+> capture a more complete semantics, and I vaguely recall that we even
+> sketched out something along these lines based on Doug Lea's concurrency
+> property "checklist" <http://gee.cs.oswego.edu/dl/cpj/prop.html>, but our
+> primary concern was to present a simple enough system that absolutely anyone
+> could hope to use it, not just motivated and talented library designers such
+> as yourself.
+>
+> But that's no excuse, and you still want to document your library. If you
+> haven't already, take a look at the most recent proposal
+> <http://groups.csail.mit.edu/pag/jsr308/java-annotation-design.html> from
+> the ministry for putting things on top of other things (JSR 308). I think it
+> goes a long way towards answering your needs. For example, imagine that
+> Immutable were declared as follows:
+>
+> @Documented
+>  @Target({TYPE, TYPEREF})  // currently only @Target(TYPE)
+> @Retention(RUNTIME)
+> public @interface Immutable {}
+>
+> Then you have no need of @ReturnsThreadSafe, because you can annotate the
+> return type directly:
+>
+>   static <E> @Immutable Set<E> immutableSet() { ... }
+>
+> The JSR 308 proposal also includes hints about annotations like @ReadOnly,
+> though its scope does not extend to defining the semantics of these.
+>
+> The big problem with all of this, of course, is that you can't annotate
+> your library with it, at least not officially, until Java 7 at the earliest.
+> But it might help guide you in devising an interim measure that stands a
+> chance of harmonizing with any later developments.
+>
+> --tim
+>
+> On 10/30/07, kevin bourrillion < kevinb at google.com> wrote:
+> >
+> > Hi folks.
+> >
+> > I'm interested in cultivating best practices for documenting the
+> > concurrency-related behavior of types, methods, and fields in a very
+> > clear and precise way.  I really like the concept behind the
+> > annotations described in JCIP, but has anyone put any thought and/or
+> > work into fleshing out a more complete set of annotations?
+> >
+> > @Immutable, @ThreadSafe and @NotThreadSafe are nice, but can only be
+> > applied to types.  So they can't, for example, make any distinction
+> > between a plain HashSet and a Collections.synchronizedSet() because
+> > both are of type Set.
+> >
+> > So I find myself wishing for annotations such as @ReturnsImmutable,
+> > @ReturnsThreadSafe and @ReturnsNotThreadSafe, which could be applied
+> > to a method to describe the properties of whatever object that method
+> > returns.  This annotation could match or strengthen whatever
+> > thread-safety assertion is made by the returned type (weakening the
+> > guarantee would be nonsensical and an analyzer should probably emit a
+> > warning).  Would these be good to have?
+> >
+> > Next, consider a method which returns some result based on at least
+> > one mutable parameter. Suppose the method is thread-safe, in that it
+> > won't corrupt the state of any object.  It still feels necessary to
+> > document in some clear way how this method behaves when any of its
+> > parameters are being concurrently modified.  Is it...
+> >
+> > - Safe? (will produce a reasonably 'correct' answer according to its
+> > spec)
+> > - Unsafe? (might throw an exception, as documented in its
+> > specification, but at least won't return a bad answer)
+> > - Dangerous? (might give corrupted answer; its spec uses the "results
+> > are undefined" weasel words)
+> > - others....?
+> >
+> > Is there value in being able to annotate method such as
+> > ConcurrentHashMap.put() as @Atomic, and ConcurrentHashMap.putAll() as
+> > @NotAtomic?  (I'm specifically asking about concurrent atomicity, but
+> > there is the other issue of failure atomicity....)
+> >
+> > If you could annotate methods which are allowed to mutate the state of
+> > the instance as @Mutates, would this help in recognizing situations
+> > where it may be safe to assume thread-safety via "effective
+> > immutability"?  What about a method of a mutable type which is based
+> > only on immutable data -- method which will always return the same
+> > value/instance no matter what?  @Fixed?
+> >
+> > I'll stop there.  I don't want to propose a slew of annotations just
+> > for the fun of it; I really just want to find what feels like the
+> > right level of precision at which I should annotate my own libraries
+> > like the google collections, so that with tool support our users could
+> > get some really helpful warnings.  I feel like it's quite a challenge
+> > for even strong, intermediate developers to grasp the nuances of
+> > "concurrency stuff", and by having clearly defined and documented
+> > annotations used -- in good taste of course -- we can really help them
+> > out.
+> >
+> > Would love to hear ideas from the list.
+> >
+> >
+> >
+> > On 10/23/07, kevin bourrillion <kevinb at google.com > wrote:
+> > > Hello,
+> > >
+> > > I'm undertaking to rigorously document the API of the Google
+> > > Collections Library (Java) to convey its concurrency-related
+> > > guarantees in clear and precise terms.  I'd like to develop a set of
+> > > annotations I can use for this, so that one day, our users can get
+> > > informed by their static analysis tools of any suspicious code they
+> > > write using our API.
+> > >
+> > > Background:  Java Concurrency In Practice.
+> > > -----------------------------------------------------
+> > >
+> > > The idea came first from the book, "Java Concurrency In Practice."  In
+> > > fact, the authors published their annotations in a JAR, which I
+> > > checked in to third_party, before I realized that these only barely
+> > > scratch the surface of what is really needed.  Let me quickly explain
+> > > what these do before I move on to propose what else I think we need.
+> > >
+> > > The three primary JCIP annotations @Immutable, @ThreadSafe and
+> > > @NotThreadSafe can be applied to any type (class, interface or enum).
+> > > The meanings are:
+> > >
+> > >   * @Immutable: Any instance of this type is expected to be immutable.
+> > > (Stateless counts as immutable, and is probably not worth
+> > > distinguishing.)
+> > >
+> > >   * @ThreadSafe: Any instance of this type is expected to be
+> > > thread-safe, but may or may not additionally be immutable.
+> > >
+> > >   * @NotThreadSafe: I assert nothing, but I want you to know that I at
+> >
+> > > least thought about it.  (Static analysis tools should always treat
+> > > @NotThreadSafe and the no-annotation case the same -- that is, aside
+> > > from possibly recommending when there is no annotation that one be
+> > > added!)
+> > >
+> > > When these annotations are applied to a *final* class, they take on a
+> > > stronger meaning: they are a claim by the developer that the
+> > > implementation *does* fulfill the criteria, not simply an expression
+> > > that any subtype *should* fulfill them.
+> > >
+> > > Note that a non-instantiable class containing only static members is
+> > > arguably a "type" all; I do not believe that any annotations are
+> > > called for in this case.  The class should be final and have a
+> > > private, do-nothing constructor.
+> > >
+> > > What's the use?
+> > > --------------------
+> > >
+> > > We can already do a few things with only these annotations.  Our
+> > > hypothetical static analyzer should raise a warning for any of the
+> > > following scenarios:
+> > >
+> > >   * A class is marked @NotThreadSafe, or has no thread-safety
+> > > annotation, but at least one supertype of this class is marked either
+> > > @ThreadSafe or @Immutable.
+> > >
+> > >   * A class is marked @ThreadSafe, but at least one supertype is
+> > > marked @Immutable.
+> > >
+> > > In short, a subtype cannot weaken the guarantee of a supertype,
+> > > without producing a warning.  Adding a claim such as @Immutable to a
+> > > type has a cascading effect to all subtypes; they must also add the
+> > > same or stronger claim to avoid a warning.
+> > >
+> > > Then what?
+> > > ------------------
+> > >
+> > > Well... that's it!  That's just about where the usefulness of the JCIP
+> >
+> > > annotations runs out (there is also a @GuardedBy annotation, but this
+> > > is used to document implementation, not API).
+> > >
+> > > I'd like to say "now the static analysis tools can warn if an instance
+> >
+> > > not known to be thread-safe is published to multiple threads."
+> > > However, this doesn't work; the analyzer has no way of knowing that
+> > > 'new HashSet()' is unsafe while both Collections.synchronizedSet ()
+> > and
+> > > Collections.unmodifiableSet() are safe, because these all share the
+> > > same type, Set.
+> > >
+> > > The same goes for a public static final field in CONSTANT_CASE; we'd
+> > > like to make sure people don't do this for a mutable object, but we
+> > > really can't.
+> > >
+> > > (I'm sure I'm missing some things that really can be done.)
+> > >
+> > > So now what?
+> > >
+> > > Method annotations
+> > > ---------------------------
+> > >
+> > > To be used for methods with non-void, non-primitive return types:
+> > >
+> > >   * @ReturnsImmutable: Declares that the instance returned by any
+> > > implementation of this method is expected to be immutable.
+> > >
+> > >   * @ReturnsThreadSafe: Declares that the instance returned by any
+> > > implementation of this method is expected to be thread-safe, possibly
+> > > immutable.
+> > >
+> > >   * @ReturnsNotThreadSafe: Declares nothing of the sort, thank you
+> > > very much; don't spread it around.
+> > >
+> > > A method may not weaken the guarantee of a method it implements or
+> > > overrides; only match it or strengthen it.  It also may strengthen any
+> > > guarantee made by the *type* being returned (this is key to resolving
+> > > the problem in the Set example above).  It makes no sense for it to
+> > > claim to weaken the guarantee made by the type, so this should be
+> > > flagged as a warning and fixed to avoid confusion.
+> > >
+> > > Just as the meaning of a type annotation is stronger when applied to a
+> > > final class, the meaning of a method annotation becomes stronger when
+> > > applied to a static method, final method, or method of a final class.
+> > >
+> > >   * @ThreadSafe.  Same annotation as above, but a slightly different
+> > > meaning when applied to a method.  It's easiest to start by
+> > > considering only what this annotation means when applied to a *static*
+> >
+> > > method.  It means that the method will perform correctly regardless of
+> > > any concurrent modifications happening to any of its *parameters*.
+> > > Obviously, if all parameters are primitive or of @Immutable types,
+> > > then the method is categorically @ThreadSafe (undecided whether the
+> > > annotation should be used or elided in this case).  However, even one
+> > > non- at Immutable parameter raises the question -- even if the parameter
+> > > type is @ThreadSafe!  A simple example:
+> > >
+> > >   public static Object getLastElement(CopyOnWriteArrayList list) {
+> > >     return list.get(list.size() - 1);
+> > >   }
+> > >
+> > > COWAL is thread-safe, but the method is not.
+> > >
+> > > Considering how @ThreadSafe applies to instance methods is trickier,
+> > > and I'll punt on it for now.
+> > >
+> > >   * @Atomic.  On a write operation, signifies that other threads are
+> > > guaranteed not to observe the object in an intermediate state with
+> > > part of the work of the method completed.  For example,
+> > > ConcurrentHashMap.put(K,V) is atomic because no thread will ever
+> > > observe a partially-created entry, such as one having the key set but
+> > > the value still null.   ConcurrentHashMap.putAll(Map) is not atomic;
+> > > another thread may observe only 42 of the entries having been added.
+> > > [The term 'atomic' also carries implications for behavior in the face
+> > > of an exception; you expect a failed atomic method call to leave the
+> > > data in an untouched state, while a failed non-atomic call may have
+> > > left the data corrupted. I'm not sure whether we want to incorporate
+> > > or steer clear of that meaning for purposes of this annotation.]
+> > >
+> > >   * @Read, @Write. (Or to be precise, @WillNotModifyState and
+> > > @MightModifyState.)  Obviously an @Immutable type may not have @Write
+> > > methods, and a method may not be @Write if the method it overrides or
+> > > implements is @Read.  These could potentially be used to understand
+> > > when it's safe to exploit the "effective immutability" of a factually
+> > > mutable instance; but I'm not sure.
+> > >
+> > > -------------
+> > >
+> > > You know, I've been typing this email all day, so let me just leave it
+> > > at this for now, and see if any discussion comes of it.  dinner time!
+> > >
+> > > thanks for reading.
+> > >
+> > >
+> > >
+> > > --
+> > > Kevin Bourrillion @ Google
+> > > go/javalibraries
+> > > google-collections.googlecode.com
+> > > google-guice.googlecode.com
+> > > jsr-310.dev.java.net
+> > >
+> >
+> >
+> > --
+> > Kevin Bourrillion @ Google
+> > go/javalibraries
+> > google-collections.googlecode.com
+> > google-guice.googlecode.com
+> > jsr-310.dev.java.net
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at altair.cs.oswego.edu
+> >  http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20071101/3eb4e3a9/attachment-0001.html 
+
+From dhanji at gmail.com  Mon Nov  5 21:28:00 2007
+From: dhanji at gmail.com (Dhanji R. Prasanna)
+Date: Tue, 6 Nov 2007 12:28:00 +1000
+Subject: [concurrency-interest] conditional put
+Message-ID: <aa067ea10711051828m3f9baf27y606ace4ea8dc5c7@mail.gmail.com>
+
+Hi,
+
+CHM is a wonderful abstraction for atomic conditional puts
+(putIfAbsent). However, it does not work well in a lambda-like use
+case (i.e. evaluate if absent).
+
+Is there some way for me to achieve the following:
+
+chm.putIfAbsent(key, new Callable<Value> {
+    //expression that is only evaluated if key is absent
+});
+
+And that this callable is evaluated atomically.
+Thank you,
+
+Dhanji.
+
+From dcholmes at optusnet.com.au  Mon Nov  5 21:49:17 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Tue, 6 Nov 2007 12:49:17 +1000
+Subject: [concurrency-interest] conditional put
+In-Reply-To: <aa067ea10711051828m3f9baf27y606ace4ea8dc5c7@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCGEGFHJAA.dcholmes@optusnet.com.au>
+
+Dhanji,
+
+I can think of some ugly tricks to get the Callable evaluated only if being
+placed into (or potentially placed into) the map; but there is no way to do
+this "atomically".
+
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Dhanji
+> R. Prasanna
+> Sent: Tuesday, 6 November 2007 12:28 PM
+> To: concurrency-interest
+> Subject: [concurrency-interest] conditional put
+>
+>
+> Hi,
+>
+> CHM is a wonderful abstraction for atomic conditional puts
+> (putIfAbsent). However, it does not work well in a lambda-like use
+> case (i.e. evaluate if absent).
+>
+> Is there some way for me to achieve the following:
+>
+> chm.putIfAbsent(key, new Callable<Value> {
+>     //expression that is only evaluated if key is absent
+> });
+>
+> And that this callable is evaluated atomically.
+> Thank you,
+>
+> Dhanji.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From crazybob at crazybob.org  Mon Nov  5 22:19:45 2007
+From: crazybob at crazybob.org (Bob Lee)
+Date: Mon, 5 Nov 2007 19:19:45 -0800
+Subject: [concurrency-interest] conditional put
+In-Reply-To: <aa067ea10711051828m3f9baf27y606ace4ea8dc5c7@mail.gmail.com>
+References: <aa067ea10711051828m3f9baf27y606ace4ea8dc5c7@mail.gmail.com>
+Message-ID: <a74683f90711051919m37bfc2ck426dac25ed24905c@mail.gmail.com>
+
+I use ReferenceCache for this sort of thing:
+http://google-guice.googlecode.com/svn/trunk/src/com/google/inject/internal/
+
+We're working on a more flexible replacement though.
+
+In the mean time, you can also use a ConcurrentMap<K, Future<V>>.
+
+Future<V> future = map.get(key);
+if (future != null) {
+  return future.get();
+}
+Callable<V> callable = ...;
+Future<V> future = new FutureTask<V>(callable);
+Future<V> fromMap = map.putIfAbsent(key, future);
+return (fromMap == null ? future : fromMap).get();
+
+Bob
+
+On 11/5/07, Dhanji R. Prasanna <dhanji at gmail.com> wrote:
+> Hi,
+>
+> CHM is a wonderful abstraction for atomic conditional puts
+> (putIfAbsent). However, it does not work well in a lambda-like use
+> case (i.e. evaluate if absent).
+>
+> Is there some way for me to achieve the following:
+>
+> chm.putIfAbsent(key, new Callable<Value> {
+>     //expression that is only evaluated if key is absent
+> });
+>
+> And that this callable is evaluated atomically.
+> Thank you,
+>
+> Dhanji.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From dcholmes at optusnet.com.au  Mon Nov  5 22:32:02 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Tue, 6 Nov 2007 13:32:02 +1000
+Subject: [concurrency-interest] conditional put
+In-Reply-To: <a74683f90711051919m37bfc2ck426dac25ed24905c@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOEGFHJAA.dcholmes@optusnet.com.au>
+
+If this pattern works for you then take a look at Memoizer from JCiP. But
+from the description I thought Dhanji was after something slightly
+different. And the atomicity aspect also needs addressing - but the question
+is "atomic with respect to what?"
+
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Bob Lee
+> Sent: Tuesday, 6 November 2007 1:20 PM
+> To: Dhanji R. Prasanna
+> Cc: concurrency-interest
+> Subject: Re: [concurrency-interest] conditional put
+>
+>
+> I use ReferenceCache for this sort of thing:
+> http://google-guice.googlecode.com/svn/trunk/src/com/google/inject
+> /internal/
+>
+> We're working on a more flexible replacement though.
+>
+> In the mean time, you can also use a ConcurrentMap<K, Future<V>>.
+>
+> Future<V> future = map.get(key);
+> if (future != null) {
+>   return future.get();
+> }
+> Callable<V> callable = ...;
+> Future<V> future = new FutureTask<V>(callable);
+> Future<V> fromMap = map.putIfAbsent(key, future);
+> return (fromMap == null ? future : fromMap).get();
+>
+> Bob
+>
+> On 11/5/07, Dhanji R. Prasanna <dhanji at gmail.com> wrote:
+> > Hi,
+> >
+> > CHM is a wonderful abstraction for atomic conditional puts
+> > (putIfAbsent). However, it does not work well in a lambda-like use
+> > case (i.e. evaluate if absent).
+> >
+> > Is there some way for me to achieve the following:
+> >
+> > chm.putIfAbsent(key, new Callable<Value> {
+> >     //expression that is only evaluated if key is absent
+> > });
+> >
+> > And that this callable is evaluated atomically.
+> > Thank you,
+> >
+> > Dhanji.
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at altair.cs.oswego.edu
+> > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From dcholmes at optusnet.com.au  Mon Nov  5 23:05:46 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Tue, 6 Nov 2007 14:05:46 +1000
+Subject: [concurrency-interest] conditional put
+In-Reply-To: <86DE63FC-D4D8-4B36-BA2E-4345CE5208E0@bellsouth.net>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEGGHJAA.dcholmes@optusnet.com.au>
+
+Dave,
+
+It is unclear from Dhanji's post exactly what level of "atomicity" is
+required. However, if I presume that it is atomic with respect to being
+added to the map, then locking would have to be done across the map
+operations and that would defeat the purpose of using CHM.
+
+Cheers,
+David Holmes
+
+> -----Original Message-----
+> From: Dave Griffith [mailto:dgriffith at bellsouth.net]
+> Sent: Tuesday, 6 November 2007 1:57 PM
+> To: dholmes at ieee.org
+> Cc: Dhanji R. Prasanna; concurrency-interest
+> Subject: Re: [concurrency-interest] conditional put
+>
+>
+> Just have the table (or some shadow table) contain either values or
+> futures.  Lock the combined "table with either values or futures"
+> structure on every access (accesses will be shortlived, and not
+> require locking for the duration of the deferred calculation) and you
+> should be good to go.  What am I missing?
+>
+> --Dave Griffith
+>
+> On Nov 5, 2007, at 9:49 PM, David Holmes wrote:
+>
+> > Dhanji,
+> >
+> > I can think of some ugly tricks to get the Callable evaluated only
+> > if being
+> > placed into (or potentially placed into) the map; but there is no
+> > way to do
+> > this "atomically".
+> >
+> > David Holmes
+> >
+> >> -----Original Message-----
+> >> From: concurrency-interest-bounces at cs.oswego.edu
+> >> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of
+> >> Dhanji
+> >> R. Prasanna
+> >> Sent: Tuesday, 6 November 2007 12:28 PM
+> >> To: concurrency-interest
+> >> Subject: [concurrency-interest] conditional put
+> >>
+> >>
+> >> Hi,
+> >>
+> >> CHM is a wonderful abstraction for atomic conditional puts
+> >> (putIfAbsent). However, it does not work well in a lambda-like use
+> >> case (i.e. evaluate if absent).
+> >>
+> >> Is there some way for me to achieve the following:
+> >>
+> >> chm.putIfAbsent(key, new Callable<Value> {
+> >>     //expression that is only evaluated if key is absent
+> >> });
+> >>
+> >> And that this callable is evaluated atomically.
+> >> Thank you,
+> >>
+> >> Dhanji.
+> >> _______________________________________________
+> >> Concurrency-interest mailing list
+> >> Concurrency-interest at altair.cs.oswego.edu
+> >> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at altair.cs.oswego.edu
+> > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+>
+
+
+From dhanji at gmail.com  Tue Nov  6 00:04:49 2007
+From: dhanji at gmail.com (Dhanji R. Prasanna)
+Date: Tue, 6 Nov 2007 15:04:49 +1000
+Subject: [concurrency-interest] conditional put
+In-Reply-To: <86DE63FC-D4D8-4B36-BA2E-4345CE5208E0@bellsouth.net>
+References: <NFBBKALFDCPFIDBNKAPCGEGFHJAA.dcholmes@optusnet.com.au>
+	<86DE63FC-D4D8-4B36-BA2E-4345CE5208E0@bellsouth.net>
+Message-ID: <aa067ea10711052104j6db30f1dj9c43e247faed587d@mail.gmail.com>
+
+On 11/6/07, Dave Griffith <dgriffith at bellsouth.net> wrote:
+> Just have the table (or some shadow table) contain either values or
+> futures.  Lock the combined "table with either values or futures"
+> structure on every access (accesses will be shortlived, and not
+> require locking for the duration of the deferred calculation) and you
+> should be good to go.  What am I missing?
+
+Doesn't that defeat the use of CHM? If I am synchronizing the
+put/evaluation at the data structure's granularity, then puts are
+sequential not concurrent.
+
+Dhanji.
+
+From joe.bowbeer at gmail.com  Tue Nov  6 01:00:42 2007
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Mon, 5 Nov 2007 22:00:42 -0800
+Subject: [concurrency-interest] conditional put
+In-Reply-To: <aa067ea10711051828m3f9baf27y606ace4ea8dc5c7@mail.gmail.com>
+References: <aa067ea10711051828m3f9baf27y606ace4ea8dc5c7@mail.gmail.com>
+Message-ID: <31f2a7bd0711052200w4472745bj31510a55d55caba5@mail.gmail.com>
+
+On Nov 5, 2007 6:28 PM, Dhanji R. Prasanna wrote:
+> Hi,
+>
+> CHM is a wonderful abstraction for atomic conditional puts
+> (putIfAbsent). However, it does not work well in a lambda-like use
+> case (i.e. evaluate if absent).
+>
+> Is there some way for me to achieve the following:
+>
+> chm.putIfAbsent(key, new Callable<Value> {
+>     //expression that is only evaluated if key is absent
+> });
+>
+> And that this callable is evaluated atomically.
+> Thank you,
+>
+> Dhanji.
+>
+
+There was a long discussion about this not too long ago titled "Adding
+a createIfAbsent() API?"
+
+Have you ruled out the use of Futures (a la Memoizer)?
+
+--
+Joe Bowbeer
+
+Remember Remember the Fifth of November...
+
+From dhanji at gmail.com  Tue Nov  6 01:53:34 2007
+From: dhanji at gmail.com (Dhanji R. Prasanna)
+Date: Tue, 6 Nov 2007 16:53:34 +1000
+Subject: [concurrency-interest] conditional put
+In-Reply-To: <a74683f90711051919m37bfc2ck426dac25ed24905c@mail.gmail.com>
+References: <aa067ea10711051828m3f9baf27y606ace4ea8dc5c7@mail.gmail.com>
+	<a74683f90711051919m37bfc2ck426dac25ed24905c@mail.gmail.com>
+Message-ID: <aa067ea10711052253k5b9d73a4s8fbf12e95c39af32@mail.gmail.com>
+
+Bob,
+
+That is interesting--if I read it correctly, it is an evaluate-on-get
+rather than evaluate-on-successful-put. Ignoring subsequent concurrent
+puts if there is already a value...
+
+That's not exactly what I was after but it offers a concurrent put and
+defers the expense of computation, so I think it works for my needs.
+
+Would be nice to have a callable closure in CHM.putIfAbsent() *hint*
+Thank you all for responses,
+
+Dhanji.
+
+On 11/6/07, Bob Lee <crazybob at crazybob.org> wrote:
+> I use ReferenceCache for this sort of thing:
+> http://google-guice.googlecode.com/svn/trunk/src/com/google/inject/internal/
+>
+> We're working on a more flexible replacement though.
+>
+> In the mean time, you can also use a ConcurrentMap<K, Future<V>>.
+>
+> Future<V> future = map.get(key);
+> if (future != null) {
+>   return future.get();
+> }
+> Callable<V> callable = ...;
+> Future<V> future = new FutureTask<V>(callable);
+> Future<V> fromMap = map.putIfAbsent(key, future);
+> return (fromMap == null ? future : fromMap).get();
+>
+> Bob
+>
+> On 11/5/07, Dhanji R. Prasanna <dhanji at gmail.com> wrote:
+> > Hi,
+> >
+> > CHM is a wonderful abstraction for atomic conditional puts
+> > (putIfAbsent). However, it does not work well in a lambda-like use
+> > case (i.e. evaluate if absent).
+> >
+> > Is there some way for me to achieve the following:
+> >
+> > chm.putIfAbsent(key, new Callable<Value> {
+> >     //expression that is only evaluated if key is absent
+> > });
+> >
+> > And that this callable is evaluated atomically.
+> > Thank you,
+> >
+> > Dhanji.
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at altair.cs.oswego.edu
+> > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+>
+
+From kevinb at google.com  Tue Nov  6 02:41:51 2007
+From: kevinb at google.com (kevin bourrillion)
+Date: Mon, 5 Nov 2007 23:41:51 -0800
+Subject: [concurrency-interest] conditional put
+In-Reply-To: <aa067ea10711052253k5b9d73a4s8fbf12e95c39af32@mail.gmail.com>
+References: <aa067ea10711051828m3f9baf27y606ace4ea8dc5c7@mail.gmail.com>
+	<a74683f90711051919m37bfc2ck426dac25ed24905c@mail.gmail.com>
+	<aa067ea10711052253k5b9d73a4s8fbf12e95c39af32@mail.gmail.com>
+Message-ID: <108fcdeb0711052341r6375ae78g33480f47c5a80078@mail.gmail.com>
+
+Dhanji,
+
+Doug and Bob and I have coincidentally been discussing this again
+lately; Doug is still skeptical that a truly general-purpose reusable
+solution is feasible, but I'm a damned optimist.  If we manage to come
+up with something it will go into the google collections library.
+
+
+
+On Nov 5, 2007 10:53 PM, Dhanji R. Prasanna <dhanji at gmail.com> wrote:
+> Bob,
+>
+> That is interesting--if I read it correctly, it is an evaluate-on-get
+> rather than evaluate-on-successful-put. Ignoring subsequent concurrent
+> puts if there is already a value...
+>
+> That's not exactly what I was after but it offers a concurrent put and
+> defers the expense of computation, so I think it works for my needs.
+>
+> Would be nice to have a callable closure in CHM.putIfAbsent() *hint*
+> Thank you all for responses,
+>
+> Dhanji.
+>
+>
+> On 11/6/07, Bob Lee <crazybob at crazybob.org> wrote:
+> > I use ReferenceCache for this sort of thing:
+> > http://google-guice.googlecode.com/svn/trunk/src/com/google/inject/internal/
+> >
+> > We're working on a more flexible replacement though.
+> >
+> > In the mean time, you can also use a ConcurrentMap<K, Future<V>>.
+> >
+> > Future<V> future = map.get(key);
+> > if (future != null) {
+> >   return future.get();
+> > }
+> > Callable<V> callable = ...;
+> > Future<V> future = new FutureTask<V>(callable);
+> > Future<V> fromMap = map.putIfAbsent(key, future);
+> > return (fromMap == null ? future : fromMap).get();
+> >
+> > Bob
+> >
+> > On 11/5/07, Dhanji R. Prasanna <dhanji at gmail.com> wrote:
+> > > Hi,
+> > >
+> > > CHM is a wonderful abstraction for atomic conditional puts
+> > > (putIfAbsent). However, it does not work well in a lambda-like use
+> > > case (i.e. evaluate if absent).
+> > >
+> > > Is there some way for me to achieve the following:
+> > >
+> > > chm.putIfAbsent(key, new Callable<Value> {
+> > >     //expression that is only evaluated if key is absent
+> > > });
+> > >
+> > > And that this callable is evaluated atomically.
+> > > Thank you,
+> > >
+> > > Dhanji.
+> > > _______________________________________________
+> > > Concurrency-interest mailing list
+> > > Concurrency-interest at altair.cs.oswego.edu
+> > > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> > >
+> >
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+-- 
+Kevin Bourrillion @ Google
+go/javalibraries
+google-collections.googlecode.com
+google-guice.googlecode.com
+jsr-310.dev.java.net
+
+From dhanji at gmail.com  Tue Nov  6 04:56:22 2007
+From: dhanji at gmail.com (Dhanji R. Prasanna)
+Date: Tue, 6 Nov 2007 19:56:22 +1000
+Subject: [concurrency-interest] conditional put
+In-Reply-To: <108fcdeb0711052341r6375ae78g33480f47c5a80078@mail.gmail.com>
+References: <aa067ea10711051828m3f9baf27y606ace4ea8dc5c7@mail.gmail.com>
+	<a74683f90711051919m37bfc2ck426dac25ed24905c@mail.gmail.com>
+	<aa067ea10711052253k5b9d73a4s8fbf12e95c39af32@mail.gmail.com>
+	<108fcdeb0711052341r6375ae78g33480f47c5a80078@mail.gmail.com>
+Message-ID: <aa067ea10711060156j37373b2ep3409d198ed280b7e@mail.gmail.com>
+
+Kevin,
+
+Then I shall look forward to that and your damning optimism ;)
+
+Dhanji.
+
+On 11/6/07, kevin bourrillion <kevinb at google.com> wrote:
+> Dhanji,
+>
+> Doug and Bob and I have coincidentally been discussing this again
+> lately; Doug is still skeptical that a truly general-purpose reusable
+> solution is feasible, but I'm a damned optimist.  If we manage to come
+> up with something it will go into the google collections library.
+>
+>
+>
+> On Nov 5, 2007 10:53 PM, Dhanji R. Prasanna <dhanji at gmail.com> wrote:
+> > Bob,
+> >
+> > That is interesting--if I read it correctly, it is an evaluate-on-get
+> > rather than evaluate-on-successful-put. Ignoring subsequent concurrent
+> > puts if there is already a value...
+> >
+> > That's not exactly what I was after but it offers a concurrent put and
+> > defers the expense of computation, so I think it works for my needs.
+> >
+> > Would be nice to have a callable closure in CHM.putIfAbsent() *hint*
+> > Thank you all for responses,
+> >
+> > Dhanji.
+> >
+> >
+> > On 11/6/07, Bob Lee <crazybob at crazybob.org> wrote:
+> > > I use ReferenceCache for this sort of thing:
+> > > http://google-guice.googlecode.com/svn/trunk/src/com/google/inject/internal/
+> > >
+> > > We're working on a more flexible replacement though.
+> > >
+> > > In the mean time, you can also use a ConcurrentMap<K, Future<V>>.
+> > >
+> > > Future<V> future = map.get(key);
+> > > if (future != null) {
+> > >   return future.get();
+> > > }
+> > > Callable<V> callable = ...;
+> > > Future<V> future = new FutureTask<V>(callable);
+> > > Future<V> fromMap = map.putIfAbsent(key, future);
+> > > return (fromMap == null ? future : fromMap).get();
+> > >
+> > > Bob
+> > >
+> > > On 11/5/07, Dhanji R. Prasanna <dhanji at gmail.com> wrote:
+> > > > Hi,
+> > > >
+> > > > CHM is a wonderful abstraction for atomic conditional puts
+> > > > (putIfAbsent). However, it does not work well in a lambda-like use
+> > > > case (i.e. evaluate if absent).
+> > > >
+> > > > Is there some way for me to achieve the following:
+> > > >
+> > > > chm.putIfAbsent(key, new Callable<Value> {
+> > > >     //expression that is only evaluated if key is absent
+> > > > });
+> > > >
+> > > > And that this callable is evaluated atomically.
+> > > > Thank you,
+> > > >
+> > > > Dhanji.
+> > > > _______________________________________________
+> > > > Concurrency-interest mailing list
+> > > > Concurrency-interest at altair.cs.oswego.edu
+> > > > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> > > >
+> > >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at altair.cs.oswego.edu
+> > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+>
+>
+>
+> --
+> Kevin Bourrillion @ Google
+> go/javalibraries
+> google-collections.googlecode.com
+> google-guice.googlecode.com
+> jsr-310.dev.java.net
+>
+
+From tim at peierls.net  Tue Nov  6 09:05:37 2007
+From: tim at peierls.net (Tim Peierls)
+Date: Tue, 6 Nov 2007 09:05:37 -0500
+Subject: [concurrency-interest] conditional put
+In-Reply-To: <108fcdeb0711052341r6375ae78g33480f47c5a80078@mail.gmail.com>
+References: <aa067ea10711051828m3f9baf27y606ace4ea8dc5c7@mail.gmail.com>
+	<a74683f90711051919m37bfc2ck426dac25ed24905c@mail.gmail.com>
+	<aa067ea10711052253k5b9d73a4s8fbf12e95c39af32@mail.gmail.com>
+	<108fcdeb0711052341r6375ae78g33480f47c5a80078@mail.gmail.com>
+Message-ID: <63b4e4050711060605g46877c0he7e5862407958985@mail.gmail.com>
+
+On 11/6/07, kevin bourrillion <kevinb at google.com> wrote:
+>
+> Doug and Bob and I have coincidentally been discussing this again
+> lately; Doug is still skeptical that a truly general-purpose reusable
+> solution is feasible, but I'm a damned optimist.  If we manage to come
+> up with something it will go into the google collections library.
+>
+
+For those who, like me, can't always remember everything Doug had to say on
+this:
+
+http://www.nabble.com/Lazy-concurrent-map-value-initialization-p4390597.html
+
+and the more recent discussion:
+
+http://www.nabble.com/Adding-a-createIfAbsent%28%29-API--tf4262682.html#a12130834
+
+--tim
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20071106/96c1ae1b/attachment.html 
+
+From gregg at cytetech.com  Tue Nov  6 10:35:06 2007
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Tue, 06 Nov 2007 09:35:06 -0600
+Subject: [concurrency-interest] conditional put
+In-Reply-To: <63b4e4050711060605g46877c0he7e5862407958985@mail.gmail.com>
+References: <aa067ea10711051828m3f9baf27y606ace4ea8dc5c7@mail.gmail.com>
+	<a74683f90711051919m37bfc2ck426dac25ed24905c@mail.gmail.com>
+	<aa067ea10711052253k5b9d73a4s8fbf12e95c39af32@mail.gmail.com>
+	<108fcdeb0711052341r6375ae78g33480f47c5a80078@mail.gmail.com>
+	<63b4e4050711060605g46877c0he7e5862407958985@mail.gmail.com>
+Message-ID: <473089AA.6060306@cytetech.com>
+
+Tim Peierls wrote:
+> On 11/6/07, *kevin bourrillion* <kevinb at google.com 
+> <mailto:kevinb at google.com>> wrote:
+> 
+>     Doug and Bob and I have coincidentally been discussing this again
+>     lately; Doug is still skeptical that a truly general-purpose reusable
+>     solution is feasible, but I'm a damned optimist.  If we manage to come
+>     up with something it will go into the google collections library.
+
+The pattern I use is something like
+
+Value<Type> t, newt;
+
+if( (t = map.putIfAbsent( key, newt = new Value<Type>() ) != null ) {
+	newt.destroy();
+}
+
+I also put in as much lazy initialization as I can which does not require 
+unnecessary synchronization.
+
+I've not had any real issues with doing this.  The primary issue with putting 
+anything into a map and the concurrently using it from multiple threads, is that 
+the initialization must be atomic. Doing the construction with an local 
+reference, I feel, is the best choice.  You could also do something synchronized 
+on newt, and perform newt.initialize() instead.
+
+newt = new Value<Type>();
+synchronized( newt ) {
+	if( ( t = map.putIfAbsent( key, newt ) ) == null ) {
+		newt.initialize();
+	}
+}
+
+but then newt access will need to be synchronized for "read" operations which is 
+what doesn't work well for concurrency.  You might also be able to use a 
+proxying delegate object to defer initialization, and then have it replace 
+itself in the map with the initialized reference so that the first use(s) will 
+be synchronized, but will then move away from that.
+
+public interface MyInterface {
+	public void func1();
+	public int func2();
+	public String func3( int v);
+	...etc...
+}
+
+public class MyProxy implements MyInterface {
+	MyInterface del;
+	ConcurrentHashMap<Key,Value> map;
+	Key k;
+	Callable<MyInterface>creator;
+	public MyProxy( ConcurrentHashMap<Key,Value> map, Key k,
+			Callable<MyInterface>creator, ...other parms... ) {
+		this.k = k;
+		this.map = map;
+		this.creator = creator;
+	}
+
+	public synchronized void func1() {
+		checkRef();
+		del.func1();
+	}
+	public synchronized int func2() {
+		checkRef();
+		return del.func2();
+	}
+	public synchronized String func3( int v ) {
+		checkRef();
+		return del.func3( v );
+	}
+	private void checkRef() {
+		if( del == null ) {
+			del = creator.call( k ...other parms... );
+			// Replace the existing entry, this, with
+			// the real one we want to use.
+			map.put( k, del );
+		}
+	}
+}
+
+This will then quickly create and replace the instance in the map with a real 
+reference that can take full advantage of concurrency opportunities. If there is 
+not an interface, or a subclassing opportunity, this doesn't work out so well...
+
+Gregg Wonderly
+
+From conivek at gmail.com  Wed Nov  7 13:24:49 2007
+From: conivek at gmail.com (Kevin Condon)
+Date: Wed, 7 Nov 2007 13:24:49 -0500
+Subject: [concurrency-interest] conditional put
+Message-ID: <2e780ac60711071024h73a49586s657187959b8893be@mail.gmail.com>
+
+A while back I developed a ConcurrentCreationMap class to encapsulate
+this type of behavior.  It is a Map implementation that adds a
+createIfAbsent(key, factory) method, with usage like this:
+
+// implement the required factory interface
+ConcurrentCreationMapValueFactory<K,V> factory =
+    new ConcurrentCreationMapValueFactory<K,V>() {
+  public V createInstance(K key) { ... }
+  public long creationTimeout() { ... }
+};
+...
+ConcurrentCreationMap<K,V> map = new ConcurrentCreationMap<K,V>();
+...
+K key = ...;
+V value = map.get(key);
+if (value == null) {
+  value = map.createIfAbsent(key, factory);
+  if (value == null) {
+    // creation failed or timed out waiting for another thread to create
+  }
+}
+
+The implementation uses internally a ConcurrentHashMap to hold the
+values and delegates other map operations directly to it.  Well,
+almost directly.  The internal map values are actually a Map.Entry
+implementation whose getValue() blocks until setValue() is invoked
+with the created value (by the createIfAbsent() logic), or until the
+factory timeout expires.  Due to this Map.Entry wrapper, the delegated
+map operations and iterators have to unwrap the internal map.get()
+returned value.  The internal Map.Entry implementation is where all
+the synchronization occurs and is the key to limiting contention only
+to accessing the value being created without blocking the entire map,
+as well as enforcing creation atomicity.
+
+I wish I had thought of using a FutureTask at the time I developed
+this class.  It could be easily retrofitted by creating the FutureTask
+in createIfAbsent() and then doing a get() with the specified factory
+timeout.  That's almost cool enough to do the retrofit on just the
+merits of elegance alone.
+
+I like having the behavior encapsulated into its own class, just to
+keep from duplicating the logic over and over.  Also, it encouraged me
+to create unit tests for the class, which means I could do the
+FutureTask retrofit and be pretty confident that I didn't break
+anything in the process.
+
+Regards,
+Kevin
+
+From gergg at cox.net  Wed Nov  7 13:24:19 2007
+From: gergg at cox.net (Gregg Wonderly)
+Date: Wed, 07 Nov 2007 12:24:19 -0600
+Subject: [concurrency-interest] conditional put
+In-Reply-To: <473089AA.6060306@cytetech.com>
+References: <aa067ea10711051828m3f9baf27y606ace4ea8dc5c7@mail.gmail.com>	<a74683f90711051919m37bfc2ck426dac25ed24905c@mail.gmail.com>	<aa067ea10711052253k5b9d73a4s8fbf12e95c39af32@mail.gmail.com>	<108fcdeb0711052341r6375ae78g33480f47c5a80078@mail.gmail.com>	<63b4e4050711060605g46877c0he7e5862407958985@mail.gmail.com>
+	<473089AA.6060306@cytetech.com>
+Message-ID: <473202D3.6050903@cox.net>
+
+Gregg Wonderly wrote:
+> You might also be able to use a 
+> proxying delegate object to defer initialization, and then have it replace 
+> itself in the map with the initialized reference so that the first use(s) will 
+> be synchronized, but will then move away from that.
+> 
+> public interface MyInterface {
+> 	public void func1();
+> 	public int func2();
+> 	public String func3( int v);
+> 	...etc...
+> }
+> 
+> public class MyProxy implements MyInterface {
+
+And one other thing, is that I sometimes do this with an InvocationHandler and a 
+  reflection generated Proxy when I have an interface.  The invocationHandler 
+can then become a pretty generic solution for this, and you can create a factory 
+interface for creating Proxy objects that use the correct InvocationHandler.
+
+Gregg Wonderly
+
+From Grace.Kwok at mscibarra.com  Tue Nov 20 18:19:22 2007
+From: Grace.Kwok at mscibarra.com (Kwok, Grace (MSCIBARRA))
+Date: Tue, 20 Nov 2007 18:19:22 -0500
+Subject: [concurrency-interest] Question: Concurrent Memoizer pattern with
+	SoftHashMap
+Message-ID: <937C75B544E7E8428436C67056A3A1730BC959@NYWEXMB83.msad.ms.com>
+
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20071120/e7f89c52/attachment.html 
+
+From Grace.Kwok at mscibarra.com  Tue Nov 20 18:38:54 2007
+From: Grace.Kwok at mscibarra.com (Kwok, Grace (MSCIBARRA))
+Date: Tue, 20 Nov 2007 18:38:54 -0500
+Subject: [concurrency-interest] Question: Concurrent Memoizer pattern with
+	SoftHashMap
+In-Reply-To: <937C75B544E7E8428436C67056A3A1730BC959@NYWEXMB83.msad.ms.com>
+References: <937C75B544E7E8428436C67056A3A1730BC959@NYWEXMB83.msad.ms.com>
+Message-ID: <937C75B544E7E8428436C67056A3A173052AE9F6@NYWEXMB83.msad.ms.com>
+
+Posting again due to posting problem earlier.
+========================= 
+
+Hi all,
+ 
+    I am refactoring code and would like to use the Memoizer pattern
+but I need my cache to be a concurrent soft hash map instead of simply a
+ConcurrentHashMap.
+ 
+// recall the concurrent Memoizer pattern where cache is a
+ConcurrentHashMap.
+public V compute(final A arg) throws Exception{
+   Future<V> f = cache.get(arg);
+   if(f==null){
+      Callable<V> eval = new Callable<V>(){....}
+ 
+    FutureTask<V> ft = new FutureTask<V>(eval);
+    f = cache.putIfAbsent(arg, ft);
+    if(f == null){
+        f = ft;
+        ft.run();
+    }
+}
+f.get();
+}
+ 
+ 
+If I were to base soft hash map on  this,
+http://www.javaspecialists.co.za/archive/Issue098.html
+(search for title "New SoftHashMap")
+ 
+does anyone has any suggestion of having the Memoizer and SoftHashMap
+concepts working together such that I do not need to use explicit
+synchronization?
+ 
+Thanks, Grace
+--------------------------------------------------------
+
+NOTICE: If received in error, please destroy and notify sender. Sender does not intend to waive confidentiality or privilege. Use of this email is prohibited when received in error.
+
+
+From dcholmes at optusnet.com.au  Tue Nov 20 19:04:54 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed, 21 Nov 2007 10:04:54 +1000
+Subject: [concurrency-interest] Question: Concurrent Memoizer pattern
+	withSoftHashMap
+In-Reply-To: <937C75B544E7E8428436C67056A3A173052AE9F6@NYWEXMB83.msad.ms.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEIKHJAA.dcholmes@optusnet.com.au>
+
+Grace,
+
+The SoftHashmap is neither concurrent nor thread-safe so I don't see how you
+could use it somewhere you would use ConcurrentHashMap, without using
+explicit synchronization.
+
+Is there a reason you can't simply wrap the Future in a SoftReference
+directly so that your ConcurrentHashMap cache is mapping from K ->
+SoftReference<Future<V>> ? If you find a value with a null referent then you
+can remove the WeakReference from the map and replace with a new one. You
+might need additional expunging logic if your cache might accumulate "empty"
+SoftReferences.
+
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Kwok,
+> Grace (MSCIBARRA)
+> Sent: Wednesday, 21 November 2007 9:39 AM
+> To: concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] Question: Concurrent Memoizer pattern
+> withSoftHashMap
+>
+>
+> Posting again due to posting problem earlier.
+> =========================
+>
+> Hi all,
+>
+>     I am refactoring code and would like to use the Memoizer pattern
+> but I need my cache to be a concurrent soft hash map instead of simply a
+> ConcurrentHashMap.
+>
+> // recall the concurrent Memoizer pattern where cache is a
+> ConcurrentHashMap.
+> public V compute(final A arg) throws Exception{
+>    Future<V> f = cache.get(arg);
+>    if(f==null){
+>       Callable<V> eval = new Callable<V>(){....}
+>
+>     FutureTask<V> ft = new FutureTask<V>(eval);
+>     f = cache.putIfAbsent(arg, ft);
+>     if(f == null){
+>         f = ft;
+>         ft.run();
+>     }
+> }
+> f.get();
+> }
+>
+>
+> If I were to base soft hash map on  this,
+> http://www.javaspecialists.co.za/archive/Issue098.html
+> (search for title "New SoftHashMap")
+>
+> does anyone has any suggestion of having the Memoizer and SoftHashMap
+> concepts working together such that I do not need to use explicit
+> synchronization?
+>
+> Thanks, Grace
+> --------------------------------------------------------
+>
+> NOTICE: If received in error, please destroy and notify sender.
+> Sender does not intend to waive confidentiality or privilege. Use
+> of this email is prohibited when received in error.
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From tim at peierls.net  Tue Nov 20 20:01:51 2007
+From: tim at peierls.net (Tim Peierls)
+Date: Tue, 20 Nov 2007 20:01:51 -0500
+Subject: [concurrency-interest] Question: Concurrent Memoizer pattern
+	withSoftHashMap
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCCEIKHJAA.dcholmes@optusnet.com.au>
+References: <937C75B544E7E8428436C67056A3A173052AE9F6@NYWEXMB83.msad.ms.com>
+	<NFBBKALFDCPFIDBNKAPCCEIKHJAA.dcholmes@optusnet.com.au>
+Message-ID: <63b4e4050711201701g5abbf70br17a9f81339cb012f@mail.gmail.com>
+
+On Nov 20, 2007 7:04 PM, David Holmes <dcholmes at optusnet.com.au> wrote:
+
+> Is there a reason you can't simply wrap the Future in a SoftReference
+> directly so that your ConcurrentHashMap cache is mapping from K ->
+> SoftReference<Future<V>> ? If you find a value with a null referent then
+> you
+> can remove the WeakReference from the map and replace with a new one. You
+> might need additional expunging logic if your cache might accumulate
+> "empty"
+> SoftReferences.
+>
+
+I found this surprisingly hard to get right. I have code that I would have
+to figure how to release that lets you build Memoizers using plain, soft, or
+weak references. The plain version is just standard Memoizer.
+
+But closer at hand is the Google Collections library and ReferenceCache from
+the Guice codebase. Somewhere in there you can find what you need.
+
+--tim
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20071120/a8b5988c/attachment.html 
+
+From fry at google.com  Tue Nov 20 20:27:27 2007
+From: fry at google.com (Charles Fry)
+Date: Tue, 20 Nov 2007 20:27:27 -0500
+Subject: [concurrency-interest] Question: Concurrent Memoizer pattern
+	with SoftHashMap
+In-Reply-To: <937C75B544E7E8428436C67056A3A1730BC959@NYWEXMB83.msad.ms.com>
+References: <937C75B544E7E8428436C67056A3A1730BC959@NYWEXMB83.msad.ms.com>
+Message-ID: <b549193f0711201727u22899cdcw79c40c911acd939a@mail.gmail.com>
+
+Have you looked at ReferenceCache?
+
+Charles
+
+On Nov 20, 2007 6:19 PM, Kwok, Grace (MSCIBARRA)
+<Grace.Kwok at mscibarra.com> wrote:
+>
+>
+>
+> Hi all,
+>
+>     I am refactoring code and would like to use the Memoizer pattern  but I
+> need my cache to be a concurrent soft hash map instead of simply a
+> ConcurrentHashMap.
+>
+> // recall the concurrent Memoizer pattern where cache is a
+> ConcurrentHashMap.
+> public V compute(final A arg) throws Exception{
+>    Future<V> f = cache.get(arg);
+>    if(f==null){
+>       Callable<V> eval = new Callable<V>(){....}
+>
+>     FutureTask<V> ft = new FutureTask<V>(eval);
+>     f = cache.putIfAbsent(arg, ft);
+>     if(f == null){
+>         f = ft;
+>         ft.run();
+>     }
+> }
+> f.get();
+> }
+>
+>
+>
+> We are basing our soft hash map from this:
+> http://www.javaspecialists.co.za/archive/Issue098.html
+> (search for title "New SoftHashMap")
+>
+> Does anyone has any suggestion of having the Memoizer and SoftHashMap
+> concepts working together such that I do not need to use explicit
+> synchronization?
+>
+> Thanks, Grace
+>
+>
+>
+>
+>
+>  ________________________________
+>
+>
+> NOTICE: If received in error, please destroy and notify sender. Sender does
+> not intend to waive confidentiality or privilege. Use of this email is
+> prohibited when received in error.
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+From Grace.Kwok at mscibarra.com  Wed Nov 21 14:16:13 2007
+From: Grace.Kwok at mscibarra.com (Kwok, Grace (MSCIBARRA))
+Date: Wed, 21 Nov 2007 14:16:13 -0500
+Subject: [concurrency-interest] Question: Concurrent Memoizer pattern
+	with SoftHashMap
+In-Reply-To: <b549193f0711201727u22899cdcw79c40c911acd939a@mail.gmail.com>
+References: <937C75B544E7E8428436C67056A3A1730BC959@NYWEXMB83.msad.ms.com>
+	<b549193f0711201727u22899cdcw79c40c911acd939a@mail.gmail.com>
+Message-ID: <937C75B544E7E8428436C67056A3A173052AEB7C@NYWEXMB83.msad.ms.com>
+
+Thanks all for the feedbacks.
+
+1) I went to the GUICE javadoc but do not see a ReferenceCache class
+there.
+http://google-guice.googlecode.com/svn/trunk/javadoc/index.html
+I do see a ReferenceMap class in the collections package.
+
+2) Are the the google collections and guice library both in Alpha
+version?
+
+
+Thanks, Grace
+
+
+
+-----Original Message-----
+From: Charles Fry [mailto:fry at google.com] 
+Sent: Tuesday, November 20, 2007 5:27 PM
+To: Kwok, Grace (MSCIBARRA)
+Cc: concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] Question: Concurrent Memoizer
+pattern with SoftHashMap
+
+Have you looked at ReferenceCache?
+
+Charles
+
+On Nov 20, 2007 6:19 PM, Kwok, Grace (MSCIBARRA)
+<Grace.Kwok at mscibarra.com> wrote:
+>
+>
+>
+> Hi all,
+>
+>     I am refactoring code and would like to use the Memoizer pattern  
+> but I need my cache to be a concurrent soft hash map instead of simply
+
+> a ConcurrentHashMap.
+>
+> // recall the concurrent Memoizer pattern where cache is a 
+> ConcurrentHashMap.
+> public V compute(final A arg) throws Exception{
+>    Future<V> f = cache.get(arg);
+>    if(f==null){
+>       Callable<V> eval = new Callable<V>(){....}
+>
+>     FutureTask<V> ft = new FutureTask<V>(eval);
+>     f = cache.putIfAbsent(arg, ft);
+>     if(f == null){
+>         f = ft;
+>         ft.run();
+>     }
+> }
+> f.get();
+> }
+>
+>
+>
+> We are basing our soft hash map from this:
+> http://www.javaspecialists.co.za/archive/Issue098.html
+> (search for title "New SoftHashMap")
+>
+> Does anyone has any suggestion of having the Memoizer and SoftHashMap 
+> concepts working together such that I do not need to use explicit 
+> synchronization?
+>
+> Thanks, Grace
+>
+>
+>
+>
+>
+>  ________________________________
+>
+>
+> NOTICE: If received in error, please destroy and notify sender. Sender
+
+> does not intend to waive confidentiality or privilege. Use of this 
+> email is prohibited when received in error.
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+--------------------------------------------------------
+
+NOTICE: If received in error, please destroy and notify sender. Sender does not intend to waive confidentiality or privilege. Use of this email is prohibited when received in error.
+
+
+From tim at peierls.net  Wed Nov 21 14:30:37 2007
+From: tim at peierls.net (Tim Peierls)
+Date: Wed, 21 Nov 2007 14:30:37 -0500
+Subject: [concurrency-interest] Question: Concurrent Memoizer pattern
+	with SoftHashMap
+In-Reply-To: <937C75B544E7E8428436C67056A3A173052AEB7C@NYWEXMB83.msad.ms.com>
+References: <937C75B544E7E8428436C67056A3A1730BC959@NYWEXMB83.msad.ms.com>
+	<b549193f0711201727u22899cdcw79c40c911acd939a@mail.gmail.com>
+	<937C75B544E7E8428436C67056A3A173052AEB7C@NYWEXMB83.msad.ms.com>
+Message-ID: <63b4e4050711211130r2b35b464n199f157c82bee6ed@mail.gmail.com>
+
+On Nov 21, 2007 2:16 PM, Kwok, Grace (MSCIBARRA) <Grace.Kwok at mscibarra.com>
+wrote:
+
+> Thanks all for the feedbacks.
+>
+> 1) I went to the GUICE javadoc but do not see a ReferenceCache class
+> there.
+> http://google-guice.googlecode.com/svn/trunk/javadoc/index.html
+
+
+ReferenceCache and AbstractReferenceCache are internal classes to Guice, but
+the source is available and only lightly coupled to the rest of Guice. The
+maintainers said they intend to release these classes separately, but I
+don't think it has happened yet.
+
+
+<http://google-guice.googlecode.com/svn/trunk/javadoc/index.html>I do see a
+> ReferenceMap class in the collections package.
+
+
+You could build a Memoizer from that.
+
+
+
+> 2) Are the the google collections and guice library both in Alpha version?
+>
+
+No, only one of them is alpha, Google Collections (0.5). Guice is 1.0.
+
+--tim
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20071121/e5403510/attachment.html 
+
+From kevinb at google.com  Wed Nov 21 15:06:00 2007
+From: kevinb at google.com (kevin bourrillion)
+Date: Wed, 21 Nov 2007 12:06:00 -0800
+Subject: [concurrency-interest] Question: Concurrent Memoizer pattern
+	with SoftHashMap
+In-Reply-To: <63b4e4050711211130r2b35b464n199f157c82bee6ed@mail.gmail.com>
+References: <937C75B544E7E8428436C67056A3A1730BC959@NYWEXMB83.msad.ms.com>
+	<b549193f0711201727u22899cdcw79c40c911acd939a@mail.gmail.com>
+	<937C75B544E7E8428436C67056A3A173052AEB7C@NYWEXMB83.msad.ms.com>
+	<63b4e4050711211130r2b35b464n199f157c82bee6ed@mail.gmail.com>
+Message-ID: <108fcdeb0711211206i5f3e62adn413598c0f90aa4dd@mail.gmail.com>
+
+On Nov 21, 2007 11:30 AM, Tim Peierls <tim at peierls.net> wrote:
+
+ReferenceCache and AbstractReferenceCache are internal classes to Guice, but
+> the source is available and only lightly coupled to the rest of Guice. The
+> maintainers said they intend to release these classes separately, but I
+> don't think it has happened yet.
+>
+
+I'd like to encourage everyone to ignore those. :-)  They're based on a very
+old version of ReferenceMap, and we are busily working on making sure that
+the Google Collections Library contains the equivalent functionality.
+
+
+2) Are the the google collections and guice library both in Alpha version?
+> >
+>
+> No, only one of them is alpha, Google Collections (0.5). Guice is 1.0.
+
+
+Right.
+
+We call Google Collections "alpha" because we do not have API freeze yet and
+there are some big TODO's like serialization.
+
+
+-- 
+Kevin Bourrillion @ Google
+go/javalibraries
+google-collections.googlecode.com
+google-guice.googlecode.com
+jsr-310.dev.java.net
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20071121/56f7df11/attachment.html 
+
+From krzysiek.zaporowski at googlemail.com  Sat Nov 24 17:00:32 2007
+From: krzysiek.zaporowski at googlemail.com (Krzysiek Zaporowski)
+Date: Sat, 24 Nov 2007 23:00:32 +0100
+Subject: [concurrency-interest] Question: microbenchmarks sourcecodes
+Message-ID: <ec7cb73a0711241400k49d4971cx719ce81ce18ce9f8@mail.gmail.com>
+
+Hi,
+I'm making microbenchmark that measures ReentrantLock vs synchronized.
+I've followed advices Brian Goetz presents in his articles, but still
+I'm receiving strange results - synchronized block seems to be preety
+faster. So, now I'm in the point where I don't know what to correct in
+my benchmark to run it properly. Conceptually it's pretty similar to
+benchmark proposed by Brian Goetz and Tim Peierls - threads are
+receiving random numbers in synchronized or lock block.
+Are there any sourcecodes of microbenchmark proposed? Or maybe someone
+had done such benchmarks and could show me how to do this properly?
+
+Regards,
+Krzysiek
+
+From joe.bowbeer at gmail.com  Mon Nov 26 16:27:19 2007
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Mon, 26 Nov 2007 13:27:19 -0800
+Subject: [concurrency-interest] Question: microbenchmarks sourcecodes
+In-Reply-To: <ec7cb73a0711241400k49d4971cx719ce81ce18ce9f8@mail.gmail.com>
+References: <ec7cb73a0711241400k49d4971cx719ce81ce18ce9f8@mail.gmail.com>
+Message-ID: <31f2a7bd0711261327i836cc60vbafd4edb8857ad1d@mail.gmail.com>
+
+On Nov 24, 2007 2:00 PM, Krzysiek Zaporowski wrote:
+>
+> I'm making microbenchmark that measures ReentrantLock vs synchronized.
+> I've followed advices Brian Goetz presents in his articles, but still
+> I'm receiving strange results - synchronized block seems to be pretty
+> faster. So, now I'm in the point where I don't know what to correct in
+> my benchmark to run it properly. Conceptually it's pretty similar to
+> benchmark proposed by Brian Goetz and Tim Peierls - threads are
+> receiving random numbers in synchronized or lock block.
+> Are there any sourcecodes of microbenchmark proposed? Or maybe someone
+> had done such benchmarks and could show me how to do this properly?
+>
+
+Note that synchronized performance has improved considerably since the
+initial benchmark results were reported:
+
+  Why is reentrant lock faster than synchronized?
+  http://osdir.com/ml/java.jsr.166-concurrency/2005-02/msg00031.html
+
+Btw, are you referring to the following article?
+
+  Java theory and practice: Anatomy of a flawed microbenchmark
+  http://www.ibm.com/developerworks/java/library/j-jtp02225.html
+
+--
+Joe Bowbeer
+
+From gykwok at gmail.com  Wed Nov 28 01:17:21 2007
+From: gykwok at gmail.com (Grace Kwok)
+Date: Tue, 27 Nov 2007 22:17:21 -0800
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+Message-ID: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+
+Hi,
+
+I am considering replacing my synchronized HashMap cache to be a
+ConcurrentHashMap.
+
+1) Consider these operations on a populated map:
+- map.clear() is called
+- immediately or concurrently afterwards map.get(A) and map.get(B) are called.
+
+We know for sure that if map is a synchronized HashMap, the result of
+A and B would be null.
+
+However, if map is a concurrentHashMap, the results of get(A) and
+get(B) could be any of the followings [AResult, BResult], [null,
+null], [AResult, null], [null, BResult].  Am I correct?
+
+If so, is there a way around it such that this old behavior remains
+and I can still take advantage of the concurrency in
+ConcurrentHashMap?
+
+2) I have a map cache that behaves as such:
+i) Everytime a request is invoked to get a value corresponding to a
+certain key, the whole map will be populated if it has not been done.
+After which, the map would not change and there would continue to be
+concurrent gets accessing it.
+ii) When the map needs to be invalidated, the whole map would be invalidated.
+iii) After which, we go back to the first step i).
+
+I am trying to think of the most concurrent and correct way of
+implementing this.
+
+Below is psuedo code that I thought of:
+
+static volatile FutureTask<K, V> task = new FutureTask<K, V>(new
+Callable(){...});  where call() method would populate and return a non
+modifiable map.
+
+private Map<K, V> getMyCache()
+{
+   return task.get();
+}
+
+public V getValue(K key)
+{
+     getMyCache().get(key);
+}
+
+public void invalidate()
+{
+    task = new FutureTask<K, V>(new Callable(){...});
+}
+
+Please comment on the idea as well as suggestion of a better way of doing this.
+
+Thank you very much!
+
+Grace
+
+From dcholmes at optusnet.com.au  Wed Nov 28 01:53:33 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed, 28 Nov 2007 16:53:33 +1000
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEJIHJAA.dcholmes@optusnet.com.au>
+
+Hi Grace,
+
+> 1) Consider these operations on a populated map:
+> - map.clear() is called
+> - immediately or concurrently afterwards map.get(A) and
+> map.get(B) are called.
+>
+> We know for sure that if map is a synchronized HashMap, the result of
+> A and B would be null.
+>
+> However, if map is a concurrentHashMap, the results of get(A) and
+> get(B) could be any of the followings [AResult, BResult], [null,
+> null], [AResult, null], [null, BResult].  Am I correct?
+
+Yes and no. You are correct on the possible result set, but incorrect that
+for a synchronized HashMap the result would always be [null, null].
+
+It all depends on the timing of get relative to the clear:
+
+- clear -> get(A) -> get(B)  => [null, null]
+- get(A) -> clear -> get(B)  => [AResult, null]
+- get(B) -> clear -> get(A)  => [null, BResult]
+- get(A) -> get(B) -> clear  => [AResult, BResult]
+
+With ConcurrentHashMap the timing window is different - clear becomes
+clear-reaches-the-point-of-locking-segment-A/B - but the possible outcomes
+are the same.
+
+> 2) I have a map cache that behaves as such:
+
+No comment on this part.
+
+Cheers,
+David Holmes
+
+
+From gykwok at gmail.com  Wed Nov 28 02:13:00 2007
+From: gykwok at gmail.com (Grace Kwok)
+Date: Tue, 27 Nov 2007 23:13:00 -0800
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCCEJIHJAA.dcholmes@optusnet.com.au>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCCEJIHJAA.dcholmes@optusnet.com.au>
+Message-ID: <cbd4e1ab0711272313r445496a4icd230528df827de0@mail.gmail.com>
+
+Thanks.
+
+> Yes and no. You are correct on the possible result set, but incorrect that
+> for a synchronized HashMap the result would always be [null, null].
+
+Okay, thanks for the info.   I was being unclear.  In my
+implementation, I synchronized with a sychronized block on a HashMap (
+for methods get, put , clear) so the results are [null, null] in my
+case and I want to keep this behavior.
+
+Thanks, Grace
+
+
+
+On Nov 27, 2007 10:53 PM, David Holmes <dcholmes at optusnet.com.au> wrote:
+> Hi Grace,
+>
+> > 1) Consider these operations on a populated map:
+> > - map.clear() is called
+> > - immediately or concurrently afterwards map.get(A) and
+> > map.get(B) are called.
+> >
+> > We know for sure that if map is a synchronized HashMap, the result of
+> > A and B would be null.
+> >
+> > However, if map is a concurrentHashMap, the results of get(A) and
+> > get(B) could be any of the followings [AResult, BResult], [null,
+> > null], [AResult, null], [null, BResult].  Am I correct?
+>
+> Yes and no. You are correct on the possible result set, but incorrect that
+> for a synchronized HashMap the result would always be [null, null].
+>
+> It all depends on the timing of get relative to the clear:
+>
+> - clear -> get(A) -> get(B)  => [null, null]
+> - get(A) -> clear -> get(B)  => [AResult, null]
+> - get(B) -> clear -> get(A)  => [null, BResult]
+> - get(A) -> get(B) -> clear  => [AResult, BResult]
+>
+> With ConcurrentHashMap the timing window is different - clear becomes
+> clear-reaches-the-point-of-locking-segment-A/B - but the possible outcomes
+> are the same.
+>
+> > 2) I have a map cache that behaves as such:
+>
+> No comment on this part.
+>
+> Cheers,
+> David Holmes
+>
+>
+>
+
+From dcholmes at optusnet.com.au  Wed Nov 28 02:32:12 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed, 28 Nov 2007 17:32:12 +1000
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEJJHJAA.dcholmes@optusnet.com.au>
+
+Grace,
+
+Looking at Q#2
+
+> 2) I have a map cache that behaves as such:
+> i) Everytime a request is invoked to get a value corresponding to a
+> certain key, the whole map will be populated if it has not been done.
+> After which, the map would not change and there would continue to be
+> concurrent gets accessing it.
+> ii) When the map needs to be invalidated, the whole map would be
+> invalidated.
+> iii) After which, we go back to the first step i).
+>
+> I am trying to think of the most concurrent and correct way of
+> implementing this.
+>
+> Below is psuedo code that I thought of:
+>
+> static volatile FutureTask<K, V> task = new FutureTask<K, V>(new
+> Callable(){...});  where call() method would populate and return a non
+> modifiable map.
+>
+> private Map<K, V> getMyCache()
+> {
+>    return task.get();
+> }
+
+This won't cause task.run() to execute. Though you could create a custom
+FutureTask that provides that functionality - ie first getter runs, and uses
+internal synchronization.
+
+> public V getValue(K key)
+> {
+>      getMyCache().get(key);
+> }
+>
+> public void invalidate()
+> {
+>     task = new FutureTask<K, V>(new Callable(){...});
+> }
+
+This doesn't invalidate the map for callers of getValue() that have already
+retrieved the old map from getMyCache() but have not yet executed get(key)
+on it.
+
+If you need these actions to be atomic then I think you will not be able to
+benefit from using ConcurrentHashMap, as you will need external locking
+anyway.
+
+Cheers,
+David Holmes
+
+
+From joe.bowbeer at gmail.com  Wed Nov 28 03:15:00 2007
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Wed, 28 Nov 2007 00:15:00 -0800
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+Message-ID: <31f2a7bd0711280015j7a51c7caue89cc014629011a4@mail.gmail.com>
+
+On Nov 27, 2007 10:17 PM, Grace Kwok wrote:
+>
+> I am considering replacing my synchronized HashMap cache to be a
+> ConcurrentHashMap.
+>
+> 1) Consider these operations on a populated map:
+> - map.clear() is called
+> - immediately or concurrently afterwards map.get(A) and map.get(B) are called.
+>
+> We know for sure that if map is a synchronized HashMap, the result of
+> A and B would be null.
+>
+> However, if map is a concurrentHashMap, the results of get(A) and
+> get(B) could be any of the followings [AResult, BResult], [null,
+> null], [AResult, null], [null, BResult].  Am I correct?
+>
+
+I agree if "immediately or concurrently" means *after* map.clear() is
+called but *before* it completes.
+
+> 2) I have a map cache that behaves as such:
+> i) Everytime a request is invoked to get a value corresponding to a
+> certain key, the whole map will be populated if it has not been done.
+> After which, the map would not change and there would continue to be
+> concurrent gets accessing it.
+> ii) When the map needs to be invalidated, the whole map would be invalidated.
+> iii) After which, we go back to the first step i).
+>
+> I am trying to think of the most concurrent and correct way of
+> implementing this.
+>
+> Below is psuedo code that I thought of:
+>
+> static volatile FutureTask<K, V> task = new FutureTask<K, V>(new
+> Callable(){...});  where call() method would populate and return a non
+> modifiable map.
+>
+> private Map<K, V> getMyCache()
+> {
+>    return task.get();
+> }
+>
+> public V getValue(K key)
+> {
+>      getMyCache().get(key);
+> }
+>
+> public void invalidate()
+> {
+>     task = new FutureTask<K, V>(new Callable(){...});
+> }
+>
+> Please comment on the idea as well as suggestion of a better way of doing this.
+>
+
+As David points out, the task is never run.
+
+You could synchronize getMap() and invalidate(), as follows.  Then, if
+you need get(A) and get(B) to be in-synch you could implement a
+getValues method that would fetch them from the same map -- returned
+by getMap.
+
+private Map<K,V> map;
+
+private synchronized Map<K,V> getMap() {
+  if (map == null)
+    map = createMap();
+  return map;
+}
+
+public V getValue(K key) { return getMap().get(key); }
+
+public synchronized void invalidate() { map = null; }
+
+--
+Joe Bowbeer
+
+From jseigh_cp00 at xemaps.com  Wed Nov 28 06:23:52 2007
+From: jseigh_cp00 at xemaps.com (Joseph Seigh)
+Date: Wed, 28 Nov 2007 06:23:52 -0500
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <31f2a7bd0711280015j7a51c7caue89cc014629011a4@mail.gmail.com>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+	<31f2a7bd0711280015j7a51c7caue89cc014629011a4@mail.gmail.com>
+Message-ID: <474D4FC8.6010400@xemaps.com>
+
+Joe Bowbeer wrote:
+>
+> On Nov 27, 2007 10:17 PM, Grace Kwok wrote:
+>   
+>> I am considering replacing my synchronized HashMap cache to be a
+>> ConcurrentHashMap.
+>>
+>> 1) Consider these operations on a populated map:
+>> - map.clear() is called
+>> - immediately or concurrently afterwards map.get(A) and map.get(B) are called.
+>>
+>> We know for sure that if map is a synchronized HashMap, the result of
+>> A and B would be null.
+>>
+>> However, if map is a concurrentHashMap, the results of get(A) and
+>> get(B) could be any of the followings [AResult, BResult], [null,
+>> null], [AResult, null], [null, BResult].  Am I correct?
+>>
+>>     
+>
+> I agree if "immediately or concurrently" means *after* map.clear() is
+> called but *before* it completes.
+>
+>   
+Great! I go check the docs to see what the semantics of map.clear() 
+actually are in this case.  It
+doesn't say.  So how does this work?  Semantics are implementation 
+dependent.  Is the implementation
+fixed for all time or can it change?
+
+--
+Joe Seigh
+
+From krzysiek.zaporowski at googlemail.com  Wed Nov 28 09:02:42 2007
+From: krzysiek.zaporowski at googlemail.com (Krzysiek Zaporowski)
+Date: Wed, 28 Nov 2007 15:02:42 +0100
+Subject: [concurrency-interest] Question: microbenchmarks sourcecodes
+In-Reply-To: <31f2a7bd0711261327i836cc60vbafd4edb8857ad1d@mail.gmail.com>
+References: <ec7cb73a0711241400k49d4971cx719ce81ce18ce9f8@mail.gmail.com>
+	<31f2a7bd0711261327i836cc60vbafd4edb8857ad1d@mail.gmail.com>
+Message-ID: <ec7cb73a0711280602k1e58f091uaa1f2ca5074bf5f5@mail.gmail.com>
+
+2007/11/26, Joe Bowbeer <joe.bowbeer at gmail.com>:
+> On Nov 24, 2007 2:00 PM, Krzysiek Zaporowski wrote:
+> >
+> > I'm making microbenchmark that measures ReentrantLock vs synchronized.
+> > I've followed advices Brian Goetz presents in his articles, but still
+> > I'm receiving strange results - synchronized block seems to be pretty
+> > faster. So, now I'm in the point where I don't know what to correct in
+> > my benchmark to run it properly. Conceptually it's pretty similar to
+> > benchmark proposed by Brian Goetz and Tim Peierls - threads are
+> > receiving random numbers in synchronized or lock block.
+> > Are there any sourcecodes of microbenchmark proposed? Or maybe someone
+> > had done such benchmarks and could show me how to do this properly?
+> >
+>
+> Note that synchronized performance has improved considerably since the
+> initial benchmark results were reported:
+>
+>   Why is reentrant lock faster than synchronized?
+>   http://osdir.com/ml/java.jsr.166-concurrency/2005-02/msg00031.html
+>
+> Btw, are you referring to the following article?
+>
+>   Java theory and practice: Anatomy of a flawed microbenchmark
+>   http://www.ibm.com/developerworks/java/library/j-jtp02225.html
+>
+> --
+> Joe Bowbeer
+ok, thx - I've taken synchronized improvements on a account. And yes,
+I'm following good advices from this Brian Goetz's article :)
+
+From krzysiek.zaporowski at googlemail.com  Wed Nov 28 09:04:41 2007
+From: krzysiek.zaporowski at googlemail.com (Krzysiek Zaporowski)
+Date: Wed, 28 Nov 2007 15:04:41 +0100
+Subject: [concurrency-interest] Java concurrency benchmarks - need ideas
+Message-ID: <ec7cb73a0711280604s3f698483kf42737ff390d3b40@mail.gmail.com>
+
+Hi,
+In connection to my previous topic about ReentranLock benchmark - I'm
+doing a little research about concurrency in Java for my University
+and have to make series of benchmarks.
+What is has to be done is a conclusions such like "yeah, ReentrantLock
+is good for more scalable locking, but if you need simple lock a
+non-nested block of code, it's better to use synchronized because of
+less overhead in today versions of JDK 5 and 6".
+In my benchmarks I'm trying to follow mostly JCIP book, doing for
+example performance measurements of concurrent collection classes by
+implementing for example producer-consumer pattern with various
+consumer load of work degree, various consumer threads number, etc.
+I've also measured overhead of locking (my previous post). I will also
+measure mean Thread creation and start() time taken.
+But I don't have idea for simple use-cases of concurrency, that will
+lead me to make conclusions like above. Have you got any ideas what
+should be measured?
+
+From gregg at cytetech.com  Wed Nov 28 12:46:02 2007
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Wed, 28 Nov 2007 11:46:02 -0600
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+Message-ID: <474DA95A.7020300@cytetech.com>
+
+Grace Kwok wrote:
+> I am trying to think of the most concurrent and correct way of
+> implementing this.
+
+When I have all or nothing situations like this, I will often rebuild the map 
+into a local referenced instance, and then overwrite the global reference with 
+the new instance to create an "atomic" swap to the new values without having to 
+"wait" for them everywhere else.
+
+Based on what I think you are doing on clear, it might look something like the 
+following.
+
+volatile ConcurrentHashMap<T,K> map = ...
+
+public void clear() {
+	ConcurrentHashMap<T,K> newmap = ...
+	fillmap( newmap );
+	map = newmap;
+}
+
+But I am not clear on exactly when you fill the map.  If you fill the map on a 
+"get", then you may instead choose to use a future to cause those doing a get to 
+wait for the map to "appear" in a filled state.
+
+public void clear() {
+	map = null;
+}
+
+volatile Future<ConcurrentHashMap<T,K>> mapFuture;
+
+public T get( K key ) {
+	if( map == null ) {
+		if( mapFuture == null ) {
+			synchronized( mapLock ) {
+				if( mapFuture == null )
+					mapFuture = startMapBuild();
+			}
+		}
+		map = mapFuture.get();
+	}
+	return map.get( key );
+}
+
+This focuses the locking into the moment that is needed while allow the 
+concurrency in ConcurrentHashMap to be exploited on gets().
+
+Gregg Wonderly
+
+From joe.bowbeer at gmail.com  Wed Nov 28 16:29:19 2007
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Wed, 28 Nov 2007 13:29:19 -0800
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <474DA95A.7020300@cytetech.com>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+	<474DA95A.7020300@cytetech.com>
+Message-ID: <31f2a7bd0711281329l5c7d4ae3y761d369fd112afa7@mail.gmail.com>
+
+On Nov 28, 2007 9:46 AM, Gregg Wonderly wrote:
+>
+> When I have all or nothing situations like this, I will often rebuild the map
+> into a local referenced instance, and then overwrite the global reference with
+> the new instance to create an "atomic" swap to the new values without having to
+> "wait" for them everywhere else.
+>
+> Based on what I think you are doing on clear, it might look something like the
+> following.
+>
+> volatile ConcurrentHashMap<T,K> map = ...
+>
+> public void clear() {
+>         ConcurrentHashMap<T,K> newmap = ...
+>         fillmap( newmap );
+>         map = newmap;
+> }
+>
+
+Is there also a requirement that get(A) and get(B) return values from
+the same version of the cache?
+
+If so, you can stash the map reference before fetching the values:
+
+  Map<K,V> cache = map;
+  cachedA = cache.get(A);
+  cachedB = cache.get(B);
+
+Or fetch the values optimistically and then retry if you detect an update:
+
+  Map<K,V> prev = map;
+  do {
+    cachedA = map.get(A);
+    cachedB = map.get(B);
+  } while (map != prev);
+
+--
+Joe Bowbeer
+
+From joe.bowbeer at gmail.com  Wed Nov 28 17:33:16 2007
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Wed, 28 Nov 2007 14:33:16 -0800
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <31f2a7bd0711281329l5c7d4ae3y761d369fd112afa7@mail.gmail.com>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+	<474DA95A.7020300@cytetech.com>
+	<31f2a7bd0711281329l5c7d4ae3y761d369fd112afa7@mail.gmail.com>
+Message-ID: <31f2a7bd0711281433v10d697h71a1d2e9ed790b9@mail.gmail.com>
+
+> Or fetch the values optimistically and then retry if you detect an update:
+>
+>   Map<K,V> prev = map;
+>   do {
+>     cachedA = map.get(A);
+>     cachedB = map.get(B);
+>   } while (map != prev);
+>
+
+Well, not exactly like that, but...
+
+  Map<K,V> prev;
+  do {
+    prev =map;
+    cachedA = map.get(A);
+    cachedB = map.get(B);
+  } while (map != prev);
+
+
+On Nov 28, 2007 1:29 PM, Joe Bowbeer <joe.bowbeer at gmail.com> wrote:
+> On Nov 28, 2007 9:46 AM, Gregg Wonderly wrote:
+> >
+> > When I have all or nothing situations like this, I will often rebuild the map
+> > into a local referenced instance, and then overwrite the global reference with
+> > the new instance to create an "atomic" swap to the new values without having to
+> > "wait" for them everywhere else.
+> >
+> > Based on what I think you are doing on clear, it might look something like the
+> > following.
+> >
+> > volatile ConcurrentHashMap<T,K> map = ...
+> >
+> > public void clear() {
+> >         ConcurrentHashMap<T,K> newmap = ...
+> >         fillmap( newmap );
+> >         map = newmap;
+> > }
+> >
+>
+> Is there also a requirement that get(A) and get(B) return values from
+> the same version of the cache?
+>
+> If so, you can stash the map reference before fetching the values:
+>
+>   Map<K,V> cache = map;
+>   cachedA = cache.get(A);
+>   cachedB = cache.get(B);
+>
+> Or fetch the values optimistically and then retry if you detect an update:
+>
+>   Map<K,V> prev = map;
+>   do {
+>     cachedA = map.get(A);
+>     cachedB = map.get(B);
+>   } while (map != prev);
+>
+> --
+> Joe Bowbeer
+>
+
+From dcholmes at optusnet.com.au  Wed Nov 28 23:28:25 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Thu, 29 Nov 2007 14:28:25 +1000
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <474D4FC8.6010400@xemaps.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEJMHJAA.dcholmes@optusnet.com.au>
+
+Joe,
+
+> Joe Bowbeer wrote:
+> Great! I go check the docs to see what the semantics of map.clear()
+> actually are in this case.  It doesn't say.  So how does this work?
+> Semantics are implementation dependent.  Is the implementation
+> fixed for all time or can it change?
+
+The docs are a little brief here :) I think all it can say is that after
+clear() returns, every mapping that was present when clear() "commenced",
+will have been removed. New mappings concurrent with clear() may or may not
+have been removed. But even this is a loose description as "commenced" is
+really determined by the locking strategy.
+
+The implementation could certainly change in theory. Eg we might lock all
+segments then clear all, rather than locking, clearing, unlocking, one at a
+time. In practice it is unlikely to change.
+
+The atomicity (or not) of CHM methods are often subject to debate.
+
+Cheers,
+David
+
+
+From gykwok at gmail.com  Thu Nov 29 00:52:55 2007
+From: gykwok at gmail.com (Grace Kwok)
+Date: Wed, 28 Nov 2007 21:52:55 -0800
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCEEJJHJAA.dcholmes@optusnet.com.au>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCEEJJHJAA.dcholmes@optusnet.com.au>
+Message-ID: <cbd4e1ab0711282152w35d27ec7l7d33ba1e06880bd3@mail.gmail.com>
+
+Thanks all.
+
+Hi David,
+
+> This won't cause task.run() to execute. Though you could create a custom
+> FutureTask that provides that functionality - ie first getter runs, and uses
+> internal synchronization.
+
+
+1) Thanks all for catching the fact that it won't execute.  Could you
+explain further this part - " first getter runs, and uses internal
+synchronization" ?  What do you mean by "internal" synchronization?
+
+
+
+> This doesn't invalidate the map for callers of getValue() that have already
+> retrieved the old map from getMyCache() but have not yet executed get(key)
+> on it.
+>
+
+
+I am fine with that.  I just need my map to be in a consistent
+state;i.e. all entries of the map are from previous loading or all
+entries of the map are from new loading.  For instance, if I iterate
+thru the map,  I don't want a map containing half entries of new
+values and half entries with old values.  In between loadings, there
+would be many concurrent gets on the map.
+
+
+
+One more question,
+
+FutureTask task = new FutureTask();
+
+If task.get() is called before task.run(), what would happen?
+Does task.get() waits till task.run() is run and finished?
+
+
+Thanks, Grace
+
+From dcholmes at optusnet.com.au  Thu Nov 29 01:20:23 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Thu, 29 Nov 2007 16:20:23 +1000
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <cbd4e1ab0711282152w35d27ec7l7d33ba1e06880bd3@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIEJNHJAA.dcholmes@optusnet.com.au>
+
+Hi Grace,
+
+> > This won't cause task.run() to execute. Though you could create a custom
+> > FutureTask that provides that functionality - ie first getter
+> > runs, and uses internal synchronization.
+>
+>
+> 1) Thanks all for catching the fact that it won't execute.  Could you
+> explain further this part - " first getter runs, and uses internal
+> synchronization" ?  What do you mean by "internal" synchronization?
+
+Simply that you have to use some form of synchronization so that only one
+thread will execute run(). eg:
+
+public final void get() ... {
+  if (isDone())
+    return super.get();
+  synchronized(this) {
+    if (!isDone())
+      run();
+  }
+  return super.get();
+}
+
+That said, I think FutureTask.run() is actually safe to call multiple
+times - anything other than the first will just return. But that's an
+implementation detail not part of the spec. If you can live with that then
+get() can be written simply as
+
+public final void get() {
+   run();
+   return super.get();
+}
+
+> > This doesn't invalidate the map for callers of getValue() that
+> > have already retrieved the old map from getMyCache() but have not yet
+> > executed get(key) on it.
+> >
+> I am fine with that.  I just need my map to be in a consistent
+> state;i.e. all entries of the map are from previous loading or all
+> entries of the map are from new loading.  For instance, if I iterate
+> thru the map,  I don't want a map containing half entries of new
+> values and half entries with old values.  In between loadings, there
+> would be many concurrent gets on the map.
+
+Hmmm. That would depend on the details of iteration and how the clear() can
+be interleaved. I don't think you have this consistency guarantee in
+general.
+
+> One more question,
+>
+> FutureTask task = new FutureTask();
+>
+> If task.get() is called before task.run(), what would happen?
+> Does task.get() waits till task.run() is run and finished?
+
+Yes, get() blocks until the result is available or the Future has been
+cancelled.
+
+David
+
+
+From jseigh_cp00 at xemaps.com  Thu Nov 29 06:11:50 2007
+From: jseigh_cp00 at xemaps.com (Joseph Seigh)
+Date: Thu, 29 Nov 2007 06:11:50 -0500
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCKEJMHJAA.dcholmes@optusnet.com.au>
+References: <NFBBKALFDCPFIDBNKAPCKEJMHJAA.dcholmes@optusnet.com.au>
+Message-ID: <474E9E76.7020707@xemaps.com>
+
+David Holmes wrote:
+> Joe,
+>
+>   
+>> Joe Bowbeer wrote:
+>> Great! I go check the docs to see what the semantics of map.clear()
+>> actually are in this case.  It doesn't say.  So how does this work?
+>> Semantics are implementation dependent.  Is the implementation
+>> fixed for all time or can it change?
+>>     
+>
+> The docs are a little brief here :) I think all it can say is that after
+> clear() returns, every mapping that was present when clear() "commenced",
+> will have been removed. New mappings concurrent with clear() may or may not
+> have been removed. But even this is a loose description as "commenced" is
+> really determined by the locking strategy.
+>
+> The implementation could certainly change in theory. Eg we might lock all
+> segments then clear all, rather than locking, clearing, unlocking, one at a
+> time. In practice it is unlikely to change.
+>
+> The atomicity (or not) of CHM methods are often subject to debate.
+>   
+
+I found the actual documentation later.  It's up in the into section, 
+not down in the method
+documentation which is apparently an artifact of how javadoc works.  You 
+implement a
+interface methods and you have to have something there, right?  So just 
+copy it from the
+interface.  Probably 90% of the collections documentation is just 
+repeated boilerplate.
+
+Sidestepping the issue of almost nobody knowing how to specify semantics 
+for concurrency,
+one of the few things that is understood is atomicity.   So 
+hypothetically you could say
+something like all mutating operations are atomic w.r.t. other mutating 
+operations, even
+the aggregate ones.  And all non aggregate read operations are atomic 
+w.r.t. all non aggregate
+operations, both read and mutating.  Something like that.
+
+This is where transactional memory might help.  It may not scale but it 
+will let you implement
+collections where all operations are atomic w.r.t. each other.  That 
+simplifies semantics somewhat.
+Except for the fact that the java collections api is bit over elaborate 
+to put it mildly.  With too
+many methods you put users a lot nearer to something that's the 
+equivalent of distributed
+programming with volatile ints.  It can be done but how many average 
+programmers can do it?
+For a concurrent queue you should just have push() and pop() and that's 
+it.  Even there some
+programmers can screw it up since it has state.
+
+You can undo this by specifying your own simplified collection api's and 
+"extending" existing
+java collections with the simplified api.  I've done this for comparison 
+testing where I didn't
+want to implement set operations for a queue implementation since the 
+set operations would
+never be used and it would have been pointlessly stupid to implement them. 
+
+--
+Joe Seigh
+
+
+
+From dcholmes at optusnet.com.au  Thu Nov 29 22:14:54 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Fri, 30 Nov 2007 13:14:54 +1000
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <474E9E76.7020707@xemaps.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCGEJPHJAA.dcholmes@optusnet.com.au>
+
+Hi Joe,
+
+> I found the actual documentation later.  It's up in the into section,
+> not down in the method documentation which is apparently an artifact of
+how javadoc works.
+
+Well we could have redefined the method Javadoc to include additional text,
+but instead we just put a couple of general sentences in the class javadoc.
+
+> Sidestepping the issue of almost nobody knowing how to specify semantics
+> for concurrency, one of the few things that is understood is atomicity. So
+> hypothetically you could say something like all mutating operations are
+atomic
+> w.r.t. other mutating operations, even the aggregate ones.
+
+You could. But that's not the way the implementation works. All I was saying
+was what could be said for the existing implementation.
+
+Cheers,
+David
+
+
+From gykwok at gmail.com  Thu Nov 29 23:47:30 2007
+From: gykwok at gmail.com (Grace Kwok)
+Date: Thu, 29 Nov 2007 20:47:30 -0800
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCIEJNHJAA.dcholmes@optusnet.com.au>
+References: <cbd4e1ab0711282152w35d27ec7l7d33ba1e06880bd3@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCIEJNHJAA.dcholmes@optusnet.com.au>
+Message-ID: <cbd4e1ab0711292047u2289b101o246282383f8160ec@mail.gmail.com>
+
+> Hmmm. That would depend on the details of iteration and how the clear() can
+> be interleaved. I don't think you have this consistency guarantee in
+> general.
+>
+
+Thanks! Understood.
+
+From jed at atlassian.com  Fri Nov 30 03:10:17 2007
+From: jed at atlassian.com (Jed Wesley-Smith)
+Date: Fri, 30 Nov 2007 19:10:17 +1100
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <474DA95A.7020300@cytetech.com>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+	<474DA95A.7020300@cytetech.com>
+Message-ID: <474FC569.8050703@atlassian.com>
+
+I have a utility class for that encapsulates lockless lazy loading 
+stuff. It locks only when multiple threads call get while run is 
+occuring (FutureTask implementation).
+
+/**
+ * Thread-safe lock-less reference that is not constructed until required.
+ * <p>
+ * Implement create() in implementation.
+ */
+public abstract class LazyLoadedReference<V>
+{
+    private final AtomicReference<FutureTask<V>> ref = new 
+AtomicReference<FutureTask<V>>();
+
+    public final V get()
+    {
+        FutureTask<V> future = ref.get();
+        if (future == null)
+        {
+            // create a Future
+            future = new FutureTask<V>(new Callable<V>()
+            {
+                public V call() throws Exception
+                {
+                    return create();
+                }
+            });
+            // set the reference only if it is still null
+            ref.compareAndSet(null, future);
+            // get the future that ref now holds (may be different to above
+            future = ref.get();
+        }
+        while (true)
+        {
+            try
+            {
+                future.run();
+                return future.get();
+            }
+            catch (InterruptedException interruptAndTryAgain)
+            {
+                Thread.currentThread().interrupt();
+            }
+            catch (ExecutionException e)
+            {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
+    /**
+     * The object factory method, guaranteed to be called once and only 
+once.
+     */
+    protected abstract V create();
+}
+
+Then you simply need to implement create() in your implementation. 
+
+Gregg Wonderly wrote:
+> Grace Kwok wrote:
+>   
+>> I am trying to think of the most concurrent and correct way of
+>> implementing this.
+>>     
+>
+> When I have all or nothing situations like this, I will often rebuild the map 
+> into a local referenced instance, and then overwrite the global reference with 
+> the new instance to create an "atomic" swap to the new values without having to 
+> "wait" for them everywhere else.
+>
+> Based on what I think you are doing on clear, it might look something like the 
+> following.
+>
+> volatile ConcurrentHashMap<T,K> map = ...
+>
+> public void clear() {
+> 	ConcurrentHashMap<T,K> newmap = ...
+> 	fillmap( newmap );
+> 	map = newmap;
+> }
+>
+> But I am not clear on exactly when you fill the map.  If you fill the map on a 
+> "get", then you may instead choose to use a future to cause those doing a get to 
+> wait for the map to "appear" in a filled state.
+>
+> public void clear() {
+> 	map = null;
+> }
+>
+> volatile Future<ConcurrentHashMap<T,K>> mapFuture;
+>
+> public T get( K key ) {
+> 	if( map == null ) {
+> 		if( mapFuture == null ) {
+> 			synchronized( mapLock ) {
+> 				if( mapFuture == null )
+> 					mapFuture = startMapBuild();
+> 			}
+> 		}
+> 		map = mapFuture.get();
+> 	}
+> 	return map.get( key );
+> }
+>
+> This focuses the locking into the moment that is needed while allow the 
+> concurrency in ConcurrentHashMap to be exploited on gets().
+>   
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20071130/8519a113/attachment.html 
+
+From tim at peierls.net  Fri Nov 30 11:58:11 2007
+From: tim at peierls.net (Tim Peierls)
+Date: Fri, 30 Nov 2007 11:58:11 -0500
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <474FC569.8050703@atlassian.com>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+	<474DA95A.7020300@cytetech.com> <474FC569.8050703@atlassian.com>
+Message-ID: <63b4e4050711300858h309d1e78pa469bfe92fc7aa5a@mail.gmail.com>
+
+Sorry if this is obvious to everyone else, but I don't understand the
+interrupt handling in the while loop. How does it terminate?
+
+--tim
+
+On Nov 30, 2007 3:10 AM, Jed Wesley-Smith <jed at atlassian.com> wrote:
+
+>  I have a utility class for that encapsulates lockless lazy loading stuff.
+> It locks only when multiple threads call get while run is occuring
+> (FutureTask implementation).
+>
+> /**
+>  * Thread-safe lock-less reference that is not constructed until required.
+>  * <p>
+>  * Implement create() in implementation.
+>  */
+> public abstract class LazyLoadedReference<V>
+> {
+>     private final AtomicReference<FutureTask<V>> ref = new
+> AtomicReference<FutureTask<V>>();
+>
+>     public final V get()
+>     {
+>         FutureTask<V> future = ref.get();
+>         if (future == null)
+>         {
+>             // create a Future
+>             future = new FutureTask<V>(new Callable<V>()
+>             {
+>                 public V call() throws Exception
+>                 {
+>                     return create();
+>                 }
+>             });
+>             // set the reference only if it is still null
+>             ref.compareAndSet(null, future);
+>             // get the future that ref now holds (may be different to
+> above
+>             future = ref.get();
+>         }
+>         while (true)
+>         {
+>             try
+>             {
+>                 future.run();
+>                 return future.get();
+>             }
+>             catch (InterruptedException interruptAndTryAgain)
+>             {
+>                 Thread.currentThread().interrupt();
+>             }
+>             catch (ExecutionException e)
+>             {
+>                 throw new RuntimeException(e);
+>             }
+>         }
+>     }
+>
+>     /**
+>      * The object factory method, guaranteed to be called once and only
+> once.
+>      */
+>     protected abstract V create();
+> }
+>
+> Then you simply need to implement create() in your implementation.
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20071130/8d00985d/attachment.html 
+
+From carfield at carfield.com.hk  Fri Nov 30 12:34:20 2007
+From: carfield at carfield.com.hk (Carfield Yim)
+Date: Sat, 1 Dec 2007 01:34:20 +0800
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <63b4e4050711300858h309d1e78pa469bfe92fc7aa5a@mail.gmail.com>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+	<474DA95A.7020300@cytetech.com> <474FC569.8050703@atlassian.com>
+	<63b4e4050711300858h309d1e78pa469bfe92fc7aa5a@mail.gmail.com>
+Message-ID: <b4503c170711300934o35425f4ehb9e840623d468695@mail.gmail.com>
+
+May be you can refer to this article -
+http://www.javaspecialists.eu/archive/Issue146.html
+
+On 12/1/07, Tim Peierls <tim at peierls.net> wrote:
+> Sorry if this is obvious to everyone else, but I don't understand the
+> interrupt handling in the while loop. How does it terminate?
+>
+> --tim
+>
+>
+> On Nov 30, 2007 3:10 AM, Jed Wesley-Smith < jed at atlassian.com> wrote:
+>
+> >
+> > I have a utility class for that encapsulates lockless lazy loading stuff.
+> It locks only when multiple threads call get while run is occuring
+> (FutureTask implementation).
+> >
+> > /**
+> >  * Thread-safe lock-less reference that is not constructed until required.
+> >  * <p>
+> >  * Implement create() in implementation.
+> >  */
+> > public abstract class LazyLoadedReference<V>
+> > {
+> >     private final AtomicReference<FutureTask<V>> ref = new
+> AtomicReference<FutureTask<V>>();
+> >
+> >     public final V get()
+> >     {
+> >         FutureTask<V> future = ref.get();
+> >         if (future == null)
+> >         {
+> >             // create a Future
+> >             future = new FutureTask<V>(new Callable<V>()
+> >             {
+> >                 public V call() throws Exception
+> >                 {
+> >                     return create();
+> >                 }
+> >             });
+> >             // set the reference only if it is still null
+> >             ref.compareAndSet(null, future);
+> >             // get the future that ref now holds (may be different to
+> above
+> >             future = ref.get();
+> >         }
+> >         while (true)
+> >         {
+> >             try
+> >             {
+> >                 future.run();
+> >                 return future.get();
+> >             }
+> >             catch (InterruptedException interruptAndTryAgain)
+> >             {
+> >                 Thread.currentThread().interrupt();
+> >             }
+> >             catch (ExecutionException e)
+> >             {
+> >                 throw new RuntimeException(e);
+> >             }
+> >         }
+> >     }
+> >
+> >     /**
+> >      * The object factory method, guaranteed to be called once and only
+> once.
+> >      */
+> >     protected abstract V create();
+> > }
+> >
+> > Then you simply need to implement create() in your implementation.
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+From tim at peierls.net  Fri Nov 30 13:02:00 2007
+From: tim at peierls.net (Tim Peierls)
+Date: Fri, 30 Nov 2007 13:02:00 -0500
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <b4503c170711300934o35425f4ehb9e840623d468695@mail.gmail.com>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+	<474DA95A.7020300@cytetech.com> <474FC569.8050703@atlassian.com>
+	<63b4e4050711300858h309d1e78pa469bfe92fc7aa5a@mail.gmail.com>
+	<b4503c170711300934o35425f4ehb9e840623d468695@mail.gmail.com>
+Message-ID: <63b4e4050711301002k47d53259pd327743ef32250fd@mail.gmail.com>
+
+The code in that example has a break statement after resetting the
+interrupt. Jed's example doesn't.
+
+--tim
+
+On Nov 30, 2007 12:34 PM, Carfield Yim <carfield at carfield.com.hk> wrote:
+
+> May be you can refer to this article -
+> http://www.javaspecialists.eu/archive/Issue146.html
+>
+> On 12/1/07, Tim Peierls <tim at peierls.net> wrote:
+> > Sorry if this is obvious to everyone else, but I don't understand the
+> > interrupt handling in the while loop. How does it terminate?
+> >
+> > --tim
+> >
+> >
+> > On Nov 30, 2007 3:10 AM, Jed Wesley-Smith < jed at atlassian.com> wrote:
+> >
+> > >
+> > > I have a utility class for that encapsulates lockless lazy loading
+> stuff.
+> > It locks only when multiple threads call get while run is occuring
+> > (FutureTask implementation).
+> > >
+> > > /**
+> > >  * Thread-safe lock-less reference that is not constructed until
+> required.
+> > >  * <p>
+> > >  * Implement create() in implementation.
+> > >  */
+> > > public abstract class LazyLoadedReference<V>
+> > > {
+> > >     private final AtomicReference<FutureTask<V>> ref = new
+> > AtomicReference<FutureTask<V>>();
+> > >
+> > >     public final V get()
+> > >     {
+> > >         FutureTask<V> future = ref.get();
+> > >         if (future == null)
+> > >         {
+> > >             // create a Future
+> > >             future = new FutureTask<V>(new Callable<V>()
+> > >             {
+> > >                 public V call() throws Exception
+> > >                 {
+> > >                     return create();
+> > >                 }
+> > >             });
+> > >             // set the reference only if it is still null
+> > >             ref.compareAndSet(null, future);
+> > >             // get the future that ref now holds (may be different to
+> > above
+> > >             future = ref.get();
+> > >         }
+> > >         while (true)
+> > >         {
+> > >             try
+> > >             {
+> > >                 future.run();
+> > >                 return future.get();
+> > >             }
+> > >             catch (InterruptedException interruptAndTryAgain)
+> > >             {
+> > >                 Thread.currentThread().interrupt();
+> > >             }
+> > >             catch (ExecutionException e)
+> > >             {
+> > >                 throw new RuntimeException(e);
+> > >             }
+> > >         }
+> > >     }
+> > >
+> > >     /**
+> > >      * The object factory method, guaranteed to be called once and
+> only
+> > once.
+> > >      */
+> > >     protected abstract V create();
+> > > }
+> > >
+> > > Then you simply need to implement create() in your implementation.
+> >
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at altair.cs.oswego.edu
+> > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> >
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20071130/26a94db7/attachment.html 
+
+From Thomas.Hawtin at Sun.COM  Fri Nov 30 14:15:25 2007
+From: Thomas.Hawtin at Sun.COM (Thomas Hawtin)
+Date: Fri, 30 Nov 2007 19:15:25 +0000
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <b4503c170711300934o35425f4ehb9e840623d468695@mail.gmail.com>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+	<474DA95A.7020300@cytetech.com> <474FC569.8050703@atlassian.com>
+	<63b4e4050711300858h309d1e78pa469bfe92fc7aa5a@mail.gmail.com>
+	<b4503c170711300934o35425f4ehb9e840623d468695@mail.gmail.com>
+Message-ID: <4750614D.5030802@Sun.COM>
+
+Carfield Yim wrote:
+> May be you can refer to this article -
+> http://www.javaspecialists.eu/archive/Issue146.html
+
+Notice that Heinz breaks out of the loop.
+
+In the example in this thread, we go around the loop again with 
+interrupt set. So the task will get interrupted the first time it gets 
+to a suitable point (wait, tryLock, etc). The catch block will then 
+catch the exception, reset the status and loop again. The result is a 
+lot of cycles and little result.
+
+If you don't want to exit the loop, remember that an interrupt has 
+happened, but don't reset the status. Go back around the loop. When the 
+loop exits, then the interrupt status can be reapplied.
+
+Tom Hawtin
+
+> On 12/1/07, Tim Peierls <tim at peierls.net> wrote:
+> 
+>>Sorry if this is obvious to everyone else, but I don't understand the
+>>interrupt handling in the while loop. How does it terminate?
+
+
+From gregg at cytetech.com  Fri Nov 30 15:57:54 2007
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Fri, 30 Nov 2007 14:57:54 -0600
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <63b4e4050711300858h309d1e78pa469bfe92fc7aa5a@mail.gmail.com>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+	<474DA95A.7020300@cytetech.com> <474FC569.8050703@atlassian.com>
+	<63b4e4050711300858h309d1e78pa469bfe92fc7aa5a@mail.gmail.com>
+Message-ID: <47507952.3090504@cytetech.com>
+
+Tim Peierls wrote:
+> Sorry if this is obvious to everyone else, but I don't understand the 
+> interrupt handling in the while loop. How does it terminate?
+
+On Windows xp SP2 with JDK 1.6, the following does run to completion.  The 
+Thread.interrupt() does seem to raise some type of exceptional processing that 
+the throws clause does not express...
+
+/**
+  * Thread-safe lock-less reference that is not constructed until required.
+  * <p>
+  * Implement create() in implementation.
+  */
+public abstract class LazyLoadedReference<V> {
+	private final AtomicReference<FutureTask<V>> ref = new 
+AtomicReference<FutureTask<V>>();
+	Logger log = Logger.getLogger( getClass().getName() );
+	public final V get() {
+		FutureTask<V> future = ref.get();
+		if (future == null) {
+			// create a Future
+			future = new FutureTask<V>(new Callable<V>() {
+				public V call() throws Exception {
+					return create();
+				}
+			});
+			// set the reference only if it is still null
+			ref.compareAndSet(null, future);
+			// get the future that ref now holds (may be different to above
+			future = ref.get();
+		}
+		try {
+			while (true) {
+				try {
+					future.run();
+					return future.get();
+				} catch (InterruptedException ex) {
+			//		log.log( Level.SEVERE, ex.toString()+": get Interrupted", ex );
+					Thread.currentThread().interrupt();
+				} catch (ExecutionException e) {
+					throw new RuntimeException(e);
+				}
+			}
+		} finally {
+			log.info( "exiting get");
+		}
+	}
+
+	/**
+	 * The object factory method, guaranteed to be called once and only once.
+	 */
+	protected abstract V create();
+
+	public static void main( String args[] ) throws InterruptedException {
+		final Logger log = Logger.getLogger( LazyLoadedReference.class.getName() );
+
+		final LazyLoadedReference<Integer> r = new LazyLoadedReference<Integer>() {
+			protected Integer create() {
+				log.info("create called");
+				synchronized( this ) {
+					try {
+						this.wait();
+					} catch (InterruptedException ex) {
+						log.log( Level.SEVERE, ex.toString()+": wait was interrupted", ex );
+					}
+				}
+				return new Integer( 42 );
+			}
+		};
+
+		Thread mt = new Thread() {
+			public void run() {
+				log.info("creating");
+				try {
+					Integer v = r.get();
+					log.info("created: "+v);
+				} catch( Exception ex ) {
+					log.log( Level.SEVERE, ex.toString(), ex );
+				}
+			}
+		};
+		log.info("running");
+		mt.start();
+		log.info("sleeping");
+		Thread.currentThread().sleep(5000);
+		log.info("interrupting");
+		mt.interrupt();
+		log.info("exiting");
+		Object lock = new Object();
+		synchronized(lock) {
+			lock.wait();
+		}
+	}
+}
+
+Here's the output I see...
+
+Nov 30, 2007 2:51:20 PM com.cytetech.util.LazyLoadedReference main
+INFO: running
+Nov 30, 2007 2:51:20 PM com.cytetech.util.LazyLoadedReference main
+INFO: sleeping
+Nov 30, 2007 2:51:20 PM com.cytetech.util.LazyLoadedReference$3 run
+INFO: creating
+Nov 30, 2007 2:51:20 PM com.cytetech.util.LazyLoadedReference$2 create
+INFO: create called
+Nov 30, 2007 2:51:25 PM com.cytetech.util.LazyLoadedReference main
+INFO: interrupting
+Nov 30, 2007 2:51:25 PM com.cytetech.util.LazyLoadedReference main
+INFO: exiting
+Nov 30, 2007 2:51:25 PM com.cytetech.util.LazyLoadedReference$2 create
+SEVERE: java.lang.InterruptedException: wait was interrupted
+java.lang.InterruptedException
+         at java.lang.Object.wait(Native Method)
+         at java.lang.Object.wait(Object.java:485)
+         at 
+com.cytetech.util.LazyLoadedReference$2.create(LazyLoadedReference.java:71)
+         at 
+com.cytetech.util.LazyLoadedReference$2.create(LazyLoadedReference.java:66)
+         at 
+com.cytetech.util.LazyLoadedReference$1.call(LazyLoadedReference.java:33)
+         at java.util.concurrent.FutureTask$Sync.innerRun(FutureTask.java:303)
+         at java.util.concurrent.FutureTask.run(FutureTask.java:138)
+         at com.cytetech.util.LazyLoadedReference.get(LazyLoadedReference.java:44)
+         at com.cytetech.util.LazyLoadedReference$3.run(LazyLoadedReference.java:84)
+Nov 30, 2007 2:51:25 PM com.cytetech.util.LazyLoadedReference get
+INFO: exiting get
+Nov 30, 2007 2:51:25 PM com.cytetech.util.LazyLoadedReference$3 run
+INFO: created: 42
+
+From joe.bowbeer at gmail.com  Fri Nov 30 16:57:45 2007
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Fri, 30 Nov 2007 13:57:45 -0800
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <47507952.3090504@cytetech.com>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>
+	<474DA95A.7020300@cytetech.com> <474FC569.8050703@atlassian.com>
+	<63b4e4050711300858h309d1e78pa469bfe92fc7aa5a@mail.gmail.com>
+	<47507952.3090504@cytetech.com>
+Message-ID: <31f2a7bd0711301357p7c188f3cl48def865e83932a2@mail.gmail.com>
+
+In the trace, the wait() inside create() was interrupted, not future.get().
+
+I think you can "fix" the test by reasserting the interrupt in the
+interrupt handler in the create() method.
+
+On Nov 30, 2007 12:57 PM, Gregg Wonderly <gregg at cytetech.com> wrote:
+> Tim Peierls wrote:
+> > Sorry if this is obvious to everyone else, but I don't understand the
+> > interrupt handling in the while loop. How does it terminate?
+>
+> On Windows xp SP2 with JDK 1.6, the following does run to completion.  The
+> Thread.interrupt() does seem to raise some type of exceptional processing that
+> the throws clause does not express...
+>
+> /**
+>   * Thread-safe lock-less reference that is not constructed until required.
+>   * <p>
+>   * Implement create() in implementation.
+>   */
+> public abstract class LazyLoadedReference<V> {
+>         private final AtomicReference<FutureTask<V>> ref = new
+> AtomicReference<FutureTask<V>>();
+>         Logger log = Logger.getLogger( getClass().getName() );
+>         public final V get() {
+>                 FutureTask<V> future = ref.get();
+>                 if (future == null) {
+>                         // create a Future
+>                         future = new FutureTask<V>(new Callable<V>() {
+>                                 public V call() throws Exception {
+>                                         return create();
+>                                 }
+>                         });
+>                         // set the reference only if it is still null
+>                         ref.compareAndSet(null, future);
+>                         // get the future that ref now holds (may be different to above
+>                         future = ref.get();
+>                 }
+>                 try {
+>                         while (true) {
+>                                 try {
+>                                         future.run();
+>                                         return future.get();
+>                                 } catch (InterruptedException ex) {
+>                         //              log.log( Level.SEVERE, ex.toString()+": get Interrupted", ex );
+>                                         Thread.currentThread().interrupt();
+>                                 } catch (ExecutionException e) {
+>                                         throw new RuntimeException(e);
+>                                 }
+>                         }
+>                 } finally {
+>                         log.info( "exiting get");
+>                 }
+>         }
+>
+>         /**
+>          * The object factory method, guaranteed to be called once and only once.
+>          */
+>         protected abstract V create();
+>
+>         public static void main( String args[] ) throws InterruptedException {
+>                 final Logger log = Logger.getLogger( LazyLoadedReference.class.getName() );
+>
+>                 final LazyLoadedReference<Integer> r = new LazyLoadedReference<Integer>() {
+>                         protected Integer create() {
+>                                 log.info("create called");
+>                                 synchronized( this ) {
+>                                         try {
+>                                                 this.wait();
+>                                         } catch (InterruptedException ex) {
+>                                                 log.log( Level.SEVERE, ex.toString()+": wait was interrupted", ex );
+>                                         }
+>                                 }
+>                                 return new Integer( 42 );
+>                         }
+>                 };
+>
+>                 Thread mt = new Thread() {
+>                         public void run() {
+>                                 log.info("creating");
+>                                 try {
+>                                         Integer v = r.get();
+>                                         log.info("created: "+v);
+>                                 } catch( Exception ex ) {
+>                                         log.log( Level.SEVERE, ex.toString(), ex );
+>                                 }
+>                         }
+>                 };
+>                 log.info("running");
+>                 mt.start();
+>                 log.info("sleeping");
+>                 Thread.currentThread().sleep(5000);
+>                 log.info("interrupting");
+>                 mt.interrupt();
+>                 log.info("exiting");
+>                 Object lock = new Object();
+>                 synchronized(lock) {
+>                         lock.wait();
+>                 }
+>         }
+> }
+>
+> Here's the output I see...
+>
+> Nov 30, 2007 2:51:20 PM com.cytetech.util.LazyLoadedReference main
+> INFO: running
+> Nov 30, 2007 2:51:20 PM com.cytetech.util.LazyLoadedReference main
+> INFO: sleeping
+> Nov 30, 2007 2:51:20 PM com.cytetech.util.LazyLoadedReference$3 run
+> INFO: creating
+> Nov 30, 2007 2:51:20 PM com.cytetech.util.LazyLoadedReference$2 create
+> INFO: create called
+> Nov 30, 2007 2:51:25 PM com.cytetech.util.LazyLoadedReference main
+> INFO: interrupting
+> Nov 30, 2007 2:51:25 PM com.cytetech.util.LazyLoadedReference main
+> INFO: exiting
+> Nov 30, 2007 2:51:25 PM com.cytetech.util.LazyLoadedReference$2 create
+> SEVERE: java.lang.InterruptedException: wait was interrupted
+> java.lang.InterruptedException
+>          at java.lang.Object.wait(Native Method)
+>          at java.lang.Object.wait(Object.java:485)
+>          at
+> com.cytetech.util.LazyLoadedReference$2.create(LazyLoadedReference.java:71)
+>          at
+> com.cytetech.util.LazyLoadedReference$2.create(LazyLoadedReference.java:66)
+>          at
+> com.cytetech.util.LazyLoadedReference$1.call(LazyLoadedReference.java:33)
+>          at java.util.concurrent.FutureTask$Sync.innerRun(FutureTask.java:303)
+>          at java.util.concurrent.FutureTask.run(FutureTask.java:138)
+>          at com.cytetech.util.LazyLoadedReference.get(LazyLoadedReference.java:44)
+>          at com.cytetech.util.LazyLoadedReference$3.run(LazyLoadedReference.java:84)
+> Nov 30, 2007 2:51:25 PM com.cytetech.util.LazyLoadedReference get
+> INFO: exiting get
+> Nov 30, 2007 2:51:25 PM com.cytetech.util.LazyLoadedReference$3 run
+> INFO: created: 42
+>
+
+From gergg at cox.net  Fri Nov 30 16:56:51 2007
+From: gergg at cox.net (Gregg Wonderly)
+Date: Fri, 30 Nov 2007 15:56:51 -0600
+Subject: [concurrency-interest] Questions on ConcurrentHashMap
+In-Reply-To: <47507952.3090504@cytetech.com>
+References: <cbd4e1ab0711272217w7add3bc5p8223e22b339fe057@mail.gmail.com>	<474DA95A.7020300@cytetech.com>
+	<474FC569.8050703@atlassian.com>	<63b4e4050711300858h309d1e78pa469bfe92fc7aa5a@mail.gmail.com>
+	<47507952.3090504@cytetech.com>
+Message-ID: <47508723.60608@cox.net>
+
+Gregg Wonderly wrote:
+> Tim Peierls wrote:
+> 
+>>Sorry if this is obvious to everyone else, but I don't understand the 
+>>interrupt handling in the while loop. How does it terminate?
+> 
+> 
+> On Windows xp SP2 with JDK 1.6, the following does run to completion.  The 
+> Thread.interrupt() does seem to raise some type of exceptional processing that 
+> the throws clause does not express...
+
+> 		final LazyLoadedReference<Integer> r = new LazyLoadedReference<Integer>() {
+> 			protected Integer create() {
+> 				log.info("create called");
+> 				synchronized( this ) {
+> 					try {
+> 						this.wait();
+> 					} catch (InterruptedException ex) {
+> 						log.log( Level.SEVERE, ex.toString()+": wait was interrupted", ex );
+> 					}
+> 				}
+> 				return new Integer( 42 );
+> 			}
+> 		};
+
+And of course I found my own bug here which causes it to return a value which 
+keeps the interruption from propagating up...
+
+It does in fact go into an infinite loop if you do 
+Thread.currentThread().interrupt() where my log statement is above.
+
+Gregg Wonderly
+

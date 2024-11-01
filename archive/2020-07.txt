@@ -1,0 +1,1677 @@
+From 987222392 at qq.com  Thu Jul 16 08:01:38 2020
+From: 987222392 at qq.com (=?gb18030?B?TGl1?=)
+Date: Thu, 16 Jul 2020 20:01:38 +0800
+Subject: [concurrency-interest] why the last thread must sweep to check
+ every slot again?
+Message-ID: <tencent_8629118DC1E0911F48B0125A05DA09E7BC0A@qq.com>
+
+hello&nbsp;concurrency-interest:&nbsp; &nbsp; &nbsp;In jdk1.8,&nbsp;ConcurrentHashMap's transfer function is used to resize, but there is a place I don’t understand. see below.
+if (i < 0 || i &gt;= n || i + n &gt;= nextn) {
+    int sc;
+    if (finishing) {
+        nextTable = null;
+        table = nextTab;
+        sizeCtl = (n << 1) - (n &gt;&gt;&gt; 1);
+        return;
+    }
+    if (U.compareAndSwapInt(this, SIZECTL, sc = sizeCtl, sc - 1)) {
+        if ((sc - 2) != resizeStamp(n) << RESIZE_STAMP_SHIFT)
+            return;
+        finishing = advance = true;
+        i = n; // recheck before commit
+    }
+}
+&nbsp; &nbsp;From the code above, the last thread to restore sizeCtl must recheck every slot again. But in my opinion, when the last thread to restore sizeCtl, every slot have been transfer to the new table already. So why&nbsp;why the last thread must sweep to check every slot again?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200716/4a6e29c1/attachment.htm>
+
+From info at homecredit.ph  Thu Jul 16 12:05:56 2020
+From: info at homecredit.ph (info at homecredit.ph)
+Date: Fri, 17 Jul 2020 00:05:56 +0800 (PHT)
+Subject: [concurrency-interest] Concurrency-interest Digest, Vol 185,
+ Issue 1
+In-Reply-To: <mailman.3.1594915202.26583.concurrency-interest@cs.oswego.edu>
+Message-ID: <0361QaFGBCXUTEU0@homecredit.ph>
+
+This is an automated response.  We're currently working on a skeletal workforce due to the Covid-19 pandemic and it may take us 4-5 days to respond to your email.  We apologize for the delay.
+Para sa account specific concerns, please make sure na naisulat ninyo sa email ang inyong Loan Account Number at Date of Birth, para mapabilis ang inyong transaction.
+Here���s a quick guide para sa mga dapat asahan ngayong new normal:
+Para sa mga loan customers na nag-avail ng grace period para sa mga due dates mula March 17-May 31, ang inyong loan term ay na-extend at ito ay naka-reflect na sa mobile app.  Makikita rin ang equivalent na accrued interest para dito. Siguraduhin lamang na gamit ang latest version ng Home Credit app para makita ang tamang impormasyon.
+For more information, visit: https://homecredit.ph/payments/frequently-asked-questions/. 
+If you���re contacting us about payment arrangements, feel free to call us at 02(7753-5712) to discuss your options.  
+Gift payment eligibility will not be affected by the grace period and will automatically be applied on your account. You just need to make sure to keep your account updated according to the new installment schedule. 
+For credit card customers, siguraduhing magbayad ng at least minimum amount due para mapanatiling active ang inyong card at maiwasan ang late payment fee. 
+Maaari ninyong puntahan ang bit.ly/HCPayNow para magbayad online o tignan ang list of available payment partners dito.
+Para sa mga enrolled sa ADA, we have resumed regular bank debiting on your loan due date in the month of June.  We will resume regular debiting three days before your due date from July 1 due date onwards.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200717/d1657763/attachment.htm>
+
+From cpovirk at google.com  Thu Jul 16 14:09:45 2020
+From: cpovirk at google.com (Chris Povirk)
+Date: Thu, 16 Jul 2020 14:09:45 -0400
+Subject: [concurrency-interest] (hypothetical? bogus?) TSAN failure reported
+ in ForkJoinPool (JDK11 and "refresh" versions)
+Message-ID: <CAEvq2nq+0Kb-JLpVEc0UiNG0wsY+AVE4dz4omA5UJ_ynb2NVqw@mail.gmail.com>
+
+Hi,
+
+Lately we've been running most of our continuous builds with TSAN. When we
+updated to the JDK11 runtime, we started getting reports of a race when
+handing a task to a ForkJoinPool. I see the same race when running with the
+"refresh
+<http://cs.oswego.edu/pipermail/concurrency-interest/2020-January/017048.html>"
+ForkJoinPool (assuming that's what I still get when I download
+http://gee.cs.oswego.edu/dl/concurrent/dist/jsr166.jar nowadays).
+
+The very rough form of the code is executing a job like this:
+
+class Job implements Runnable {
+  boolean b = true;
+
+  public void run() {
+    if (!b) { ... }
+  }
+}
+
+TSAN reports a race between the write of b (in the submitting thread) and
+the read (in the pool thread).
+
+After staring at ForkJoinPool code a little, I'm not completely clear on
+whether there's necessarily a happens-before edge between the plain write
+of the task
+<http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinPool.java?revision=1.355&view=markup#l926>
+and
+the acquire read
+<http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinPool.java?revision=1.355&view=markup#l1563>,
+at least when the worker was already running beforehand. I see a subsequent
+casSlotToNull
+<http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinPool.java?revision=1.355&view=markup#l1566>,
+but that's a weakCompareAndSet
+<http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinPool.java?revision=1.355&view=markup#l837>,
+so I don't think that helps
+<https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/atomic/package-summary.html#weakCompareAndSet>
+?
+
+But there is so much going on in ForkJoinPool that I won't pretend to
+understand -- some of which TSAN doesn't currently understand, either
+(e.g., manual fences). Plus, even if there is theoretically a race here, I
+don't know if any compiler/architecture would exploit it. (For what it's
+worth, I couldn't actually observe a stale value in my limited testing,
+even on PPC.)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200716/a136d630/attachment.htm>
+
+From cpovirk at google.com  Thu Jul 16 14:15:06 2020
+From: cpovirk at google.com (Chris Povirk)
+Date: Thu, 16 Jul 2020 14:15:06 -0400
+Subject: [concurrency-interest] (hypothetical? bogus?) TSAN failure
+ reported in ForkJoinPool (JDK11 and "refresh" versions)
+In-Reply-To: <CAEvq2nq+0Kb-JLpVEc0UiNG0wsY+AVE4dz4omA5UJ_ynb2NVqw@mail.gmail.com>
+References: <CAEvq2nq+0Kb-JLpVEc0UiNG0wsY+AVE4dz4omA5UJ_ynb2NVqw@mail.gmail.com>
+Message-ID: <CAEvq2noqiHLu0eE-bFbP3gf6FBdd0c6=5Hg4jGrsxzJ4E98s0w@mail.gmail.com>
+
+Additional info:
+
+We have worked around
+<https://github.com/google/guava/commit/da93601899485518956c211e81017833071838b9>
+the immediate TSAN failure.
+
+Unfortunately, I don't have a test case packed up for you to run. What I
+have is entangled with Google infrastructure (which is different from some
+JDK infrastructure Martin discussed last year
+<https://bugs.openjdk.java.net/browse/JDK-8232642?focusedCommentId=14295054&page=com.atlassian.jira.plugin.system.issuetabpanels%3Acomment-tabpanel#comment-14295054>
+).
+
+But here is the code I've been running and a TSAN failure report. (TSAN
+gives an error maybe about half the time I run the test.) The report comes
+from a run against the "refresh" ForkJoinPool.
+
+Again, the failure is a TSAN failure only: I haven't been able to see a
+stale value in practice, so my assertFalse check is always succeeding.
+
+package com.google.common;
+
+import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.junit.Assert.assertFalse;
+
+import java.util.concurrent.ForkJoinPool;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.JUnit4;
+
+@RunWith(JUnit4.class)
+public class ForkJoinPoolTsanTest {
+  @Test
+  public void testHandoff() throws Exception {
+    ForkJoinPool service = new ForkJoinPool();
+    boolean[] failed = new boolean[1];
+    for (int j = 0; j < 5; j++) {
+      service.execute(new Job(failed));
+    }
+    service.shutdown();
+    service.awaitTermination(10, SECONDS);
+    assertFalse(failed[0]);
+  }
+
+  private static final class Job implements Runnable {
+    final boolean[] failed;
+    boolean b = true;
+
+    Job(boolean[] failed) {
+      this.failed = failed;
+    }
+
+    @Override
+    public void run() {
+      if (!b) {
+        failed[0] = true;
+      }
+    }
+  }
+}
+
+Read of size 1 at 0x0000cf6f8d54 by thread T18:
+  #0 com.google.common.ForkJoinPoolTsanTest$Job.run()V
+ForkJoinPoolTsanTest.java:35
+  #1 java.util.concurrent.ForkJoinTask$RunnableExecuteAction.exec()Z
+ForkJoinTask.java:1341
+  #2 java.util.concurrent.ForkJoinTask.doExec()I ForkJoinTask.java:435
+  #3
+java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Ljava/util/concurrent/ForkJoinTask;Ljava/util/concurrent/ForkJoinPool$WorkQueue;)V
+ForkJoinPool.java:1128
+  #4
+java.util.concurrent.ForkJoinPool.scan(Ljava/util/concurrent/ForkJoinPool$WorkQueue;II)I
+ForkJoinPool.java:1598
+  #5
+java.util.concurrent.ForkJoinPool.runWorker(Ljava/util/concurrent/ForkJoinPool$WorkQueue;)V
+ForkJoinPool.java:1565
+  #6 java.util.concurrent.ForkJoinWorkerThread.run()V
+ForkJoinWorkerThread.java:138
+
+Previous write of size 1 at 0x0000cf6f8d54 by thread T5:
+  #0 com.google.common.ForkJoinPoolTsanTest$Job.<init>([Z)V
+ForkJoinPoolTsanTest.java:27
+  #1 com.google.common.ForkJoinPoolTsanTest.testHandoff()V
+ForkJoinPoolTsanTest.java:18
+
+Thread T18 (tid=661, running) created by thread T5 at:
+  #0 pthread_create
+third_party/llvm/llvm-project/compiler-rt/lib/tsan/rtl/tsan_interceptors_posix.cpp:965:3
+(4766092b7397d478e6abfb6f139c4adc84ae7e74c64c75064c31eca5ef3d4346_02000308b290+0x36b82a)
+  #1 os::create_thread(Thread*, os::ThreadType, unsigned long) <null>
+(libjvm.so+0x1148e95)
+  #2 java.lang.Thread.start()V Thread.java:803
+  #3 java.util.concurrent.ForkJoinPool.createWorker()Z
+ForkJoinPool.java:1408
+  #4 java.util.concurrent.ForkJoinPool.signalWork()V ForkJoinPool.java:1531
+  #5
+java.util.concurrent.ForkJoinPool.externalPush(Ljava/util/concurrent/ForkJoinTask;)V
+ForkJoinPool.java:2128
+  #6
+java.util.concurrent.ForkJoinPool.externalSubmit(Ljava/util/concurrent/ForkJoinTask;)Ljava/util/concurrent/ForkJoinTask;
+ForkJoinPool.java:2143
+  #7 java.util.concurrent.ForkJoinPool.execute(Ljava/lang/Runnable;)V
+ForkJoinPool.java:2587
+  #8 com.google.common.ForkJoinPoolTsanTest.testHandoff()V
+ForkJoinPoolTsanTest.java:18
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200716/2f20d1ef/attachment.htm>
+
+From thomas.krieger at vmlens.com  Thu Jul 16 18:04:32 2020
+From: thomas.krieger at vmlens.com (Thomas Krieger)
+Date: Fri, 17 Jul 2020 00:04:32 +0200 (CEST)
+Subject: [concurrency-interest] (hypothetical? bogus?) TSAN failure
+ reported in ForkJoinPool (JDK11 and "refresh" versions)
+In-Reply-To: <CAEvq2noqiHLu0eE-bFbP3gf6FBdd0c6=5Hg4jGrsxzJ4E98s0w@mail.gmail.com>
+References: <CAEvq2nq+0Kb-JLpVEc0UiNG0wsY+AVE4dz4omA5UJ_ynb2NVqw@mail.gmail.com>
+ <CAEvq2noqiHLu0eE-bFbP3gf6FBdd0c6=5Hg4jGrsxzJ4E98s0w@mail.gmail.com>
+Message-ID: <506921731.630247.1594937072935@communicator.strato.com>
+
+In JDK 8 ForkJoinPool used getObjectVolatile to get tasks from the work queue array. 
+See the method scan(WorkQueue w, int r) from the class ForkJoinPool:
+U.getObjectVolatile(a, i))) != null &&
+
+In JDK 11 ForkJoinPool uses getAcquire to get a task from the array
+t = (ForkJoinTask<?>)QA.getAcquire(a, k = (cap - 1) & b);
+
+
+
+>     On 16 July 2020 20:15 Chris Povirk via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+> 
+>     Additional info:
+> 
+>     We have  worked around https://github.com/google/guava/commit/da93601899485518956c211e81017833071838b9 the immediate TSAN failure.
+> 
+>     Unfortunately, I don't have a test case packed up for you to run. What I have is entangled with Google infrastructure (which is different from some JDK infrastructure Martin discussed last year https://bugs.openjdk.java.net/browse/JDK-8232642?focusedCommentId=14295054&page=com.atlassian.jira.plugin.system.issuetabpanels%3Acomment-tabpanel#comment-14295054 ).
+> 
+>     But here is the code I've been running and a TSAN failure report. (TSAN gives an error maybe about half the time I run the test.) The report comes from a run against the "refresh" ForkJoinPool.
+> 
+>     Again, the failure is a TSAN failure only: I haven't been able to see a stale value in practice, so my assertFalse check is always succeeding.
+> 
+>     package com.google.common;
+> 
+>     import static java.util.concurrent.TimeUnit.SECONDS;
+>     import static org.junit.Assert.assertFalse;
+> 
+>     import java.util.concurrent.ForkJoinPool;
+>     import org.junit.Test;
+>     import org.junit.runner.RunWith;
+>     import org.junit.runners.JUnit4;
+> 
+>     @RunWith(JUnit4.class)
+>     public class ForkJoinPoolTsanTest {
+>       @Test
+>       public void testHandoff() throws Exception {
+>         ForkJoinPool service = new ForkJoinPool();
+>         boolean[] failed = new boolean[1];
+>         for (int j = 0; j < 5; j++) {
+>           service.execute(new Job(failed));
+>         }
+>         service.shutdown();
+>         service.awaitTermination(10, SECONDS);
+>         assertFalse(failed[0]);
+>       }
+> 
+>       private static final class Job implements Runnable {
+>         final boolean[] failed;
+>         boolean b = true;
+> 
+>         Job(boolean[] failed) {
+>           this.failed = failed;
+>         }
+> 
+>         @Override
+>         public void run() {
+>           if (!b) {
+>             failed[0] = true;
+>           }
+>         }
+>       }
+>     }
+> 
+>     Read of size 1 at 0x0000cf6f8d54 by thread T18:
+>       #0 com.google.common.ForkJoinPoolTsanTest$Job.run()V ForkJoinPoolTsanTest.java:35
+>       #1 java.util.concurrent.ForkJoinTask$RunnableExecuteAction.exec()Z ForkJoinTask.java:1341
+>       #2 java.util.concurrent.ForkJoinTask.doExec()I ForkJoinTask.java:435
+>       #3 java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Ljava/util/concurrent/ForkJoinTask;Ljava/util/concurrent/ForkJoinPool$WorkQueue;)V ForkJoinPool.java:1128
+>       #4 java.util.concurrent.ForkJoinPool.scan(Ljava/util/concurrent/ForkJoinPool$WorkQueue;II)I ForkJoinPool.java:1598
+>       #5 java.util.concurrent.ForkJoinPool.runWorker(Ljava/util/concurrent/ForkJoinPool$WorkQueue;)V ForkJoinPool.java:1565
+>       #6 java.util.concurrent.ForkJoinWorkerThread.run()V ForkJoinWorkerThread.java:138
+> 
+>     Previous write of size 1 at 0x0000cf6f8d54 by thread T5:
+>       #0 com.google.common.ForkJoinPoolTsanTest$Job.<init>([Z)V ForkJoinPoolTsanTest.java:27
+>       #1 com.google.common.ForkJoinPoolTsanTest.testHandoff()V ForkJoinPoolTsanTest.java:18
+> 
+>     Thread T18 (tid=661, running) created by thread T5 at:
+>       #0 pthread_create third_party/llvm/llvm-project/compiler-rt/lib/tsan/rtl/tsan_interceptors_posix.cpp:965:3 (4766092b7397d478e6abfb6f139c4adc84ae7e74c64c75064c31eca5ef3d4346_02000308b290+0x36b82a)
+>       #1 os::create_thread(Thread*, os::ThreadType, unsigned long) <null> (libjvm.so+0x1148e95)
+>       #2 java.lang.Thread.start()V Thread.java:803
+>       #3 java.util.concurrent.ForkJoinPool.createWorker()Z ForkJoinPool.java:1408
+>       #4 java.util.concurrent.ForkJoinPool.signalWork()V ForkJoinPool.java:1531
+>       #5 java.util.concurrent.ForkJoinPool.externalPush(Ljava/util/concurrent/ForkJoinTask;)V ForkJoinPool.java:2128
+>       #6 java.util.concurrent.ForkJoinPool.externalSubmit(Ljava/util/concurrent/ForkJoinTask;)Ljava/util/concurrent/ForkJoinTask; ForkJoinPool.java:2143
+>       #7 java.util.concurrent.ForkJoinPool.execute(Ljava/lang/Runnable;)V ForkJoinPool.java:2587
+>       #8 com.google.common.ForkJoinPoolTsanTest.testHandoff()V ForkJoinPoolTsanTest.java:18
+>     _______________________________________________
+>     Concurrency-interest mailing list
+>     Concurrency-interest at cs.oswego.edu
+>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200717/c2f38109/attachment-0001.htm>
+
+From info at homecredit.ph  Thu Jul 16 18:12:30 2020
+From: info at homecredit.ph (info at homecredit.ph)
+Date: Fri, 17 Jul 2020 06:12:30 +0800 (PHT)
+Subject: [concurrency-interest] Concurrency-interest Digest, Vol 185,
+ Issue 2
+In-Reply-To: <mailman.9.1594937084.15234.concurrency-interest@cs.oswego.edu>
+Message-ID: <0361QaFGBCXUTGM5@homecredit.ph>
+
+This is an automated response.  We're currently working on a skeletal workforce due to the Covid-19 pandemic and it may take us 4-5 days to respond to your email.  We apologize for the delay.
+Para sa account specific concerns, please make sure na naisulat ninyo sa email ang inyong Loan Account Number at Date of Birth, para mapabilis ang inyong transaction.
+Here���s a quick guide para sa mga dapat asahan ngayong new normal:
+Para sa mga loan customers na nag-avail ng grace period para sa mga due dates mula March 17-May 31, ang inyong loan term ay na-extend at ito ay naka-reflect na sa mobile app.  Makikita rin ang equivalent na accrued interest para dito. Siguraduhin lamang na gamit ang latest version ng Home Credit app para makita ang tamang impormasyon.
+For more information, visit: https://homecredit.ph/payments/frequently-asked-questions/. 
+If you���re contacting us about payment arrangements, feel free to call us at 02(7753-5712) to discuss your options.  
+Gift payment eligibility will not be affected by the grace period and will automatically be applied on your account. You just need to make sure to keep your account updated according to the new installment schedule. 
+For credit card customers, siguraduhing magbayad ng at least minimum amount due para mapanatiling active ang inyong card at maiwasan ang late payment fee. 
+Maaari ninyong puntahan ang bit.ly/HCPayNow para magbayad online o tignan ang list of available payment partners dito.
+Para sa mga enrolled sa ADA, we have resumed regular bank debiting on your loan due date in the month of June.  We will resume regular debiting three days before your due date from July 1 due date onwards.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200717/69e2c66b/attachment.htm>
+
+From cpovirk at google.com  Thu Jul 16 21:10:05 2020
+From: cpovirk at google.com (Chris Povirk)
+Date: Thu, 16 Jul 2020 21:10:05 -0400
+Subject: [concurrency-interest] (hypothetical? bogus?) TSAN failure
+ reported in ForkJoinPool (JDK11 and "refresh" versions)
+In-Reply-To: <506921731.630247.1594937072935@communicator.strato.com>
+References: <CAEvq2nq+0Kb-JLpVEc0UiNG0wsY+AVE4dz4omA5UJ_ynb2NVqw@mail.gmail.com>
+ <CAEvq2noqiHLu0eE-bFbP3gf6FBdd0c6=5Hg4jGrsxzJ4E98s0w@mail.gmail.com>
+ <506921731.630247.1594937072935@communicator.strato.com>
+Message-ID: <CAEvq2nrKRaYfQWV2oyBcfpRqeM=onb72Xoa1cFCUpBZW5YVVJA@mail.gmail.com>
+
+Thanks. My impression is that even a <setRelease,getAcquire> pair is enough
+to establish the happens-before relationship. (I say that mainly from
+skimming http://gee.cs.oswego.edu/dl/html/j9mm.html, not from any deep
+understanding. I see that that doc even recommends against the term
+"happens-before" :)) And for what it's worth, that's enough to satisfy our
+TSAN setup, too.
+
+The most interesting change relative to JDK8 (which is what we were using
+before) might be on the *write* side: Where JDK8 always(?)
+used putOrderedObject (apparently similar to volatile) or similar, JDK11
+sometimes uses only(?) that plain write I linked above.
+
+It occurs to me only now that I'm writing this that, thanks to the power of
+--patch-module, I could probably tweak the ForkJoinPool source to use a
+"stronger" write and see if the TSAN failure goes away. Maybe I'll try that
+if I get a chance....
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200716/92f280ea/attachment.htm>
+
+From cpovirk at google.com  Fri Jul 17 10:55:06 2020
+From: cpovirk at google.com (Chris Povirk)
+Date: Fri, 17 Jul 2020 10:55:06 -0400
+Subject: [concurrency-interest] (hypothetical? bogus?) TSAN failure
+ reported in ForkJoinPool (JDK11 and "refresh" versions)
+In-Reply-To: <CAEvq2nrKRaYfQWV2oyBcfpRqeM=onb72Xoa1cFCUpBZW5YVVJA@mail.gmail.com>
+References: <CAEvq2nq+0Kb-JLpVEc0UiNG0wsY+AVE4dz4omA5UJ_ynb2NVqw@mail.gmail.com>
+ <CAEvq2noqiHLu0eE-bFbP3gf6FBdd0c6=5Hg4jGrsxzJ4E98s0w@mail.gmail.com>
+ <506921731.630247.1594937072935@communicator.strato.com>
+ <CAEvq2nrKRaYfQWV2oyBcfpRqeM=onb72Xoa1cFCUpBZW5YVVJA@mail.gmail.com>
+Message-ID: <CAEvq2nqPqu-KgB2Q-D-Rp1zqsyMwCoe=z58bk2Uv4vD3gHgamw@mail.gmail.com>
+
+I built jsr166 from CVS head. I can reproduce the TSAN failure with that.
+
+If I edit lockedPush to use setRelease instead of a plain write, the
+failure goes away.
+
+(Oddly, the failure *also* goes away if I merely switch to *setOpaque*,
+which I would not have thought would be enough. This may well be more of an
+artifact of what our TSAN can detect. (And again, this whole *failure* may
+well be an artifact of TSAN.))
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200717/c7079f9f/attachment.htm>
+
+From dl at cs.oswego.edu  Fri Jul 17 11:23:36 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 17 Jul 2020 11:23:36 -0400
+Subject: [concurrency-interest] (hypothetical? bogus?) TSAN failure
+ reported in ForkJoinPool (JDK11 and "refresh" versions)
+In-Reply-To: <CAEvq2nqPqu-KgB2Q-D-Rp1zqsyMwCoe=z58bk2Uv4vD3gHgamw@mail.gmail.com>
+References: <CAEvq2nq+0Kb-JLpVEc0UiNG0wsY+AVE4dz4omA5UJ_ynb2NVqw@mail.gmail.com>
+ <CAEvq2noqiHLu0eE-bFbP3gf6FBdd0c6=5Hg4jGrsxzJ4E98s0w@mail.gmail.com>
+ <506921731.630247.1594937072935@communicator.strato.com>
+ <CAEvq2nrKRaYfQWV2oyBcfpRqeM=onb72Xoa1cFCUpBZW5YVVJA@mail.gmail.com>
+ <CAEvq2nqPqu-KgB2Q-D-Rp1zqsyMwCoe=z58bk2Uv4vD3gHgamw@mail.gmail.com>
+Message-ID: <94dff5e7-e2ce-cc0d-aa76-6d93e8bb04a1@cs.oswego.edu>
+
+
+On 7/17/20 10:55 AM, Chris Povirk via Concurrency-interest wrote:
+> I built jsr166 from CVS head. I can reproduce the TSAN failure with that.
+>
+> If I edit lockedPush to use setRelease instead of a plain write, the 
+> failure goes away.
+>
+> (Oddly, the failure /also/ goes away if I merely switch to 
+> /setOpaque/, which I would not have thought would be enough. This may 
+> well be more of an artifact of what our TSAN can detect. (And again, 
+> this whole /failure/ may well be an artifact of TSAN.))
+
+Yes, this does seem to be a TSAN limitation that would be hard to 
+address.  We could change the write to Opaque mode to be clearer about 
+it eventually occurring, but subsequent release or volatile accesses 
+that are guaranteed to follow eventually ensure it anyway (while also 
+allowing a tiny bit more parallelism here).
+
+-Doug
+
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200717/cbb38e2c/attachment.htm>
+
+From dl at cs.oswego.edu  Fri Jul 17 11:31:14 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 17 Jul 2020 11:31:14 -0400
+Subject: [concurrency-interest] why the last thread must sweep to check
+ every slot again?
+In-Reply-To: <tencent_8629118DC1E0911F48B0125A05DA09E7BC0A@qq.com>
+References: <tencent_8629118DC1E0911F48B0125A05DA09E7BC0A@qq.com>
+Message-ID: <36b62579-3958-447a-25c1-db399b91f7ec@cs.oswego.edu>
+
+On 7/16/20 8:01 AM, Liu via Concurrency-interest wrote:
+>      In jdk1.8, ConcurrentHashMap's transfer function is used to 
+> resize, but there is a place I don’t understand. see below.
+> if (i <0 || i >= n || i + n >= nextn) {
+>      int sc; if (finishing) {
+>          nextTable =null; table = nextTab; sizeCtl = (n <<1) - (n >>>1); return; }
+>      if (U.compareAndSwapInt(this, SIZECTL, sc =sizeCtl, sc -1)) {
+>          if ((sc -2) !=resizeStamp(n) <<RESIZE_STAMP_SHIFT)
+>              return; finishing = advance =true; i = n; // recheck before commit }
+> }
+>    From the code above, the last thread to restore sizeCtl must 
+> recheck every slot again. But in my opinion, when the last thread to 
+> restore sizeCtl, every slot have been transfer to the new table 
+> already. So why why the last thread must sweep to check every slot again?
+>
+Yes, this is a valid point; thanks. The post-scan was needed in a 
+previous version, and could be removed. It does not trigger often enough 
+to matter though, so is for now another minor tweak that might be 
+included next time CHM is updated.
+
+-Doug
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200717/06dd1fab/attachment.htm>
+
+From info at homecredit.ph  Fri Jul 17 12:04:44 2020
+From: info at homecredit.ph (info at homecredit.ph)
+Date: Sat, 18 Jul 2020 00:04:44 +0800 (PHT)
+Subject: [concurrency-interest] Concurrency-interest Digest, Vol 185,
+ Issue 3
+In-Reply-To: <mailman.3.1595001602.24129.concurrency-interest@cs.oswego.edu>
+Message-ID: <0361QaFGBCXUW2BF@homecredit.ph>
+
+This is an automated response.  We're currently working on a skeletal workforce due to the Covid-19 pandemic and it may take us 4-5 days to respond to your email.  We apologize for the delay.
+Para sa account specific concerns, please make sure na naisulat ninyo sa email ang inyong Loan Account Number at Date of Birth, para mapabilis ang inyong transaction.
+Here���s a quick guide para sa mga dapat asahan ngayong new normal:
+Para sa mga loan customers na nag-avail ng grace period para sa mga due dates mula March 17-May 31, ang inyong loan term ay na-extend at ito ay naka-reflect na sa mobile app.  Makikita rin ang equivalent na accrued interest para dito. Siguraduhin lamang na gamit ang latest version ng Home Credit app para makita ang tamang impormasyon.
+For more information, visit: https://homecredit.ph/payments/frequently-asked-questions/. 
+If you���re contacting us about payment arrangements, feel free to call us at 02(7753-5712) to discuss your options.  
+Gift payment eligibility will not be affected by the grace period and will automatically be applied on your account. You just need to make sure to keep your account updated according to the new installment schedule. 
+For credit card customers, siguraduhing magbayad ng at least minimum amount due para mapanatiling active ang inyong card at maiwasan ang late payment fee. 
+Maaari ninyong puntahan ang bit.ly/HCPayNow para magbayad online o tignan ang list of available payment partners dito.
+Para sa mga enrolled sa ADA, we have resumed regular bank debiting on your loan due date in the month of June.  We will resume regular debiting three days before your due date from July 1 due date onwards.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200718/fcb08b70/attachment.htm>
+
+From 987222392 at qq.com  Fri Jul 17 12:11:55 2020
+From: 987222392 at qq.com (=?ISO-8859-1?B?TGl1?=)
+Date: Sat, 18 Jul 2020 00:11:55 +0800
+Subject: [concurrency-interest] why the last thread must sweep to check
+ every slot again?
+In-Reply-To: <36b62579-3958-447a-25c1-db399b91f7ec@cs.oswego.edu>
+References: <tencent_8629118DC1E0911F48B0125A05DA09E7BC0A@qq.com>
+ <36b62579-3958-447a-25c1-db399b91f7ec@cs.oswego.edu>
+Message-ID: <tencent_E3F8FDAD846804A6907C4CE283D035D04205@qq.com>
+
+Thanks for answer! But I think in every resize process,&nbsp;the last thread will trigger&nbsp;to check every slot again surely, not just possibly. Even when only one thread to invoke the transfer func, this thread&nbsp;also do the recheck in the end.&nbsp;Am I wrong?
+     
+
+-Liu
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200718/06a167dc/attachment.htm>
+
+From cpovirk at google.com  Fri Jul 17 14:19:53 2020
+From: cpovirk at google.com (Chris Povirk)
+Date: Fri, 17 Jul 2020 14:19:53 -0400
+Subject: [concurrency-interest] (hypothetical? bogus?) TSAN failure
+ reported in ForkJoinPool (JDK11 and "refresh" versions)
+In-Reply-To: <94dff5e7-e2ce-cc0d-aa76-6d93e8bb04a1@cs.oswego.edu>
+References: <CAEvq2nq+0Kb-JLpVEc0UiNG0wsY+AVE4dz4omA5UJ_ynb2NVqw@mail.gmail.com>
+ <CAEvq2noqiHLu0eE-bFbP3gf6FBdd0c6=5Hg4jGrsxzJ4E98s0w@mail.gmail.com>
+ <506921731.630247.1594937072935@communicator.strato.com>
+ <CAEvq2nrKRaYfQWV2oyBcfpRqeM=onb72Xoa1cFCUpBZW5YVVJA@mail.gmail.com>
+ <CAEvq2nqPqu-KgB2Q-D-Rp1zqsyMwCoe=z58bk2Uv4vD3gHgamw@mail.gmail.com>
+ <94dff5e7-e2ce-cc0d-aa76-6d93e8bb04a1@cs.oswego.edu>
+Message-ID: <CAEvq2nqXNzZAL6N8NvTMPy_TCmGGKC8LFVN-GvtHHAnc8dvuww@mail.gmail.com>
+
+Thanks.
+
+The puzzling thing to me has been the "guaranteed to follow eventually"
+part: As best I can tell, a worker thread can potentially see the
+submitting thread's plain write without any subsequent action by the
+submitting thread. (Some evidence: I edited ForkJoinPool so that it will
+randomly decide to loop infinitely immediately after the write sometimes.
+With that change, I sometimes still see a worker thread pick up the
+submitted task during the submitter's infinite loop. Or at least I
+*think* that's
+what I'm seeing.) Thus, we can't be relying on subsequent work by the
+submitting thread.
+
+So, to provide the edge we need, I gathered that the *worker thread* has to
+do something. And I see now that I was misunderstanding its
+weakCompareAndSet: I had read the docs on (JDK8)
+AtomicReference.weakCompareAndSet
+<https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/atomic/AtomicReference.html#weakCompareAndSet-V-V->,
+which provides no ordering guarantees. But I see that that name has been
+deprecated as misleading
+<https://docs.oracle.com/javase/9/docs/api/java/util/concurrent/atomic/AtomicReference.html#weakCompareAndSet-V-V->,
+and the *VarHandle* weakCompareAndSet
+<https://docs.oracle.com/javase/9/docs/api/java/lang/invoke/VarHandle.html#weakCompareAndSet-java.lang.Object...->
+(the
+one that's used in ForkJoinPoo.scan
+<http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinPool.java?revision=1.355&view=markup#l1566>
+) *does* provide ordering guarantees. Then, while I don't know the details
+of mixing a plain write with an acquire read + volatile CAS, I can imagine
+that any writes prior to the plain write in the submitting thread are
+guaranteed visible to the worker thread after its successful CAS.
+
+However, this still feels a little iffy: Since the submitter is performing
+only plain writes, it's not obvious to me what would prevent it from
+writing the task to the queue (and then being delayed arbitrarily long)
+before writing the boolean flag. Perhaps the worker's weakCompareAndSet
+somehow fails "spuriously" in that case?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200717/c1e10c29/attachment.htm>
+
+From allmaymight at 163.com  Sat Jul 18 06:01:20 2020
+From: allmaymight at 163.com (Liu)
+Date: Sat, 18 Jul 2020 18:01:20 +0800 (GMT+08:00)
+Subject: [concurrency-interest] ConcurrentHashMap's clear() may make size()
+ always incorrent
+Message-ID: <701a1b4a.cd5a.173615ef884.Coremail.allmaymight@163.com>
+
+hi concurrency-interest:
+    In JDK8's ConcurrentHashMap, we would use size() or mappingCount() to get size of map.
+
+
+    public int size() {
+        long n = sumCount();
+        return ((n < 0L) ? 0 :
+                (n > (long)Integer.MAX_VALUE) ? Integer.MAX_VALUE :
+                (int)n);
+    }
+
+
+    But sometimes, the sumCount() may return a negative number, and size() or mappingCount() function must ignore the negative number and return zero.
+
+
+    The reason why sumCount() may return a negative number, is that when sumCount() invoked by clear() just traverse a CounterCell object to get its count, a later delete operation comes and decrease this CounterCell's value. Then addCount(delta, -1) invoked by clear() will add a smaller negative number which is incorrent.
+
+
+    I know sumCount() return a negative number is acceptable, because sumCount() not need return a very accurate number. But this incorrectness will always maintain in baseCount and counterCells, if above case happens.
+
+
+    BUT I am wonder why not to corrent this incorrectness, when sumCount() return a negative number? 
+
+
+    When this incorrectness happen, sumCount() always return a number that less than the correct count number. For example, in a time, ConcurrentHashMap has three node currently, but size() could return zero.
+
+
+    Perhaps correct way is to make baseCount and counterCells all zero.
+
+
+--------------------------------------------------------------------------------
+Regards
+Liu | someone who are very interested in concurrency
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200718/b0869742/attachment-0001.htm>
+
+From info at homecredit.ph  Sat Jul 18 06:11:27 2020
+From: info at homecredit.ph (info at homecredit.ph)
+Date: Sat, 18 Jul 2020 18:11:27 +0800 (PHT)
+Subject: [concurrency-interest] Concurrency-interest Digest, Vol 185,
+ Issue 4
+In-Reply-To: <mailman.11.1595066488.15234.concurrency-interest@cs.oswego.edu>
+Message-ID: <0361QaFH5E2Q06K0@homecredit.ph>
+
+This is an automated response.  We're currently working on a skeletal workforce due to the Covid-19 pandemic and it may take us 4-5 days to respond to your email.  We apologize for the delay.
+Para sa account specific concerns, please make sure na naisulat ninyo sa email ang inyong Loan Account Number at Date of Birth, para mapabilis ang inyong transaction.
+Here���s a quick guide para sa mga dapat asahan ngayong new normal:
+Para sa mga loan customers na nag-avail ng grace period para sa mga due dates mula March 17-May 31, ang inyong loan term ay na-extend at ito ay naka-reflect na sa mobile app.  Makikita rin ang equivalent na accrued interest para dito. Siguraduhin lamang na gamit ang latest version ng Home Credit app para makita ang tamang impormasyon.
+For more information, visit: https://homecredit.ph/payments/frequently-asked-questions/. 
+If you���re contacting us about payment arrangements, feel free to call us at 02(7753-5712) to discuss your options.  
+Gift payment eligibility will not be affected by the grace period and will automatically be applied on your account. You just need to make sure to keep your account updated according to the new installment schedule. 
+For credit card customers, siguraduhing magbayad ng at least minimum amount due para mapanatiling active ang inyong card at maiwasan ang late payment fee. 
+Maaari ninyong puntahan ang bit.ly/HCPayNow para magbayad online o tignan ang list of available payment partners dito.
+Para sa mga enrolled sa ADA, we have resumed regular bank debiting on your loan due date in the month of June.  We will resume regular debiting three days before your due date from July 1 due date onwards.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200718/a948ea87/attachment.htm>
+
+From dl at cs.oswego.edu  Sat Jul 18 06:33:04 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sat, 18 Jul 2020 06:33:04 -0400
+Subject: [concurrency-interest] (hypothetical? bogus?) TSAN failure
+ reported in ForkJoinPool (JDK11 and "refresh" versions)
+In-Reply-To: <CAEvq2nqXNzZAL6N8NvTMPy_TCmGGKC8LFVN-GvtHHAnc8dvuww@mail.gmail.com>
+References: <CAEvq2nq+0Kb-JLpVEc0UiNG0wsY+AVE4dz4omA5UJ_ynb2NVqw@mail.gmail.com>
+ <CAEvq2noqiHLu0eE-bFbP3gf6FBdd0c6=5Hg4jGrsxzJ4E98s0w@mail.gmail.com>
+ <506921731.630247.1594937072935@communicator.strato.com>
+ <CAEvq2nrKRaYfQWV2oyBcfpRqeM=onb72Xoa1cFCUpBZW5YVVJA@mail.gmail.com>
+ <CAEvq2nqPqu-KgB2Q-D-Rp1zqsyMwCoe=z58bk2Uv4vD3gHgamw@mail.gmail.com>
+ <94dff5e7-e2ce-cc0d-aa76-6d93e8bb04a1@cs.oswego.edu>
+ <CAEvq2nqXNzZAL6N8NvTMPy_TCmGGKC8LFVN-GvtHHAnc8dvuww@mail.gmail.com>
+Message-ID: <0c2b3c8c-3197-0bda-ec12-75244b26f5c7@cs.oswego.edu>
+
+This now looks like a simpler issue than I was thinking...
+
+On 7/17/20 2:19 PM, Chris Povirk wrote:
+>
+> So, to provide the edge we need, I gathered that the /worker thread/ 
+> has to do something. And I see now that I was misunderstanding its 
+> weakCompareAndSet: I had read the docs on (JDK8) 
+> AtomicReference.weakCompareAndSet 
+> <https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/atomic/AtomicReference.html#weakCompareAndSet-V-V->, 
+> which provides no ordering guarantees. But I see that that name has 
+> been deprecated as misleading 
+> <https://docs.oracle.com/javase/9/docs/api/java/util/concurrent/atomic/AtomicReference.html#weakCompareAndSet-V-V->, 
+> and the /VarHandle/ weakCompareAndSet 
+> <https://docs.oracle.com/javase/9/docs/api/java/lang/invoke/VarHandle.html#weakCompareAndSet-java.lang.Object...-> (the 
+> one that's used in ForkJoinPoo.scan 
+> <http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ForkJoinPool.java?revision=1.355&view=markup#l1566>) 
+> /does/ provide ordering guarantees.
+
+Yes, prior to JDK9, the only supported weakCompareAndSet method was weak 
+in both the sense of spurious failures and  ordering. But there are now 
+multiple versions, and the one used here has ordering equivalent to 
+compareAndSet on success. (The package-level docs were changed 
+accordingly, to reference VarHandle docs.) So externalPush has memory 
+semantics of lock-unlock.
+
+-Doug
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200718/0c9d9126/attachment.htm>
+
+From info at homecredit.ph  Sat Jul 18 12:05:30 2020
+From: info at homecredit.ph (info at homecredit.ph)
+Date: Sun, 19 Jul 2020 00:05:30 +0800 (PHT)
+Subject: [concurrency-interest] Concurrency-interest Digest, Vol 185,
+ Issue 5
+In-Reply-To: <mailman.3.1595088001.22189.concurrency-interest@cs.oswego.edu>
+Message-ID: <0361QaFH5E2Q0KT2@homecredit.ph>
+
+This is an automated response.  We're currently working on a skeletal workforce due to the Covid-19 pandemic and it may take us 4-5 days to respond to your email.  We apologize for the delay.
+Para sa account specific concerns, please make sure na naisulat ninyo sa email ang inyong Loan Account Number at Date of Birth, para mapabilis ang inyong transaction.
+Here���s a quick guide para sa mga dapat asahan ngayong new normal:
+Para sa mga loan customers na nag-avail ng grace period para sa mga due dates mula March 17-May 31, ang inyong loan term ay na-extend at ito ay naka-reflect na sa mobile app.  Makikita rin ang equivalent na accrued interest para dito. Siguraduhin lamang na gamit ang latest version ng Home Credit app para makita ang tamang impormasyon.
+For more information, visit: https://homecredit.ph/payments/frequently-asked-questions/. 
+If you���re contacting us about payment arrangements, feel free to call us at 02(7753-5712) to discuss your options.  
+Gift payment eligibility will not be affected by the grace period and will automatically be applied on your account. You just need to make sure to keep your account updated according to the new installment schedule. 
+For credit card customers, siguraduhing magbayad ng at least minimum amount due para mapanatiling active ang inyong card at maiwasan ang late payment fee. 
+Maaari ninyong puntahan ang bit.ly/HCPayNow para magbayad online o tignan ang list of available payment partners dito.
+Para sa mga enrolled sa ADA, we have resumed regular bank debiting on your loan due date in the month of June.  We will resume regular debiting three days before your due date from July 1 due date onwards.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200719/fbe3e172/attachment.htm>
+
+From kineolyan at protonmail.com  Sun Jul 19 05:15:44 2020
+From: kineolyan at protonmail.com (Olivier Peyrusse)
+Date: Sun, 19 Jul 2020 09:15:44 +0000
+Subject: [concurrency-interest] Tr :  Concurrency-interest Digest, Vol 185,
+ Issue 4
+In-Reply-To: <0361QaFH5E2Q06K0@homecredit.ph>
+References: <0361QaFH5E2Q06K0@homecredit.ph>
+Message-ID: <NGtsbRTZzMzfyvPXqQUjq1yIbRxx30n_gdg_qZGdVhv9ZhFC9lfBjOdrTltmMyM5_H7DiON6wKSd5x_Z-r3wwJxydUUGELTpPam_WKWa2wA=@protonmail.com>
+
+Hello everyone,
+
+Am I the only one to receive such spam mail legitimately coming from this mailing list?
+If not, can it be moderated? Though I am not falling for the scam, it is quite annoying.
+
+Best regards
+-------- Message d'origine --------
+On 18 juil. 2020 à 12:11, info--- via Concurrency-interest a écrit :
+
+> This is an automated response. We're currently working on a skeletal workforce due to the Covid-19 pandemic and it may take us 4-5 days to respond to your email. We apologize for the delay.
+>
+> Para sa account specific concerns, please make sure na naisulat ninyo sa email ang inyong Loan Account Number at Date of Birth, para mapabilis ang inyong transaction.
+>
+> Here’s a quick guide para sa mga dapat asahan ngayong new normal:
+>
+> - Para sa mga loan customers na nag-avail ng grace period para sa mga due dates mula March 17-May 31, ang inyong loan term ay na-extend at ito ay naka-reflect na sa mobile app. Makikita rin ang equivalent na accrued interest para dito. Siguraduhin lamang na gamit ang latest version ng Home Credit app para makita ang tamang impormasyon.
+> For more information, visit: https://homecredit.ph/payments/frequently-asked-questions/.
+> - If you’re contacting us about payment arrangements, feel free to call us at 02(7753-5712) to discuss your options.
+> - Gift payment eligibility will not be affected by the grace period and will automatically be applied on your account. You just need to make sure to keep your account updated according to the new installment schedule.
+> - For credit card customers, siguraduhing magbayad ng at least minimum amount due para mapanatiling active ang inyong card at maiwasan ang late payment fee.
+> - Maaari ninyong puntahan ang bit.ly/HCPayNow para magbayad online o tignan ang list of available payment partners [dito](https://homecredit.ph/payments/).
+> - Para sa mga enrolled sa ADA, we have resumed regular bank debiting on your loan due date in the month of June. We will resume regular debiting three days before your due date from July 1 due date onwards.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200719/4b3d3210/attachment.htm>
+
+From dl at cs.oswego.edu  Sun Jul 19 06:30:24 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 19 Jul 2020 06:30:24 -0400
+Subject: [concurrency-interest] Tr : Concurrency-interest Digest, Vol 185,
+ Issue 4
+In-Reply-To: <NGtsbRTZzMzfyvPXqQUjq1yIbRxx30n_gdg_qZGdVhv9ZhFC9lfBjOdrTltmMyM5_H7DiON6wKSd5x_Z-r3wwJxydUUGELTpPam_WKWa2wA=@protonmail.com>
+References: <0361QaFH5E2Q06K0@homecredit.ph>
+ <NGtsbRTZzMzfyvPXqQUjq1yIbRxx30n_gdg_qZGdVhv9ZhFC9lfBjOdrTltmMyM5_H7DiON6wKSd5x_Z-r3wwJxydUUGELTpPam_WKWa2wA=@protonmail.com>
+Message-ID: <b9e225eb-ca35-a1b5-858b-e0d8da07f67f@cs.oswego.edu>
+
+Usually Mailman intercepts such noise, but not this one, so I manually 
+removed.
+
+On 7/19/20 5:15 AM, Olivier Peyrusse via Concurrency-interest wrote:
+> Hello everyone,
+>
+> Am I the only one to receive such spam mail legitimately coming from 
+> this mailing list?
+> If not, can it be moderated? Though I am not falling for the scam, it 
+> is quite annoying.
+>
+> Best regards
+> -------- Message d'origine --------
+> On 18 juil. 2020 à 12:11, info--- via Concurrency-interest < 
+> concurrency-interest at cs.oswego.edu > a écrit :
+>
+>
+>     HTML Editor - Full Version
+>
+>     *This is an automated response.  We're currently working on a
+>     skeletal workforce due to the Covid-19 pandemic and it may take us
+>     4-5 days to respond to your email.  We apologize for the delay.*
+>
+>     Para sa account specific concerns, please make sure na naisulat
+>     ninyo sa email ang inyong Loan Account Number at Date of Birth,
+>     para mapabilis ang inyong transaction.
+>
+>     Here’s a quick guide para sa mga dapat asahan ngayong new normal:
+>
+>       * Para sa mga loan customers na nag-avail ng grace period para
+>         sa mga due dates mula March 17-May 31, ang inyong loan term ay
+>         na-extend at ito ay naka-reflect na sa mobile app.  Makikita
+>         rin ang equivalent na accrued interest para dito. Siguraduhin
+>         lamang na gamit ang latest version ng Home Credit app para
+>         makita ang tamang impormasyon.
+>         For more information, visit:
+>         https://homecredit.ph/payments/frequently-asked-questions/.
+>       * If you’re contacting us about *payment arrangements*, feel
+>         free to call us at *02(7753-5712)* to discuss your options.
+>       * Gift payment eligibility will not be affected by the grace
+>         period and will automatically be applied on your account. You
+>         just need to make sure to keep your account updated according
+>         to the new installment schedule.
+>       * For credit card customers, siguraduhing magbayad ng at least
+>         minimum amount due para mapanatiling active ang inyong card at
+>         maiwasan ang late payment fee.
+>       * Maaari ninyong puntahan ang _bit.ly/HCPayNow
+>         <http://bit.ly/HCPayNow>_ para magbayad online o tignan ang
+>         list of available payment partners _dito
+>         <https://homecredit.ph/payments/>._
+>       * Para sa mga enrolled sa ADA, we have resumed regular bank
+>         debiting on your loan due date in the month of June. We will
+>         resume regular debiting *three days* before your due date from
+>         *July 1 due date onwards*.
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200719/111bc7c1/attachment.htm>
+
+From dl at cs.oswego.edu  Sun Jul 19 06:33:10 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 19 Jul 2020 06:33:10 -0400
+Subject: [concurrency-interest] why the last thread must sweep to check
+ every slot again?
+In-Reply-To: <tencent_E3F8FDAD846804A6907C4CE283D035D04205@qq.com>
+References: <tencent_8629118DC1E0911F48B0125A05DA09E7BC0A@qq.com>
+ <36b62579-3958-447a-25c1-db399b91f7ec@cs.oswego.edu>
+ <tencent_E3F8FDAD846804A6907C4CE283D035D04205@qq.com>
+Message-ID: <909fc120-bc7d-8f68-298d-a3fd98d623a9@cs.oswego.edu>
+
+You are right that the post-scan is non-optional. As I mentioned, 
+rechecking that it is never needed and possibly removing is on the todo 
+list for next update. (Because it only impacts one step of resize, the 
+performance impact is relatively low.)
+
+On 7/17/20 12:11 PM, Liu wrote:
+> Thanks for answer! But I think in every resize process, the last 
+> thread will trigger to check every slot again surely, not just 
+> possibly. Even when only one thread to invoke the transfer func, this 
+> thread also do the recheck in the end. Am I wrong?
+>
+> -Liu
+
+From dl at cs.oswego.edu  Sun Jul 19 06:49:03 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 19 Jul 2020 06:49:03 -0400
+Subject: [concurrency-interest] ConcurrentHashMap's clear() may make
+ size() always incorrent
+In-Reply-To: <701a1b4a.cd5a.173615ef884.Coremail.allmaymight@163.com>
+References: <701a1b4a.cd5a.173615ef884.Coremail.allmaymight@163.com>
+Message-ID: <bcd54199-19d3-8407-3052-6274956a3681@cs.oswego.edu>
+
+
+On 7/18/20 6:01 AM, Liu via Concurrency-interest wrote:
+>
+>     The reason why sumCount() may return a negative number, is that 
+> when sumCount() invoked by clear() just traverse a CounterCell object 
+> to get its count, a later delete operation comes and decrease this 
+> CounterCell's value. Then addCount(delta, -1) invoked by clear() will 
+> add a smaller negative number which is incorrent.
+
+Yes, when clears race with removes, some reported counts may be 
+inaccurate. They would be less inaccurate if decrements were performed 
+one-by-one, but at noticeable cost. Still, thanks for the reminder that 
+this might be improved.
+
+>
+>
+>   Perhaps correct way is to make baseCount and counterCells all zero.
+
+There is no quiescent point to do this, so this would also race and 
+sometimes be inaccurate.
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200719/96c261b6/attachment-0001.htm>
+
+From 987222392 at qq.com  Sun Jul 19 09:31:01 2020
+From: 987222392 at qq.com (=?ISO-8859-1?B?TGl1?=)
+Date: Sun, 19 Jul 2020 21:31:01 +0800
+Subject: [concurrency-interest] ConcurrentHashMap's clear() may make
+ size() always incorrent
+In-Reply-To: <bcd54199-19d3-8407-3052-6274956a3681@cs.oswego.edu>
+References: <701a1b4a.cd5a.173615ef884.Coremail.allmaymight@163.com>
+ <bcd54199-19d3-8407-3052-6274956a3681@cs.oswego.edu>
+Message-ID: <tencent_100584C3DE4E88DE6064C8C125D009AF0209@qq.com>
+
+Well, consider of the&nbsp;possibility of races, maybe&nbsp;
+there is no way to imporve it.
+
+
+Result of any operations can be&nbsp;obsolete, because of races.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200719/e9459fde/attachment.htm>
+
+From martinrb at google.com  Sun Jul 19 10:41:14 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Sun, 19 Jul 2020 07:41:14 -0700
+Subject: [concurrency-interest] ConcurrentHashMap's clear() may make
+ size() always incorrent
+In-Reply-To: <tencent_100584C3DE4E88DE6064C8C125D009AF0209@qq.com>
+References: <701a1b4a.cd5a.173615ef884.Coremail.allmaymight@163.com>
+ <bcd54199-19d3-8407-3052-6274956a3681@cs.oswego.edu>
+ <tencent_100584C3DE4E88DE6064C8C125D009AF0209@qq.com>
+Message-ID: <CA+kOe08c+bJ77PnLt5T=oQ5ceikr8z195CBxS1wywFSXvZmpgw@mail.gmail.com>
+
+The principle is that:
+- global operations like size() must be correct in a quiescent map.
+- When non-quiescent, we cannot succeed but we try to return a good estimate.
+
+On Sun, Jul 19, 2020 at 6:32 AM Liu via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+>
+> Well, consider of the possibility of races, maybe
+> there is no way to imporve it.
+>
+> Result of any operations can be obsolete, because of races.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From cpovirk at google.com  Mon Jul 20 16:24:43 2020
+From: cpovirk at google.com (Chris Povirk)
+Date: Mon, 20 Jul 2020 16:24:43 -0400
+Subject: [concurrency-interest] (hypothetical? bogus?) TSAN failure
+ reported in ForkJoinPool (JDK11 and "refresh" versions)
+In-Reply-To: <0c2b3c8c-3197-0bda-ec12-75244b26f5c7@cs.oswego.edu>
+References: <CAEvq2nq+0Kb-JLpVEc0UiNG0wsY+AVE4dz4omA5UJ_ynb2NVqw@mail.gmail.com>
+ <CAEvq2noqiHLu0eE-bFbP3gf6FBdd0c6=5Hg4jGrsxzJ4E98s0w@mail.gmail.com>
+ <506921731.630247.1594937072935@communicator.strato.com>
+ <CAEvq2nrKRaYfQWV2oyBcfpRqeM=onb72Xoa1cFCUpBZW5YVVJA@mail.gmail.com>
+ <CAEvq2nqPqu-KgB2Q-D-Rp1zqsyMwCoe=z58bk2Uv4vD3gHgamw@mail.gmail.com>
+ <94dff5e7-e2ce-cc0d-aa76-6d93e8bb04a1@cs.oswego.edu>
+ <CAEvq2nqXNzZAL6N8NvTMPy_TCmGGKC8LFVN-GvtHHAnc8dvuww@mail.gmail.com>
+ <0c2b3c8c-3197-0bda-ec12-75244b26f5c7@cs.oswego.edu>
+Message-ID: <CAEvq2nr8Ac8=SRH72xhNsOHf_muwewZR8vdAwthHXttMRVL4zw@mail.gmail.com>
+
+Thanks. At this point, I am definitely in over my head :) If anything comes
+of internal discussions about TSAN, I will report back.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200720/58013f42/attachment.htm>
+
+From allmaymight at 163.com  Thu Jul 23 09:38:51 2020
+From: allmaymight at 163.com (Liu)
+Date: Thu, 23 Jul 2020 21:38:51 +0800 (GMT+08:00)
+Subject: [concurrency-interest] why ConcurrentLinkedQueue#addAll need set
+ tail twice?
+Message-ID: <29537fef.a795.1737be5e9c0.Coremail.allmaymight@163.com>
+
+In JDK8's ConcurrentLinkedQueue, there is an addAll function, and it will set tail twice, why?
+
+
+public boolean addAll(Collection<? extends E> c) {
+if (c == this)
+// As historically specified in AbstractQueue#addAll
+throw new IllegalArgumentException();
+
+// Copy c into a private chain of Nodes
+Node<E> beginningOfTheEnd = null, last = null;
+    for (E e : c) {
+checkNotNull(e);
+Node<E> newNode = new Node<E>(e);
+        if (beginningOfTheEnd == null)
+            beginningOfTheEnd = last = newNode;
+        else {
+            last.lazySetNext(newNode);
+last = newNode;
+}
+    }
+if (beginningOfTheEnd == null)
+return false;
+
+// Atomically append the chain at the tail of this collection
+for (Node<E> t = tail, p = t;;) {
+        Node<E> q = p.next;
+        if (q == null) {
+// p is last node
+if (p.casNext(null, beginningOfTheEnd)) {
+// Successful CAS is the linearization point
+                // for all elements to be added to this queue.
+if (!casTail(t, last)) {  // first set tail
+// Try a little harder to update tail,
+                    // since we may be adding many elements.
+t = tail;
+                    if (last.next == null)
+                        casTail(t, last);  // second set tail
+}
+return true;
+}
+// Lost CAS race to another thread; re-read next
+}
+else if (p == q)
+// We have fallen off list.  If tail is unchanged, it
+            // will also be off-list, in which case we need to
+            // jump to head, from which all live nodes are always
+            // reachable.  Else the new tail is a better bet.
+p = (t != (t = tail)) ? t : head;
+        else
+// Check for tail updates after two hops.
+p = (p != t && t != (t = tail)) ? t : q;
+}
+}
+
+
+I don't quite understand, I just think the second set operation is not necessary.
+--------------------------------------------------------------------------------
+Regards
+Liu 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200723/abeb555c/attachment.htm>
+
+From oleksandr.otenko at gmail.com  Thu Jul 23 13:34:22 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Thu, 23 Jul 2020 18:34:22 +0100
+Subject: [concurrency-interest] why ConcurrentLinkedQueue#addAll need
+ set tail twice?
+In-Reply-To: <29537fef.a795.1737be5e9c0.Coremail.allmaymight@163.com>
+References: <29537fef.a795.1737be5e9c0.Coremail.allmaymight@163.com>
+Message-ID: <CANkgWKhvERYgm+H0LwT1Dj=AKVcQOGqAJVG00CdX5My9yFdgDg@mail.gmail.com>
+
+I assume you are talking about casTail just before returning.
+
+It will set tail at most once.
+
+Observe that it returns true disregarding the result of casTail. It means
+the queue works correctly even if you don't update the tail at all.
+
+>From this we can conclude it is an optimisation to help others do less
+work, e.g. scan less of the queue to find an insertion point.
+
+Then you can also see the second casTail is attempted only if the first one
+fails. So it isn't done twice. But the second attempt may fail too - this
+only means someone will hit a _slightly_ slower path, because you fail to
+set the tail only when someone else succeded - presumably setting the tail
+close enough to the end of the queue.
+
+Alex
+
+On Thu, 23 Jul 2020, 14:41 Liu via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> In JDK8's ConcurrentLinkedQueue, there is an addAll function, and it
+> will set tail twice, why?
+>
+> public boolean addAll(Collection<? extends E> c) {
+>     if (c == this)
+>         // As historically specified in AbstractQueue#addAll
+>         throw new IllegalArgumentException();
+>
+>     // Copy c into a private chain of Nodes
+>     Node<E> beginningOfTheEnd = null, last = null;
+>     for (E e : c) {
+>         checkNotNull(e);
+>         Node<E> newNode = new Node<E>(e);
+>         if (beginningOfTheEnd == null)
+>             beginningOfTheEnd = last = newNode;
+>         else {
+>             last.lazySetNext(newNode);
+>             last = newNode;
+>         }
+>     }
+>     if (beginningOfTheEnd == null)
+>         return false;
+>
+>     // Atomically append the chain at the tail of this collection
+>     for (Node<E> t = tail, p = t;;) {
+>         Node<E> q = p.next;
+>         if (q == null) {
+>             // p is last node
+>             if (p.casNext(null, beginningOfTheEnd)) {
+>                 // Successful CAS is the linearization point
+>                 // for all elements to be added to this queue.
+>                 if (!casTail(t, last)) {  // first set tail
+>                     // Try a little harder to update tail,
+>                     // since we may be adding many elements.
+>                     t = tail;
+>                     if (last.next == null)
+>                         casTail(t, last);  // second set tail
+>                 }
+>                 return true;
+>             }
+>             // Lost CAS race to another thread; re-read next
+>         }
+>         else if (p == q)
+>             // We have fallen off list.  If tail is unchanged, it
+>             // will also be off-list, in which case we need to
+>             // jump to head, from which all live nodes are always
+>             // reachable.  Else the new tail is a better bet.
+>             p = (t != (t = tail)) ? t : head;
+>         else
+>             // Check for tail updates after two hops.
+>             p = (p != t && t != (t = tail)) ? t : q;
+>     }
+> }
+>
+>
+> I don't quite understand, I just think the second set operation is not
+> necessary.
+>
+> --------------------------------------------------------------------------------
+> Regards
+> Liu
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200723/7b2f41c2/attachment.htm>
+
+From martinrb at google.com  Thu Jul 23 20:45:26 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Thu, 23 Jul 2020 17:45:26 -0700
+Subject: [concurrency-interest] why ConcurrentLinkedQueue#addAll need
+ set tail twice?
+In-Reply-To: <29537fef.a795.1737be5e9c0.Coremail.allmaymight@163.com>
+References: <29537fef.a795.1737be5e9c0.Coremail.allmaymight@163.com>
+Message-ID: <CA+kOe097XwxLxMGE-XWc8nh7G76dtLgG=VUvzGXriRp3XnkH5Q@mail.gmail.com>
+
+     * - There is exactly one (last) Node with a null next reference,
+     *   which is CASed when enqueueing.  This last Node can be
+     *   reached in O(1) time from tail, but tail is merely an
+     *   optimization - it can always be reached in O(N) time from
+     *   head as well.
+
+On Thu, Jul 23, 2020 at 6:41 AM Liu via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+>
+> In JDK8's ConcurrentLinkedQueue, there is an addAll function, and it will set tail twice, why?
+>
+> public boolean addAll(Collection<? extends E> c) {
+>     if (c == this)
+>         // As historically specified in AbstractQueue#addAll
+>         throw new IllegalArgumentException();
+>
+>     // Copy c into a private chain of Nodes
+>     Node<E> beginningOfTheEnd = null, last = null;
+>     for (E e : c) {
+>         checkNotNull(e);
+>         Node<E> newNode = new Node<E>(e);
+>         if (beginningOfTheEnd == null)
+>             beginningOfTheEnd = last = newNode;
+>         else {
+>             last.lazySetNext(newNode);
+>             last = newNode;
+>         }
+>     }
+>     if (beginningOfTheEnd == null)
+>         return false;
+>
+>     // Atomically append the chain at the tail of this collection
+>     for (Node<E> t = tail, p = t;;) {
+>         Node<E> q = p.next;
+>         if (q == null) {
+>             // p is last node
+>             if (p.casNext(null, beginningOfTheEnd)) {
+>                 // Successful CAS is the linearization point
+>                 // for all elements to be added to this queue.
+>                 if (!casTail(t, last)) {  // first set tail
+>                     // Try a little harder to update tail,
+>                     // since we may be adding many elements.
+>                     t = tail;
+>                     if (last.next == null)
+>                         casTail(t, last);  // second set tail
+>                 }
+>                 return true;
+>             }
+>             // Lost CAS race to another thread; re-read next
+>         }
+>         else if (p == q)
+>             // We have fallen off list.  If tail is unchanged, it
+>             // will also be off-list, in which case we need to
+>             // jump to head, from which all live nodes are always
+>             // reachable.  Else the new tail is a better bet.
+>             p = (t != (t = tail)) ? t : head;
+>         else
+>             // Check for tail updates after two hops.
+>             p = (p != t && t != (t = tail)) ? t : q;
+>     }
+> }
+>
+>
+> I don't quite understand, I just think the second set operation is not necessary.
+> --------------------------------------------------------------------------------
+> Regards
+> Liu
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From allmaymight at 163.com  Fri Jul 24 09:31:11 2020
+From: allmaymight at 163.com (Liu)
+Date: Fri, 24 Jul 2020 21:31:11 +0800 (GMT+08:00)
+Subject: [concurrency-interest] why ConcurrentLinkedQueue#addAll need
+ set tail twice?
+In-Reply-To: <CANkgWKhvERYgm+H0LwT1Dj=AKVcQOGqAJVG00CdX5My9yFdgDg@mail.gmail.com>
+References: <29537fef.a795.1737be5e9c0.Coremail.allmaymight@163.com>
+ <CANkgWKhvERYgm+H0LwT1Dj=AKVcQOGqAJVG00CdX5My9yFdgDg@mail.gmail.com>
+Message-ID: <2822b62c.fe94.17381054083.Coremail.allmaymight@163.com>
+
+Thanks for answer. I understand now. 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200724/1eb43637/attachment.htm>
+
+From allmaymight at 163.com  Mon Jul 27 20:58:52 2020
+From: allmaymight at 163.com (Liu)
+Date: Tue, 28 Jul 2020 08:58:52 +0800 (GMT+08:00)
+Subject: [concurrency-interest] why AtomicInteger in LinkedBlockingQueue
+ always use getAndIncrement?
+Message-ID: <63b85450.84e.17392edecb1.Coremail.allmaymight@163.com>
+
+why AtomicInteger in LinkedBlockingQueue always use getAndIncrement?why not IncrementAndGet.(PS:JDK8)
+
+there is a reason or not? or both functions can be uesd.
+
+I hope this question is not silly.
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200728/3df33d86/attachment.htm>
+
+From martinrb at google.com  Mon Jul 27 21:19:45 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Mon, 27 Jul 2020 18:19:45 -0700
+Subject: [concurrency-interest] why AtomicInteger in LinkedBlockingQueue
+ always use getAndIncrement?
+In-Reply-To: <63b85450.84e.17392edecb1.Coremail.allmaymight@163.com>
+References: <63b85450.84e.17392edecb1.Coremail.allmaymight@163.com>
+Message-ID: <CA+kOe088COrJJQ+b-=ibz827MJprdQwaqUhG0p_yLuQYDTmrdw@mail.gmail.com>
+
+Your suggestion may be a small improvement.
+
+On Mon, Jul 27, 2020 at 6:01 PM Liu via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+>
+> why AtomicInteger in LinkedBlockingQueue always use getAndIncrement?why not IncrementAndGet.(PS:JDK8)
+>
+> there is a reason or not? or both functions can be uesd.
+>
+> I hope this question is not silly.
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From allmaymight at 163.com  Wed Jul 29 10:43:57 2020
+From: allmaymight at 163.com (Liu)
+Date: Wed, 29 Jul 2020 22:43:57 +0800 (GMT+08:00)
+Subject: [concurrency-interest] why LinkedBlockingQueue's unlink() not need
+ do notEmpty.signal() just like poll() ?
+Message-ID: <168faf51.aab5.1739b07a9e0.Coremail.allmaymight@163.com>
+
+LinkedBlockingQueue's unlink() is as follows:
+void unlink(Node<E> p, Node<E> trail) {
+// assert isFullyLocked();
+    // p.next is not changed, to allow iterators that are
+    // traversing p to maintain their weak-consistency guarantee.
+p.item = null;
+trail.next = p.next;
+    if (last == p)
+last = trail;
+    if (count.getAndDecrement() == capacity)
+notFull.signal();
+}
+
+
+unlink() will be invoked by remove(Object o).
+
+
+Why LinkedBlockingQueue's unlink() not need do notEmpty.signal() just like poll() ?
+
+
+Maybe it could be like this:
+    void unlink(Node<E> p, Node<E> trail) {
+        // assert isFullyLocked();
+        // p.next is not changed, to allow iterators that are
+        // traversing p to maintain their weak-consistency guarantee.
+        p.item = null;
+        trail.next = p.next;
+        if (last == p)
+            last = trail;
+        int c = count.getAndDecrement();
+        if (c > 1)
+            notEmpty.signal();
+        if (c == capacity)
+            notFull.signal();
+    }
+
+
+PS:JDK8.
+
+
+--------------------------------------------------------------------------------
+Regards
+Liu
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200729/d194b4c1/attachment.htm>
+
+From martinrb at google.com  Wed Jul 29 11:56:45 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 29 Jul 2020 08:56:45 -0700
+Subject: [concurrency-interest] why LinkedBlockingQueue's unlink() not
+ need do notEmpty.signal() just like poll() ?
+In-Reply-To: <168faf51.aab5.1739b07a9e0.Coremail.allmaymight@163.com>
+References: <168faf51.aab5.1739b07a9e0.Coremail.allmaymight@163.com>
+Message-ID: <CA+kOe08ZrC6dCPxOEv4hJJKPqLBoU=SptAm+mn7wnaPZFsiaHw@mail.gmail.com>
+
+Maintainers rarely look at ancient versions of their own code, so
+study the tip of development.
+
+On Wed, Jul 29, 2020 at 7:46 AM Liu via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+>
+> LinkedBlockingQueue's unlink() is as follows:
+>
+> void unlink(Node<E> p, Node<E> trail) {
+>     // assert isFullyLocked();
+>     // p.next is not changed, to allow iterators that are
+>     // traversing p to maintain their weak-consistency guarantee.
+>     p.item = null;
+>     trail.next = p.next;
+>     if (last == p)
+>         last = trail;
+>     if (count.getAndDecrement() == capacity)
+>         notFull.signal();
+> }
+>
+>
+> unlink() will be invoked by remove(Object o).
+>
+> Why LinkedBlockingQueue's unlink() not need do notEmpty.signal() just like poll() ?
+>
+> Maybe it could be like this:
+>     void unlink(Node<E> p, Node<E> trail) {
+>         // assert isFullyLocked();
+>         // p.next is not changed, to allow iterators that are
+>         // traversing p to maintain their weak-consistency guarantee.
+>         p.item = null;
+>         trail.next = p.next;
+>         if (last == p)
+>             last = trail;
+>         int c = count.getAndDecrement();
+>         if (c > 1)
+>             notEmpty.signal();
+>         if (c == capacity)
+>             notFull.signal();
+>     }
+>
+> PS:JDK8.
+>
+> --------------------------------------------------------------------------------
+> Regards
+> Liu
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From gshayban at gmail.com  Fri Jul 31 13:40:21 2020
+From: gshayban at gmail.com (Ghadi Shayban)
+Date: Fri, 31 Jul 2020 13:40:21 -0400
+Subject: [concurrency-interest] Lazy,
+ cached supplier: most performant mutex mechanism?
+Message-ID: <CAO3q7t9XOZbBr=Mp_z5FmVX7ff4=2J6yAevVat-iiFW6Kji4Eg@mail.gmail.com>
+
+This seems like it would be a common stdlib ask, but what is the most
+performant way to protect the code inside a supplier from being
+concurrently realized more than once? Contention would be rare, and the
+losing threads need to wait on the value being computed by the winning
+thread.
+
+The most straightforward thing to do is a synchronized block, but this
+currently pins a carrier thread in Project Loom.
+
+The Supplier needs to keep track of:
+1) the thunk, if unrealized
+2) a value, if realized
+
+Golang's sync.Once does this [1] (CAS, fallback to mutex. Doesn't remember
+value)
+Clojure's lazy sequences use synchronized [2]
+
+Is there a better way to approach this on the JVM?
+
+Thanks!
+
+[1] https://golang.org/src/sync/once.go
+[2]
+https://github.com/clojure/clojure/blob/30a36cbe0ef936e57ddba238b7fa6d58ee1cbdce/src/jvm/clojure/lang/LazySeq.java#L39-L46
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200731/0a3c1b88/attachment.htm>
+
+From forax at univ-mlv.fr  Fri Jul 31 13:58:26 2020
+From: forax at univ-mlv.fr (Remi Forax)
+Date: Fri, 31 Jul 2020 19:58:26 +0200 (CEST)
+Subject: [concurrency-interest] Lazy,
+ cached supplier: most performant mutex mechanism?
+In-Reply-To: <CAO3q7t9XOZbBr=Mp_z5FmVX7ff4=2J6yAevVat-iiFW6Kji4Eg@mail.gmail.com>
+References: <CAO3q7t9XOZbBr=Mp_z5FmVX7ff4=2J6yAevVat-iiFW6Kji4Eg@mail.gmail.com>
+Message-ID: <1603705102.394857.1596218306229.JavaMail.zimbra@u-pem.fr>
+
+> De: "concurrency-interest" <concurrency-interest at cs.oswego.edu>
+> À: "concurrency-interest at cs.oswego.edu"
+> <concurrency-interest at altair.cs.oswego.edu>
+> Envoyé: Vendredi 31 Juillet 2020 19:40:21
+> Objet: [concurrency-interest] Lazy, cached supplier: most performant mutex
+> mechanism?
+
+> This seems like it would be a common stdlib ask, but what is the most performant
+> way to protect the code inside a supplier from being concurrently realized more
+> than once? Contention would be rare, and the losing threads need to wait on the
+> value being computed by the winning thread.
+
+> The most straightforward thing to do is a synchronized block, but this currently
+> pins a carrier thread in Project Loom.
+
+> The Supplier needs to keep track of:
+> 1) the thunk, if unrealized
+> 2) a value, if realized
+
+> Golang's sync.Once does this [1] (CAS, fallback to mutex. Doesn't remember
+> value)
+> Clojure's lazy sequences use synchronized [2]
+
+> Is there a better way to approach this on the JVM?
+
+For the JVM, you can use the class holder idiom, it uses the fact that class are lazily initialized in Java and that the static block are only run once. 
+see [ https://en.wikipedia.org/wiki/Initialization-on-demand_holder_idiom | https://en.wikipedia.org/wiki/Initialization-on-demand_holder_idiom ] 
+
+about your comment on synchronized block vs loom, you can use a RentrantLock instead which is loom-aware. 
+
+> Thanks!
+
+> [1] [ https://golang.org/src/sync/once.go | https://golang.org/src/sync/once.go
+> ]
+> [2] [
+> https://github.com/clojure/clojure/blob/30a36cbe0ef936e57ddba238b7fa6d58ee1cbdce/src/jvm/clojure/lang/LazySeq.java#L39-L46
+> |
+> https://github.com/clojure/clojure/blob/30a36cbe0ef936e57ddba238b7fa6d58ee1cbdce/src/jvm/clojure/lang/LazySeq.java#L39-L46
+> ]
+
+cheers, 
+Rémi 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200731/17e9eacf/attachment.htm>
+
+From ben.manes at gmail.com  Fri Jul 31 14:01:41 2020
+From: ben.manes at gmail.com (Benjamin Manes)
+Date: Fri, 31 Jul 2020 11:01:41 -0700
+Subject: [concurrency-interest] Lazy,
+ cached supplier: most performant mutex mechanism?
+In-Reply-To: <CAO3q7t9XOZbBr=Mp_z5FmVX7ff4=2J6yAevVat-iiFW6Kji4Eg@mail.gmail.com>
+References: <CAO3q7t9XOZbBr=Mp_z5FmVX7ff4=2J6yAevVat-iiFW6Kji4Eg@mail.gmail.com>
+Message-ID: <CAGu0=MNHGmwZENn7Ez0vO2to=_xp1yhMYfq3xABHD8z_RAX=Nw@mail.gmail.com>
+
+I believe double-checked locking, such as Martin's version in Guava
+Suppliers#memoize
+<https://github.com/google/guava/blob/master/guava/src/com/google/common/base/Suppliers.java#L124-L137>,
+is the best approach on the JVM for instance-level memoization.
+
+On Fri, Jul 31, 2020 at 10:42 AM Ghadi Shayban via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> This seems like it would be a common stdlib ask, but what is the most
+> performant way to protect the code inside a supplier from being
+> concurrently realized more than once? Contention would be rare, and the
+> losing threads need to wait on the value being computed by the winning
+> thread.
+>
+> The most straightforward thing to do is a synchronized block, but this
+> currently pins a carrier thread in Project Loom.
+>
+> The Supplier needs to keep track of:
+> 1) the thunk, if unrealized
+> 2) a value, if realized
+>
+> Golang's sync.Once does this [1] (CAS, fallback to mutex. Doesn't remember
+> value)
+> Clojure's lazy sequences use synchronized [2]
+>
+> Is there a better way to approach this on the JVM?
+>
+> Thanks!
+>
+> [1] https://golang.org/src/sync/once.go
+> [2]
+> https://github.com/clojure/clojure/blob/30a36cbe0ef936e57ddba238b7fa6d58ee1cbdce/src/jvm/clojure/lang/LazySeq.java#L39-L46
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200731/32fe7247/attachment.htm>
+
+From viktor.klang at gmail.com  Fri Jul 31 14:33:09 2020
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Fri, 31 Jul 2020 20:33:09 +0200
+Subject: [concurrency-interest] Lazy,
+ cached supplier: most performant mutex mechanism?
+In-Reply-To: <CAGu0=MNHGmwZENn7Ez0vO2to=_xp1yhMYfq3xABHD8z_RAX=Nw@mail.gmail.com>
+References: <CAO3q7t9XOZbBr=Mp_z5FmVX7ff4=2J6yAevVat-iiFW6Kji4Eg@mail.gmail.com>
+ <CAGu0=MNHGmwZENn7Ez0vO2to=_xp1yhMYfq3xABHD8z_RAX=Nw@mail.gmail.com>
+Message-ID: <CANPzfU9aOnYP06s4UurBM7mjZXzvRRcxo2wTPLSRWEStSPAMCw@mail.gmail.com>
+
+We spent quite some time on this, you can read all about it here:
+https://docs.scala-lang.org/sips/improved-lazy-val-initialization.html
+
+On Fri, 31 Jul 2020 at 20:02, Benjamin Manes via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> I believe double-checked locking, such as Martin's version in Guava
+> Suppliers#memoize
+> <https://github.com/google/guava/blob/master/guava/src/com/google/common/base/Suppliers.java#L124-L137>,
+> is the best approach on the JVM for instance-level memoization.
+>
+> On Fri, Jul 31, 2020 at 10:42 AM Ghadi Shayban via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>> This seems like it would be a common stdlib ask, but what is the most
+>> performant way to protect the code inside a supplier from being
+>> concurrently realized more than once? Contention would be rare, and the
+>> losing threads need to wait on the value being computed by the winning
+>> thread.
+>>
+>> The most straightforward thing to do is a synchronized block, but this
+>> currently pins a carrier thread in Project Loom.
+>>
+>> The Supplier needs to keep track of:
+>> 1) the thunk, if unrealized
+>> 2) a value, if realized
+>>
+>> Golang's sync.Once does this [1] (CAS, fallback to mutex. Doesn't
+>> remember value)
+>> Clojure's lazy sequences use synchronized [2]
+>>
+>> Is there a better way to approach this on the JVM?
+>>
+>> Thanks!
+>>
+>> [1] https://golang.org/src/sync/once.go
+>> [2]
+>> https://github.com/clojure/clojure/blob/30a36cbe0ef936e57ddba238b7fa6d58ee1cbdce/src/jvm/clojure/lang/LazySeq.java#L39-L46
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-- 
+Cheers,
+√
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200731/9a584f13/attachment-0001.htm>
+
+From gshayban at gmail.com  Fri Jul 31 14:56:10 2020
+From: gshayban at gmail.com (Ghadi Shayban)
+Date: Fri, 31 Jul 2020 14:56:10 -0400
+Subject: [concurrency-interest] Lazy,
+ cached supplier: most performant mutex mechanism?
+In-Reply-To: <CANPzfU9aOnYP06s4UurBM7mjZXzvRRcxo2wTPLSRWEStSPAMCw@mail.gmail.com>
+References: <CAO3q7t9XOZbBr=Mp_z5FmVX7ff4=2J6yAevVat-iiFW6Kji4Eg@mail.gmail.com>
+ <CAGu0=MNHGmwZENn7Ez0vO2to=_xp1yhMYfq3xABHD8z_RAX=Nw@mail.gmail.com>
+ <CANPzfU9aOnYP06s4UurBM7mjZXzvRRcxo2wTPLSRWEStSPAMCw@mail.gmail.com>
+Message-ID: <CAO3q7t-8vw=dd+H0kCpJMMJ65z4+cxnqm-+kePV7rJ0raCa-Mw@mail.gmail.com>
+
+Thanks everyone, I'll check these things out.
+Seems like the user-space dual of a condy instruction, except run max once.
+I was hoping to try an approach that wasn't based on synchronized, though
+synchronized saves you the allocation of a lock.
+
+Ron Pressler had another interesting suggestion to try:
+
+Read val; if it's null, CAS fn to null.
+
+If you win, allocate a lock and do an ordered set (with a VarHandle) to the
+lock field, lock it, invoke fn, do an ordered write (with a VarHandle) to
+val, and unlock, then do another ordered write to null out the lock.
+If you lose the CAS, spin with an ordered read on the lock field and the
+val. This will be a short spin, because all you're waiting for is the
+allocation of the lock. If you see a non-null val, you're done. If you see
+a non-null lock, lock on it, and then a normal read from val should be
+non-null.
+
+This requires a bit of care in terms of memory ordering, and will probably
+require testing on non-Intel platforms, as those have weaker memory
+ordering than Intel, and many concurrency bugs don't manifest on x86. But
+the code will still be small, and it's an important method, so a relatively
+elaborate mechanism there might be worth it.
+</suggestion>
+
+
+
+On Fri, Jul 31, 2020 at 2:33 PM Viktor Klang <viktor.klang at gmail.com> wrote:
+
+> We spent quite some time on this, you can read all about it here:
+> https://docs.scala-lang.org/sips/improved-lazy-val-initialization.html
+>
+> On Fri, 31 Jul 2020 at 20:02, Benjamin Manes via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>> I believe double-checked locking, such as Martin's version in Guava
+>> Suppliers#memoize
+>> <https://github.com/google/guava/blob/master/guava/src/com/google/common/base/Suppliers.java#L124-L137>,
+>> is the best approach on the JVM for instance-level memoization.
+>>
+>> On Fri, Jul 31, 2020 at 10:42 AM Ghadi Shayban via Concurrency-interest <
+>> concurrency-interest at cs.oswego.edu> wrote:
+>>
+>>> This seems like it would be a common stdlib ask, but what is the most
+>>> performant way to protect the code inside a supplier from being
+>>> concurrently realized more than once? Contention would be rare, and the
+>>> losing threads need to wait on the value being computed by the winning
+>>> thread.
+>>>
+>>> The most straightforward thing to do is a synchronized block, but this
+>>> currently pins a carrier thread in Project Loom.
+>>>
+>>> The Supplier needs to keep track of:
+>>> 1) the thunk, if unrealized
+>>> 2) a value, if realized
+>>>
+>>> Golang's sync.Once does this [1] (CAS, fallback to mutex. Doesn't
+>>> remember value)
+>>> Clojure's lazy sequences use synchronized [2]
+>>>
+>>> Is there a better way to approach this on the JVM?
+>>>
+>>> Thanks!
+>>>
+>>> [1] https://golang.org/src/sync/once.go
+>>> [2]
+>>> https://github.com/clojure/clojure/blob/30a36cbe0ef936e57ddba238b7fa6d58ee1cbdce/src/jvm/clojure/lang/LazySeq.java#L39-L46
+>>>
+>>>
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+> --
+> Cheers,
+> √
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200731/e82406ba/attachment.htm>
+

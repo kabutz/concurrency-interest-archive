@@ -1,0 +1,2789 @@
+From Alexander.Berger at finnova.ch  Mon Jun  4 09:13:29 2012
+From: Alexander.Berger at finnova.ch (Alexander.Berger at finnova.ch)
+Date: Mon, 4 Jun 2012 15:13:29 +0200
+Subject: [concurrency-interest] How to dynamically adapt the pool size of a
+	ForkJoinPool
+Message-ID: <8D57A051FA150A4CA0493D185DDAA855494BF786D1@CHARON.SIDON.OLYMP>
+
+Hello everybody
+
+I am experimenting with a special kind of ForkJoinPool which uses some heuristics to detect if
+some of its worker threads are blocked (by other means than ManagedBlocker, e.g. sleeping, waiting, I/O, ...) and
+which will automatically add new worker threads to compensate for blocked threads.
+
+To add new worker threads I use tryCompensate(null,null) which works as expected, but I found no way
+to later on decrease the number of worker threads (once there are no blocked workers anymore). I tried
+using incrementActiveCount() but without any success. I just don't get rid of the extra threads.
+
+So here comes my question:
+
+How can I instruct a ForkJoinPool instance to release its extra worker threads (those that exceed parallelism)?
+
+Please note, I have read the comments (in ForkJoinPool.java) about the problems such an approach
+could cause (unwanted positive feedback control loops, etc.). Nevertheless I want to experiment
+with such a solution as in our use case we want to share a ForkJoinPool instance with some legacy
+and third party code, over which we have no control and which might submit blocking tasks to
+the ExecutorService represented by that ForkJoinPool instance.
+
+Alex
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20120604/0a98ff5b/attachment.html>
+
+From dl at cs.oswego.edu  Mon Jun  4 09:36:27 2012
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 04 Jun 2012 09:36:27 -0400
+Subject: [concurrency-interest] How to dynamically adapt the pool size
+ of a	ForkJoinPool
+In-Reply-To: <8D57A051FA150A4CA0493D185DDAA855494BF786D1@CHARON.SIDON.OLYMP>
+References: <8D57A051FA150A4CA0493D185DDAA855494BF786D1@CHARON.SIDON.OLYMP>
+Message-ID: <4FCCB9DB.5050307@cs.oswego.edu>
+
+On 06/04/12 09:13, Alexander.Berger at finnova.ch wrote:
+
+> How can I instruct a ForkJoinPool instance to release its extra worker threads
+> (those that exceed parallelism)?
+
+Assuming you are hacking on FJ source code...
+Workers can only be removed after running idleness consensus.
+They then wait SHRINK_RATE ns after last idleness or removal.
+SHRINK_RATE is set to a relatively high value (about 4sec)
+in part to avoid some (uncommon) hysteresis effects.
+You could try lowering it.
+
+Also note that unless there are a huge number of them
+(so cause a resource problem), these extra workers are
+probably not doing you enough harm in terms of throughput
+to warrant intervention.
+
+-Doug
+
+From viktor.klang at gmail.com  Wed Jun  6 08:17:50 2012
+From: viktor.klang at gmail.com (=?UTF-8?B?4oiaaWt0b3Ig0qBsYW5n?=)
+Date: Wed, 6 Jun 2012 14:17:50 +0200
+Subject: [concurrency-interest] Quest for the optimal queue
+In-Reply-To: <CALwNKeTpgxfKcUEnkHOfggNRfnbwfSj2+-ha5aZpEBOTEcqdzw@mail.gmail.com>
+References: <CANPzfU-EMjzPDzCTJfahV08dCe8J22mcZ4hQQa8EHbeCJfYJTg@mail.gmail.com>
+	<CALwNKeRcD=Wf1Zp8yUrvddwXgf+v4FKTknP-g8huPa33PLV4ng@mail.gmail.com>
+	<CANPzfU8XVMyy5i1n_aRwhRXSEdyTYFx+3QM3OgkpbvDDcL=Q1g@mail.gmail.com>
+	<CALwNKeRbsJkm72nFekghmf8jNC+75QhNSOwiGbyR55G-h=QMNA@mail.gmail.com>
+	<CANPzfU82dowyDLYsd0zQ87BygmW46P3YQRd2kCyagT5+XW=Z8w@mail.gmail.com>
+	<CALwNKeTK+RPxdFwz70yjssa4mK50vrFpJymy5zd+64958xKMaQ@mail.gmail.com>
+	<CANPzfU-51MymW-OLK224YRtGJ6YepWQQ1Zs2Us+n-FW-1i3erA@mail.gmail.com>
+	<CALwNKeTpgxfKcUEnkHOfggNRfnbwfSj2+-ha5aZpEBOTEcqdzw@mail.gmail.com>
+Message-ID: <CANPzfU9Riv9qqkrsTAyqVnznXU7ZsarkYOAJ+6rCpo8cEBopXw@mail.gmail.com>
+
+On Mon, May 14, 2012 at 9:19 AM, Michael Barker <mikeb01 at gmail.com> wrote:
+
+> > The problem with batch dequeues is that if one of the messages fail we
+> need
+> > to be at a stable state, and doing that would mean store away the
+> remaining
+> > batch, which would bump the processors size by atleast a reference, which
+> > can be expensive if you have millions of them.
+>
+> If you are will to stay away from the standard Java collections API,
+> then I was thinking of a call with a more functional style.  E.g.
+> (pseudo code)
+>
+>    public void foreach(Callback callback) {
+>        Node current = head;
+>
+>        if (current.next == null) {
+>            return;
+>        }
+>
+>        try {
+>            do {
+>                Object value = current.value;
+>                callback.onEvent(value);
+>                current = current.next;
+>            } while (current.next != null);
+>        } finally {
+>            updateHead(current);  // Do the appropriate thread-safe
+>                                            // update to head
+>        }
+>    }
+>
+>    private static interface Callback
+>    {
+>        void onMessage(Object o);
+>    }
+>
+> In the above case, if an exception thrown when handling the message,
+> then the message that caused the exception is redelivered.  The
+> collection is then responsible for maintaining a stable state in the
+> case of an exception and the definition of that behaviour is part of
+> the contract for the collection.
+>
+> I think there is also an interesting optimisation here.  The reason
+> I've added the short circuit check at the top of the method is that I
+> think it removes the only possible case where you could have write
+> contention with producers and consumers.  The only time a consumer and
+> a producer would contend on a write would be if the queue was empty.
+> I.e. head == tail.  If we remove that case from the consumer then
+> producers and consumers should never have a write conflict.  The
+> updateHead() method used by the consumer may not need a CAS, it is
+> possible that you could get away with a lazySet, which would certainly
+> improve performance.  Someone should check my reasoning though.
+>
+
+Sorry for coming back to this after all this time,
+you've got a very interesting idea here, I hope I'll find some time so see
+if it may work out.
+Unfortunately, this will break out APIs so it might not be feasible from
+that point of view,
+but if it is significantly more efficient then that's I price I'd be
+willing to pay!
+
+Cheers!
+
+?
+
+
+>
+> > It's an interesting problem though. I've been thinking about how to
+> handle
+> > producer conflicts as cheap as possible, as there are no consumer
+> conflicts.
+>
+> That's a tough one.  The most complicated code in the Disruptor is
+> dealing with this case and we've ended up with 2 strategies based on
+> the ratio of producer threads to available cores. With an array-backed
+> queue this is easier, but I think for your use case you need something
+> list-backed.
+>
+> Mike.
+>
+
+
+
+-- 
+Viktor Klang
+
+Akka Tech Lead
+Typesafe <http://www.typesafe.com/> - The software stack for applications
+that scale
+
+Twitter: @viktorklang
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20120606/5a5e2610/attachment.html>
+
+From dl at cs.oswego.edu  Wed Jun  6 12:19:19 2012
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 06 Jun 2012 12:19:19 -0400
+Subject: [concurrency-interest] ConcurrentHashMapV8 improvements
+Message-ID: <4FCF8307.5020104@cs.oswego.edu>
+
+
+Finally acting on an old idea, I committed an update to
+ConcurrentHashMap (currently only the one in our jdk8 preview
+package, as jsr166e.ConcurrentHashMap8) that much more gracefully
+handles maps that are huge or have many keys with colliding
+hash codes. Internally, it uses tree-map-like structures to
+maintain bins containing more nodes than would be expected
+under ideal random key distributions over ideal numbers of bins.
+
+Among other things, this provides graceful (O log(N)) degradation when
+there are more than about a billion elements (which run out of 32bit
+hash resolution and array bound limits). However, the map can only
+do so if keys are Comparable, which is true of most keys in
+practice -- Strings, Longs, etc. Without relying on Comparable,
+we can't otherwise magically find any other means to further
+resolve and organize keys after running out of bits, so performance
+for non-Comparable keys is unaffected/unimproved.
+
+This also provides a mechanism for coping with hostile usages in
+which many keys (Strings in particular) are somehow constructed to
+have the same hashCode, which can lead to algorithmic denial
+of service attacks (because of linear-time bin searches) if
+code using the map don't screen external inputs. The overflow-tree-based
+strategy here is an alternative approach to adding secondary
+randomly-seeded hash code methods ("hash32") to class String,
+as has been committed recently to OpenJDK. But ConcurrentHashMap8
+doesn't doesn't rely on this.
+
+The use of overflow-bins also allowed a few other minor speedups
+in more typical usages. A few more small improvements are still
+left unfinished for now. (I'll be traveling and/or otherwise
+committed for most of the next few weeks.)
+
+Links:
+jsr166e.jar: http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166e.jar
+source: 
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/jsr166e/ConcurrentHashMapV8.java?view=log
+
+Please give this a try and let me know about experiences.
+
+-Doug
+
+
+From nathan.reynolds at oracle.com  Thu Jun  7 12:06:18 2012
+From: nathan.reynolds at oracle.com (Nathan Reynolds)
+Date: Thu, 07 Jun 2012 09:06:18 -0700
+Subject: [concurrency-interest] ConcurrentHashMapV8 improvements
+In-Reply-To: <4FCF8307.5020104@cs.oswego.edu>
+References: <4FCF8307.5020104@cs.oswego.edu>
+Message-ID: <4FD0D17A.2070502@oracle.com>
+
+Doug,
+
+ > This also provides a mechanism for coping with hostile usages in 
+which many keys (Strings in particular) are somehow constructed to have 
+the same hashCode, which can lead to algorithmic denial of service 
+attacks (because of linear-time bin searches) if code using the map 
+don't screen external inputs.
+
+I recommend making similar changes to HashMap for this same reason.
+
+Nathan Reynolds 
+<http://psr.us.oracle.com/wiki/index.php/User:Nathan_Reynolds> | 
+Consulting Member of Technical Staff | 602.333.9091
+Oracle PSR Engineering <http://psr.us.oracle.com/> | Server Technology
+
+On 6/6/2012 9:19 AM, Doug Lea wrote:
+>
+> Finally acting on an old idea, I committed an update to
+> ConcurrentHashMap (currently only the one in our jdk8 preview
+> package, as jsr166e.ConcurrentHashMap8) that much more gracefully
+> handles maps that are huge or have many keys with colliding
+> hash codes. Internally, it uses tree-map-like structures to
+> maintain bins containing more nodes than would be expected
+> under ideal random key distributions over ideal numbers of bins.
+>
+> Among other things, this provides graceful (O log(N)) degradation when
+> there are more than about a billion elements (which run out of 32bit
+> hash resolution and array bound limits). However, the map can only
+> do so if keys are Comparable, which is true of most keys in
+> practice -- Strings, Longs, etc. Without relying on Comparable,
+> we can't otherwise magically find any other means to further
+> resolve and organize keys after running out of bits, so performance
+> for non-Comparable keys is unaffected/unimproved.
+>
+> This also provides a mechanism for coping with hostile usages in
+> which many keys (Strings in particular) are somehow constructed to
+> have the same hashCode, which can lead to algorithmic denial
+> of service attacks (because of linear-time bin searches) if
+> code using the map don't screen external inputs. The overflow-tree-based
+> strategy here is an alternative approach to adding secondary
+> randomly-seeded hash code methods ("hash32") to class String,
+> as has been committed recently to OpenJDK. But ConcurrentHashMap8
+> doesn't doesn't rely on this.
+>
+> The use of overflow-bins also allowed a few other minor speedups
+> in more typical usages. A few more small improvements are still
+> left unfinished for now. (I'll be traveling and/or otherwise
+> committed for most of the next few weeks.)
+>
+> Links:
+> jsr166e.jar: http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166e.jar
+> source: 
+> http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/jsr166e/ConcurrentHashMapV8.java?view=log
+>
+> Please give this a try and let me know about experiences.
+>
+> -Doug
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20120607/ca90459e/attachment.html>
+
+From dl at cs.oswego.edu  Fri Jun  8 09:17:28 2012
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 08 Jun 2012 09:17:28 -0400
+Subject: [concurrency-interest] ConcurrentHashMapV8 improvements
+In-Reply-To: <4FD0D17A.2070502@oracle.com>
+References: <4FCF8307.5020104@cs.oswego.edu> <4FD0D17A.2070502@oracle.com>
+Message-ID: <4FD1FB68.1070302@cs.oswego.edu>
+
+On 06/07/12 12:06, Nathan Reynolds wrote:
+> Doug,
+> I recommend making similar changes to HashMap for this same reason.
+
+I think this is a likely follow-on, but it seems best to collect
+some usage feedback for the ConcurrentHashMap(V8) version before
+putting in the non-trivial effort to retrofit LogN overflow techniques
+to other hash-table based collections.
+
+-Doug
+
+From aleksey.shipilev at gmail.com  Fri Jun  8 15:47:56 2012
+From: aleksey.shipilev at gmail.com (Aleksey Shipilev)
+Date: Fri, 08 Jun 2012 23:47:56 +0400
+Subject: [concurrency-interest] Fork/Join traces: instrumentation and
+	rendering
+Message-ID: <4FD256EC.8080908@gmail.com>
+
+Hi everyone,
+
+I was crawling through nastly performance problem with FJP and my
+particular use case. This forced me to do the instrumentation in FJP,
+and also sketch up some FJP-specific analyzers.
+
+While thinking around what to do with that next, I figured it would be
+to ask if this tool is something community wants/needs, or I can just
+throw it in the trunk, and leave it there. (Maybe it is not even worth
+to contaminate GitHub with).
+
+The bundle is at http://shipilev.net/pub/stuff/fjp-trace/. See README
+there. In short, this provides instrumented FJP, which dumps the
+execution traces, which then can be analyzed, down to fork-join
+dependencies, steals, parks-unparks, etc.
+
+For instance, this is one use case I was chasing:
+ - http://shipilev.net/pub/stuff/fjp-trace/fjp-trace-sample.png
+ - that's a 4x10x2 Nehalem running 8b39-lambda
+ - doing FJP.submit().get(), hence waiting for external task to complete
+ - note that FJP ramps up really quickly, in less than 5ms
+ - two heavily out-balanced tasks are seen as green bars
+ - six joiners are waiting on those tasks to complete
+ - one could also estimate the actual integral parallelism
+
+Thoughts?
+
+-Aleksey.
+
+From aleksey.shipilev at gmail.com  Sat Jun  9 09:53:31 2012
+From: aleksey.shipilev at gmail.com (Aleksey Shipilev)
+Date: Sat, 9 Jun 2012 17:53:31 +0400
+Subject: [concurrency-interest] Fork/Join traces: instrumentation and
+	rendering
+In-Reply-To: <4FD256EC.8080908@gmail.com>
+References: <4FD256EC.8080908@gmail.com>
+Message-ID: <CA+1LWGFX19bfgBArCqo3-9SENxJCCRGgeXHx5S7mdthRsjSOFg@mail.gmail.com>
+
+FYI, there is an updated version [1], which piggybacks heavily on
+WorkQueue mechanics to avoid serial bottlenecks when writing the
+trace, and Unsafe to provide binary representation for traces without
+resorting to string ops. It is somewhat 20x faster on my laptop with
+tracing enabled than previous one. This only visible when there are
+lots of FJP events, which is always the case when tasks are tiny. With
+modest task sizes, the overhead of tracing is bearable.
+
+-Aleksey.
+
+[1] http://shipilev.net/pub/stuff/fjp-trace/
+
+On Fri, Jun 8, 2012 at 11:47 PM, Aleksey Shipilev
+<aleksey.shipilev at gmail.com> wrote:
+> Hi everyone,
+>
+> I was crawling through nastly performance problem with FJP and my
+> particular use case. This forced me to do the instrumentation in FJP,
+> and also sketch up some FJP-specific analyzers.
+>
+> While thinking around what to do with that next, I figured it would be
+> to ask if this tool is something community wants/needs, or I can just
+> throw it in the trunk, and leave it there. (Maybe it is not even worth
+> to contaminate GitHub with).
+>
+> The bundle is at http://shipilev.net/pub/stuff/fjp-trace/. See README
+> there. In short, this provides instrumented FJP, which dumps the
+> execution traces, which then can be analyzed, down to fork-join
+> dependencies, steals, parks-unparks, etc.
+>
+> For instance, this is one use case I was chasing:
+> ?- http://shipilev.net/pub/stuff/fjp-trace/fjp-trace-sample.png
+> ?- that's a 4x10x2 Nehalem running 8b39-lambda
+> ?- doing FJP.submit().get(), hence waiting for external task to complete
+> ?- note that FJP ramps up really quickly, in less than 5ms
+> ?- two heavily out-balanced tasks are seen as green bars
+> ?- six joiners are waiting on those tasks to complete
+> ?- one could also estimate the actual integral parallelism
+>
+> Thoughts?
+>
+> -Aleksey.
+
+
+From mr.chrisvest at gmail.com  Sat Jun  9 13:28:13 2012
+From: mr.chrisvest at gmail.com (Chris Vest)
+Date: Sat, 9 Jun 2012 19:28:13 +0200
+Subject: [concurrency-interest] Fork/Join traces: instrumentation and
+	rendering
+In-Reply-To: <CA+1LWGFX19bfgBArCqo3-9SENxJCCRGgeXHx5S7mdthRsjSOFg@mail.gmail.com>
+References: <4FD256EC.8080908@gmail.com>
+	<CA+1LWGFX19bfgBArCqo3-9SENxJCCRGgeXHx5S7mdthRsjSOFg@mail.gmail.com>
+Message-ID: <CAHXi_0fOjtmC9zoy7XFOEWNr-9Ly+N4YthCYhjED-85Fay+tPg@mail.gmail.com>
+
+I think it's an interesting way to visualise how the FJP crunches a task.
+As in your example, it can help show if the tasks are badly balanced,
+though I don't know how big a problem that is in practice. Github
+repositories are a pretty cheap commodity, so I don't think this would be
+contaminating it :)
+
+One thing it makes me wonder is, if the FJP is executing some slow tasks
+and a number of joiners are waiting on them, and then another task is
+submitted, then there will be fewer threads to handle the new work?
+
+On 9 June 2012 15:53, Aleksey Shipilev <aleksey.shipilev at gmail.com> wrote:
+
+> FYI, there is an updated version [1], which piggybacks heavily on
+> WorkQueue mechanics to avoid serial bottlenecks when writing the
+> trace, and Unsafe to provide binary representation for traces without
+> resorting to string ops. It is somewhat 20x faster on my laptop with
+> tracing enabled than previous one. This only visible when there are
+> lots of FJP events, which is always the case when tasks are tiny. With
+> modest task sizes, the overhead of tracing is bearable.
+>
+> -Aleksey.
+>
+> [1] http://shipilev.net/pub/stuff/fjp-trace/
+>
+> On Fri, Jun 8, 2012 at 11:47 PM, Aleksey Shipilev
+> <aleksey.shipilev at gmail.com> wrote:
+> > Hi everyone,
+> >
+> > I was crawling through nastly performance problem with FJP and my
+> > particular use case. This forced me to do the instrumentation in FJP,
+> > and also sketch up some FJP-specific analyzers.
+> >
+> > While thinking around what to do with that next, I figured it would be
+> > to ask if this tool is something community wants/needs, or I can just
+> > throw it in the trunk, and leave it there. (Maybe it is not even worth
+> > to contaminate GitHub with).
+> >
+> > The bundle is at http://shipilev.net/pub/stuff/fjp-trace/. See README
+> > there. In short, this provides instrumented FJP, which dumps the
+> > execution traces, which then can be analyzed, down to fork-join
+> > dependencies, steals, parks-unparks, etc.
+> >
+> > For instance, this is one use case I was chasing:
+> >  - http://shipilev.net/pub/stuff/fjp-trace/fjp-trace-sample.png
+> >  - that's a 4x10x2 Nehalem running 8b39-lambda
+> >  - doing FJP.submit().get(), hence waiting for external task to complete
+> >  - note that FJP ramps up really quickly, in less than 5ms
+> >  - two heavily out-balanced tasks are seen as green bars
+> >  - six joiners are waiting on those tasks to complete
+> >  - one could also estimate the actual integral parallelism
+> >
+> > Thoughts?
+> >
+> > -Aleksey.
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20120609/ec12c78d/attachment.html>
+
+From dl at cs.oswego.edu  Sun Jun 10 17:10:19 2012
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 10 Jun 2012 17:10:19 -0400 (EDT)
+Subject: [concurrency-interest] Fork/Join traces: instrumentation and
+ rendering
+In-Reply-To: <CAHXi_0fOjtmC9zoy7XFOEWNr-9Ly+N4YthCYhjED-85Fay+tPg@mail.gmail.com>
+References: <4FD256EC.8080908@gmail.com>
+	<CA+1LWGFX19bfgBArCqo3-9SENxJCCRGgeXHx5S7mdthRsjSOFg@mail.gmail.com>
+	<CAHXi_0fOjtmC9zoy7XFOEWNr-9Ly+N4YthCYhjED-85Fay+tPg@mail.gmail.com>
+Message-ID: <40746.222.128.196.8.1339362619.squirrel@altair.cs.oswego.edu>
+
+
+> One thing it makes me wonder is, if the FJP is executing some slow tasks
+> and a number of joiners are waiting on them, and then another task is
+> submitted, then there will be fewer threads to handle the new work?
+>
+
+Sometimes. ForkJoinPool may internally generate new ones -- always
+enough to avoid starvation, but usually fewer than the parallelism level.
+When some subtasks are expected to block or take
+a much longer time than others, it is more efficient
+to use CountedCompleters instead, that avoid cascaded blocking
+at the expense of harder-to-use APIs.
+
+Thanks to Aleksey for making the profiler available!
+It is, among other things, a helpful tool for showing
+the impact of these kinds of design decisions.
+
+
+-Doug
+
+
+
+From radhakrishnan.mohan at gmail.com  Fri Jun 15 01:27:16 2012
+From: radhakrishnan.mohan at gmail.com (Mohan Radhakrishnan)
+Date: Fri, 15 Jun 2012 10:57:16 +0530
+Subject: [concurrency-interest] Tools for identifying cache misses
+Message-ID: <CAOoXFP_FAzB_RACfuPAQy2m8CkQPCRwjZ9nq2ZLA7o=6ptKBmA@mail.gmail.com>
+
+Hi,
+       I am aware of some of the effects  of cache line sharing and padding
+required to address  it. Are tools like cachegrind advocated to identify
+these issues ? VTune is expensive and and I remember Sun Studio analyzer
+wasn't specifically meant for x86 ?
+
+I am basically working on Capacity Planning by gathering metrics  like this
+and finding their correlation coefficient for system modeling. This  is
+just the context and has  nothing to do with my main question.
+
+I ask  this because it is related to concurrency.
+
+Thanks,
+Mohan
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20120615/b4b274ed/attachment.html>
+
+From wolfgang.baltes at laposte.net  Fri Jun 15 11:52:20 2012
+From: wolfgang.baltes at laposte.net (Wolfgang Baltes)
+Date: Fri, 15 Jun 2012 08:52:20 -0700
+Subject: [concurrency-interest] a volatile bug?
+In-Reply-To: <CACuKZqGnxkb6MuWj40z9cd4f0AkHu18ubd0Jg2xHJK2o1=pRzA@mail.gmail.com>
+References: <CACuKZqGnxkb6MuWj40z9cd4f0AkHu18ubd0Jg2xHJK2o1=pRzA@mail.gmail.com>
+Message-ID: <4FDB5A34.8010408@laposte.net>
+
+It looks like this has been fixed in the latest JDK 7u6 build b14 See 
+the last item in the category "hotspot" on this web page: 
+http://download.java.net/jdk7u6/changes/jdk7u6-b14.html.
+
+Wolfgang.
+
+On 2012-05-16 09:55, Zhong Yu wrote:
+> as reported on
+> http://stackoverflow.com/questions/10620680
+>
+> basically there are
+>
+>      volatile int a;
+>      int b;
+>
+> Thread 1:
+>
+>      b=1;
+>      a=1;
+>
+> Thread 2:
+>
+>      while(a==0)
+>          ;
+>      if(b==0)
+>          print("error");
+>
+> "error" is seen printed on 32 bit JDK6 on 64bit machine
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+From nathan.reynolds at oracle.com  Fri Jun 15 14:26:09 2012
+From: nathan.reynolds at oracle.com (Nathan Reynolds)
+Date: Fri, 15 Jun 2012 11:26:09 -0700
+Subject: [concurrency-interest] Tools for identifying cache misses
+In-Reply-To: <CAOoXFP_FAzB_RACfuPAQy2m8CkQPCRwjZ9nq2ZLA7o=6ptKBmA@mail.gmail.com>
+References: <CAOoXFP_FAzB_RACfuPAQy2m8CkQPCRwjZ9nq2ZLA7o=6ptKBmA@mail.gmail.com>
+Message-ID: <4FDB7E41.2020602@oracle.com>
+
+I have never seen any cachegrind reports with processor performance 
+counters.  That doesn't mean it can't do it.
+
+One might interpret this page in such a way that Oracle Studio Analyzer 
+can capture x86 hardware counters on Linux.  But, it is hard to say. 
+https://blogs.oracle.com/openomics/entry/cpu_hardware_counter_stats
+
+You might consider using OProfile. 
+http://oprofile.sourceforge.net/news/  It captures processor performance 
+counters and is free.
+
+Nathan Reynolds 
+<http://psr.us.oracle.com/wiki/index.php/User:Nathan_Reynolds> | 
+Consulting Member of Technical Staff | 602.333.9091
+Oracle PSR Engineering <http://psr.us.oracle.com/> | Server Technology
+On 6/14/2012 10:27 PM, Mohan Radhakrishnan wrote:
+> Hi,
+>        I am aware of some of the effects  of cache line sharing and 
+> padding required to address  it. Are tools like cachegrind advocated 
+> to identify these issues ? VTune is expensive and and I remember Sun 
+> Studio analyzer wasn't specifically meant for x86 ?
+> I am basically working on Capacity Planning by gathering metrics  like 
+> this and finding their correlation coefficient for system modeling. 
+> This  is  just the context and has  nothing to do with my main question.
+> I ask  this because it is related to concurrency.
+> Thanks,
+> Mohan
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20120615/f8efd776/attachment.html>
+
+From aleksey.shipilev at gmail.com  Fri Jun 15 14:43:37 2012
+From: aleksey.shipilev at gmail.com (Aleksey Shipilev)
+Date: Fri, 15 Jun 2012 22:43:37 +0400
+Subject: [concurrency-interest] Tools for identifying cache misses
+In-Reply-To: <4FDB7E41.2020602@oracle.com>
+References: <CAOoXFP_FAzB_RACfuPAQy2m8CkQPCRwjZ9nq2ZLA7o=6ptKBmA@mail.gmail.com>
+	<4FDB7E41.2020602@oracle.com>
+Message-ID: <CA+1LWGHHAsF-+RpjE+cTLS_oBVb5MKW7ApSowi-jtYey539ydg@mail.gmail.com>
+
+On Fri, Jun 15, 2012 at 10:26 PM, Nathan Reynolds
+<nathan.reynolds at oracle.com> wrote:
+> One might interpret this page in such a way that Oracle Studio Analyzer can
+> capture x86 hardware counters on Linux.? But, it is hard to say.
+> https://blogs.oracle.com/openomics/entry/cpu_hardware_counter_stats
+
+It can capture hardware counters. I do that all the time on Linux
+2.6.32+. The beautiful part about Oracle Studio Analyzer is that it
+can get the counter mapping back to JITted code, which is something
+native tools could not easily do without knowing that they actually
+profiling dynamic Java runtime.
+
+-Aleksey.
+
+
+From aleksey.shipilev at gmail.com  Sun Jun 17 11:21:06 2012
+From: aleksey.shipilev at gmail.com (Aleksey Shipilev)
+Date: Sun, 17 Jun 2012 19:21:06 +0400
+Subject: [concurrency-interest] Fork/Join traces: instrumentation and
+ rendering
+In-Reply-To: <40746.222.128.196.8.1339362619.squirrel@altair.cs.oswego.edu>
+References: <4FD256EC.8080908@gmail.com>
+	<CA+1LWGFX19bfgBArCqo3-9SENxJCCRGgeXHx5S7mdthRsjSOFg@mail.gmail.com>
+	<CAHXi_0fOjtmC9zoy7XFOEWNr-9Ly+N4YthCYhjED-85Fay+tPg@mail.gmail.com>
+	<40746.222.128.196.8.1339362619.squirrel@altair.cs.oswego.edu>
+Message-ID: <4FDDF5E2.2010601@gmail.com>
+
+On 06/11/2012 01:10 AM, Doug Lea wrote:
+> Thanks to Aleksey for making the profiler available!
+> It is, among other things, a helpful tool for showing
+> the impact of these kinds of design decisions.
+
+FYI, I had pushed fjp-trace to GitHub [1]. You can use the issue tracker
+there to file bugs against it.
+
+Additionally, I had pulled in vanilla JSR166 FJP into jsr166 branch, so
+one can see the changes between baseline and instrumented FJP by
+comparing the branches [2]. Doug, can you consider merging
+instrumentation code directly into JSR166?
+
+-Aleksey.
+
+[1] https://github.com/shipilev/fjp-trace
+[2] https://github.com/shipilev/fjp-trace/compare/jsr166...master
+
+From dl at cs.oswego.edu  Sun Jun 17 16:39:01 2012
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 17 Jun 2012 16:39:01 -0400
+Subject: [concurrency-interest] Fork/Join traces: instrumentation and
+ rendering
+In-Reply-To: <4FDDF5E2.2010601@gmail.com>
+References: <4FD256EC.8080908@gmail.com>
+	<CA+1LWGFX19bfgBArCqo3-9SENxJCCRGgeXHx5S7mdthRsjSOFg@mail.gmail.com>
+	<CAHXi_0fOjtmC9zoy7XFOEWNr-9Ly+N4YthCYhjED-85Fay+tPg@mail.gmail.com>
+	<40746.222.128.196.8.1339362619.squirrel@altair.cs.oswego.edu>
+	<4FDDF5E2.2010601@gmail.com>
+Message-ID: <4FDE4065.4090907@cs.oswego.edu>
+
+On 06/17/12 11:21, Aleksey Shipilev wrote:
+> On 06/11/2012 01:10 AM, Doug Lea wrote:
+>> Thanks to Aleksey for making the profiler available!
+>> It is, among other things, a helpful tool for showing
+>> the impact of these kinds of design decisions.
+>
+> FYI, I had pushed fjp-trace to GitHub [1].
+
+Thanks!
+
+> Additionally, I had pulled in vanilla JSR166 FJP into jsr166 branch, so
+> one can see the changes between baseline and instrumented FJP by
+> comparing the branches [2]. Doug, can you consider merging
+> instrumentation code directly into JSR166?
+
+
+I/We don't see a way to do it with zero guaranteed impact vs
+non-instrumented code. But after giving fjp-trace some time to
+settle in, we'll find some reasonable way to semi-integrate
+to make it easier to use for diagnostics.
+
+-Doug
+
+
+> [1] https://github.com/shipilev/fjp-trace
+> [2] https://github.com/shipilev/fjp-trace/compare/jsr166...master
+>
+
+
+From aleksey.shipilev at gmail.com  Sun Jun 17 16:52:46 2012
+From: aleksey.shipilev at gmail.com (Aleksey Shipilev)
+Date: Mon, 18 Jun 2012 00:52:46 +0400
+Subject: [concurrency-interest] Fork/Join traces: instrumentation and
+ rendering
+In-Reply-To: <4FDE4065.4090907@cs.oswego.edu>
+References: <4FD256EC.8080908@gmail.com>
+	<CA+1LWGFX19bfgBArCqo3-9SENxJCCRGgeXHx5S7mdthRsjSOFg@mail.gmail.com>
+	<CAHXi_0fOjtmC9zoy7XFOEWNr-9Ly+N4YthCYhjED-85Fay+tPg@mail.gmail.com>
+	<40746.222.128.196.8.1339362619.squirrel@altair.cs.oswego.edu>
+	<4FDDF5E2.2010601@gmail.com> <4FDE4065.4090907@cs.oswego.edu>
+Message-ID: <4FDE439E.1020805@gmail.com>
+
+On 06/18/2012 12:39 AM, Doug Lea wrote:
+> I/We don't see a way to do it with zero guaranteed impact vs
+> non-instrumented code. But after giving fjp-trace some time to
+> settle in, we'll find some reasonable way to semi-integrate
+> to make it easier to use for diagnostics.
+
+Sure, let it brew. In the mean time, let's consider more light-weight
+ways to hook up the instrumentation code. I would go the code weaving
+route, but that will require specific junction points within FJP to
+weave to. Would calling dummy (static?) FJP methods in the places where
+registerEvent() is called in current code work as zero-impact marker?
+
+(Now the crazy talk). Other options are:
+ - protecting instrumentation calls with asserts and weave them into
+existence when tracing is enabled? (Not really different from in-place
+static final boolean check).
+ - local variables with special names get written with the event; hoping
+smart JIT will otherwise optimize the write away. (Is not really working
+for interpreter and inferior "java" VMs).
+ - anything else?
+
+-Aleksey.
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 836 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20120618/cafda3c0/attachment.bin>
+
+From radhakrishnan.mohan at gmail.com  Mon Jun 18 10:41:38 2012
+From: radhakrishnan.mohan at gmail.com (Mohan Radhakrishnan)
+Date: Mon, 18 Jun 2012 20:11:38 +0530
+Subject: [concurrency-interest] Fork/Join traces: instrumentation and
+	rendering
+In-Reply-To: <4FDE439E.1020805@gmail.com>
+References: <4FD256EC.8080908@gmail.com>
+	<CA+1LWGFX19bfgBArCqo3-9SENxJCCRGgeXHx5S7mdthRsjSOFg@mail.gmail.com>
+	<CAHXi_0fOjtmC9zoy7XFOEWNr-9Ly+N4YthCYhjED-85Fay+tPg@mail.gmail.com>
+	<40746.222.128.196.8.1339362619.squirrel@altair.cs.oswego.edu>
+	<4FDDF5E2.2010601@gmail.com> <4FDE4065.4090907@cs.oswego.edu>
+	<4FDE439E.1020805@gmail.com>
+Message-ID: <CAOoXFP8d885E+wJ3sDjjVV4ywWbEvGbX5dFzqwqXz+5PwUzCoQ@mail.gmail.com>
+
+I have used AspectJ and tried it with FJ. It works but the change to the
+code after weaving aspects could introduce subtle concurrency bugs. I
+thought that merging a framework written by experts and aspects written by
+me is cause for trouble. The technology will work very well because I have
+woven aspects into even containers like WebSphere.
+
+My idea was to use JavaFX to show a GUI by weaving into FJ. The POC worked.
+
+
+Thanks,
+Mohan
+
+On Mon, Jun 18, 2012 at 2:22 AM, Aleksey Shipilev <
+aleksey.shipilev at gmail.com> wrote:
+
+> On 06/18/2012 12:39 AM, Doug Lea wrote:
+> > I/We don't see a way to do it with zero guaranteed impact vs
+> > non-instrumented code. But after giving fjp-trace some time to
+> > settle in, we'll find some reasonable way to semi-integrate
+> > to make it easier to use for diagnostics.
+>
+> Sure, let it brew. In the mean time, let's consider more light-weight
+> ways to hook up the instrumentation code. I would go the code weaving
+> route, but that will require specific junction points within FJP to
+> weave to. Would calling dummy (static?) FJP methods in the places where
+> registerEvent() is called in current code work as zero-impact marker?
+>
+> (Now the crazy talk). Other options are:
+>  - protecting instrumentation calls with asserts and weave them into
+> existence when tracing is enabled? (Not really different from in-place
+> static final boolean check).
+>  - local variables with special names get written with the event; hoping
+> smart JIT will otherwise optimize the write away. (Is not really working
+> for interpreter and inferior "java" VMs).
+>  - anything else?
+>
+> -Aleksey.
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20120618/40644115/attachment.html>
+
+From alexlamsl at gmail.com  Wed Jun 20 09:17:39 2012
+From: alexlamsl at gmail.com (Alex Lam S.L.)
+Date: Wed, 20 Jun 2012 14:17:39 +0100
+Subject: [concurrency-interest] generalise computeIfAbsent() for
+	ConcurrentMap
+Message-ID: <CAGpACNs08aH6sC75BGb02RPBNnDL+BtOSW9LoExmCV=pvgr1wQ@mail.gmail.com>
+
+Hi there,
+
+I am happily trying out the new computeIfAbsent() at the moment - it
+saves a lot of headache for instance when I have to do an extra get()
+before putIfAbsent() just because the potentially duplicated value
+would create too much memory pressure.
+
+In same places however I do use the other ConcurrentMap
+implementation, i.e. ConcurrentSkipListMap. I notice that
+computeIfAbsent() is implemented explicitly for ConcurrentHashMap
+instead; even the mapping functions are under ConcurrentHashMap
+instead of the ConcurrentMap interface.
+
+Any reasons why this cannot be done for ConcurrentSkipListMap as well?
+Or have I been doing something wrong altogether?
+
+
+Thanks,
+Alex.
+
+From dl at cs.oswego.edu  Wed Jun 20 09:49:45 2012
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 20 Jun 2012 09:49:45 -0400
+Subject: [concurrency-interest] generalise computeIfAbsent()
+	for	ConcurrentMap
+In-Reply-To: <CAGpACNs08aH6sC75BGb02RPBNnDL+BtOSW9LoExmCV=pvgr1wQ@mail.gmail.com>
+References: <CAGpACNs08aH6sC75BGb02RPBNnDL+BtOSW9LoExmCV=pvgr1wQ@mail.gmail.com>
+Message-ID: <4FE1D4F9.7080600@cs.oswego.edu>
+
+On 06/20/12 09:17, Alex Lam S.L. wrote:
+> Hi there,
+>
+> I am happily trying out the new computeIfAbsent() at the moment - it
+> saves a lot of headache for instance when I have to do an extra get()
+> before putIfAbsent() just because the potentially duplicated value
+> would create too much memory pressure.
+>
+> In same places however I do use the other ConcurrentMap
+> implementation, i.e. ConcurrentSkipListMap. I notice that
+> computeIfAbsent() is implemented explicitly for ConcurrentHashMap
+> instead; even the mapping functions are under ConcurrentHashMap
+> instead of the ConcurrentMap interface.
+>
+> Any reasons why this cannot be done for ConcurrentSkipListMap as well?
+> Or have I been doing something wrong altogether?
+>
+
+I was pretty sure something like this mail would come eventually :-)
+
+It's not too hard (easier than CHM) to implement this for
+ConcurrentSkipListMap (which is our only other j.u.c ConcurrentMap).
+This should and hopefully will be done before JDK8.
+But to cover this commonality at the level of interfaces, we'd
+need to introduce a new interface that extends ConcurrentMap.
+The thought of introducing an intrinsically-awkward-name
+just for the sake of two methods is not very appealing though.
+(BTW, upcoming jdk8 "defenders" will not help with this in covering
+other non-j.u.c ConcurrentMaps, since there is no conceivable
+default implementation.) So at the moment I'm thinking that
+having both our ConcurrentMaps support the computeifAbsent
+and recompute methods without adding interface is OK until we
+find some more compelling reason to add a new interface.
+
+-Doug
+
+
+
+From forax at univ-mlv.fr  Wed Jun 20 10:04:51 2012
+From: forax at univ-mlv.fr (=?ISO-8859-1?Q?R=E9mi_Forax?=)
+Date: Wed, 20 Jun 2012 16:04:51 +0200
+Subject: [concurrency-interest] generalise computeIfAbsent()
+	for	ConcurrentMap
+In-Reply-To: <4FE1D4F9.7080600@cs.oswego.edu>
+References: <CAGpACNs08aH6sC75BGb02RPBNnDL+BtOSW9LoExmCV=pvgr1wQ@mail.gmail.com>
+	<4FE1D4F9.7080600@cs.oswego.edu>
+Message-ID: <4FE1D883.6040503@univ-mlv.fr>
+
+On 06/20/2012 03:49 PM, Doug Lea wrote:
+> On 06/20/12 09:17, Alex Lam S.L. wrote:
+>> Hi there,
+>>
+>> I am happily trying out the new computeIfAbsent() at the moment - it
+>> saves a lot of headache for instance when I have to do an extra get()
+>> before putIfAbsent() just because the potentially duplicated value
+>> would create too much memory pressure.
+>>
+>> In same places however I do use the other ConcurrentMap
+>> implementation, i.e. ConcurrentSkipListMap. I notice that
+>> computeIfAbsent() is implemented explicitly for ConcurrentHashMap
+>> instead; even the mapping functions are under ConcurrentHashMap
+>> instead of the ConcurrentMap interface.
+>>
+>> Any reasons why this cannot be done for ConcurrentSkipListMap as well?
+>> Or have I been doing something wrong altogether?
+>>
+>
+> I was pretty sure something like this mail would come eventually :-)
+>
+> It's not too hard (easier than CHM) to implement this for
+> ConcurrentSkipListMap (which is our only other j.u.c ConcurrentMap).
+> This should and hopefully will be done before JDK8.
+> But to cover this commonality at the level of interfaces, we'd
+> need to introduce a new interface that extends ConcurrentMap.
+> The thought of introducing an intrinsically-awkward-name
+> just for the sake of two methods is not very appealing though.
+> (BTW, upcoming jdk8 "defenders" will not help with this in covering
+> other non-j.u.c ConcurrentMaps, since there is no conceivable
+> default implementation.) So at the moment I'm thinking that
+> having both our ConcurrentMaps support the computeifAbsent
+> and recompute methods without adding interface is OK until we
+> find some more compelling reason to add a new interface.
+
+There is a possible default which is to throw an 
+UnsupportedOperationException
+saying that there is no default.
+
+>
+> -Doug
+
+R?mi
+
+
+From aleksey.shipilev at gmail.com  Wed Jun 20 10:27:27 2012
+From: aleksey.shipilev at gmail.com (Aleksey Shipilev)
+Date: Wed, 20 Jun 2012 18:27:27 +0400
+Subject: [concurrency-interest] generalise computeIfAbsent() for
+	ConcurrentMap
+In-Reply-To: <4FE1D883.6040503@univ-mlv.fr>
+References: <CAGpACNs08aH6sC75BGb02RPBNnDL+BtOSW9LoExmCV=pvgr1wQ@mail.gmail.com>
+	<4FE1D4F9.7080600@cs.oswego.edu> <4FE1D883.6040503@univ-mlv.fr>
+Message-ID: <CA+1LWGGRtZW5VfcxAPRV6V99heUOa0jWZ4Q2wZdQcGCPNHTZdg@mail.gmail.com>
+
+I am puzzled now. Why wouldn't usual stub suffice as the default implementation?
+
+    @Override
+    public V computeIfAbsent(K key,
+ConcurrentHashMapV8.MappingFunction<? super K, ? extends V>
+mappingFunction) {
+        V v = get(key);
+        if (v == null) {
+            V newV = mappingFunction.map(key);
+            V oldV = putIfAbsent(key, newV);
+            v = (oldV == null) ? newV : oldV;
+        }
+        return v;
+    }
+
+Is this an incorrect defender?
+
+-Aleksey.
+
+On Wed, Jun 20, 2012 at 6:04 PM, R?mi Forax <forax at univ-mlv.fr> wrote:
+> On 06/20/2012 03:49 PM, Doug Lea wrote:
+>>
+>> On 06/20/12 09:17, Alex Lam S.L. wrote:
+>>>
+>>> Hi there,
+>>>
+>>> I am happily trying out the new computeIfAbsent() at the moment - it
+>>> saves a lot of headache for instance when I have to do an extra get()
+>>> before putIfAbsent() just because the potentially duplicated value
+>>> would create too much memory pressure.
+>>>
+>>> In same places however I do use the other ConcurrentMap
+>>> implementation, i.e. ConcurrentSkipListMap. I notice that
+>>> computeIfAbsent() is implemented explicitly for ConcurrentHashMap
+>>> instead; even the mapping functions are under ConcurrentHashMap
+>>> instead of the ConcurrentMap interface.
+>>>
+>>> Any reasons why this cannot be done for ConcurrentSkipListMap as well?
+>>> Or have I been doing something wrong altogether?
+>>>
+>>
+>> I was pretty sure something like this mail would come eventually :-)
+>>
+>> It's not too hard (easier than CHM) to implement this for
+>> ConcurrentSkipListMap (which is our only other j.u.c ConcurrentMap).
+>> This should and hopefully will be done before JDK8.
+>> But to cover this commonality at the level of interfaces, we'd
+>> need to introduce a new interface that extends ConcurrentMap.
+>> The thought of introducing an intrinsically-awkward-name
+>> just for the sake of two methods is not very appealing though.
+>> (BTW, upcoming jdk8 "defenders" will not help with this in covering
+>> other non-j.u.c ConcurrentMaps, since there is no conceivable
+>> default implementation.) So at the moment I'm thinking that
+>> having both our ConcurrentMaps support the computeifAbsent
+>> and recompute methods without adding interface is OK until we
+>> find some more compelling reason to add a new interface.
+>
+>
+> There is a possible default which is to throw an
+> UnsupportedOperationException
+> saying that there is no default.
+>
+>>
+>> -Doug
+>
+>
+> R?mi
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From alexlamsl at gmail.com  Wed Jun 20 10:41:38 2012
+From: alexlamsl at gmail.com (Alex Lam S.L.)
+Date: Wed, 20 Jun 2012 15:41:38 +0100
+Subject: [concurrency-interest] generalise computeIfAbsent() for
+	ConcurrentMap
+In-Reply-To: <CA+1LWGGRtZW5VfcxAPRV6V99heUOa0jWZ4Q2wZdQcGCPNHTZdg@mail.gmail.com>
+References: <CAGpACNs08aH6sC75BGb02RPBNnDL+BtOSW9LoExmCV=pvgr1wQ@mail.gmail.com>
+	<4FE1D4F9.7080600@cs.oswego.edu> <4FE1D883.6040503@univ-mlv.fr>
+	<CA+1LWGGRtZW5VfcxAPRV6V99heUOa0jWZ4Q2wZdQcGCPNHTZdg@mail.gmail.com>
+Message-ID: <CAGpACNudSRCEAzFgtXMvqoX3kWtpw3RSMjQhwVcSXFY3nM3Ffg@mail.gmail.com>
+
+Isn't the whole operation being atomic part of the requirement?
+
+
+Confused,
+Alex.
+
+
+
+On Wed, Jun 20, 2012 at 3:27 PM, Aleksey Shipilev
+<aleksey.shipilev at gmail.com> wrote:
+> I am puzzled now. Why wouldn't usual stub suffice as the default implementation?
+>
+> ? ?@Override
+> ? ?public V computeIfAbsent(K key,
+> ConcurrentHashMapV8.MappingFunction<? super K, ? extends V>
+> mappingFunction) {
+> ? ? ? ?V v = get(key);
+> ? ? ? ?if (v == null) {
+> ? ? ? ? ? ?V newV = mappingFunction.map(key);
+> ? ? ? ? ? ?V oldV = putIfAbsent(key, newV);
+> ? ? ? ? ? ?v = (oldV == null) ? newV : oldV;
+> ? ? ? ?}
+> ? ? ? ?return v;
+> ? ?}
+>
+> Is this an incorrect defender?
+>
+> -Aleksey.
+>
+> On Wed, Jun 20, 2012 at 6:04 PM, R?mi Forax <forax at univ-mlv.fr> wrote:
+>> On 06/20/2012 03:49 PM, Doug Lea wrote:
+>>>
+>>> On 06/20/12 09:17, Alex Lam S.L. wrote:
+>>>>
+>>>> Hi there,
+>>>>
+>>>> I am happily trying out the new computeIfAbsent() at the moment - it
+>>>> saves a lot of headache for instance when I have to do an extra get()
+>>>> before putIfAbsent() just because the potentially duplicated value
+>>>> would create too much memory pressure.
+>>>>
+>>>> In same places however I do use the other ConcurrentMap
+>>>> implementation, i.e. ConcurrentSkipListMap. I notice that
+>>>> computeIfAbsent() is implemented explicitly for ConcurrentHashMap
+>>>> instead; even the mapping functions are under ConcurrentHashMap
+>>>> instead of the ConcurrentMap interface.
+>>>>
+>>>> Any reasons why this cannot be done for ConcurrentSkipListMap as well?
+>>>> Or have I been doing something wrong altogether?
+>>>>
+>>>
+>>> I was pretty sure something like this mail would come eventually :-)
+>>>
+>>> It's not too hard (easier than CHM) to implement this for
+>>> ConcurrentSkipListMap (which is our only other j.u.c ConcurrentMap).
+>>> This should and hopefully will be done before JDK8.
+>>> But to cover this commonality at the level of interfaces, we'd
+>>> need to introduce a new interface that extends ConcurrentMap.
+>>> The thought of introducing an intrinsically-awkward-name
+>>> just for the sake of two methods is not very appealing though.
+>>> (BTW, upcoming jdk8 "defenders" will not help with this in covering
+>>> other non-j.u.c ConcurrentMaps, since there is no conceivable
+>>> default implementation.) So at the moment I'm thinking that
+>>> having both our ConcurrentMaps support the computeifAbsent
+>>> and recompute methods without adding interface is OK until we
+>>> find some more compelling reason to add a new interface.
+>>
+>>
+>> There is a possible default which is to throw an
+>> UnsupportedOperationException
+>> saying that there is no default.
+>>
+>>>
+>>> -Doug
+>>
+>>
+>> R?mi
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From mthornton at optrak.com  Wed Jun 20 10:56:24 2012
+From: mthornton at optrak.com (Mark Thornton)
+Date: Wed, 20 Jun 2012 15:56:24 +0100
+Subject: [concurrency-interest] generalise computeIfAbsent() for
+	ConcurrentMap
+In-Reply-To: <CA+1LWGGRtZW5VfcxAPRV6V99heUOa0jWZ4Q2wZdQcGCPNHTZdg@mail.gmail.com>
+References: <CAGpACNs08aH6sC75BGb02RPBNnDL+BtOSW9LoExmCV=pvgr1wQ@mail.gmail.com>
+	<4FE1D4F9.7080600@cs.oswego.edu> <4FE1D883.6040503@univ-mlv.fr>
+	<CA+1LWGGRtZW5VfcxAPRV6V99heUOa0jWZ4Q2wZdQcGCPNHTZdg@mail.gmail.com>
+Message-ID: <4FE1E498.3020204@optrak.com>
+
+On 20/06/12 15:27, Aleksey Shipilev wrote:
+> I am puzzled now. Why wouldn't usual stub suffice as the default implementation?
+>
+>      @Override
+>      public V computeIfAbsent(K key,
+> ConcurrentHashMapV8.MappingFunction<? super K, ? extends V>
+> mappingFunction) {
+>          V v = get(key);
+>          if (v == null) {
+>              V newV = mappingFunction.map(key);
+>              V oldV = putIfAbsent(key, newV);
+>              v = (oldV == null) ? newV : oldV;
+>          }
+>          return v;
+>      }
+>
+> Is this an incorrect defender?
+
+Yes, if the mappingFunction has side effects, as it may be called more 
+than once for a key.
+
+Mark
+
+
+From alexlamsl at gmail.com  Wed Jun 20 10:56:13 2012
+From: alexlamsl at gmail.com (Alex Lam S.L.)
+Date: Wed, 20 Jun 2012 15:56:13 +0100
+Subject: [concurrency-interest] generalise computeIfAbsent() for
+	ConcurrentMap
+In-Reply-To: <CA+1LWGGRtZW5VfcxAPRV6V99heUOa0jWZ4Q2wZdQcGCPNHTZdg@mail.gmail.com>
+References: <CAGpACNs08aH6sC75BGb02RPBNnDL+BtOSW9LoExmCV=pvgr1wQ@mail.gmail.com>
+	<4FE1D4F9.7080600@cs.oswego.edu> <4FE1D883.6040503@univ-mlv.fr>
+	<CA+1LWGGRtZW5VfcxAPRV6V99heUOa0jWZ4Q2wZdQcGCPNHTZdg@mail.gmail.com>
+Message-ID: <CAGpACNtrdvw7sUwJSQQ09-mZcePH-+pkfOYtMFKamQP_Oo=4eA@mail.gmail.com>
+
+(My earlier reply seems too cryptic, now that I read over it again.)
+
+The implementation below would cause map() to be called even if a
+value has been put into place after the initial get() but before
+putIfAbsent(), which seems to contradict the behaviour from what I can
+understand.
+
+
+Alex.
+
+
+
+On Wed, Jun 20, 2012 at 3:27 PM, Aleksey Shipilev
+<aleksey.shipilev at gmail.com> wrote:
+> I am puzzled now. Why wouldn't usual stub suffice as the default implementation?
+>
+> ? ?@Override
+> ? ?public V computeIfAbsent(K key,
+> ConcurrentHashMapV8.MappingFunction<? super K, ? extends V>
+> mappingFunction) {
+> ? ? ? ?V v = get(key);
+> ? ? ? ?if (v == null) {
+> ? ? ? ? ? ?V newV = mappingFunction.map(key);
+> ? ? ? ? ? ?V oldV = putIfAbsent(key, newV);
+> ? ? ? ? ? ?v = (oldV == null) ? newV : oldV;
+> ? ? ? ?}
+> ? ? ? ?return v;
+> ? ?}
+>
+> Is this an incorrect defender?
+>
+> -Aleksey.
+>
+> On Wed, Jun 20, 2012 at 6:04 PM, R?mi Forax <forax at univ-mlv.fr> wrote:
+>> On 06/20/2012 03:49 PM, Doug Lea wrote:
+>>>
+>>> On 06/20/12 09:17, Alex Lam S.L. wrote:
+>>>>
+>>>> Hi there,
+>>>>
+>>>> I am happily trying out the new computeIfAbsent() at the moment - it
+>>>> saves a lot of headache for instance when I have to do an extra get()
+>>>> before putIfAbsent() just because the potentially duplicated value
+>>>> would create too much memory pressure.
+>>>>
+>>>> In same places however I do use the other ConcurrentMap
+>>>> implementation, i.e. ConcurrentSkipListMap. I notice that
+>>>> computeIfAbsent() is implemented explicitly for ConcurrentHashMap
+>>>> instead; even the mapping functions are under ConcurrentHashMap
+>>>> instead of the ConcurrentMap interface.
+>>>>
+>>>> Any reasons why this cannot be done for ConcurrentSkipListMap as well?
+>>>> Or have I been doing something wrong altogether?
+>>>>
+>>>
+>>> I was pretty sure something like this mail would come eventually :-)
+>>>
+>>> It's not too hard (easier than CHM) to implement this for
+>>> ConcurrentSkipListMap (which is our only other j.u.c ConcurrentMap).
+>>> This should and hopefully will be done before JDK8.
+>>> But to cover this commonality at the level of interfaces, we'd
+>>> need to introduce a new interface that extends ConcurrentMap.
+>>> The thought of introducing an intrinsically-awkward-name
+>>> just for the sake of two methods is not very appealing though.
+>>> (BTW, upcoming jdk8 "defenders" will not help with this in covering
+>>> other non-j.u.c ConcurrentMaps, since there is no conceivable
+>>> default implementation.) So at the moment I'm thinking that
+>>> having both our ConcurrentMaps support the computeifAbsent
+>>> and recompute methods without adding interface is OK until we
+>>> find some more compelling reason to add a new interface.
+>>
+>>
+>> There is a possible default which is to throw an
+>> UnsupportedOperationException
+>> saying that there is no default.
+>>
+>>>
+>>> -Doug
+>>
+>>
+>> R?mi
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From aleksey.shipilev at gmail.com  Wed Jun 20 11:26:05 2012
+From: aleksey.shipilev at gmail.com (Aleksey Shipilev)
+Date: Wed, 20 Jun 2012 19:26:05 +0400
+Subject: [concurrency-interest] generalise computeIfAbsent() for
+	ConcurrentMap
+In-Reply-To: <CAGpACNtrdvw7sUwJSQQ09-mZcePH-+pkfOYtMFKamQP_Oo=4eA@mail.gmail.com>
+References: <CAGpACNs08aH6sC75BGb02RPBNnDL+BtOSW9LoExmCV=pvgr1wQ@mail.gmail.com>
+	<4FE1D4F9.7080600@cs.oswego.edu> <4FE1D883.6040503@univ-mlv.fr>
+	<CA+1LWGGRtZW5VfcxAPRV6V99heUOa0jWZ4Q2wZdQcGCPNHTZdg@mail.gmail.com>
+	<CAGpACNtrdvw7sUwJSQQ09-mZcePH-+pkfOYtMFKamQP_Oo=4eA@mail.gmail.com>
+Message-ID: <CA+1LWGG+GY6HwT5=VJUCsn=se2+taOJLZXj_6k97iL9MMWUheQ@mail.gmail.com>
+
+Yes, I saw that coming. Continuing on my point, if computeIfAbsent()
+ought to be the placeholder for the usual code people do around
+putIfAbsent(), it seems to be presumed mapper function is side-effect
+free. Would it help to require that for MappingFunction? What benefits
+there are *not* requiring side-effect freedom for MappingFunction
+(except for generality)?
+
+-Aleksey.
+
+On Wed, Jun 20, 2012 at 6:56 PM, Alex Lam S.L. <alexlamsl at gmail.com> wrote:
+> (My earlier reply seems too cryptic, now that I read over it again.)
+>
+> The implementation below would cause map() to be called even if a
+> value has been put into place after the initial get() but before
+> putIfAbsent(), which seems to contradict the behaviour from what I can
+> understand.
+>
+>
+> Alex.
+>
+>
+>
+> On Wed, Jun 20, 2012 at 3:27 PM, Aleksey Shipilev
+> <aleksey.shipilev at gmail.com> wrote:
+>> I am puzzled now. Why wouldn't usual stub suffice as the default implementation?
+>>
+>> ? ?@Override
+>> ? ?public V computeIfAbsent(K key,
+>> ConcurrentHashMapV8.MappingFunction<? super K, ? extends V>
+>> mappingFunction) {
+>> ? ? ? ?V v = get(key);
+>> ? ? ? ?if (v == null) {
+>> ? ? ? ? ? ?V newV = mappingFunction.map(key);
+>> ? ? ? ? ? ?V oldV = putIfAbsent(key, newV);
+>> ? ? ? ? ? ?v = (oldV == null) ? newV : oldV;
+>> ? ? ? ?}
+>> ? ? ? ?return v;
+>> ? ?}
+>>
+>> Is this an incorrect defender?
+>>
+>> -Aleksey.
+>>
+>> On Wed, Jun 20, 2012 at 6:04 PM, R?mi Forax <forax at univ-mlv.fr> wrote:
+>>> On 06/20/2012 03:49 PM, Doug Lea wrote:
+>>>>
+>>>> On 06/20/12 09:17, Alex Lam S.L. wrote:
+>>>>>
+>>>>> Hi there,
+>>>>>
+>>>>> I am happily trying out the new computeIfAbsent() at the moment - it
+>>>>> saves a lot of headache for instance when I have to do an extra get()
+>>>>> before putIfAbsent() just because the potentially duplicated value
+>>>>> would create too much memory pressure.
+>>>>>
+>>>>> In same places however I do use the other ConcurrentMap
+>>>>> implementation, i.e. ConcurrentSkipListMap. I notice that
+>>>>> computeIfAbsent() is implemented explicitly for ConcurrentHashMap
+>>>>> instead; even the mapping functions are under ConcurrentHashMap
+>>>>> instead of the ConcurrentMap interface.
+>>>>>
+>>>>> Any reasons why this cannot be done for ConcurrentSkipListMap as well?
+>>>>> Or have I been doing something wrong altogether?
+>>>>>
+>>>>
+>>>> I was pretty sure something like this mail would come eventually :-)
+>>>>
+>>>> It's not too hard (easier than CHM) to implement this for
+>>>> ConcurrentSkipListMap (which is our only other j.u.c ConcurrentMap).
+>>>> This should and hopefully will be done before JDK8.
+>>>> But to cover this commonality at the level of interfaces, we'd
+>>>> need to introduce a new interface that extends ConcurrentMap.
+>>>> The thought of introducing an intrinsically-awkward-name
+>>>> just for the sake of two methods is not very appealing though.
+>>>> (BTW, upcoming jdk8 "defenders" will not help with this in covering
+>>>> other non-j.u.c ConcurrentMaps, since there is no conceivable
+>>>> default implementation.) So at the moment I'm thinking that
+>>>> having both our ConcurrentMaps support the computeifAbsent
+>>>> and recompute methods without adding interface is OK until we
+>>>> find some more compelling reason to add a new interface.
+>>>
+>>>
+>>> There is a possible default which is to throw an
+>>> UnsupportedOperationException
+>>> saying that there is no default.
+>>>
+>>>>
+>>>> -Doug
+>>>
+>>>
+>>> R?mi
+>>>
+>>>
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From dl at cs.oswego.edu  Wed Jun 20 11:51:04 2012
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 20 Jun 2012 11:51:04 -0400
+Subject: [concurrency-interest] generalise computeIfAbsent()
+	for	ConcurrentMap
+In-Reply-To: <CA+1LWGG+GY6HwT5=VJUCsn=se2+taOJLZXj_6k97iL9MMWUheQ@mail.gmail.com>
+References: <CAGpACNs08aH6sC75BGb02RPBNnDL+BtOSW9LoExmCV=pvgr1wQ@mail.gmail.com>	<4FE1D4F9.7080600@cs.oswego.edu>
+	<4FE1D883.6040503@univ-mlv.fr>	<CA+1LWGGRtZW5VfcxAPRV6V99heUOa0jWZ4Q2wZdQcGCPNHTZdg@mail.gmail.com>	<CAGpACNtrdvw7sUwJSQQ09-mZcePH-+pkfOYtMFKamQP_Oo=4eA@mail.gmail.com>
+	<CA+1LWGG+GY6HwT5=VJUCsn=se2+taOJLZXj_6k97iL9MMWUheQ@mail.gmail.com>
+Message-ID: <4FE1F168.2050300@cs.oswego.edu>
+
+On 06/20/12 11:26, Aleksey Shipilev wrote:
+> Yes, I saw that coming. Continuing on my point, if computeIfAbsent()
+> ought to be the placeholder for the usual code people do around
+> putIfAbsent(), it seems to be presumed mapper function is side-effect
+> free.
+
+That was part of our reasoning for not including these methods
+in the first place. But we now know that many users disagree.
+See for example the paper below that found errors in
+user code due to either not implementing the
+putIfAbsent version correctly or actually needing a version
+that guarantees once-only computation. Supporting the stronger
+versions hits both these cases at once. (And those people
+who prefer weaker version can still get it using putIfAbsent.)
+
+http://www.cs.tau.ac.il/~ohads/docs/OOPSLA11.pdf
+Testing Atomicity of Composed Concurrent Operations
+Ohad Shacham, Nathan Bronson, Alex Aiken, Mooly Sagiv, Martin Vechev, and Eran 
+Yahav. OOPSLA'11
+
+-Doug
+
+From aleksey.shipilev at gmail.com  Wed Jun 20 12:07:05 2012
+From: aleksey.shipilev at gmail.com (Aleksey Shipilev)
+Date: Wed, 20 Jun 2012 20:07:05 +0400
+Subject: [concurrency-interest] generalise computeIfAbsent() for
+	ConcurrentMap
+In-Reply-To: <4FE1F168.2050300@cs.oswego.edu>
+References: <CAGpACNs08aH6sC75BGb02RPBNnDL+BtOSW9LoExmCV=pvgr1wQ@mail.gmail.com>
+	<4FE1D4F9.7080600@cs.oswego.edu> <4FE1D883.6040503@univ-mlv.fr>
+	<CA+1LWGGRtZW5VfcxAPRV6V99heUOa0jWZ4Q2wZdQcGCPNHTZdg@mail.gmail.com>
+	<CAGpACNtrdvw7sUwJSQQ09-mZcePH-+pkfOYtMFKamQP_Oo=4eA@mail.gmail.com>
+	<CA+1LWGG+GY6HwT5=VJUCsn=se2+taOJLZXj_6k97iL9MMWUheQ@mail.gmail.com>
+	<4FE1F168.2050300@cs.oswego.edu>
+Message-ID: <CA+1LWGHtWwdq1qtrZSBL_BYSia9NBG9j5pJsqu1UTrLazjQJdA@mail.gmail.com>
+
+On Wed, Jun 20, 2012 at 7:51 PM, Doug Lea <dl at cs.oswego.edu> wrote:
+> On 06/20/12 11:26, Aleksey Shipilev wrote:
+>> Yes, I saw that coming. Continuing on my point, if computeIfAbsent()
+>> ought to be the placeholder for the usual code people do around
+>> putIfAbsent(), it seems to be presumed mapper function is side-effect
+>> free.
+>
+> That was part of our reasoning for not including these methods
+> in the first place. But we now know that many users disagree.
+
+Thanks. So, no-side-effects requirement is too strict for this case
+(apart from being generally unenforceable in Java), and actually
+devalvates the benefit of having computeIfAbsent() as the separate
+method.
+
+-Aleksey.
+
+From dl at cs.oswego.edu  Sat Jun 23 09:17:53 2012
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sat, 23 Jun 2012 09:17:53 -0400
+Subject: [concurrency-interest] StampedLock: A possible SequenceLock
+	replacement
+Message-ID: <4FE5C201.5040201@cs.oswego.edu>
+
+
+Early experience with jsr166e.SequenceLock suggests that it
+might be less useful than anticipated. In addition to
+concerns that correctly writing code using any seqlock-style
+construct can be challenging, there are two technical issues
+limiting its range of applicability:
+
+1. Under high write rates, sequenced reads continually retry unless
+readers fall back to getting the lock. But doing so causes other readers
+to fail needlessly -- the lock is not actually protecting updates.
+This tends to devolve into a very slow emulation of an ordinary lock,
+and may do so under even relatively low write rates when there are
+many readers. These could be avoided if some form of read-lock were
+available for use on retry.
+
+2. As Hans Boehm and others pointed out (including in a
+paper at last week's MSPC workshop --
+http://safari.ece.cmu.edu/MSPC2012/papers/p12-boehm.pdf),
+SequenceLocks either require that all fields read be
+volatile/final (which is the currently stated usage
+restriction), or that the internal implementation of
+sequence validation use some ordering mechanism not
+expressible using current JMM rules. This second option
+is possible (although not strictly explainable :-), but only
+under a slightly different  API to encapsulate seq validation
+as a method. This could in turn be supported via non-public
+internal hotspot intrinsics (although some internal specs might
+need to be strengthened to guarantee to do what they now do).
+
+Attacking these issues presents an opportunity to also
+address another continuing RFE -- providing a cheaper,
+but more restricted, form of read-write lock
+than our ReentrantReadWriteLock. (This includes
+one in the upcoming paper by Jun Shirako et al
+https://wiki.rice.edu/confluence/display/HABANERO/Publications)
+Creating one that also allows optimistic reads would
+further improve support for STM-like constructions.
+
+One down side of schemes that can support seqlock-like
+optimistic validated observations, plus read-locks, plus
+write-locks is that the classes don't fit nicely into our
+Lock APIs. Most if not all use stamps/cookies/tickets returned
+from initial lock/start methods and used as arguments in
+unlock/finish methods. This means that such a lock would not
+be a drop-in replacement for other Locks. Which is arguably
+an advantage, since the main usages it supports typically
+entail very different code than most Lock-based code. In addition
+to having different methods/signatures, such locks can't support
+reentrancy or Conditions. Here is one possible form:
+
+class StampedLock {
+   long lockForWriting(); // return stamp needed for unlock call
+   long lockForReading();
+   long beginObserving(); // block until not write-locked
+
+   void unlock(long stamp);
+   boolean validate(long stamp); // return false if interfered
+
+   long tryLockForWriting(); // returns 0 if not available
+   long tryLockForReading();
+   long tryBeginObserving();
+
+   boolean isLockedForWriting();
+   boolean isLockedForReading();
+
+   long tryUpgradeFromReadingToWriting(long stamp); // succeed if only 1 reader
+   long downgradeFromWritingToReading(long stamp);  // always succeed
+}
+
+And here is a sample usage -- a variant of the example
+in the SequenceLock javadoc. It illustrates a read-only
+method with only one optimistic try, falling back to read lock.
+(The try/finally's here are overkill in this particular
+example because there are no possible exceptions.)
+
+class Point {
+    private int x, y;
+    private final StampedLock lock = new StampedLock();
+
+     public int magnitude() { // a read-only method
+         long stamp = lock.beginObserving();
+         try {
+             int currentX = x;
+             int currentY = y;
+         } finally {
+             if (!lock.validate(stamp)) {
+                 stamp = lock.lockForReading();
+                 try {
+                     currentX = x;
+                     currentY = y;
+                 } finally {
+                     lock.unlock(stamp);
+                 }
+             }
+             return currentX * currentX + currentY * currentY;
+         }
+     }
+
+     public void move(int deltaX, int deltaY) { // a write-locked method
+        long stamp = lock.lockForWriting();
+        try {
+            x += deltaX;
+            y += deltaY;
+        } finally {
+            lock.unlock(stamp);
+        }
+    }
+}
+
+A secondary issue here is whether StampedLock should even
+appear in java.util.concurrent as opposed to being made
+available as an "extra". Correctness of optimistic modes
+relies on strict adherence to: read then validate then use.
+This is not easy to get right especially when using arrays
+or pointer-based data structures, so you cannot just slap
+on the mechanics to most existing code. So this would not be
+the kind of class non-experts would ever use. On the other hand,
+we'd like to supply a common API for people who use such techniques
+to produce more user-friendly layered libraries and components.
+This audience might include ourselves for other future j.u.c classes.
+
+Comments about this possible SequenceLock replacement would be
+welcome.
+
+(I'll be out Sunday through Wednesday so might not reply immediately.)
+
+-Doug
+
+From plokhotnyuk at gmail.com  Sat Jun 23 09:42:52 2012
+From: plokhotnyuk at gmail.com (Andriy Plokhotnyuk)
+Date: Sat, 23 Jun 2012 16:42:52 +0300
+Subject: [concurrency-interest] =?utf-8?b?0J3QkDogIFN0YW1wZWRMb2NrOiBBIHBv?=
+ =?utf-8?q?ssible_SequenceLock_replacement?=
+Message-ID: <4fe5c7d9.025fb40a.2af7.525f@mx.google.com>
+
+
+
+?????????? ? ????? ????????????? HTC
+
+----- ???????? ????????? -----
+??: Doug Lea <dl at cs.oswego.edu>
+??????????: 23 ???? 2012 ?. 16:17
+????: Concurrency-interest at cs.oswego.edu <Concurrency-interest at cs.oswego.edu>
+????: [concurrency-interest] StampedLock: A possible SequenceLock replacement
+
+
+Early experience with jsr166e.SequenceLock suggests that it
+might be less useful than anticipated. In addition to
+concerns that correctly writing code using any seqlock-style
+construct can be challenging, there are two technical issues
+limiting its range of applicability:
+
+1. Under high write rates, sequenced reads continually retry unless
+readers fall back to getting the lock. But doing so causes other readers
+to fail needlessly -- the lock is not actually protecting updates.
+This tends to devolve into a very slow emulation of an ordinary lock,
+and may do so under even relatively low write rates when there are
+many readers. These could be avoided if some form of read-lock were
+available for use on retry.
+
+2. As Hans Boehm and others pointed out (including in a
+paper at last week's MSPC workshop --
+http://safari.ece.cmu.edu/MSPC2012/papers/p12-boehm.pdf),
+SequenceLocks either require that all fields read be
+volatile/final (which is the currently stated usage
+restriction), or that the internal implementation of
+sequence validation use some ordering mechanism not
+expressible using current JMM rules. This second option
+is possible (although not strictly explainable :-), but only
+under a slightly different  API to encapsulate seq validation
+as a method. This could in turn be supported via non-public
+internal hotspot intrinsics (although some internal specs might
+need to be strengthened to guarantee to do what they now do).
+
+Attacking these issues presents an opportunity to also
+address another continuing RFE -- providing a cheaper,
+but more restricted, form of read-write lock
+than our ReentrantReadWriteLock. (This includes
+one in the upcoming paper by Jun Shirako et al
+https://wiki.rice.edu/confluence/display/HABANERO/Publications)
+Creating one that also allows optimistic reads would
+further improve support for STM-like constructions.
+
+One down side of schemes that can support seqlock-like
+optimistic validated observations, plus read-locks, plus
+write-locks is that the classes
+
+[??????? ?? ???? ????? ????????? ?????????]
+
+
+From hans.boehm at hp.com  Sun Jun 24 13:57:10 2012
+From: hans.boehm at hp.com (Boehm, Hans)
+Date: Sun, 24 Jun 2012 17:57:10 +0000
+Subject: [concurrency-interest] StampedLock: A possible
+	SequenceLock	replacement
+In-Reply-To: <4FE5C201.5040201@cs.oswego.edu>
+References: <4FE5C201.5040201@cs.oswego.edu>
+Message-ID: <A3E67C2071F49C4CBC4F17E6D77CDDD235F402CD@G4W3296.americas.hpqcorp.net>
+
+It seems to me that problems 1 and 2 are essentially orthogonal, and are addressed by separable parts of the solution, right?  Problem 2 essentially requires something like a LoadLoad fence in the implementation of a validate()-like primitive, which, as Doug points out, makes it unimplementable in pure Java, and hard to explain in terms of the Java memory model.  But does it have much to do with the interface change, except that the interface change highlights the weird usage model?
+
+I'm nervous about introducing any construct that relies on intentional, unannotated data races.  Is there already an annotation that says "not volatile, but intentionally accessed through data races"?  If not, is there a reason not to introduce one (aside from the fact that we don't really know what racy accesses mean)?  If we had one, a construct like this might at least not get in the way of data race detectors.
+
+Hans
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-
+> interest-bounces at cs.oswego.edu] On Behalf Of Doug Lea
+> Sent: Saturday, June 23, 2012 6:18 AM
+> To: Concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] StampedLock: A possible SequenceLock
+> replacement
+> 
+> 
+> Early experience with jsr166e.SequenceLock suggests that it might be less
+> useful than anticipated. In addition to concerns that correctly writing code
+> using any seqlock-style construct can be challenging, there are two technical
+> issues limiting its range of applicability:
+> 
+> 1. Under high write rates, sequenced reads continually retry unless readers
+> fall back to getting the lock. But doing so causes other readers to fail
+> needlessly -- the lock is not actually protecting updates.
+> This tends to devolve into a very slow emulation of an ordinary lock, and may
+> do so under even relatively low write rates when there are many readers.
+> These could be avoided if some form of read-lock were available for use on
+> retry.
+> 
+> 2. As Hans Boehm and others pointed out (including in a paper at last week's
+> MSPC workshop -- http://safari.ece.cmu.edu/MSPC2012/papers/p12-
+> boehm.pdf),
+> SequenceLocks either require that all fields read be volatile/final (which is
+> the currently stated usage restriction), or that the internal implementation of
+> sequence validation use some ordering mechanism not expressible using
+> current JMM rules. This second option is possible (although not strictly
+> explainable :-), but only under a slightly different  API to encapsulate seq
+> validation as a method. This could in turn be supported via non-public
+> internal hotspot intrinsics (although some internal specs might need to be
+> strengthened to guarantee to do what they now do).
+> 
+> Attacking these issues presents an opportunity to also address another
+> continuing RFE -- providing a cheaper, but more restricted, form of read-
+> write lock than our ReentrantReadWriteLock. (This includes one in the
+> upcoming paper by Jun Shirako et al
+> https://wiki.rice.edu/confluence/display/HABANERO/Publications)
+> Creating one that also allows optimistic reads would further improve support
+> for STM-like constructions.
+> 
+> One down side of schemes that can support seqlock-like optimistic validated
+> observations, plus read-locks, plus write-locks is that the classes don't fit
+> nicely into our Lock APIs. Most if not all use stamps/cookies/tickets returned
+> from initial lock/start methods and used as arguments in unlock/finish
+> methods. This means that such a lock would not be a drop-in replacement for
+> other Locks. Which is arguably an advantage, since the main usages it
+> supports typically entail very different code than most Lock-based code. In
+> addition to having different methods/signatures, such locks can't support
+> reentrancy or Conditions. Here is one possible form:
+> 
+> class StampedLock {
+>    long lockForWriting(); // return stamp needed for unlock call
+>    long lockForReading();
+>    long beginObserving(); // block until not write-locked
+> 
+>    void unlock(long stamp);
+>    boolean validate(long stamp); // return false if interfered
+> 
+>    long tryLockForWriting(); // returns 0 if not available
+>    long tryLockForReading();
+>    long tryBeginObserving();
+> 
+>    boolean isLockedForWriting();
+>    boolean isLockedForReading();
+> 
+>    long tryUpgradeFromReadingToWriting(long stamp); // succeed if only 1
+> reader
+>    long downgradeFromWritingToReading(long stamp);  // always succeed }
+> 
+> And here is a sample usage -- a variant of the example in the SequenceLock
+> javadoc. It illustrates a read-only method with only one optimistic try, falling
+> back to read lock.
+> (The try/finally's here are overkill in this particular example because there are
+> no possible exceptions.)
+> 
+> class Point {
+>     private int x, y;
+>     private final StampedLock lock = new StampedLock();
+> 
+>      public int magnitude() { // a read-only method
+>          long stamp = lock.beginObserving();
+>          try {
+>              int currentX = x;
+>              int currentY = y;
+>          } finally {
+>              if (!lock.validate(stamp)) {
+>                  stamp = lock.lockForReading();
+>                  try {
+>                      currentX = x;
+>                      currentY = y;
+>                  } finally {
+>                      lock.unlock(stamp);
+>                  }
+>              }
+>              return currentX * currentX + currentY * currentY;
+>          }
+>      }
+> 
+>      public void move(int deltaX, int deltaY) { // a write-locked method
+>         long stamp = lock.lockForWriting();
+>         try {
+>             x += deltaX;
+>             y += deltaY;
+>         } finally {
+>             lock.unlock(stamp);
+>         }
+>     }
+> }
+> 
+> A secondary issue here is whether StampedLock should even appear in
+> java.util.concurrent as opposed to being made available as an "extra".
+> Correctness of optimistic modes relies on strict adherence to: read then
+> validate then use.
+> This is not easy to get right especially when using arrays or pointer-based
+> data structures, so you cannot just slap on the mechanics to most existing
+> code. So this would not be the kind of class non-experts would ever use. On
+> the other hand, we'd like to supply a common API for people who use such
+> techniques to produce more user-friendly layered libraries and components.
+> This audience might include ourselves for other future j.u.c classes.
+> 
+> Comments about this possible SequenceLock replacement would be
+> welcome.
+> 
+> (I'll be out Sunday through Wednesday so might not reply immediately.)
+> 
+> -Doug
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From dig at illinois.edu  Sun Jun 24 15:27:28 2012
+From: dig at illinois.edu (Danny Dig)
+Date: Sun, 24 Jun 2012 14:27:28 -0500
+Subject: [concurrency-interest] Summer School on Parallel Programming with
+ Java (registration closes Jun 27th)
+Message-ID: <CADiYQu7uNSZLUKJVVzR6Ai-rZj1RvC=JDVC11Hj+WZph-JeYcA@mail.gmail.com>
+
+Dear Concurrency Enthusiasts,
+
+We still have a few seats available for this year's summer school.
+Maybe this is not for you, the experts, but you might know somebody
+who really needs to take this programming-intensive course. I'd
+appreciate if you forward this announcement to your colleagues who
+might be interested in learning about parallel programming in Java.
+The registration closes this Wed, June 27th.
+
+best,
+Danny
+
+<<<<<<<<<<<<<<<<<<<<<<
+
+2012 Summer School on Parallel Programming
+
+Important dates:
+June 27th, registration deadline
+July 9-13, Event held at University of Illinois at Urbana-Champaign
+
+
+Software engineering practitioners and researchers with little or no
+exposure to parallelism will have an opportunity to learn about
+multicore programming at the University of Illinois at Urbana-
+Champaign (UIUC) during our July 9th ? 13th Illinois-Intel Parallelism
+Center Summer School training event. We?re excited about the new
+direction that our program will be taking this year, offering a deeper
+dive into Java parallel programming and the Eclipse platform.
+
+We have an exciting lineup of teachers this year, from both industry
+and academia, including:
+- Dr. Cliff Click (0xdata)
+- Dr. Danny Dig (University of Illinois)
+- Mr. Stephen Heumann (University of Illinois)
+- Mr. Richard Hudson (Intel Corporation)
+- Dr. Doug Lea (State University of New York at Oswego), lead architect
+of Java concurrency libraries
+- Dr. Tim Mattson (Intel Corporation), co-author of the most influential
+book on parallel patterns
+- Dr. Darko Marinov
+- Dr. Marc Snir (University of Illinois), the co-inventor of MPI
+
+The curriculum for the program has been refined and tested both in prior
+summer schools and in industry courses. The courses have received
+very high reviews from participants, and we?re confident our Multicore
+Summer School will be useful to those wanting to apply parallel
+programming techniques to their code.
+
+Please see the 2012 I2PC Summer School on Multicore Programming
+website (http://i2pc.cs.illinois.edu/summer.html) for a tentative
+course schedule, prerequisites for participation in the school,
+information about fees, meals, and travel to the University of Illinois,
+and to register online! Registration closes on June 9th, or when our 60
+participant maximum has been reached.
+
+If you have any questions, please don?t hesitate to contact the workshop
+coordinator, Meg Osfar (mosfar2 at illinois.edu).
+
+Best regards,
+The I2PC Summer School Team
+
+-- 
+Danny Dig
+Visiting Research Assistant Professor at UIUC
+
+http://netfiles.uiuc.edu/dig/www
+
+Motto: "Success is not for the chosen few but for the few who choose"
+
+
+From elizarov at devexperts.com  Mon Jun 25 04:47:00 2012
+From: elizarov at devexperts.com (Roman Elizarov)
+Date: Mon, 25 Jun 2012 08:47:00 +0000
+Subject: [concurrency-interest] StampedLock: A
+	possible	SequenceLock	replacement
+In-Reply-To: <A3E67C2071F49C4CBC4F17E6D77CDDD235F402CD@G4W3296.americas.hpqcorp.net>
+References: <4FE5C201.5040201@cs.oswego.edu>
+	<A3E67C2071F49C4CBC4F17E6D77CDDD235F402CD@G4W3296.americas.hpqcorp.net>
+Message-ID: <C248BCD79E2CBC4B93C0AE3B1E77E9A80D93122B@RAVEN.office.devexperts.com>
+
+I, for one, would welcome a standard "intentional race" annotation. We've recently ran a bunch of our code through an [in-house] dynamic data-race detector (DRD) and on several occasions found benign data races. Interestingly enough, all were read/write races and there is a pattern to all of them. One example: we're tracking the most recent thread which acquired a [custom] lock. This "lastOwner" field is written only while the lock is held, but it is read outside of the lock when a thread fails to acquire the lock for a while. So, there's a write/read race on "lastOwner" field which our DRD had found. However, we know that there was at least one synchronization point (synchronizes-with edge) between the tread that held the lock and the thread that was trying to acquire it. We don't care about a race with threads that wrote this variable after that. We need to know any thread which owned the lock while we were trying to acquire it.
+
+Basically, our code works as long as we have semantics of ~ "regular register" (not necessary an atomic one) that guarantees that a read that races with a number of write(s) would return either the previous value of the register or one of the values that are being written. The only guaranteed we need is that during a racy read it does not get a value "out of thin air". JMM does give us such guarantee.
+
+Sincerely,
+Roman Elizarov
+
+-----Original Message-----
+From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of Boehm, Hans
+Sent: Sunday, June 24, 2012 9:57 PM
+To: Doug Lea; Concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] StampedLock: A possible SequenceLock replacement
+
+It seems to me that problems 1 and 2 are essentially orthogonal, and are addressed by separable parts of the solution, right?  Problem 2 essentially requires something like a LoadLoad fence in the implementation of a validate()-like primitive, which, as Doug points out, makes it unimplementable in pure Java, and hard to explain in terms of the Java memory model.  But does it have much to do with the interface change, except that the interface change highlights the weird usage model?
+
+I'm nervous about introducing any construct that relies on intentional, unannotated data races.  Is there already an annotation that says "not volatile, but intentionally accessed through data races"?  If not, is there a reason not to introduce one (aside from the fact that we don't really know what racy accesses mean)?  If we had one, a construct like this might at least not get in the way of data race detectors.
+
+Hans
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency- 
+> interest-bounces at cs.oswego.edu] On Behalf Of Doug Lea
+> Sent: Saturday, June 23, 2012 6:18 AM
+> To: Concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] StampedLock: A possible SequenceLock 
+> replacement
+> 
+> 
+> Early experience with jsr166e.SequenceLock suggests that it might be 
+> less useful than anticipated. In addition to concerns that correctly 
+> writing code using any seqlock-style construct can be challenging, 
+> there are two technical issues limiting its range of applicability:
+> 
+> 1. Under high write rates, sequenced reads continually retry unless 
+> readers fall back to getting the lock. But doing so causes other 
+> readers to fail needlessly -- the lock is not actually protecting updates.
+> This tends to devolve into a very slow emulation of an ordinary lock, 
+> and may do so under even relatively low write rates when there are many readers.
+> These could be avoided if some form of read-lock were available for 
+> use on retry.
+> 
+> 2. As Hans Boehm and others pointed out (including in a paper at last 
+> week's MSPC workshop -- http://safari.ece.cmu.edu/MSPC2012/papers/p12-
+> boehm.pdf),
+> SequenceLocks either require that all fields read be volatile/final 
+> (which is the currently stated usage restriction), or that the 
+> internal implementation of sequence validation use some ordering 
+> mechanism not expressible using current JMM rules. This second option 
+> is possible (although not strictly explainable :-), but only under a 
+> slightly different  API to encapsulate seq validation as a method. 
+> This could in turn be supported via non-public internal hotspot 
+> intrinsics (although some internal specs might need to be strengthened to guarantee to do what they now do).
+> 
+> Attacking these issues presents an opportunity to also address another 
+> continuing RFE -- providing a cheaper, but more restricted, form of 
+> read- write lock than our ReentrantReadWriteLock. (This includes one 
+> in the upcoming paper by Jun Shirako et al
+> https://wiki.rice.edu/confluence/display/HABANERO/Publications)
+> Creating one that also allows optimistic reads would further improve 
+> support for STM-like constructions.
+> 
+> One down side of schemes that can support seqlock-like optimistic 
+> validated observations, plus read-locks, plus write-locks is that the 
+> classes don't fit nicely into our Lock APIs. Most if not all use 
+> stamps/cookies/tickets returned from initial lock/start methods and 
+> used as arguments in unlock/finish methods. This means that such a 
+> lock would not be a drop-in replacement for other Locks. Which is 
+> arguably an advantage, since the main usages it supports typically 
+> entail very different code than most Lock-based code. In addition to 
+> having different methods/signatures, such locks can't support reentrancy or Conditions. Here is one possible form:
+> 
+> class StampedLock {
+>    long lockForWriting(); // return stamp needed for unlock call
+>    long lockForReading();
+>    long beginObserving(); // block until not write-locked
+> 
+>    void unlock(long stamp);
+>    boolean validate(long stamp); // return false if interfered
+> 
+>    long tryLockForWriting(); // returns 0 if not available
+>    long tryLockForReading();
+>    long tryBeginObserving();
+> 
+>    boolean isLockedForWriting();
+>    boolean isLockedForReading();
+> 
+>    long tryUpgradeFromReadingToWriting(long stamp); // succeed if only 
+> 1 reader
+>    long downgradeFromWritingToReading(long stamp);  // always succeed 
+> }
+> 
+> And here is a sample usage -- a variant of the example in the 
+> SequenceLock javadoc. It illustrates a read-only method with only one 
+> optimistic try, falling back to read lock.
+> (The try/finally's here are overkill in this particular example 
+> because there are no possible exceptions.)
+> 
+> class Point {
+>     private int x, y;
+>     private final StampedLock lock = new StampedLock();
+> 
+>      public int magnitude() { // a read-only method
+>          long stamp = lock.beginObserving();
+>          try {
+>              int currentX = x;
+>              int currentY = y;
+>          } finally {
+>              if (!lock.validate(stamp)) {
+>                  stamp = lock.lockForReading();
+>                  try {
+>                      currentX = x;
+>                      currentY = y;
+>                  } finally {
+>                      lock.unlock(stamp);
+>                  }
+>              }
+>              return currentX * currentX + currentY * currentY;
+>          }
+>      }
+> 
+>      public void move(int deltaX, int deltaY) { // a write-locked method
+>         long stamp = lock.lockForWriting();
+>         try {
+>             x += deltaX;
+>             y += deltaY;
+>         } finally {
+>             lock.unlock(stamp);
+>         }
+>     }
+> }
+> 
+> A secondary issue here is whether StampedLock should even appear in 
+> java.util.concurrent as opposed to being made available as an "extra".
+> Correctness of optimistic modes relies on strict adherence to: read 
+> then validate then use.
+> This is not easy to get right especially when using arrays or 
+> pointer-based data structures, so you cannot just slap on the 
+> mechanics to most existing code. So this would not be the kind of 
+> class non-experts would ever use. On the other hand, we'd like to 
+> supply a common API for people who use such techniques to produce more user-friendly layered libraries and components.
+> This audience might include ourselves for other future j.u.c classes.
+> 
+> Comments about this possible SequenceLock replacement would be 
+> welcome.
+> 
+> (I'll be out Sunday through Wednesday so might not reply immediately.)
+> 
+> -Doug
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From nathan.reynolds at oracle.com  Mon Jun 25 12:24:59 2012
+From: nathan.reynolds at oracle.com (Nathan Reynolds)
+Date: Mon, 25 Jun 2012 09:24:59 -0700
+Subject: [concurrency-interest] Fork/Join traces: instrumentation and
+ rendering
+In-Reply-To: <4FDE439E.1020805@gmail.com>
+References: <4FD256EC.8080908@gmail.com>
+	<CA+1LWGFX19bfgBArCqo3-9SENxJCCRGgeXHx5S7mdthRsjSOFg@mail.gmail.com>
+	<CAHXi_0fOjtmC9zoy7XFOEWNr-9Ly+N4YthCYhjED-85Fay+tPg@mail.gmail.com>
+	<40746.222.128.196.8.1339362619.squirrel@altair.cs.oswego.edu>
+	<4FDDF5E2.2010601@gmail.com> <4FDE4065.4090907@cs.oswego.edu>
+	<4FDE439E.1020805@gmail.com>
+Message-ID: <4FE890DB.6050000@oracle.com>
+
+Code weaving is a good route.  BTrace, AspectJ or other tools (?) will 
+make this simple.  Static and member empty methods will be inlined by 
+JIT optimization and hence no instructions will be added to the 
+optimized code.  These methods will impact interpreted code and hence 
+impact start up and warm up.  These methods will add a bit more memory 
+usage since there are additional bytecodes and metadata about the 
+methods.  I kind of doubt these latter 2 points will have any 
+significant impact.
+
+Static final booleans initialized to a constant will cause javac to 
+discard the check and dead code.  No interpreter impact and no bytecode 
+impact.  Static final booleans initialized at runtime will *hopefully* 
+cause JIT optimization to throw out the check and dead code.  I haven't 
+checked this latter point.
+
+Nathan Reynolds 
+<http://psr.us.oracle.com/wiki/index.php/User:Nathan_Reynolds> | 
+Consulting Member of Technical Staff | 602.333.9091
+Oracle PSR Engineering <http://psr.us.oracle.com/> | Server Technology
+On 6/17/2012 1:52 PM, Aleksey Shipilev wrote:
+> On 06/18/2012 12:39 AM, Doug Lea wrote:
+>> I/We don't see a way to do it with zero guaranteed impact vs
+>> non-instrumented code. But after giving fjp-trace some time to
+>> settle in, we'll find some reasonable way to semi-integrate
+>> to make it easier to use for diagnostics.
+> Sure, let it brew. In the mean time, let's consider more light-weight
+> ways to hook up the instrumentation code. I would go the code weaving
+> route, but that will require specific junction points within FJP to
+> weave to. Would calling dummy (static?) FJP methods in the places where
+> registerEvent() is called in current code work as zero-impact marker?
+>
+> (Now the crazy talk). Other options are:
+>   - protecting instrumentation calls with asserts and weave them into
+> existence when tracing is enabled? (Not really different from in-place
+> static final boolean check).
+>   - local variables with special names get written with the event; hoping
+> smart JIT will otherwise optimize the write away. (Is not really working
+> for interpreter and inferior "java" VMs).
+>   - anything else?
+>
+> -Aleksey.
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20120625/a0eab18b/attachment.html>
+
+From mthornton at optrak.com  Mon Jun 25 13:46:32 2012
+From: mthornton at optrak.com (Mark Thornton)
+Date: Mon, 25 Jun 2012 18:46:32 +0100
+Subject: [concurrency-interest] Fork/Join traces: instrumentation and
+ rendering
+In-Reply-To: <4FE890DB.6050000@oracle.com>
+References: <4FD256EC.8080908@gmail.com>
+	<CA+1LWGFX19bfgBArCqo3-9SENxJCCRGgeXHx5S7mdthRsjSOFg@mail.gmail.com>
+	<CAHXi_0fOjtmC9zoy7XFOEWNr-9Ly+N4YthCYhjED-85Fay+tPg@mail.gmail.com>
+	<40746.222.128.196.8.1339362619.squirrel@altair.cs.oswego.edu>
+	<4FDDF5E2.2010601@gmail.com> <4FDE4065.4090907@cs.oswego.edu>
+	<4FDE439E.1020805@gmail.com> <4FE890DB.6050000@oracle.com>
+Message-ID: <4FE8A3F8.7030601@optrak.com>
+
+On 25/06/12 17:24, Nathan Reynolds wrote:
+>  Static final booleans initialized at runtime will *hopefully* cause 
+> JIT optimization to throw out the check and dead code.  I haven't 
+> checked this latter point.
+They do in my experience. My tracing code relies on it to give zero cost 
+when disabled. I think this also applies to assertions.
+
+Mark Thornton
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20120625/0ae1f2d8/attachment.html>
+
+From william.louth at jinspired.com  Mon Jun 25 14:10:28 2012
+From: william.louth at jinspired.com (William Louth (JINSPIRED.COM))
+Date: Mon, 25 Jun 2012 20:10:28 +0200
+Subject: [concurrency-interest] Fork/Join traces: instrumentation and
+ rendering
+In-Reply-To: <4FE890DB.6050000@oracle.com>
+References: <4FD256EC.8080908@gmail.com>
+	<CA+1LWGFX19bfgBArCqo3-9SENxJCCRGgeXHx5S7mdthRsjSOFg@mail.gmail.com>
+	<CAHXi_0fOjtmC9zoy7XFOEWNr-9Ly+N4YthCYhjED-85Fay+tPg@mail.gmail.com>
+	<40746.222.128.196.8.1339362619.squirrel@altair.cs.oswego.edu>
+	<4FDDF5E2.2010601@gmail.com> <4FDE4065.4090907@cs.oswego.edu>
+	<4FDE439E.1020805@gmail.com> <4FE890DB.6050000@oracle.com>
+Message-ID: <4FE8A994.9050800@jinspired.com>
+
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20120625/e10be301/attachment.html>
+
+From aleksey.shipilev at gmail.com  Mon Jun 25 14:18:00 2012
+From: aleksey.shipilev at gmail.com (Aleksey Shipilev)
+Date: Mon, 25 Jun 2012 22:18:00 +0400
+Subject: [concurrency-interest] Fork/Join traces: instrumentation and
+	rendering
+In-Reply-To: <4FE8A3F8.7030601@optrak.com>
+References: <4FD256EC.8080908@gmail.com>
+	<CA+1LWGFX19bfgBArCqo3-9SENxJCCRGgeXHx5S7mdthRsjSOFg@mail.gmail.com>
+	<CAHXi_0fOjtmC9zoy7XFOEWNr-9Ly+N4YthCYhjED-85Fay+tPg@mail.gmail.com>
+	<40746.222.128.196.8.1339362619.squirrel@altair.cs.oswego.edu>
+	<4FDDF5E2.2010601@gmail.com> <4FDE4065.4090907@cs.oswego.edu>
+	<4FDE439E.1020805@gmail.com> <4FE890DB.6050000@oracle.com>
+	<4FE8A3F8.7030601@optrak.com>
+Message-ID: <CA+1LWGENvoG5rGMSFn9=E4o7FkmcfvHLLjcD2SvAkR4XNwARGw@mail.gmail.com>
+
+It is somewhat different with concurrency code and pessimistic
+compilers, and IMO that is why Doug is paranoid about this (not that I
+disagree with him). The current code for fjp-trace does the similar
+thing: checking static final variable first thing after the
+instrumented call. Granted, there is still possible overhead for
+calling the virtual method, which smart JITs are able to optimize. At
+this point, re-read the first sentence.
+
+I'm not sure if there exists any practical way to guarantee zero
+overheads without bringing "smart compiler" argument into the
+discussion. Bytecode rewriting is one questionable solution, due to
+rather complicated hotpaths in the FJP code. I would like to thing in
+this direction without assuming smart compilers.
+
+-Aleksey.
+
+On Mon, Jun 25, 2012 at 9:46 PM, Mark Thornton <mthornton at optrak.com> wrote:
+> On 25/06/12 17:24, Nathan Reynolds wrote:
+>
+> ?Static final booleans initialized at runtime will *hopefully* cause JIT
+> optimization to throw out the check and dead code.? I haven't checked this
+> latter point.
+>
+> They do in my experience. My tracing code relies on it to give zero cost
+> when disabled. I think this also applies to assertions.
+>
+> Mark Thornton
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From robert at politext.info  Mon Jun 25 17:23:02 2012
+From: robert at politext.info (Robert Varga)
+Date: Mon, 25 Jun 2012 22:23:02 +0100
+Subject: [concurrency-interest] question about
+	ConcurrentHashMapV8.RemappingFunction
+Message-ID: <CAJPpd-Ag=a+0iUXYo8BL=zxOQxxKOHkTd6R67wnOvmEEiPGveQ@mail.gmail.com>
+
+Hi Everyone,
+
+I tried to search for it (not too hard), but did not succeed, so I would
+post the question here:
+
+Was there any reason why the ConcurrentHashMapV8.RemappingFunction must
+return not-null when called from
+ConcurrentHashMapV8.compute(K,RemappingFunction) method?
+
+I understand that the map does not allow null keys or values.
+However, because of this, the null value returned from the
+RemappingFunction in this case could indicate the need to remove the
+mapping from the map.
+
+I also understand that this would make the compute() method more complex
+which would possibly reduce performance, on the other hand, it would be
+useful to have a way to carry this out, possibly with yet another compute
+method which behaves similarly to compute but caters for removal upon null
+returned from the RemappingFunction.
+
+It would allow algorithms which operate on an arbitrarily large amount of
+keys used during the lifetime of the map to clean the map up after
+themselves once the mapping is unused. At the moment such algorithms would
+need to do compute(K, RemappingFunction) with the function returning a
+magic-value, then call remove(K, magic-value), which would lead to double
+hash-lookup and additional cost due to the two mutating operations instead
+of one in the success case for a remove race.
+
+Thanks and best regards,
+
+Robert Varga
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20120625/1e182e62/attachment-0001.html>
+
+From radhakrishnan.mohan at gmail.com  Tue Jun 26 00:09:18 2012
+From: radhakrishnan.mohan at gmail.com (Mohan Radhakrishnan)
+Date: Tue, 26 Jun 2012 09:39:18 +0530
+Subject: [concurrency-interest] Fork/Join traces: instrumentation and
+	rendering
+In-Reply-To: <CA+1LWGENvoG5rGMSFn9=E4o7FkmcfvHLLjcD2SvAkR4XNwARGw@mail.gmail.com>
+References: <4FD256EC.8080908@gmail.com>
+	<CA+1LWGFX19bfgBArCqo3-9SENxJCCRGgeXHx5S7mdthRsjSOFg@mail.gmail.com>
+	<CAHXi_0fOjtmC9zoy7XFOEWNr-9Ly+N4YthCYhjED-85Fay+tPg@mail.gmail.com>
+	<40746.222.128.196.8.1339362619.squirrel@altair.cs.oswego.edu>
+	<4FDDF5E2.2010601@gmail.com> <4FDE4065.4090907@cs.oswego.edu>
+	<4FDE439E.1020805@gmail.com> <4FE890DB.6050000@oracle.com>
+	<4FE8A3F8.7030601@optrak.com>
+	<CA+1LWGENvoG5rGMSFn9=E4o7FkmcfvHLLjcD2SvAkR4XNwARGw@mail.gmail.com>
+Message-ID: <CAOoXFP_ygtKTY6-R9T640ZTg3xkbkswsuUkSBNMw-9Fh=6a3Lw@mail.gmail.com>
+
+*"Static and member empty methods will be inlined by JIT optimization and
+hence no instructions will be added to the optimized code. "*
+
+Methods like 'buildQueues'  that the new AspectJ compilers use is a empty
+method.
+
+@Aspect
+public class ForkJoinProjector {
+  @Pointcut( "execution ( int
+java.util.concurrent.ForkJoinPool.registerWorker(java.util.concurrent.
+ ForkJoinWorkerThread)) &&" +
+                   " args(thread) &&" +
+                   " target(pool)" )
+
+    *public void buildQueues( ForkJoinWorkerThread thread,
+                      ForkJoinPool pool){}
+*
+    @After("buildQueues( thread,pool)")
+    public void build( ForkJoinWorkerThread thread,
+                                   ForkJoinPool pool ) {
+     System.out.println( "ID " + thread.getId() + " Name " +
+thread.getName() );
+    }
+
+}
+
+Thanks.
+
+
+On Mon, Jun 25, 2012 at 11:48 PM, Aleksey Shipilev <
+aleksey.shipilev at gmail.com> wrote:
+
+> It is somewhat different with concurrency code and pessimistic
+> compilers, and IMO that is why Doug is paranoid about this (not that I
+> disagree with him). The current code for fjp-trace does the similar
+> thing: checking static final variable first thing after the
+> instrumented call. Granted, there is still possible overhead for
+> calling the virtual method, which smart JITs are able to optimize. At
+> this point, re-read the first sentence.
+>
+> I'm not sure if there exists any practical way to guarantee zero
+> overheads without bringing "smart compiler" argument into the
+> discussion. Bytecode rewriting is one questionable solution, due to
+> rather complicated hotpaths in the FJP code. I would like to thing in
+> this direction without assuming smart compilers.
+>
+> -Aleksey.
+>
+> On Mon, Jun 25, 2012 at 9:46 PM, Mark Thornton <mthornton at optrak.com>
+> wrote:
+> > On 25/06/12 17:24, Nathan Reynolds wrote:
+> >
+> >  Static final booleans initialized at runtime will *hopefully* cause JIT
+> > optimization to throw out the check and dead code.  I haven't checked
+> this
+> > latter point.
+> >
+> > They do in my experience. My tracing code relies on it to give zero cost
+> > when disabled. I think this also applies to assertions.
+> >
+> > Mark Thornton
+> >
+> >
+>  > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20120626/034a0f99/attachment.html>
+
+From dl at cs.oswego.edu  Tue Jun 26 07:46:32 2012
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 26 Jun 2012 07:46:32 -0400 (EDT)
+Subject: [concurrency-interest] question about
+ ConcurrentHashMapV8.RemappingFunction
+In-Reply-To: <CAJPpd-Ag=a+0iUXYo8BL=zxOQxxKOHkTd6R67wnOvmEEiPGveQ@mail.gmail.com>
+References: <CAJPpd-Ag=a+0iUXYo8BL=zxOQxxKOHkTd6R67wnOvmEEiPGveQ@mail.gmail.com>
+Message-ID: <41532.173.13.44.225.1340711192.squirrel@altair.cs.oswego.edu>
+
+> Hi Everyone,
+>
+> I tried to search for it (not too hard), but did not succeed, so I would
+> post the question here:
+>
+> Was there any reason why the ConcurrentHashMapV8.RemappingFunction must
+> return not-null when called from
+> ConcurrentHashMapV8.compute(K,RemappingFunction) method?
+
+There was some list discussion about this when CHMV8 was first
+released. I don't have a strong opinion about it. Some argued
+that returning null from remapper is in practice usually an
+error so should be trapped, so this is what it now does.
+But having null return indicate deletion does seem handy.
+If anyone knows a knock-down argument showing that it is
+more than handy, and is essential for some use-case, please
+feel free to post it.
+
+-Doug
+
+>
+> I understand that the map does not allow null keys or values.
+> However, because of this, the null value returned from the
+> RemappingFunction in this case could indicate the need to remove the
+> mapping from the map.
+>
+> I also understand that this would make the compute() method more complex
+> which would possibly reduce performance, on the other hand, it would be
+> useful to have a way to carry this out, possibly with yet another compute
+> method which behaves similarly to compute but caters for removal upon null
+> returned from the RemappingFunction.
+>
+> It would allow algorithms which operate on an arbitrarily large amount of
+> keys used during the lifetime of the map to clean the map up after
+> themselves once the mapping is unused. At the moment such algorithms would
+> need to do compute(K, RemappingFunction) with the function returning a
+> magic-value, then call remove(K, magic-value), which would lead to double
+> hash-lookup and additional cost due to the two mutating operations instead
+> of one in the success case for a remove race.
+>
+> Thanks and best regards,
+>
+> Robert Varga
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+From dl at cs.oswego.edu  Tue Jun 26 07:58:58 2012
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 26 Jun 2012 07:58:58 -0400 (EDT)
+Subject: [concurrency-interest] StampedLock: A possible SequenceLock
+ replacement
+In-Reply-To: <A3E67C2071F49C4CBC4F17E6D77CDDD235F402CD@G4W3296.americas.hpqcorp.net
+	>
+References: <4FE5C201.5040201@cs.oswego.edu>
+	<A3E67C2071F49C4CBC4F17E6D77CDDD235F402CD@G4W3296.americas.hpqcorp.net>
+Message-ID: <41554.173.13.44.225.1340711938.squirrel@altair.cs.oswego.edu>
+
+> It seems to me that problems 1 and 2 are essentially orthogonal, and are
+> addressed by separable parts of the solution, right?  Problem 2
+> essentially requires something like a LoadLoad fence in the implementation
+> of a validate()-like primitive, which, as Doug points out, makes it
+> unimplementable in pure Java, and hard to explain in terms of the Java
+> memory model.  But does it have much to do with the interface change,
+> except that the interface change highlights the weird usage model?
+
+This does require introduction of method validate(). In SequenceLock,
+we allowed users to get the sequence and compare directly, which
+didn't provide us anywhere to place the fencing needed upon the
+validation check.
+
+-Doug
+
+
+
+From pavel.rappo at gmail.com  Fri Jun 29 06:54:14 2012
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Fri, 29 Jun 2012 11:54:14 +0100
+Subject: [concurrency-interest] [Javamemorymodel-discussion] is my
+	counter thread safe?
+In-Reply-To: <CAFAd71W3Ct6s28wZhR2E4PK6oKWj9zYrQoeW0ZQVr=L2_YH0qg@mail.gmail.com>
+References: <CAFAd71W3Ct6s28wZhR2E4PK6oKWj9zYrQoeW0ZQVr=L2_YH0qg@mail.gmail.com>
+Message-ID: <CAChcVumPoPyQToXmWFQO7YS1rmTyqk9xEdT=vN6nKAKiSY9RpA@mail.gmail.com>
+
+Hi,
+
+This 'counter.get(key)' cannot simply return "not well constructed"
+object. The reason is that you use 'putIfAbsent' to put it in the map.
+Either 'get' will return 'null' or it will return perfectly valid
+AtomicLong object. There's a happen-before edge between these two
+actions.
+
+On 6/29/12, Li Li <fancyerii at gmail.com> wrote:
+> hi all
+>    I have read
+> http://www.cs.umd.edu/~pugh/java/memoryModel/DoubleCheckedLocking.html
+> and know a little about Java memory model.
+>    I want to implement a thread safe and efficient Map<String,int>
+> counter. I found a related question in stackoverflow
+> http://stackoverflow.com/questions/8477352/global-in-memory-counter-that-is-thread-safe-and-flushes-to-mysql-every-x-increm
+>    my implementation is :
+>
+>         private ConcurrentHashMap<String, AtomicLong> counter=new
+> ConcurrentHashMap<String, AtomicLong>();
+> 	
+> 	public void addCount(String key, long count){
+> 		if(count<=0) return;
+> 		AtomicLong current = counter.get(key);
+>                 if(current == null) {
+>         	    current=counter.putIfAbsent(key, new AtomicLong());
+>         	    if(current == null) current=counter.get(key);
+>                 }
+>
+>                 assert current!=null;
+>                 current.addAndGet(count);
+>
+> 	}
+>    but after I reading
+> http://www.cs.umd.edu/~pugh/java/memoryModel/DoubleCheckedLocking.html
+> . it seems there exists a state that may fail.
+>    if thread1 call addCount("key",2); and thread2 call
+> addCount("key",1); at the same time.
+>    thread1 executes AtomicLong current = counter.get(key);  and gets null.
+>    then thread 1 execute
+>           if(current == null) {
+>         	    current=counter.putIfAbsent(key, new AtomicLong());
+>    as compilers/cpus may disorder, new AtomicLong() will not be null
+> but may be well constructed.
+>    Then thread 2 call AtomicLong current = counter.get(key); it's not
+> null but not well constructed. then it call current.addAndGet().
+>     Will thread 2 crash if current is not well constructed?
+>
+>     I also find similar implementation in a popular lib -- guava
+> https://code.google.com/p/guava-libraries/source/browse/guava/src/com/google/common/util/concurrent/AtomicLongMap.java?name=v11.0-rc1
+>     it may also fail like my codes.
+>     e.g. thread 1 call atomic = map.putIfAbsent(key, new
+> AtomicLong(delta));
+>            thread 2 get a not null atomic and call it's get();
+>
+> public long addAndGet(K key, long delta) {
+>     outer: for (;;) {
+>       AtomicLong atomic = map.get(key);
+>       if (atomic == null) {
+>         atomic = map.putIfAbsent(key, new AtomicLong(delta));
+>         if (atomic == null) {
+>           return delta;
+>         }
+>         // atomic is now non-null; fall through
+>       }
+>
+>       for (;;) {
+>         long oldValue = atomic.get();
+>         if (oldValue == 0L) {
+>           // don't compareAndSet a zero
+>           if (map.replace(key, atomic, new AtomicLong(delta))) {
+>             return delta;
+>           }
+>           // atomic replaced
+>           continue outer;
+>         }
+>
+>         long newValue = oldValue + delta;
+>         if (atomic.compareAndSet(oldValue, newValue)) {
+>           return newValue;
+>         }
+>         // value changed
+>       }
+>     }
+>   }
+> _______________________________________________
+> Javamemorymodel-discussion mailing list
+> Javamemorymodel-discussion at cs.umd.edu
+> https://mailman.cs.umd.edu/mailman/listinfo/javamemorymodel-discussion
+>
+
+
+-- 
+Sincerely yours, Pavel Rappo.
+
+From pavel.rappo at gmail.com  Fri Jun 29 07:24:37 2012
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Fri, 29 Jun 2012 12:24:37 +0100
+Subject: [concurrency-interest] [Javamemorymodel-discussion] is my
+	counter thread safe?
+In-Reply-To: <CAFAd71XiBA5qZCpkO8u--Ay_s1Sn+ffkHowmw8jUrBrpAgL1uQ@mail.gmail.com>
+References: <CAFAd71W3Ct6s28wZhR2E4PK6oKWj9zYrQoeW0ZQVr=L2_YH0qg@mail.gmail.com>
+	<CAChcVumPoPyQToXmWFQO7YS1rmTyqk9xEdT=vN6nKAKiSY9RpA@mail.gmail.com>
+	<CAFAd71XiBA5qZCpkO8u--Ay_s1Sn+ffkHowmw8jUrBrpAgL1uQ@mail.gmail.com>
+Message-ID: <CAChcVumKSCb1wLf7n7ApQQYKrVHiqr7vU=m1vM_ru=LMgZNb3g@mail.gmail.com>
+
+1. I can't see any obvious flaws in it.
+2. http://docs.oracle.com/javase/6/docs/api/java/util/concurrent/package-summary.html
+(see "Memory Consistency Properties")
+
+On 6/29/12, Li Li <fancyerii at gmail.com> wrote:
+> do you mean my counter is safe?
+> putIfAbsent has a happen-before semantic? any document about this? Or
+> only current implementation guarantee this?
+>
+> On Fri, Jun 29, 2012 at 6:54 PM, Pavel Rappo <pavel.rappo at gmail.com> wrote:
+>> Hi,
+>>
+>> This 'counter.get(key)' cannot simply return "not well constructed"
+>> object. The reason is that you use 'putIfAbsent' to put it in the map.
+>> Either 'get' will return 'null' or it will return perfectly valid
+>> AtomicLong object. There's a happen-before edge between these two
+>> actions.
+>>
+>> On 6/29/12, Li Li <fancyerii at gmail.com> wrote:
+>>> hi all
+>>>    I have read
+>>> http://www.cs.umd.edu/~pugh/java/memoryModel/DoubleCheckedLocking.html
+>>> and know a little about Java memory model.
+>>>    I want to implement a thread safe and efficient Map<String,int>
+>>> counter. I found a related question in stackoverflow
+>>> http://stackoverflow.com/questions/8477352/global-in-memory-counter-that-is-thread-safe-and-flushes-to-mysql-every-x-increm
+>>>    my implementation is :
+>>>
+>>>         private ConcurrentHashMap<String, AtomicLong> counter=new
+>>> ConcurrentHashMap<String, AtomicLong>();
+>>>
+>>>       public void addCount(String key, long count){
+>>>               if(count<=0) return;
+>>>               AtomicLong current = counter.get(key);
+>>>                 if(current == null) {
+>>>                   current=counter.putIfAbsent(key, new AtomicLong());
+>>>                   if(current == null) current=counter.get(key);
+>>>                 }
+>>>
+>>>                 assert current!=null;
+>>>                 current.addAndGet(count);
+>>>
+>>>       }
+>>>    but after I reading
+>>> http://www.cs.umd.edu/~pugh/java/memoryModel/DoubleCheckedLocking.html
+>>> . it seems there exists a state that may fail.
+>>>    if thread1 call addCount("key",2); and thread2 call
+>>> addCount("key",1); at the same time.
+>>>    thread1 executes AtomicLong current = counter.get(key);  and gets
+>>> null.
+>>>    then thread 1 execute
+>>>           if(current == null) {
+>>>                   current=counter.putIfAbsent(key, new AtomicLong());
+>>>    as compilers/cpus may disorder, new AtomicLong() will not be null
+>>> but may be well constructed.
+>>>    Then thread 2 call AtomicLong current = counter.get(key); it's not
+>>> null but not well constructed. then it call current.addAndGet().
+>>>     Will thread 2 crash if current is not well constructed?
+>>>
+>>>     I also find similar implementation in a popular lib -- guava
+>>> https://code.google.com/p/guava-libraries/source/browse/guava/src/com/google/common/util/concurrent/AtomicLongMap.java?name=v11.0-rc1
+>>>     it may also fail like my codes.
+>>>     e.g. thread 1 call atomic = map.putIfAbsent(key, new
+>>> AtomicLong(delta));
+>>>            thread 2 get a not null atomic and call it's get();
+>>>
+>>> public long addAndGet(K key, long delta) {
+>>>     outer: for (;;) {
+>>>       AtomicLong atomic = map.get(key);
+>>>       if (atomic == null) {
+>>>         atomic = map.putIfAbsent(key, new AtomicLong(delta));
+>>>         if (atomic == null) {
+>>>           return delta;
+>>>         }
+>>>         // atomic is now non-null; fall through
+>>>       }
+>>>
+>>>       for (;;) {
+>>>         long oldValue = atomic.get();
+>>>         if (oldValue == 0L) {
+>>>           // don't compareAndSet a zero
+>>>           if (map.replace(key, atomic, new AtomicLong(delta))) {
+>>>             return delta;
+>>>           }
+>>>           // atomic replaced
+>>>           continue outer;
+>>>         }
+>>>
+>>>         long newValue = oldValue + delta;
+>>>         if (atomic.compareAndSet(oldValue, newValue)) {
+>>>           return newValue;
+>>>         }
+>>>         // value changed
+>>>       }
+>>>     }
+>>>   }
+>>> _______________________________________________
+>>> Javamemorymodel-discussion mailing list
+>>> Javamemorymodel-discussion at cs.umd.edu
+>>> https://mailman.cs.umd.edu/mailman/listinfo/javamemorymodel-discussion
+>>>
+>>
+>>
+>> --
+>> Sincerely yours, Pavel Rappo.
+>
+
+
+-- 
+Sincerely yours, Pavel Rappo.
+
+From dl at cs.oswego.edu  Fri Jun 29 08:36:17 2012
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 29 Jun 2012 08:36:17 -0400
+Subject: [concurrency-interest] question about
+	ConcurrentHashMapV8.RemappingFunction
+In-Reply-To: <41532.173.13.44.225.1340711192.squirrel@altair.cs.oswego.edu>
+References: <CAJPpd-Ag=a+0iUXYo8BL=zxOQxxKOHkTd6R67wnOvmEEiPGveQ@mail.gmail.com>
+	<41532.173.13.44.225.1340711192.squirrel@altair.cs.oswego.edu>
+Message-ID: <4FEDA141.2090701@cs.oswego.edu>
+
+On 06/26/12 07:46, Doug Lea wrote:
+>> Was there any reason why the ConcurrentHashMapV8.RemappingFunction must
+>> return not-null when called from
+>> ConcurrentHashMapV8.compute(K,RemappingFunction) method?
+>
+> There was some list discussion about this when CHMV8 was first
+> released. I don't have a strong opinion about it.
+
+On second thought...
+
+>> At the moment such algorithms would
+>> need to do compute(K, RemappingFunction) with the function returning a
+>> magic-value, then call remove(K, magic-value), which would lead to double
+>> hash-lookup and additional cost due to the two mutating operations instead
+>> of one in the success case for a remove race.
+
+... avoiding the need for magic values and/or non-atomic rechecks is
+why we introduced the computeIfAbsent and recompute methods in the
+first place. Using null to indicate the lack of value
+(thus removal from the map if present) not only simplifies
+such user code but also maintains atomicity of the operation.
+
+I'll revise accordingly in next update (hopefully within
+a few days.) For consistency, the same rule should apply
+to both methods, so if the function in computeIfAbsent
+returns null, no mapping should be installed.
+
+-Doug
+
+From kasperni at gmail.com  Fri Jun 29 09:14:56 2012
+From: kasperni at gmail.com (Kasper Nielsen)
+Date: Fri, 29 Jun 2012 15:14:56 +0200
+Subject: [concurrency-interest] question about
+	ConcurrentHashMapV8.RemappingFunction
+In-Reply-To: <4FEDA141.2090701@cs.oswego.edu>
+References: <CAJPpd-Ag=a+0iUXYo8BL=zxOQxxKOHkTd6R67wnOvmEEiPGveQ@mail.gmail.com>
+	<41532.173.13.44.225.1340711192.squirrel@altair.cs.oswego.edu>
+	<4FEDA141.2090701@cs.oswego.edu>
+Message-ID: <CAPs6153bejXSn1OK_3UJPgQiejNaRLexxcvHJWiSkeT9y6BD_g@mail.gmail.com>
+
+On Fri, Jun 29, 2012 at 2:36 PM, Doug Lea <dl at cs.oswego.edu> wrote:
+> On 06/26/12 07:46, Doug Lea wrote:
+>>>
+>>> Was there any reason why the ConcurrentHashMapV8.RemappingFunction must
+>>> return not-null when called from
+>>> ConcurrentHashMapV8.compute(K,RemappingFunction) method?
+>>
+>>
+>> There was some list discussion about this when CHMV8 was first
+>> released. I don't have a strong opinion about it.
+>
+>
+> On second thought...
+>
+>
+>>> At the moment such algorithms would
+>>> need to do compute(K, RemappingFunction) with the function returning a
+>>> magic-value, then call remove(K, magic-value), which would lead to double
+>>> hash-lookup and additional cost due to the two mutating operations
+>>> instead
+>>> of one in the success case for a remove race.
+>
+>
+> ... avoiding the need for magic values and/or non-atomic rechecks is
+> why we introduced the computeIfAbsent and recompute methods in the
+> first place. Using null to indicate the lack of value
+> (thus removal from the map if present) not only simplifies
+> such user code but also maintains atomicity of the operation.
+
+Are the various compute methods only going to be available on CHM?
+I mean letting null indicate a removal (or something else) makes it
+impossible to introduce them
+later on any kind of maps that allow null values.
+
+Cheers
+  Kasper
+
+From dl at cs.oswego.edu  Fri Jun 29 09:45:24 2012
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 29 Jun 2012 09:45:24 -0400
+Subject: [concurrency-interest] question about
+	ConcurrentHashMapV8.RemappingFunction
+In-Reply-To: <CAPs6153bejXSn1OK_3UJPgQiejNaRLexxcvHJWiSkeT9y6BD_g@mail.gmail.com>
+References: <CAJPpd-Ag=a+0iUXYo8BL=zxOQxxKOHkTd6R67wnOvmEEiPGveQ@mail.gmail.com>	<41532.173.13.44.225.1340711192.squirrel@altair.cs.oswego.edu>	<4FEDA141.2090701@cs.oswego.edu>
+	<CAPs6153bejXSn1OK_3UJPgQiejNaRLexxcvHJWiSkeT9y6BD_g@mail.gmail.com>
+Message-ID: <4FEDB174.2030206@cs.oswego.edu>
+
+On 06/29/12 09:14, Kasper Nielsen wrote:
+> Are the various compute methods only going to be available on CHM?
+> I mean letting null indicate a removal (or something else) makes it
+> impossible to introduce them
+> later on any kind of maps that allow null values.
+
+As mentioned in another thread, these methods can/should also be
+added to ConcurrentSkipListMap. And someday there may be some
+good opportunity to create an interface covering them and others.
+But all reasonable concurrent maps do not support null values:
+It would be impossible to distinguish null values from absence
+of mapping -- the sequential "m.get(k) == null && !m.containsKey(k)"
+idiom does not apply. So future concurrent maps should be able to
+support these methods as well.
+
+-Doug
+

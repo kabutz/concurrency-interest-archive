@@ -1,0 +1,2906 @@
+From dl@cs.oswego.edu  Mon Nov  3 14:07:13 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Mon, 3 Nov 2003 09:07:13 -0500
+Subject: [concurrency-interest] Resizing semaphores
+In-Reply-To: <088b01c39fe1$b078f180$2d1811ac@avila>
+References: <02b501c39e72$94df7a40$2d1811ac@avila>
+ <1067481298.2637.11.camel@localhost.localdomain>
+ <088b01c39fe1$b078f180$2d1811ac@avila>
+Message-ID: <16294.24849.988337.814135@altair.cs.oswego.edu>
+
+> > Yes, but there is a good compromise available. We could make this (or
+> > something with equivalent effect) a protected method that you would
+> > need to subclass in order to expose. Good enough?
+> 
+> That would work well for me.
+
+Done. Spurred by this and other concerns, we also committed some other API
+changes for semaphores that we had been contemplating:
+
+* The fair and non-fair variants are merged into a single class with
+  fairness constructor param, which is more consistent with how
+  fairness is handled elsewhere in j.u.c. Unlike other classes
+  though, there is no default fairness setting here, since the
+  usage contexts in which you'd want to ensure fairness as opposed
+  to achieve higher throughput seem about equally common.
+* Permits are now represented as ints, not longs; in part again
+  for consistency with how other counts are handled, and in part
+  to better equalize expected performance across common platforms.
+  These now seem to outweigh overflow concerns.
+* There are some new instrumentation methods similar to those
+  in ReentrantLock.
+
+As always, comments would be welcome. 
+
+-Doug
+
+
+From adam@bea.com  Tue Nov  4 22:35:55 2003
+From: adam@bea.com (Adam Messinger)
+Date: Tue, 4 Nov 2003 14:35:55 -0800
+Subject: [concurrency-interest] Lock Manager
+Message-ID: <10e101c3a324$028226a0$2d1811ac@avila>
+
+This is a multi-part message in MIME format.
+
+------=_NextPart_000_10DE_01C3A2E0.F438C100
+Content-Type: text/plain;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+Please excuse if this is something which has already been discussed and =
+found to be out of scope.  I looked back through the archives and =
+couldn't find a record of it.  I believe that a number of programs have =
+need for functionality that looks something like this:
+
+public interface LockManager {
+  public void lock(Object key, Object owner);
+  public void tryLock(Object key, Object owner, long time, TimeUnit =
+unit);
+
+  public void unlock(Object key, Object owner);
+}
+
+An example of this in the real world can be found here:
+
+http://www.javagroups.com/javagroupsnew/docs/javadoc/org/jgroups/blocks/L=
+ockManager.html
+
+In addition similar schemes are present in WebLogic Server internals.  =
+In some places we use a non-blocking variation of this which looks =
+something like:
+
+public interface NonBlockingLockManager extends LockManager { =20
+  public Future tryLock(Object key, Object owner, long time, TimeUnit =
+unit, Listener l);
+  public Future unlock(Object key, Object owner, Listener l);
+
+  public interface Listener {
+    // called whenever f.isDone() would start returning true
+    public void done(Future f);
+  }
+}
+
+The non-blocking tryLock variation allows us to avoid blocking threads =
+while trying to gain contended locks.  The non-blocking unlock is needed =
+mostly for situations where the unlock operation requires I/O.
+
+I know that many other applications have need for one or both of these =
+variations as well.
+
+All this is similar, but subtly different, than having a j.u.Map full of =
+j.u.c.Locks.  One important difference is that the locks may be owned by =
+something other than a Thread (an example use case is a transaction).  =
+Another difference is that some subtlety is required to remove unused =
+locks without race conditions which cause simultaneous lock attempts to =
+deadlock.  Finally supporting the Futures is also outside the scope of =
+what the current Locks can do.
+
+What do folks think?  Is it a general enough problem to be included in =
+JSR 166?  Is it too out of place given that it decouples locking from =
+threading?
+
+Cheers!
+
+Adam
+------=_NextPart_000_10DE_01C3A2E0.F438C100
+Content-Type: text/html;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<HTML><HEAD>
+<META http-equiv=3DContent-Type content=3D"text/html; =
+charset=3Diso-8859-1">
+<META content=3D"MSHTML 6.00.2800.1141" name=3DGENERATOR>
+<STYLE></STYLE>
+</HEAD>
+<BODY bgColor=3D#ffffff>
+<DIV><FONT face=3DArial size=3D2>Please excuse if this is something =
+which has=20
+already been discussed and found to be out of scope.&nbsp; I looked back =
+through=20
+the archives and couldn't find a record of it.&nbsp; </FONT><FONT =
+face=3DArial=20
+size=3D2>I believe that a number of programs have need for functionality =
+that=20
+looks something like this:</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>public interface LockManager =
+{</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp; public void lock(Object key, =
+Object=20
+owner);</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp; public void tryLock(Object key, =
+Object=20
+owner, long time, TimeUnit unit);</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp; public void unlock(Object key, =
+Object=20
+owner);</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>}</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>An example of this in the real world =
+can be found=20
+here:</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2><A=20
+href=3D"http://www.javagroups.com/javagroupsnew/docs/javadoc/org/jgroups/=
+blocks/LockManager.html">http://www.javagroups.com/javagroupsnew/docs/jav=
+adoc/org/jgroups/blocks/LockManager.html</A></FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>In addition similar schemes are present =
+
+in&nbsp;WebLogic Server internals.&nbsp; In some places we use a =
+non-blocking=20
+variation of this which looks something like:</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV>
+<DIV><FONT face=3DArial size=3D2>public interface NonBlockingLockManager =
+extends=20
+LockManager {</FONT><FONT face=3DArial size=3D2>&nbsp; </FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp; public Future tryLock(Object =
+key, Object=20
+owner, long time, TimeUnit unit, Listener l);</FONT></DIV>
+<DIV>
+<DIV><FONT face=3DArial size=3D2></FONT></DIV><FONT face=3DArial =
+size=3D2>&nbsp; public=20
+Future unlock(Object key, Object owner, Listener l);</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp; public interface Listener =
+{</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp;&nbsp;&nbsp; // called whenever =
+f.isDone()=20
+would start returning true</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp;&nbsp;&nbsp; public void =
+done(Future=20
+f);</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp; }</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>}</FONT></DIV></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>The non-blocking tryLock variation =
+allows us to=20
+avoid blocking threads while trying to gain contended locks.&nbsp; The=20
+non-blocking unlock is needed mostly for situations where the unlock =
+operation=20
+requires I/O.</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>I know that many other applications =
+have need for=20
+one or both of these variations as well.</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>All this is similar, but subtly =
+different, than=20
+having a j.u.Map full of j.u.c.Locks.&nbsp; One important difference is =
+that the=20
+locks may be owned by something other than a Thread (an example use case =
+
+is&nbsp;a transaction).&nbsp; Another difference is that some subtlety =
+is=20
+required to remove unused locks without race conditions which cause =
+simultaneous=20
+lock attempts to deadlock.&nbsp; Finally supporting the Futures is also =
+outside=20
+the scope of what the current Locks can do.</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>What do folks think?&nbsp; Is it a =
+general enough=20
+problem to be included in JSR 166?&nbsp; Is it too out of place given =
+that it=20
+decouples locking from threading?</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial =
+size=3D2>Cheers!<BR><BR>Adam</FONT></DIV></BODY></HTML>
+
+------=_NextPart_000_10DE_01C3A2E0.F438C100--
+
+
+From Darron_Shaffer@stercomm.com  Tue Nov  4 23:00:46 2003
+From: Darron_Shaffer@stercomm.com (Shaffer, Darron)
+Date: Tue, 4 Nov 2003 17:00:46 -0600
+Subject: [concurrency-interest] Lock Manager
+Message-ID: <D0E281E7D3C7164399488D7AD8BEEFEB01C14ED8@scidalmsg02.csg.stercomm.com>
+
+This message is in MIME format. Since your mail reader does not understand
+this format, some or all of this message may not be legible.
+
+------_=_NextPart_001_01C3A327.7B20DE5A
+Content-Type: text/plain;
+	charset="ISO-8859-1"
+
+I have just such a locking tool that I built on top of a ConcurrentHashMap.
+I called it a "NamedLockTable".  As Adam notes, it is non-trivial to do this
+such that:
+ 
+a) The known key storage doesn't grow without bounds -- released locks are
+removed.
+b) Locking with an unknown key is cheap.
+c) No races occur when a lock is being released and another thread is trying
+to acquire the same lock.
+ 
+Another possible feature is to allow locks to time out and be removed
+automatically.
+ 
+This same locking model occured as far back as IBM CICS.
+
+-----Original Message-----
+From: concurrency-interest-admin@cs.oswego.edu
+[mailto:concurrency-interest-admin@cs.oswego.edu]On Behalf Of Adam Messinger
+Sent: Tuesday, November 04, 2003 4:36 PM
+To: concurrency-interest@altair.cs.oswego.edu
+Subject: [concurrency-interest] Lock Manager
+
+
+Please excuse if this is something which has already been discussed and
+found to be out of scope.  I looked back through the archives and couldn't
+find a record of it.  I believe that a number of programs have need for
+functionality that looks something like this:
+ 
+public interface LockManager {
+  public void lock(Object key, Object owner);
+  public void tryLock(Object key, Object owner, long time, TimeUnit unit);
+ 
+  public void unlock(Object key, Object owner);
+}
+ 
+An example of this in the real world can be found here:
+ 
+http://www.javagroups.com/javagroupsnew/docs/javadoc/org/jgroups/blocks/Lock
+Manager.html
+<http://www.javagroups.com/javagroupsnew/docs/javadoc/org/jgroups/blocks/Loc
+kManager.html> 
+ 
+In addition similar schemes are present in WebLogic Server internals.  In
+some places we use a non-blocking variation of this which looks something
+like:
+ 
+public interface NonBlockingLockManager extends LockManager {  
+  public Future tryLock(Object key, Object owner, long time, TimeUnit unit,
+Listener l);
+
+  public Future unlock(Object key, Object owner, Listener l);
+ 
+  public interface Listener {
+    // called whenever f.isDone() would start returning true
+    public void done(Future f);
+  }
+}
+ 
+The non-blocking tryLock variation allows us to avoid blocking threads while
+trying to gain contended locks.  The non-blocking unlock is needed mostly
+for situations where the unlock operation requires I/O.
+ 
+I know that many other applications have need for one or both of these
+variations as well.
+ 
+All this is similar, but subtly different, than having a j.u.Map full of
+j.u.c.Locks.  One important difference is that the locks may be owned by
+something other than a Thread (an example use case is a transaction).
+Another difference is that some subtlety is required to remove unused locks
+without race conditions which cause simultaneous lock attempts to deadlock.
+Finally supporting the Futures is also outside the scope of what the current
+Locks can do.
+ 
+What do folks think?  Is it a general enough problem to be included in JSR
+166?  Is it too out of place given that it decouples locking from threading?
+ 
+Cheers!
+
+Adam
+
+
+------_=_NextPart_001_01C3A327.7B20DE5A
+Content-Type: text/html;
+	charset="ISO-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<HTML><HEAD>
+<META HTTP-EQUIV=3D"Content-Type" CONTENT=3D"text/html; =
+charset=3DISO-8859-1">
+
+
+<META content=3D"MSHTML 6.00.2800.1106" name=3DGENERATOR>
+<STYLE></STYLE>
+</HEAD>
+<BODY bgColor=3D#ffffff>
+<DIV><SPAN class=3D025485222-04112003><FONT face=3DArial =
+color=3D#0000ff size=3D2>I have=20
+just such a locking tool that I built on top of a =
+ConcurrentHashMap.&nbsp; I=20
+called it a "NamedLockTable".&nbsp; As Adam notes, it is non-trivial to =
+do this=20
+such that:</FONT></SPAN></DIV>
+<DIV><SPAN class=3D025485222-04112003><FONT face=3DArial =
+color=3D#0000ff=20
+size=3D2></FONT></SPAN>&nbsp;</DIV>
+<DIV><SPAN class=3D025485222-04112003><FONT face=3DArial =
+color=3D#0000ff size=3D2>a)=20
+The&nbsp;known key storage&nbsp;doesn't grow without bounds -- released =
+locks=20
+are removed.</FONT></SPAN></DIV>
+<DIV><SPAN class=3D025485222-04112003><FONT face=3DArial =
+color=3D#0000ff size=3D2>b)=20
+Locking with an unknown key is cheap.</FONT></SPAN></DIV>
+<DIV><SPAN class=3D025485222-04112003><FONT face=3DArial =
+color=3D#0000ff size=3D2>c) No=20
+races occur when a lock is being released and another thread is trying =
+to=20
+acquire the same lock.</FONT></SPAN></DIV>
+<DIV><SPAN class=3D025485222-04112003><FONT face=3DArial =
+color=3D#0000ff=20
+size=3D2></FONT></SPAN>&nbsp;</DIV>
+<DIV><SPAN class=3D025485222-04112003><FONT face=3DArial =
+color=3D#0000ff=20
+size=3D2>Another possible feature is to allow locks to time out and be =
+removed=20
+automatically.</FONT></SPAN></DIV>
+<DIV><SPAN class=3D025485222-04112003><FONT face=3DArial =
+color=3D#0000ff=20
+size=3D2></FONT></SPAN>&nbsp;</DIV>
+<DIV><SPAN class=3D025485222-04112003><FONT face=3DArial =
+color=3D#0000ff size=3D2>This=20
+same locking model occured as far back as IBM CICS.</FONT></SPAN></DIV>
+<BLOCKQUOTE dir=3Dltr style=3D"MARGIN-RIGHT: 0px">
+  <DIV class=3DOutlookMessageHeader dir=3Dltr align=3Dleft><FONT =
+face=3DTahoma=20
+  size=3D2>-----Original Message-----<BR><B>From:</B>=20
+  concurrency-interest-admin@cs.oswego.edu=20
+  [mailto:concurrency-interest-admin@cs.oswego.edu]<B>On Behalf Of =
+</B>Adam=20
+  Messinger<BR><B>Sent:</B> Tuesday, November 04, 2003 4:36 =
+PM<BR><B>To:</B>=20
+  concurrency-interest@altair.cs.oswego.edu<BR><B>Subject:</B>=20
+  [concurrency-interest] Lock Manager<BR><BR></FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2>Please excuse if this is something =
+which has=20
+  already been discussed and found to be out of scope.&nbsp; I looked =
+back=20
+  through the archives and couldn't find a record of it.&nbsp; =
+</FONT><FONT=20
+  face=3DArial size=3D2>I believe that a number of programs have need =
+for=20
+  functionality that looks something like this:</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT face=3DArial size=3D2>public interface LockManager =
+{</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2>&nbsp; public void lock(Object key, =
+Object=20
+  owner);</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2>&nbsp; public void tryLock(Object =
+key, Object=20
+  owner, long time, TimeUnit unit);</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT face=3DArial size=3D2>&nbsp; public void unlock(Object =
+key, Object=20
+  owner);</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2>}</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT face=3DArial size=3D2>An example of this in the real world =
+can be found=20
+  here:</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT face=3DArial size=3D2><A=20
+  =
+href=3D"http://www.javagroups.com/javagroupsnew/docs/javadoc/org/jgroups=
+/blocks/LockManager.html">http://www.javagroups.com/javagroupsnew/docs/j=
+avadoc/org/jgroups/blocks/LockManager.html</A></FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT face=3DArial size=3D2>In addition similar schemes are =
+present=20
+  in&nbsp;WebLogic Server internals.&nbsp; In some places we use a =
+non-blocking=20
+  variation of this which looks something like:</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+  <DIV>
+  <DIV><FONT face=3DArial size=3D2>public interface =
+NonBlockingLockManager extends=20
+  LockManager {</FONT><FONT face=3DArial size=3D2>&nbsp; </FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2>&nbsp; public Future tryLock(Object =
+key, Object=20
+  owner, long time, TimeUnit unit, Listener l);</FONT></DIV>
+  <DIV>
+  <DIV><FONT face=3DArial size=3D2></FONT></DIV><FONT face=3DArial =
+size=3D2>&nbsp;=20
+  public Future unlock(Object key, Object owner, Listener =
+l);</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT face=3DArial size=3D2>&nbsp; public interface Listener =
+{</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2>&nbsp;&nbsp;&nbsp; // called =
+whenever f.isDone()=20
+  would start returning true</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2>&nbsp;&nbsp;&nbsp; public void =
+done(Future=20
+  f);</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2>&nbsp; }</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2>}</FONT></DIV></DIV>
+  <DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT face=3DArial size=3D2>The non-blocking tryLock variation =
+allows us to=20
+  avoid blocking threads while trying to gain contended locks.&nbsp; =
+The=20
+  non-blocking unlock is needed mostly for situations where the unlock =
+operation=20
+  requires I/O.</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT face=3DArial size=3D2>I know that many other applications =
+have need for=20
+  one or both of these variations as well.</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT face=3DArial size=3D2>All this is similar, but subtly =
+different, than=20
+  having a j.u.Map full of j.u.c.Locks.&nbsp; One important difference =
+is that=20
+  the locks may be owned by something other than a Thread (an example =
+use case=20
+  is&nbsp;a transaction).&nbsp; Another difference is that some =
+subtlety is=20
+  required to remove unused locks without race conditions which cause=20
+  simultaneous lock attempts to deadlock.&nbsp; Finally supporting the =
+Futures=20
+  is also outside the scope of what the current Locks can =
+do.</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT face=3DArial size=3D2>What do folks think?&nbsp; Is it a =
+general enough=20
+  problem to be included in JSR 166?&nbsp; Is it too out of place given =
+that it=20
+  decouples locking from threading?</FONT></DIV>
+  <DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT face=3DArial=20
+size=3D2>Cheers!<BR><BR>Adam</FONT></DIV></BLOCKQUOTE></BODY></HTML>
+
+------_=_NextPart_001_01C3A327.7B20DE5A--
+
+From oliver@zeigermann.de  Tue Nov  4 23:32:22 2003
+From: oliver@zeigermann.de (Oliver Zeigermann)
+Date: Wed, 05 Nov 2003 00:32:22 +0100
+Subject: [concurrency-interest] Lock Manager
+In-Reply-To: <10e101c3a324$028226a0$2d1811ac@avila>
+References: <10e101c3a324$028226a0$2d1811ac@avila>
+Message-ID: <3FA83706.5040808@zeigermann.de>
+
+I tried something generic at
+
+http://cvs.apache.org/viewcvs.cgi/jakarta-slide/src/stores/org/apache/slide/store/txfile/rm/impl/GenericLock.java?rev=1.1&only_with_tag=MAIN&content-type=text/vnd.viewcvs-markup
+
+and
+
+http://cvs.apache.org/viewcvs.cgi/jakarta-slide/src/stores/org/apache/slide/store/txfile/rm/impl/GenericLockManager.java?rev=1.1&only_with_tag=HEAD&content-type=text/vnd.viewcvs-markup
+
+allowing you to configure if it should be blocking (wait) and if it is 
+reentrant. Additionally it, allows for any number of lock levels. This 
+means you can have just two (like locked/unlocked) three for 
+(read/write/unlocked) or as in my application five 
+(read/write/read-while-write/commit/unlocked).
+
+I am sure Doug and the others in this list are smarter than me, but I 
+still feel it would be very hard in general to find something that 
+matches all needs and applications even for them.
+
+Hope this was not too much off topic.
+
+Oliver
+
+Adam Messinger wrote:
+
+ > Please excuse if this is something which has already been discussed 
+and found to be out of scope.  I looked back through the archives and 
+couldn't find a record of it.  I believe that a number of programs have 
+need for functionality that looks something like this:
+ >
+ > public interface LockManager {
+ >   public void lock(Object key, Object owner);
+ >   public void tryLock(Object key, Object owner, long time, TimeUnit 
+unit);
+ >
+ >   public void unlock(Object key, Object owner);
+ > }
+
+
+
+
+From Costin.Cozianu@tabs.toshiba.com  Wed Nov  5 00:11:50 2003
+From: Costin.Cozianu@tabs.toshiba.com (Costin.Cozianu@tabs.toshiba.com)
+Date: Tue, 4 Nov 2003 16:11:50 -0800
+Subject: [concurrency-interest] Lock Manager
+Message-ID: <OFCCA309D7.AE522836-ON88256DD4.0083350E@TABSMFP.NET>
+
+I think the scheme encourages bad programming practice. That is somebody
+from outside the thread who runs under the lock has the possibility to call
+the unlock. Well, it should always be the owner thread of the lock that
+always unlocks, as it is the only one who can guarantee the return
+to a known good state.
+
+The practical problem is what should we do about errand lock owners that
+may have enetered a loop (or deadlock), and a supervising process may
+decide to forcefulyl remove the lock for other noble goals.
+
+In this case, the running computation should provide a hook for forceful
+cancellation, i.e. have an interface:
+
+LockObject.executeWithLock(CancellableTask)
+
+so that
+
+LockObject.unlock() will call cancel on CancellableTask, and the processing
+should be carefully programmed as to detect the cancellation and return the
+lock from the thread that actually owns it, when the thread is outside the
+mutual exclusion zone, and therefore the protected state is safe. One very
+simple example that I use in my work is when I execute the thread with the
+lock executes an external process, than the cancel() action will kill the
+process causing an exception to be thrown in the thread owning the lock, so
+that the thread will exit  from the safety zone and return the lock.
+
+In other words if you want to unlock you have to guarantee some minimum
+safety condition, and that is impossible when the framework only know that
+the owner is a java.lang.Object.
+
+Costin Cozianu
+costin.cozianu@tabs.toshiba.com
+Senior Software Engineer                 (949) 462-6779
+Toshiba American Business Solution
+Mobile                                              (310) 463-5940
+Alternate Email                                 c_cozianu@hotmail.com
+
+
+
+
+                                                                                                                                             
+                      "Adam Messinger"                                                                                                       
+                      <adam@bea.com>                        To:      <concurrency-interest@altair.cs.oswego.edu>                             
+                      Sent by:                              cc:                                                                              
+                      concurrency-interest-admin@cs         Subject: [concurrency-interest] Lock Manager                                     
+                      .oswego.edu                                                                                                            
+                                                                                                                                             
+                                                                                                                                             
+                      11/04/2003 02:35 PM                                                                                                    
+                                                                                                                                             
+                                                                                                                                             
+
+
+
+
+Please excuse if this is something which has already been discussed and
+found to be out of scope.  I looked back through the archives and couldn't
+find a record of it.  I believe that a number of programs have need for
+functionality that looks something like this:
+
+public interface LockManager {
+  public void lock(Object key, Object owner);
+  public void tryLock(Object key, Object owner, long time, TimeUnit unit);
+
+  public void unlock(Object key, Object owner);
+}
+
+An example of this in the real world can be found here:
+
+http://www.javagroups.com/javagroupsnew/docs/javadoc/org/jgroups/blocks/LockManager.html
+
+In addition similar schemes are present in WebLogic Server internals.  In
+some places we use a non-blocking variation of this which looks something
+like:
+
+public interface NonBlockingLockManager extends LockManager {
+  public Future tryLock(Object key, Object owner, long time, TimeUnit unit,
+Listener l);
+  public Future unlock(Object key, Object owner, Listener l);
+
+  public interface Listener {
+    // called whenever f.isDone() would start returning true
+    public void done(Future f);
+  }
+}
+
+The non-blocking tryLock variation allows us to avoid blocking threads
+while trying to gain contended locks.  The non-blocking unlock is needed
+mostly for situations where the unlock operation requires I/O.
+
+I know that many other applications have need for one or both of these
+variations as well.
+
+All this is similar, but subtly different, than having a j.u.Map full of
+j.u.c.Locks.  One important difference is that the locks may be owned by
+something other than a Thread (an example use case is a transaction).
+Another difference is that some subtlety is required to remove unused locks
+without race conditions which cause simultaneous lock attempts to deadlock.
+Finally supporting the Futures is also outside the scope of what the
+current Locks can do.
+
+What do folks think?  Is it a general enough problem to be included in JSR
+166?  Is it too out of place given that it decouples locking from
+threading?
+
+Cheers!
+
+Adam
+
+
+
+
+
+From adam@bea.com  Wed Nov  5 01:08:52 2003
+From: adam@bea.com (Adam Messinger)
+Date: Tue, 4 Nov 2003 17:08:52 -0800
+Subject: [concurrency-interest] Lock Manager
+References: <OFCCA309D7.AE522836-ON88256DD4.0083350E@TABSMFP.NET>
+Message-ID: <138f01c3a339$609d97f0$2d1811ac@avila>
+
+> I think the scheme encourages bad programming practice. That is somebody
+> from outside the thread who runs under the lock has the possibility to
+call
+> the unlock. Well, it should always be the owner thread of the lock that
+> always unlocks, as it is the only one who can guarantee the return
+> to a known good state.
+
+Costin,
+
+This model is meant to accomodate a higher level of locking, where the
+concern is not with multiple threads touching the same data but with
+multiple logical bits of work touching the same data.  Take the example of a
+transaction with a simple exclusive concurrency model; it needs to lock data
+as it accesses it so that other transactions do not change it before it is
+commited.  At commit time all of the locks associated with the transaction
+are then released.  However, a transaction may last many minutes and
+moreover it may span many individual Tasks, potentially even being processed
+by many Threads in parallel.  As such a scheme which associates locks with
+threads is not appropriate, rather the lock must be associated with a higher
+level abstraction such as a transaction.
+
+I do however agree that there is a risk of this scheme being miused by folks
+wanting to do thread level locking.  I suggest it only because it seems both
+sufficiently common and sufficiently hard to get right, that it seems like
+something a utility package might usefully provide.
+
+Cheers!
+
+Adam
+
+
+From ozeigermann@c1-fse.de  Wed Nov  5 06:28:16 2003
+From: ozeigermann@c1-fse.de (Oliver Zeigermann)
+Date: Wed, 05 Nov 2003 07:28:16 +0100
+Subject: [concurrency-interest] Lock Manager
+In-Reply-To: <3FA83706.5040808@zeigermann.de>
+References: <10e101c3a324$028226a0$2d1811ac@avila> <3FA83706.5040808@zeigermann.de>
+Message-ID: <3FA89880.5020403@c1-fse.de>
+
+Adam Messinger wrote:
+ > This model is meant to accomodate a higher level of locking, where the
+ > concern is not with multiple threads touching the same data but with
+ > multiple logical bits of work touching the same data.  Take the 
+example of a
+ > transaction with a simple exclusive concurrency model; it needs to 
+lock data
+ > as it accesses it so that other transactions do not change it before 
+it is
+ > commited.  At commit time all of the locks associated with the 
+transaction
+ > are then released.  However, a transaction may last many minutes and
+ > moreover it may span many individual Tasks, potentially even being 
+processed
+ > by many Threads in parallel.  As such a scheme which associates locks 
+with
+ > threads is not appropriate, rather the lock must be associated with a 
+higher
+ > level abstraction such as a transaction.
+
+That is exactly the szenario I used my locking for.
+
+ > I do however agree that there is a risk of this scheme being miused 
+by folks
+ > wanting to do thread level locking.  I suggest it only because it 
+seems both
+ > sufficiently common and sufficiently hard to get right, that it seems 
+like
+ > something a utility package might usefully provide.
+
+As I said, I would have loved to have this sort of locking utility 
+around, written by experts.
+
+However,
+1.) I doubt j.u.c. is the right package for it
+2.) it is very hard to match the majority of needs and applications with 
+a single, yet simple locking utility
+
+Cheers,
+
+Oliver
+
+
+
+From richard.zschech@cqrdata.com  Wed Nov  5 10:10:36 2003
+From: richard.zschech@cqrdata.com (Richard Zschech)
+Date: Wed, 05 Nov 2003 10:10:36 +0000
+Subject: [concurrency-interest] Lock Manager
+In-Reply-To: <3FA89880.5020403@c1-fse.de>
+References: <10e101c3a324$028226a0$2d1811ac@avila>
+ <3FA83706.5040808@zeigermann.de> <3FA89880.5020403@c1-fse.de>
+Message-ID: <3FA8CC9C.8060100@cqrdata.com>
+
+I had a small discussion about a higher level locking mechinism where 
+the ownership of the locks
+is not nessesarly based on a thread but could be based on a session or 
+transaction id.
+Its in the archives here:
+
+http://altair.cs.oswego.edu/pipermail/concurrency-interest/2003-July/000497.html
+
+Oliver Zeigermann wrote:
+
+> Adam Messinger wrote:
+> > This model is meant to accomodate a higher level of locking, where the
+> > concern is not with multiple threads touching the same data but with
+> > multiple logical bits of work touching the same data.  Take the 
+> example of a
+> > transaction with a simple exclusive concurrency model; it needs to 
+> lock data
+> > as it accesses it so that other transactions do not change it before 
+> it is
+> > commited.  At commit time all of the locks associated with the 
+> transaction
+> > are then released.  However, a transaction may last many minutes and
+> > moreover it may span many individual Tasks, potentially even being 
+> processed
+> > by many Threads in parallel.  As such a scheme which associates 
+> locks with
+> > threads is not appropriate, rather the lock must be associated with 
+> a higher
+> > level abstraction such as a transaction.
+>
+> That is exactly the szenario I used my locking for.
+>
+> > I do however agree that there is a risk of this scheme being miused 
+> by folks
+> > wanting to do thread level locking.  I suggest it only because it 
+> seems both
+> > sufficiently common and sufficiently hard to get right, that it 
+> seems like
+> > something a utility package might usefully provide.
+>
+> As I said, I would have loved to have this sort of locking utility 
+> around, written by experts.
+>
+> However,
+> 1.) I doubt j.u.c. is the right package for it
+> 2.) it is very hard to match the majority of needs and applications 
+> with a single, yet simple locking utility
+>
+> Cheers,
+>
+> Oliver
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+From dl@cs.oswego.edu  Wed Nov  5 12:40:29 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Wed, 5 Nov 2003 07:40:29 -0500
+Subject: [concurrency-interest] Lock Manager
+In-Reply-To: <138f01c3a339$609d97f0$2d1811ac@avila>
+References: <OFCCA309D7.AE522836-ON88256DD4.0083350E@TABSMFP.NET>
+ <138f01c3a339$609d97f0$2d1811ac@avila>
+Message-ID: <16296.61373.123307.278303@altair.cs.oswego.edu>
+
+We did intentionally omit transaction support of all kinds from
+JSR-166. Adam is right to press us about a simple LockManager anyway,
+because it is at the borders of something that can be useful even in
+non-transactional settings. But still, as others have already noted,
+there is a lot of variablility in desired policy/mechansism/usage,
+which we don't know how to deal with so conservatively omit.
+
+I do think that lightweight transaction frameworks are among the next
+major steps in Java concurrency support. But there are still lots of
+questions about how to go about this that are probably best answered
+by building pre-standardized ones and then standardizing based on
+experience.
+
+While I'm at it: The currently posted APIs as of today (modulo
+cosmetic touch-ups) are the ones that will appear in the first public
+beta of Sun JDK1.5.0, due out the first week of February. (This week
+is internal API freeze deadline for beta1.) Further changes before
+final 1.5.0 release are still possible, and WILL happen if people
+discover serious flaws or omissions.  For example, Dawid's complaints
+last month caused us to realize that we didn't have a good way to run
+tasks with special security needs, which we felt was serious enough to
+remedy (although in a way that is probably still not entirely to
+Dawid's liking :-). Plus, we do still want to encourage comments and
+suggestions of all kinds. Some of them, like transaction support,
+might end up as the basis for follow-on work.
+
+-Doug
+
+From Costin.Cozianu@tabs.toshiba.com  Wed Nov  5 21:29:00 2003
+From: Costin.Cozianu@tabs.toshiba.com (Costin.Cozianu@tabs.toshiba.com)
+Date: Wed, 5 Nov 2003 13:29:00 -0800
+Subject: [concurrency-interest] Lock Manager
+Message-ID: <OF40279F57.177F5DA5-ON88256DD5.0073B49A@TABSMFP.NET>
+
+Adam,
+
+Yes, I understand is for something else than typical multithreading
+exclusion. However, my commentaries about encouraging bad programming
+practices remain valid even for your scenario.  The reason is that objects
+are locked, and somebody will always have the lock, maybe not the original
+thread who aquired the lock, maybe it migrated in another thread, or even
+another JVM process, but the point is that there's some activity going on
+under that lock.
+
+If a lock is held and no current thread has the potential of doing
+something with the state protected by the lock, than I submit such a
+situation will indicate a serious design flaw or implementation flaw.
+Admitting that at least one thread still has the lock and has the potential
+to do something to the protected state, we need to make sure that that
+thread exits that part of processing cleanly before the lock is released.
+
+The way you propose looks to me as if the "proof" that the processing has
+been exited cleanly is that the caller who executes
+
+     LockManager.unlock(lock,owner);
+
+has the correct reference to the real owner that the framework can check.
+First of all the condition is very weak, serious bugs can still happen even
+if the owner is correct.
+
+And second, it doesn't support very important use cases which I happen to
+see in my activity and will definitely happen in DB transaction scenarios.
+For example it is a supervising thread that decides a problematic thread
+(or even group of threads) should exit the protected zone, and all the
+locks be released. In this case the supervising thread may very well have
+access to who is the opaque lock owner, but calling
+LockManager.unlock(lock, owner) accomplishes nothing good, as the
+LockManager does not have the abstract interface (for example
+CancellableTask) through which it can force that the thread exits safely
+from the protected zone, before he releases the lock.
+
+I'm not saying that such a solution cannot be made to work right, but the
+problem is that a good framework should make it more difficult for clients
+to misuse it and should make it easy and obvious to the clients how to use
+good  (correct, safe) design patterns. The API you proposed leaves it
+almost as hard to get things right as it was without it, but makes it very
+easy to write bad concurrent code.
+
+So yes, I understand the need for a lock/unlock mechanism that may work
+across threads, but I think a different API is needed that can also solve
+other needs.
+
+
+Cheers,
+
+
+Costin Cozianu
+costin.cozianu@tabs.toshiba.com
+Staff Software Engineer                 (949) 462-6779
+Toshiba American Business Solution
+Mobile                                              (310) 463-5940
+Alternate Email                                 c_cozianu@hotmail.com
+
+
+
+                                                                                                                                             
+                      "Adam Messinger"                                                                                                       
+                      <adam@bea.com>                        To:      Costin Cozianu/DSE/IRV/TOSHIBA-TABS@TOSHIBA-TABS                        
+                      Sent by:                              cc:      <concurrency-interest@altair.cs.oswego.edu>                             
+                      concurrency-interest-admin@cs         Subject: Re: [concurrency-interest] Lock Manager                                 
+                      .oswego.edu                                                                                                            
+                                                                                                                                             
+                                                                                                                                             
+                      11/04/2003 05:08 PM                                                                                                    
+                                                                                                                                             
+                                                                                                                                             
+
+
+
+
+> I think the scheme encourages bad programming practice. That is somebody
+> from outside the thread who runs under the lock has the possibility to
+call
+> the unlock. Well, it should always be the owner thread of the lock that
+> always unlocks, as it is the only one who can guarantee the return
+> to a known good state.
+
+Costin,
+
+This model is meant to accomodate a higher level of locking, where the
+concern is not with multiple threads touching the same data but with
+multiple logical bits of work touching the same data.  Take the example of
+a
+transaction with a simple exclusive concurrency model; it needs to lock
+data
+as it accesses it so that other transactions do not change it before it is
+commited.  At commit time all of the locks associated with the transaction
+are then released.  However, a transaction may last many minutes and
+moreover it may span many individual Tasks, potentially even being
+processed
+by many Threads in parallel.  As such a scheme which associates locks with
+threads is not appropriate, rather the lock must be associated with a
+higher
+level abstraction such as a transaction.
+
+I do however agree that there is a risk of this scheme being miused by
+folks
+wanting to do thread level locking.  I suggest it only because it seems
+both
+sufficiently common and sufficiently hard to get right, that it seems like
+something a utility package might usefully provide.
+
+Cheers!
+
+Adam
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+
+
+From dl@cs.oswego.edu  Sat Nov 15 16:43:18 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sat, 15 Nov 2003 11:43:18 -0500
+Subject: [concurrency-interest] Condition.await policy
+Message-ID: <16310.22438.758239.512541@altair.cs.oswego.edu>
+
+Some of you have seen variants of this issue on the JSR-133/JMM list
+(See http://www.cs.umd.edu/~pugh/java/memoryModel/) as it applies to
+built-in monitors.
+
+In Condition.await (and timeout versions of await) there are potential
+interactions among notifications, interrupts and timeouts.  There has
+to be a policy for dealing with them.
+
+First, interrupts: When a thread enters Condition.await, you might define
+two intervals at which interrupts occur:
+
+  Interrupt-before-signal:
+     Either the thread was already interrupted before waiting, or the
+     thread started waiting but was interrupted before it was signalled
+
+  Signal-before-interrupt:
+     The thread started waiting, was signalled, but was then
+     interrupted before returning from await. (Usually, this means it
+     was interrupted while reacquiring the lock, which it must do even
+     if interrupted.)
+
+The main question is whether these cases should be handled differently.
+The two options are
+
+  1. Throw InterruptedException (IE) in both of these cases.
+vs
+  2. Throw IE in case of interrupt-before-signal; otherwise return normally
+     (but with the thread's interrupt status still set true).
+
+That is: Is it more important for callers to be informed of
+interruptions as soon as they are discovered, or more important to
+know that a thread woke up as a consequence of a signal versus an
+interrupt?
+
+The choices for timeouts in await(timeout, unit) work the same way:
+  1. Return false (i.e. timeout) if timeout elapsed upon return, else true
+vs
+  2. Return true if signalled before timeout elapsed, else false if
+     the timeout occurred after being signalled but before return
+(where, in both cases, the corresponding interrupt rules hold
+if interrupted.)
+
+There are some further complications that usually enter discussion of
+this issue, including the fact that the borderlines between the
+intervals may involve race conditions, so can be problematic to
+describe and deal with, and also that some policies may entail
+additional spurious wakeups.
+
+But ignoring these, I'd like to know if people on this list have a
+compellingly strong rationale for changing (or keeping) the current
+policy in all JSR-166 Condition implementations of taking choice (1)
+for both interrupts and timeouts.
+
+Thanks!
+
+-Doug
+
+From levmatta@uol.com.br  Thu Nov 20 00:42:09 2003
+From: levmatta@uol.com.br (=?iso-8859-1?Q?Lu=EDs_Eduardo_V._Matta?=)
+Date: Wed, 19 Nov 2003 22:42:09 -0200
+Subject: [concurrency-interest] Creating custom locks
+Message-ID: <001201c3aeff$21e1b740$0200a8c0@lepc>
+
+This is a multi-part message in MIME format.
+
+------=_NextPart_000_000F_01C3AEEE.5DF98930
+Content-Type: text/plain;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+Some weeks ago,
+     "we" had a discution (the second time around) about LockManagers =
+and owned Locks, even though I agree that it its not the place neither =
+the time for this I would like to make some requests. My objective is to =
+make the subject and implementation more reachable (especialy to me).
+
+As far as I can tell LockSupport is fairly low level enough to implement =
+any kind of lock: (fair , priority, fair with prioraty, with prioraty =
+invertion, reentrant or not, owned and etc, that permit threads messing =
+with locks that it doesn't own). Is this true? Does anybody disagree?
+
+But the lock classes aren't vary user freindly. Please change this, if =
+security is a concern then create a level of abstract classes and make =
+the others final. Example:=20
+
+public class ReentrantLock implements Lock, java.io.Serializable {
+... other stuff
+
+    final void checkOwner(Thread t) { //why final
+        if (owner !=3D t)=20
+            throw new IllegalMonitorStateException();
+    }
+}
+
+Extending ReentrantLock or ReentrantReadWriteLock is a very good =
+implementation decision to anyone with special needs, so I believe this =
+will be well recieved.
+
+Thanks,
+Lu=EDs Matta
+------=_NextPart_000_000F_01C3AEEE.5DF98930
+Content-Type: text/html;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<HTML><HEAD>
+<META http-equiv=3DContent-Type content=3D"text/html; =
+charset=3Diso-8859-1">
+<META content=3D"MSHTML 6.00.2800.1276" name=3DGENERATOR>
+<STYLE></STYLE>
+</HEAD>
+<BODY bgColor=3D#ffffff>
+<DIV><FONT face=3DArial size=3D2>Some weeks ago,</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp;&nbsp;&nbsp; &nbsp;"we" had a =
+discution (the=20
+second time around) about LockManagers and owned Locks, even though I =
+agree that=20
+it its not the place neither the time for this I would like to make some =
+
+requests. My objective is to make the subject and implementation more =
+reachable=20
+(especialy to me).</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>As far as I can tell LockSupport is =
+fairly low=20
+level enough to implement any kind of lock: (fair , priority, fair with=20
+prioraty, with prioraty invertion, reentrant or not, owned and etc, that =
+
+permit&nbsp;threads messing with locks that it doesn't own). Is this =
+true? Does=20
+anybody disagree?</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>But the lock classes aren't vary user =
+freindly.=20
+Please change this, if security is a concern then create a level of =
+abstract=20
+classes and make the others final. Example: </FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>public class ReentrantLock implements =
+Lock,=20
+java.io.Serializable {</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>... other stuff</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp;&nbsp;&nbsp; final void =
+checkOwner(Thread t)=20
+{ //why final<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; if (owner =
+!=3D t)=20
+<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; =
+throw new=20
+IllegalMonitorStateException();<BR>&nbsp;&nbsp;&nbsp; }</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>}</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>Extending ReentrantLock or =
+ReentrantReadWriteLock=20
+is a very good implementation decision to anyone with special needs, so =
+I=20
+believe this will be well recieved.</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>Thanks,</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>Lu=EDs Matta</FONT></DIV></BODY></HTML>
+
+------=_NextPart_000_000F_01C3AEEE.5DF98930--
+
+
+
+From dl@cs.oswego.edu  Thu Nov 20 01:38:17 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Wed, 19 Nov 2003 20:38:17 -0500
+Subject: [concurrency-interest] Creating custom locks
+In-Reply-To: <001201c3aeff$21e1b740$0200a8c0@lepc>
+References: <001201c3aeff$21e1b740$0200a8c0@lepc>
+Message-ID: <16316.6921.456717.240809@altair.cs.oswego.edu>
+
+> But the lock classes aren't vary user freindly. Please change this, if security is a concern then create a level of abstract classes and make the others final. Example: 
+> 
+> public class ReentrantLock implements Lock, java.io.Serializable {
+> ... other stuff
+> 
+>     final void checkOwner(Thread t) { //why final
+
+Hi Luis,
+
+Thanks for the prod. ReentrantLock and ReeentrantReadWriteLock are in
+fact slated to be refactored to share most of the common code that got
+duplicated when I improved and added instrumentation to them last
+month.  I'll aim for a friendlier design. For example, some shared
+functionality may be put into a class nested inside LockSupport,
+making it possible to reuse for other kinds of locks.  I'm not sure
+when this will happen though. At this point, it seems unlikely to be
+ready for 1.5 beta1.
+
+-Doug
+
+From dholmes@dltech.com.au  Thu Nov 20 03:35:03 2003
+From: dholmes@dltech.com.au (David Holmes)
+Date: Thu, 20 Nov 2003 13:35:03 +1000
+Subject: [concurrency-interest] Creating custom locks
+In-Reply-To: <001201c3aeff$21e1b740$0200a8c0@lepc>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEMCDJAA.dholmes@dltech.com.au>
+
+>     final void checkOwner(Thread t) { //why final
+>         if (owner != t)
+>             throw new IllegalMonitorStateException();
+>     }
+> }
+
+Why would you want to override this? It is a simple little helper
+function. Is final really the problem here or the lack of access? I
+have no problem with making this protected, but I wouldn't want anyone
+to override this to not check ownership, for example.
+
+David Holmes
+
+
+From larryr@saturn.sdsu.edu  Thu Nov 20 04:59:04 2003
+From: larryr@saturn.sdsu.edu (Larry Riedel)
+Date: 20 Nov 2003 04:59:04 -0000
+Subject: [concurrency-interest] Creating custom locks
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCEEMCDJAA.dholmes@dltech.com.au>
+Message-ID: <20031120045904.29077.qmail@home19.riedel.org>
+
+> >     final void checkOwner(Thread t) { //why final
+> >         if (owner != t)
+> >             throw new IllegalMonitorStateException();
+> >     }
+> > }
+> 
+> Why would you want to override this? It is a simple little
+> helper function. Is final really the problem here or
+> the lack of access?  I have no problem with making this
+> protected, but I wouldn't want anyone to override this to
+> not check ownership, for example.
+
+Is the preference to make methods final unless there is a
+good reason not to, or is the preference to preclude users
+of a class from overriding methods if by doing so they may
+cause the method to violate its contract with the caller,
+or...?
+
+
+Larry
+
+
+From dholmes@dltech.com.au  Thu Nov 20 05:41:50 2003
+From: dholmes@dltech.com.au (David Holmes)
+Date: Thu, 20 Nov 2003 15:41:50 +1000
+Subject: [concurrency-interest] Creating custom locks
+In-Reply-To: <20031120045904.29077.qmail@home19.riedel.org>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIEMDDJAA.dholmes@dltech.com.au>
+
+Larry Riedel wrote:
+> Is the preference to make methods final unless there is a
+> good reason not to, or is the preference to preclude users
+> of a class from overriding methods if by doing so they may
+> cause the method to violate its contract with the caller,
+> or...?
+
+Speaking only for myself and not as an indication of any particular
+preference that has been or will be applied to the JSR-166 classes ...
+All of the above :-)
+
+The user can break the contract of any method they override - there's
+not much we can do about that except to not let them override them.
+Taking this to the extreme all public classes would be final (or as
+final as possible).
+
+Where there are obvious policy choices that can be made, these should
+be factored into non-final methods so that they can be customized.
+However, the concrete JSR-166 classes tend to define very specific
+policy choices, whereby a subclass that changed the policy would
+probably violate the Liskov Substitution Principle (ie the contract of
+the base class). That again leads to the argument for final classes
+and/or methods.
+
+One possibility is to define a more loosely specified Abstract base
+class with non-final methods that other's could use as a base for
+derivation. And then define final classes or methods for the concrete
+subclasses we provide. But that assumes your abstract class can
+actually be factored out in a meaningful way so that it's more than
+just an interface declaration.
+
+>From a library perspective, allowing user's to customize your classes
+through extension, means you have to open yourself up to getting bug
+reports about their code. That's not fun to sift through.
+
+Of course final methods can be really annoying when you want to do
+something simple like logging, tracing, or other actions orthogonal to
+the actual method functionality. But for that there are things like
+Aspect Oriented Programming, or simple delegation (not always possible
+if you want type substitutability).
+
+Being conservative I'd opt for final methods unless there's an obvious
+good reason not to. Removing finality in the future is always an
+option, while adding it can be problematic.
+
+I'd be interested to hear other's opinions though. And what sort of
+extensions does anyone see to things like ReentrantLock? I tend to see
+custom locks either being created from scratch, or based on Semaphore
+or ReentrantLock via delegation rather than subclassing.
+
+Cheers,
+David Holmes
+
+
+From eric.zoerner@gemstone.com  Thu Nov 20 23:16:28 2003
+From: eric.zoerner@gemstone.com (Eric Zoerner)
+Date: Thu, 20 Nov 2003 15:16:28 -0800
+Subject: [concurrency-interest] Bug in ConcurrentHashMap
+Message-ID: <20031120151628.A7513@gemstone.com>
+
+The following junit test exposes a bug in ConcurrentHashMap. This test failed on
+the preliminary test release 2, but the same defect appears to be in the current
+version of ConcurrentHashMap in the CVS repository.
+
+The problem is the implementation of the setValue method in the Map.Entry that
+you get back from entrySet. The entry returned is a reference to a HashEntry
+that can get cloned when there is a removal or a rehash on the map. If that
+occurs, then the setValue method does not write-through to the map, violating
+the contract of the setValue method.
+
+
+    private static ConcurrentHashMap longChainMap() {
+      ConcurrentHashMap map = new ConcurrentHashMap(2, 5.0f, 1);
+      assertTrue(map.isEmpty());
+      for (int i = 0; i < 20; i++)
+        map.put(new Integer(i), new Integer(i));
+      assertFalse(map.isEmpty());
+      return map;
+    }
+
+
+    public void testSetValue() throws InterruptedException {
+      final Map map = longChainMap();
+      Map.Entry entry1 = (Map.Entry)map.entrySet().iterator().next();
+
+      // assert that entry1 is not 16
+      assertTrue("entry is 16, test not valid",
+        !entry1.getKey().equals(new Integer(16)));
+
+      // remove 16 (a different key) from map in another thread,
+      // which just happens to cause entry1 to be cloned in map
+      Thread t = new Thread() {
+         public void run() {
+           map.remove(new Integer(16));
+         }
+      };
+      t.start();
+      t.join();
+
+      entry1.setValue("XYZ");
+      assertTrue(map.containsValue("XYZ")); // fails
+    }
+
+
+An idea for a fix is to implement setValue by doing a put directly on the map
+in addition to setting the value in the entry, however HashEntry is a static
+inner class and does not have a reference to the map. Making it non-static
+would add additional overhead to each entry object that I would prefer to
+avoid. Furthermore, the put should only succeed on the map if the entry is still
+present.
+
+Which leads me to another comment. It would be useful to have a "putIfPresent"
+method on ConcurrentMap in addition to the putIfAbsent that is already there,
+for the case where you require the entry to already exist when replacing a
+value.
+
+From levmatta@uol.com.br  Fri Nov 21 02:42:16 2003
+From: levmatta@uol.com.br (=?iso-8859-1?Q?Lu=EDs_Eduardo_V._Matta?=)
+Date: Fri, 21 Nov 2003 00:42:16 -0200
+Subject: [concurrency-interest] Re:  Custom Locks
+References: <20031120170001.28540.2540.Mailman@altair.cs.oswego.edu>
+Message-ID: <001401c3afd9$14972680$0200a8c0@lepc>
+
+To clarify my position, I will answer some selected questions and add a few:
+
+> Why would you want to override this? (checkOwner(Thread t)) //Larry
+         To my knowledge: to manipulate locks owned be other threads (be
+ignoring inherited behavior)
+
+> what sort of extensions does anyone see to things like ReentrantLock?
+        Things like: imposing prioraty inversion, revoking in favor of very
+important processes (emergency routines)
+
+Please remember that I proposed a level os abstract classes for
+customizations, and I believe locks classes shoud be final or as final as
+possible, for security reasons. The current  implementation already has most
+of its structure private or package private, this is part of my concern.
+
+David Holmes made a very good point about using delegation insted of
+extention. I don't think the API is prepared for that also, but I have no
+suggestions (for implementation or usage). He also wrote about getting bug
+reports from users of the code, I have a strong position about that:
+      This will be a part of the JDK, adoption depends on how usefull it is
+(specially to high end developers and researchers - and they will need to
+customize it).
+      (I mean no disrespect)
+
+Finally, I'm assuming that developers will whant to customize behavior NOT
+algoritms. This is why a asked for friendlier classes.
+
+Thanks every body,
+Luís
+
+PS: I will send on another e-mail other requests
+
+
+
+From levmatta@uol.com.br  Fri Nov 21 03:37:51 2003
+From: levmatta@uol.com.br (=?iso-8859-1?Q?Lu=EDs_Eduardo_V._Matta?=)
+Date: Fri, 21 Nov 2003 01:37:51 -0200
+Subject: [concurrency-interest] Extending and Interruption
+References: <20031120170001.28540.2540.Mailman@altair.cs.oswego.edu>
+Message-ID: <001801c3afe0$d73d9be0$0200a8c0@lepc>
+
+Requests (related to customizing locks):
+  - Better explanation on volatile:
+      There isn't much information on sun about this, people don't know it.
+So they can't decide between volatile and Atomic classes (atomics are well
+explained). Also explain where one does not need either, like with final
+fields.
+
+  - Better explanation on interruption and LookSupport (maybe in the
+tutorial to come):
+      It is not very clear how interruption, and park work. If you go to the
+java tutorial or the API you will see that it still list suspend and resume
+and does not actualy give a description or the sequence of activities in a
+interruption and the return of it. Also explaning miss conceptions and
+internal working, for example a programmer might try to release locks in the
+interrupt and reaqquire them in interrupted procedures.
+      For park you say that it removes the thread from the scheduling
+system, this does not actualy say that it doens't use interrupt and
+interrupted procedures, what makes the above ideia breakable.
+
+  - Better explanation on  Interruptable methods (documentation and
+implementation)
+      It might make better developers, and software (it is very subtle).
+
+  - A way to extend ReentrantLockQueueNode (and other internal structures of
+locks, Semaphores):
+      Still using my position on extending behavior not algoritms -
+extendind the node (possibly through generics) could allow application
+especific information for changing behavior while preserving the algoritm.
+
+None of this requests are indispensable, I just whanted to make them.
+
+Thanks,
+Luís
+
+
+
+From dl@cs.oswego.edu  Fri Nov 21 11:48:58 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 21 Nov 2003 06:48:58 -0500
+Subject: [concurrency-interest] Bug in ConcurrentHashMap
+In-Reply-To: <20031120151628.A7513@gemstone.com>
+References: <20031120151628.A7513@gemstone.com>
+Message-ID: <16317.64426.587123.219858@altair.cs.oswego.edu>
+
+Thanks very much!! 
+
+> An idea for a fix is to implement setValue by doing a put directly
+> on the map in addition to setting the value in the entry, however
+> HashEntry is a static inner class and does not have a reference to
+> the map. Making it non-static would add additional overhead to each
+> entry object that I would prefer to avoid.
+
+I think we can do better by reworking Entry node links so that
+setValue will need to traverse a little to find what map it is in,
+which would be a good tradeoff of keeping node overhead low at the
+expense of slightly slower performance of setValue. In any case, we
+will get a fix out soon.
+
+-Doug
+
+
+
+
+From dl@cs.oswego.edu  Fri Nov 21 13:02:41 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 21 Nov 2003 08:02:41 -0500
+Subject: [concurrency-interest] Re:  Custom Locks
+In-Reply-To: <001401c3afd9$14972680$0200a8c0@lepc>
+References: <20031120170001.28540.2540.Mailman@altair.cs.oswego.edu>
+ <001401c3afd9$14972680$0200a8c0@lepc>
+Message-ID: <16318.3313.432271.341492@altair.cs.oswego.edu>
+
+Hi Luis,
+
+The main packaging issue here is that JDK library classes must be more
+conservative in allowing for future re-implementations than do most
+other kinds of classes. (As a case in point, the java.lang.ThreadLocal
+class has been gutted and redone twice now.) The java.util.concurrent
+classes differ from dl.util.concurrent classes in minimizing exposure
+so that, for example, if someone someday discovers a better way to
+structure internal lock queue nodes, it can be put into place. As I
+mentioned, we should be able to separately expose some of these
+mechanics so that they remain separately available, but even that
+probably won't turn out to be as "friendly" as you'd like.
+
+The main consequence of these policies is that copy/paste/hack
+variants of JDK classes are rampant out there. This seems to be
+the lesser of the two evils though.
+
+-Doug
+
+
+
+
+
+
+From dl@cs.oswego.edu  Fri Nov 21 17:59:11 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 21 Nov 2003 12:59:11 -0500
+Subject: [concurrency-interest] Bug in ConcurrentHashMap
+In-Reply-To: <20031120151628.A7513@gemstone.com>
+References: <20031120151628.A7513@gemstone.com>
+Message-ID: <16318.21103.120481.623201@altair.cs.oswego.edu>
+
+A better way to do this was to apply the tactics we used in
+IdentityHashMap of making EntrySet entries mere forwarders (but still
+more efficiently handling the more common keySet and Values
+iterators).  As is now checked in.
+
+Eric: Is it OK fow us to add your test case to JSR166 tests?
+
+I didn't answer before:
+
+> Which leads me to another comment. It would be useful to have a "putIfPresent"
+> method on ConcurrentMap in addition to the putIfAbsent that is already there,
+> for the case where you require the entry to already exist when replacing a
+> value.
+
+Can you give a good use case? I can't think of any. 
+
+-Doug
+
+
+From Sandeep.Kamat@Sun.COM  Fri Nov 21 20:11:38 2003
+From: Sandeep.Kamat@Sun.COM (Sandeep Kamat)
+Date: Fri, 21 Nov 2003 15:11:38 -0500
+Subject: [concurrency-interest] IPC and java.util.concurrent
+Message-ID: <3FBE717A.8080600@Sun.COM>
+
+   I just scanned though the JSR 165 and had the following questions ?
+   I was wondering if the java.util.concurrent.* API can be used to 
+communicate between to threads in two separate JVM. What about on
+  two JVM on different machines. Can the BlockingQueue object passed
+  as a parameter to RMI methods ?
+
+  -thnanks
+Sandeep.
+
+
+From eric.zoerner@gemstone.com  Fri Nov 21 21:26:41 2003
+From: eric.zoerner@gemstone.com (Eric Zoerner)
+Date: Fri, 21 Nov 2003 13:26:41 -0800
+Subject: [concurrency-interest] Bug in ConcurrentHashMap
+In-Reply-To: <16318.21103.120481.623201@altair.cs.oswego.edu>
+References: <20031120151628.A7513@gemstone.com> <16318.21103.120481.623201@altair.cs.oswego.edu>
+Message-ID: <3FBE8311.7090606@gemstone.com>
+
+It is fine to add that test case to the tests, but keep in mind that it is very 
+dependent on the sizing and hash algorithms that are currently used in the map 
+in order to get a reference to an entry that would be cloned.
+Also, it was not strictly necessary to remove the key from a separate thread, of 
+course, but I wanted it to reflect a more believable scenario.
+
+Use cases for putIfPresent come up when the existence of a key in the map has 
+significance beyond what the value associated with the key is. One such use case 
+  is when the map is used for caching data from a relational database and the 
+presence of the key in the map may provide a hint that the corresponding row 
+exists in the database*, or it may provide the ability to enumerate the names of 
+all known documents, etc., without necessarily having the value in the map at 
+the moment. To free up memory in the cache you may want to replace the value in 
+the map with a placeholder indicating that the value is now invalid and needs to 
+be retrieved from the database again the next time it is requested (let's call 
+the placeholder object INVALID). However, you don't want  to lose the 
+information that the key exists. So you want to put(key, INVALID). But this 
+should not create a new key in the map if that key was just legitimately removed 
+from the map (and the database, e.g. by another thread). So in this case you 
+would want call putIfPresent(key, INVALID). I'm sure there are other ways of 
+implementing this use case, but this is a case where a putIfPresent method would 
+indeed be useful.
+I have other, more complicated use cases where putIfPresent would be useful, but 
+hopefully this simple one suffices to make the point.
+
+Thanks for fixing the setValue bug so quickly, by the way!
+
+- Eric
+
+* The presence of the key might provide a hint as to whether a CREATE or UPDATE 
+is necessary when synchonizing with a RDBMS
+
+
+Doug Lea wrote:
+
+> A better way to do this was to apply the tactics we used in
+> IdentityHashMap of making EntrySet entries mere forwarders (but still
+> more efficiently handling the more common keySet and Values
+> iterators).  As is now checked in.
+> 
+> Eric: Is it OK fow us to add your test case to JSR166 tests?
+> 
+> I didn't answer before:
+> 
+> 
+>>Which leads me to another comment. It would be useful to have a "putIfPresent"
+>>method on ConcurrentMap in addition to the putIfAbsent that is already there,
+>>for the case where you require the entry to already exist when replacing a
+>>value.
+> 
+> 
+> Can you give a good use case? I can't think of any. 
+> 
+> -Doug
+
+
+
+From eric.zoerner@gemstone.com  Fri Nov 21 23:48:12 2003
+From: eric.zoerner@gemstone.com (Eric Zoerner)
+Date: Fri, 21 Nov 2003 15:48:12 -0800
+Subject: [concurrency-interest] ConcurrentMap putIfPresent
+References: <20031120151628.A7513@gemstone.com> <16318.21103.120481.623201@altair.cs.oswego.edu> <3FBE8311.7090606@gemstone.com>
+Message-ID: <007701c3b089$ecd6bcd0$bd0a500a@savant>
+
+In addition to:
+V putIfPresent(K key, V value);
+...
+
+Another variation on putIfPresent comes up analogous to
+ConcurrentMap.remove(Object, Object);
+
+Say you do a get on a ConcurrentMap and do some computation based on that
+value and then you want to replace the value with a new value, but only if
+the old value hasn't changed in the meantime. You would want a method such
+as:
+
+/** Associate key with the given value only if currently mapped to the
+expectedValue */
+boolean putIfPresent(K key, V value, V expectedValue);
+
+Question:
+Why is it
+boolean remove(Object key, Object value);
+...and not...
+boolean remove(K key, V value);
+?
+
+
+----- Original Message -----
+From: "Eric Zoerner" <eric.zoerner@gemstone.com>
+To: "Doug Lea" <dl@altair.cs.oswego.edu>
+Cc: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Friday, November 21, 2003 13:26
+Subject: Re: [concurrency-interest] Bug in ConcurrentHashMap
+
+
+> It is fine to add that test case to the tests, but keep in mind that it is
+very
+> dependent on the sizing and hash algorithms that are currently used in the
+map
+> in order to get a reference to an entry that would be cloned.
+> Also, it was not strictly necessary to remove the key from a separate
+thread, of
+> course, but I wanted it to reflect a more believable scenario.
+>
+> Use cases for putIfPresent come up when the existence of a key in the map
+has
+> significance beyond what the value associated with the key is. One such
+use case
+>   is when the map is used for caching data from a relational database and
+the
+> presence of the key in the map may provide a hint that the corresponding
+row
+> exists in the database*, or it may provide the ability to enumerate the
+names of
+> all known documents, etc., without necessarily having the value in the map
+at
+> the moment. To free up memory in the cache you may want to replace the
+value in
+> the map with a placeholder indicating that the value is now invalid and
+needs to
+> be retrieved from the database again the next time it is requested (let's
+call
+> the placeholder object INVALID). However, you don't want  to lose the
+> information that the key exists. So you want to put(key, INVALID). But
+this
+> should not create a new key in the map if that key was just legitimately
+removed
+> from the map (and the database, e.g. by another thread). So in this case
+you
+> would want call putIfPresent(key, INVALID). I'm sure there are other ways
+of
+> implementing this use case, but this is a case where a putIfPresent method
+would
+> indeed be useful.
+> I have other, more complicated use cases where putIfPresent would be
+useful, but
+> hopefully this simple one suffices to make the point.
+>
+> Thanks for fixing the setValue bug so quickly, by the way!
+>
+> - Eric
+>
+> * The presence of the key might provide a hint as to whether a CREATE or
+UPDATE
+> is necessary when synchonizing with a RDBMS
+>
+>
+> Doug Lea wrote:
+>
+> > A better way to do this was to apply the tactics we used in
+> > IdentityHashMap of making EntrySet entries mere forwarders (but still
+> > more efficiently handling the more common keySet and Values
+> > iterators).  As is now checked in.
+> >
+> > Eric: Is it OK fow us to add your test case to JSR166 tests?
+> >
+> > I didn't answer before:
+> >
+> >
+> >>Which leads me to another comment. It would be useful to have a
+"putIfPresent"
+> >>method on ConcurrentMap in addition to the putIfAbsent that is already
+there,
+> >>for the case where you require the entry to already exist when replacing
+a
+> >>value.
+> >
+> >
+> > Can you give a good use case? I can't think of any.
+> >
+> > -Doug
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From dl@cs.oswego.edu  Sat Nov 22 00:59:58 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 21 Nov 2003 19:59:58 -0500
+Subject: [concurrency-interest] IPC and java.util.concurrent
+In-Reply-To: <3FBE717A.8080600@Sun.COM>
+References: <3FBE717A.8080600@Sun.COM>
+Message-ID: <16318.46350.724790.484678@altair.cs.oswego.edu>
+
+>  I just scanned though the JSR 165 and had the following questions ?
+>    I was wondering if the java.util.concurrent.* API can be used to 
+> communicate between to threads in two separate JVM. 
+
+No, what you are looking for is the Isolate API (JSR121), which
+unfortunately won't make it into JDK1.5. There are still plans to
+include it in some subsequent release though. See
+http://bitser.net/isolate-interest/
+http://www.jcp.org/en/jsr/detail?id=121
+
+> Can the BlockingQueue object passed
+>   as a parameter to RMI methods ?
+
+Generally yes, the main implementations are Serializable.
+
+> What about on
+>   two JVM on different machines. 
+
+There is no explicit support in JSR166 for remote transfer, but it is
+possible to use the framework to create custom solutions.  For
+example, it would be possble to create a BlockingQueue class that used
+RMI to transfer serializable elements to another in another
+JVM. However, we don't supply this.
+
+-- 
+Doug Lea, Computer Science Department, SUNY Oswego, Oswego, NY 13126 USA
+dl@cs.oswego.edu 315-312-2688 FAX:315-312-5424 http://gee.cs.oswego.edu/  
+
+From dl@cs.oswego.edu  Sat Nov 22 12:39:45 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sat, 22 Nov 2003 07:39:45 -0500
+Subject: [concurrency-interest] ConcurrentMap.replace
+Message-ID: <16319.22801.18128.679982@altair.cs.oswego.edu>
+
+Eric and others,
+
+I think the functionality you are getting at can be addressed by:
+
+  public interface ConcurrentMap<K, V> extends Map<K, V> {
+      // ...
+
+      /**
+       * Replace entry for key only if currently mapped to given value.
+       * Acts as
+       * <pre> 
+       *  if (map.containsKey(key) && map.get(key).equals(oldValue)) {
+       *     map.put(key, newValue);
+       *     return true;
+       * } else return false;
+       * </pre>
+       * except that the action is performed atomically.
+       * @param key key with which the specified value is associated.
+       * @param oldValue value expected to be associated with the specified key.
+       * @param newValue value to be associated with the specified key.
+       * @return true if the value was replaced
+       * @throws NullPointerException if this map does not permit <tt>null</tt>
+       *            keys or values, and the specified key or value is
+       *            <tt>null</tt>.
+       */
+      boolean replace(K key, V oldValue, V newValue);
+  }
+
+The fact that this can be specified in almost exactly the same way as
+ConcurrentMap.remove(key, value) bolsters confidence that it fills a
+gap we had left in this API.  (Note also the similarity to
+compareAndSet in the atomic classes.)
+
+I think it can be used to cover the use cases people have sent for
+putIfPresent.
+
+Comments?
+
+It is getting to be late for adding things like this, but ought to
+be possible.
+
+It's too bad that replace(key, null, value) cannot mean
+putIfAbsent(key, value), in which case we could do away with
+putIfAbsent.  But to mesh with java.util interface conventions, we
+cannot preclude null being a legal mapping in some Map
+implementations. Null is not a legal mapping value for
+ConcurrentHashMap, but the ConcurrentMap interface is designed to be
+implementable by future concurrent map implementations (probably
+including a sorted map of some kind) in future releases, that might
+wish to allow null values. (Further digressing: I personally think
+that allowing null value mappings is a travesty. Use the NullObject
+pattern instead!  see http://c2.com/cgi/wiki?NullObject).
+
+
+-Doug
+
+
+From tim@peierls.net  Sat Nov 22 13:31:05 2003
+From: tim@peierls.net (Tim Peierls)
+Date: Sat, 22 Nov 2003 08:31:05 -0500
+Subject: [concurrency-interest] Concurrency Utilities in Practice
+References: <16305.34994.351530.160261@altair.cs.oswego.edu><001d01c3a985$6012dfa0$20180a0a@corp.uievolution.com> <16306.57279.133300.139561@altair.cs.oswego.edu> <003001c3a987$ee748a80$20180a0a@corp.uievolution.com> <3FB3A41A.ED01B9E7@peierls.net> <003901c3ae8b$3371a980$799a7cce@REPLICANT2> <3FBCF78F.7A208503@peierls.net> <3FBD93B7.FFE2C2B1@peierls.net> <01ee01c3b03c$a081e6e0$799a7cce@REPLICANT2> <3FBE2589.2D59831@peierls.net> <020d01c3b043$8bd89430$799a7cce@REPLICANT2> <3FBE4F91.6B80A2B8@peierls.net> <022b01c3b06c$ba280f90$799a7cce@REPLICANT2> <3FBE7D58.17E0B7EF@peierls.net> <023801c3b07a$08fb2000$799a7cce@REPLICANT2> <3FBE9022.E1581C0F@peierls.net>
+Message-ID: <3FBF6519.1FC636CF@peierls.net>
+
+Joe Bowbeer and I are preparing a Birds-of-a-Feather session at JavaOne 
+San Francisco 2004 entitled "Concurrency Utilities in Practice", yet to 
+be approved. Doug Lea is the session leader. The idea is to present real 
+programs that make essential use of JSR-166 tools.
+
+We have two such programs in mind, a SwingWorker-like utility and an
+internet-based digital map rendering system. We would like to know
+about other practical applications of JSR-166 that you think would
+fit into this presentation.
+
+If you have a real program that uses j.u.c (or is soon to be converted
+from dl.u.c) that you think exemplifies some aspect of JSR-166, or just
+an idea about what kinds of examples we should be looking for, please
+let us know.
+
+Also, if you expect to be at JavaOne and would be interested in giving
+a mini-presentation (< 10 minutes) as part of this session, please let
+us know.
+
+Joseph Bowbeer <jozart@blarg.net>
+Tim Peierls <tim@peierls.net>
+
+
+From David.Biesack@sas.com  Mon Nov 24 14:09:37 2003
+From: David.Biesack@sas.com (David J. Biesack)
+Date: Mon, 24 Nov 2003 09:09:37 -0500 (EST)
+Subject: [concurrency-interest] Concurrency-interest digest, Vol 1 #168 - 7 msgs
+Message-ID: <200311241409.hAOE9bJ24319@mozart.unx.sas.com>
+
+> Date: Sat, 22 Nov 2003 08:31:05 -0500
+> From: Tim Peierls <tim@peierls.net>
+> To: concurrency-interest@altair.cs.oswego.edu
+> Subject: [concurrency-interest] Concurrency Utilities in Practice
+> 
+> Joe Bowbeer and I are preparing a Birds-of-a-Feather session at JavaOne 
+> San Francisco 2004 entitled "Concurrency Utilities in Practice", yet to 
+> be approved. Doug Lea is the session leader. The idea is to present real 
+> programs that make essential use of JSR-166 tools.
+> 
+> We have two such programs in mind, a SwingWorker-like utility 
+
+Is this based on or similar to FoxTrot, which was presented at JavaOne 2003?
+
+See http://foxtrot.sourceforge.net and
+http://servlet.java.sun.com/javaone/sf2003/conf/sessions/display-2476.en.jsp
+
+Has anyone on concurrency-interest done an analysis of Foxtrot for correctness?
+(Is Simone Bordet on this listserv?)  I'd like to see a Java 1.5/JSR 166 version of
+Foxtrot.
+
+> Joseph Bowbeer <jozart@blarg.net>
+> Tim Peierls <tim@peierls.net>
+
+-- 
+David J. Biesack     SAS Institute Inc.
+R&D Java Strategist  SAS Campus Drive Cary, NC 27513
+(919) 531-7771       http://www.sas.com
+
+
+
+From tim@peierls.net  Mon Nov 24 14:59:05 2003
+From: tim@peierls.net (Tim Peierls)
+Date: Mon, 24 Nov 2003 09:59:05 -0500
+Subject: [concurrency-interest] SwingWorker example (was Concurrency Utilities in Practice)
+References: <200311241409.hAOE9bJ24319@mozart.unx.sas.com>
+Message-ID: <3FC21CB9.A2FF9207@peierls.net>
+
+Tim Peierls wrote:
+> > The idea is to present real programs that make essential use of JSR-166 tools. 
+> > ... We have two such programs in mind, a SwingWorker-like utility ...
+
+David J. Biesack wrote:
+> Is this based on or similar to FoxTrot, which was presented at JavaOne 2003?
+
+No, our idea was simply that, since Joe had already made good use of dl.u.c 
+in a SwingWorker implementation, we could turn this into a quick example of 
+using j.u.c in a real program.
+
+I haven't looked hard at Foxtrot -- Joe may have -- but I'll take a closer look.
+
+I should say here that while responsiveness of Swing apps is clearly a great
+application of the concurrency utilities, it isn't the only one. Does anyone
+have any more-or-less real examples that make use of any of the following:
+
+    Semaphore
+    CountDownLatch (especially with count > 1)
+    CyclicBarrier
+    concurrent collections (especially PriorityBlockingQueue)
+    j.u.c.atomics
+    j.u.c.locks (especially Condition)
+
+--tim
+
+
+From ogg@valaran.com  Mon Nov 24 17:11:14 2003
+From: ogg@valaran.com (Michael Ogg)
+Date: Mon, 24 Nov 2003 12:11:14 -0500
+Subject: [concurrency-interest] SwingWorker example (was Concurrency Utilities
+ in Practice)
+In-Reply-To: <3FC21CB9.A2FF9207@peierls.net>
+References: <200311241409.hAOE9bJ24319@mozart.unx.sas.com> <3FC21CB9.A2FF9207@peierls.net>
+Message-ID: <3FC23BB2.7050605@valaran.com>
+
+we've got an example of a PooledExecutor using a BoundedBuffer from real 
+live code using dl.u.c. it's used to do overhead-free asynchronous 
+monitoring to a remote service. upto the depth of the buffer, it 
+swallows RemoteException. also got another example using 
+dl.u.c.ClockDaemon (that will migrate to j.u.c.ScheduledExecutor) for a 
+scheduling service.
+
+I'll be at J1 (even if my presentations aren't accepted).
+
+Michael
+
+Tim Peierls wrote:
+> Tim Peierls wrote:
+> 
+>>>The idea is to present real programs that make essential use of JSR-166 tools. 
+>>>... We have two such programs in mind, a SwingWorker-like utility ...
+> 
+> 
+> David J. Biesack wrote:
+> 
+>>Is this based on or similar to FoxTrot, which was presented at JavaOne 2003?
+> 
+> 
+> No, our idea was simply that, since Joe had already made good use of dl.u.c 
+> in a SwingWorker implementation, we could turn this into a quick example of 
+> using j.u.c in a real program.
+> 
+> I haven't looked hard at Foxtrot -- Joe may have -- but I'll take a closer look.
+> 
+> I should say here that while responsiveness of Swing apps is clearly a great
+> application of the concurrency utilities, it isn't the only one. Does anyone
+> have any more-or-less real examples that make use of any of the following:
+> 
+>     Semaphore
+>     CountDownLatch (especially with count > 1)
+>     CyclicBarrier
+>     concurrent collections (especially PriorityBlockingQueue)
+>     j.u.c.atomics
+>     j.u.c.locks (especially Condition)
+> 
+> --tim
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+> 
+
+-- 
+   +-----------------------------------------------------------+
+   | Michael Ogg              | e-mail: ogg@valaran.com        |
+   | CTO, Valaran Corporation | URL:    http://www.valaran.com |
+   | 212 Carnegie Center #201 | voice:  +1-609-945-7259        |
+   | Princeton NJ 08540       | fax:    +1-609-716-8463        |
+   +-----------------------------------------------------------+
+
+
+From eric.zoerner@gemstone.com  Mon Nov 24 17:32:20 2003
+From: eric.zoerner@gemstone.com (Eric Zoerner)
+Date: Mon, 24 Nov 2003 09:32:20 -0800
+Subject: [concurrency-interest] ConcurrentMap.replace
+In-Reply-To: <16319.22801.18128.679982@altair.cs.oswego.edu>
+References: <16319.22801.18128.679982@altair.cs.oswego.edu>
+Message-ID: <3FC240A4.5000608@gemstone.com>
+
+I can see how this replace method is the same as putIfPresent(K key, V value, V 
+expectedValue), but how would this method work for the case where I don't care 
+what the current value is, but I want to replace it only if containsKey(key) is 
+true? (e.g. I want to atomically replace it regardless of its current value with 
+my NullObject without the side effect of adding the key it if it's been removed)?
+
+
+Doug Lea wrote:
+
+
+>       boolean replace(K key, V oldValue, V newValue);
+
+
+
+From chussenet@yahoo.com  Mon Nov 24 18:12:27 2003
+From: chussenet@yahoo.com (Claude Hussenet)
+Date: Mon, 24 Nov 2003 10:12:27 -0800 (PST)
+Subject: [concurrency-interest] Concurrency Utilities in Practice
+In-Reply-To: <3FBF6519.1FC636CF@peierls.net>
+Message-ID: <20031124181227.19667.qmail@web41505.mail.yahoo.com>
+
+I am using the concurrent package for a large
+financial
+site in NY .We're getting few millions hit a day.
+
+We're the concurrent package as a way to process
+simultaneous request to the backend in an asynchronous
+fashion .Those calls are used to build the homepage
+of the site (Portal Applications)and also process
+backend validation,authorization........
+
+So,we're using a quite "high level API" from the
+concurrent package such as Callable, TimedCallable,
+FutureResult,PooledExecutor....
+
+We found the concurrent package an an alternative to
+the JMS API which usually require a J2EE container.
+
+Let me know if you're interested .
+
+Rgds,Claude
+
+
+
+
+
+
+--- Tim Peierls <tim@peierls.net> wrote:
+> Joe Bowbeer and I are preparing a Birds-of-a-Feather
+> session at JavaOne 
+> San Francisco 2004 entitled "Concurrency Utilities
+> in Practice", yet to 
+> be approved. Doug Lea is the session leader. The
+> idea is to present real 
+> programs that make essential use of JSR-166 tools.
+> 
+> We have two such programs in mind, a
+> SwingWorker-like utility and an
+> internet-based digital map rendering system. We
+> would like to know
+> about other practical applications of JSR-166 that
+> you think would
+> fit into this presentation.
+> 
+> If you have a real program that uses j.u.c (or is
+> soon to be converted
+> from dl.u.c) that you think exemplifies some aspect
+> of JSR-166, or just
+> an idea about what kinds of examples we should be
+> looking for, please
+> let us know.
+> 
+> Also, if you expect to be at JavaOne and would be
+> interested in giving
+> a mini-presentation (< 10 minutes) as part of this
+> session, please let
+> us know.
+> 
+> Joseph Bowbeer <jozart@blarg.net>
+> Tim Peierls <tim@peierls.net>
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+>
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+=====
+Claude Hussenet
+Independent Consultant.
+(516)942-8214 (Home Office)
+(516)782-2614 (Mobile Phone)
+www.portalsmart.com (Showcase Not Always up)
+
+__________________________________
+Do you Yahoo!?
+Free Pop-Up Blocker - Get it now
+http://companion.yahoo.com/
+
+From tim@peierls.net  Mon Nov 24 18:51:03 2003
+From: tim@peierls.net (Tim Peierls)
+Date: Mon, 24 Nov 2003 13:51:03 -0500
+Subject: [concurrency-interest] SwingWorker example (was Concurrency
+ Utilitiesin Practice)
+References: <200311241409.hAOE9bJ24319@mozart.unx.sas.com> <3FC21CB9.A2FF9207@peierls.net> <3FC23BB2.7050605@valaran.com>
+Message-ID: <3FC25317.763B830E@peierls.net>
+
+Michael Ogg wrote:
+> we've got an example of a PooledExecutor using a BoundedBuffer from real
+> live code using dl.u.c. it's used to do overhead-free asynchronous
+> monitoring to a remote service. upto the depth of the buffer, it
+> swallows RemoteException. also got another example using
+> dl.u.c.ClockDaemon (that will migrate to j.u.c.ScheduledExecutor) for a
+> scheduling service.
+
+These sound like good, short examples, thanks. Any estimate on when j.u.c
+migration could happen?
+
+--tim
+
+
+From susan@mitchlink.com  Mon Nov 24 19:31:55 2003
+From: susan@mitchlink.com (Susan Mitchell)
+Date: Mon, 24 Nov 2003 11:31:55 -0800
+Subject: [concurrency-interest] JCP Case Study of JSR 166
+Message-ID: <a05210602bbe805315691@[192.168.0.100]>
+
+<!doctype html public "-//W3C//DTD W3 HTML//EN">
+<html><head><style type="text/css"><!--
+blockquote, dl, ul, ol, li { padding-top: 0 ; padding-bottom: 0 }
+ --></style><title>JCP Case Study of JSR 166</title></head><body>
+<div>Doug suggested that I poll this list to request input for a story
+I am writing on behalf of the JCP. This story, to be posted at jcp.org
+in the spec lead guide section, is a case study in how an expert group
+handles the task of developing an API, RI, and TCK. (FYI, here are
+similar case studies I wrote: http://jcp.org/en/resources/guide/jsr53
+and http://jcp.org/en/resources/guide/jsr80.)</div>
+<div><br></div>
+<div>I just finished browsing sample postings on the
+concurrency-interest archives to get a sense of how this interest list
+works. I was impressed at the positive and enthusiastic tone of many
+of the messages. I'll be talking more with Doug, but I wondered if any
+of you wanted to answer some or all of these questions:</div>
+<div><br></div>
+<blockquote>What is your role in the development of JSR 166, and how
+did you end up in that role?</blockquote>
+<blockquote>How did you find out about the concurrency-interest
+list?</blockquote>
+<blockquote>How do you feel the contributions of the
+concurrency-interest list improved (or detracted from) the quality of
+the EG's product?</blockquote>
+<blockquote>Have your comments/suggestions been taken seriously?
+Please explain.</blockquote>
+<blockquote>What aspects of the development process should be adopted
+by other EGs?</blockquote>
+<blockquote>What aspects of the development process could have been
+improved?</blockquote>
+<blockquote>If you have participated in or interacted with other
+expert groups,</blockquote>
+<blockquote>what makes this EG unique? better? worse?</blockquote>
+<blockquote>Has it made any difference to the workings of this EG or
+interest group that spec lead Doug Lea is not employed by a
+corporation?</blockquote>
+<blockquote>Has it made any difference to the workings of this EG or
+interest group that spec lead Doug Lea was on the JCP Executive
+Committee?</blockquote>
+<blockquote>Is there anything else that a potential spec lead could
+learn from this EG to apply to a new EG?</blockquote>
+<blockquote>How do you feel about the JCP's role in the working of
+this EG?</blockquote>
+<div><br></div>
+<div>If you prefer to discuss any of these on the phone, let me know.
+I look forward to a blizzard of email from you. Thanks a bunch!</div>
+<div><br></div>
+<div>-- Susan</div>
+</body>
+</html>
+
+From tim@peierls.net  Mon Nov 24 19:42:24 2003
+From: tim@peierls.net (Tim Peierls)
+Date: Mon, 24 Nov 2003 14:42:24 -0500
+Subject: [concurrency-interest] Concurrency Utilities in Practice
+References: <20031124181227.19667.qmail@web41505.mail.yahoo.com>
+Message-ID: <3FC25F20.3D1CFAAF@peierls.net>
+
+Claude Hussenet wrote:
+> We're the concurrent package as a way to process simultaneous 
+> request to the backend in an asynchronous fashion. ... We found 
+> the concurrent package an an alternative to the JMS API which 
+> usually require a J2EE container.
+
+Have you considered Dave Walend's SomnifugiJMS? It is essentially 
+a JMS wrapper around the concurrency utilities (forgive me, Dave, 
+if I oversimplify).
+
+  http://somnifugi.sourceforge.net/
+  http://weblogs.java.net/pub/wlg/433
+
+It would be nice to get a feeling for how to decide between JMS-style 
+designs and the direct use of the concurrency utilities. If we had all 
+the time in the world, I'd love to present things in this order:
+
+  1) a j.u.c implementation of SomnifugiJMS
+  2) an example of asynch request processing using 1)
+  3) an example of asynch request processing using "raw" j.u.c
+     (as in Claude's financial site)
+
+But we don't have much time. As interesting as all of this is, I think 
+our first priority is breadth of application of the concurrency utilities. 
+
+--tim
+
+
+From susan@mitchlink.com  Mon Nov 24 19:57:54 2003
+From: susan@mitchlink.com (Susan Mitchell)
+Date: Mon, 24 Nov 2003 11:57:54 -0800
+Subject: [concurrency-interest] JCP Case Study of JSR 166
+Message-ID: <a05210608bbe812b380f0@[192.168.0.100]>
+
+My apologies to the list for the previous HTML gobbledygook. Here is 
+a plain text version.
+
+-- Susan
+
+
+
+Doug suggested that I poll this list to request input for a story I 
+am writing on behalf of the JCP. This story, to be posted at jcp.org 
+in the spec lead guide section, is a case study in how an expert 
+group handles the task of developing an API, RI, and TCK. (FYI, here 
+are similar case studies I wrote: 
+http://jcp.org/en/resources/guide/jsr53 and 
+http://jcp.org/en/resources/guide/jsr80.)
+
+I just finished browsing sample postings on the concurrency-interest 
+archives to get a sense of how this interest list works. I was 
+impressed at the positive and enthusiastic tone of many of the 
+messages. I'll be talking more with Doug, but I wondered if any of 
+you wanted to answer some or all of these questions:
+
+What is your role in the development of JSR 166, and how did you end 
+up in that role?
+How did you find out about the concurrency-interest list?
+How do you feel the contributions of the concurrency-interest list 
+improved (or detracted from) the quality of the EG's product?
+Have your comments/suggestions been taken seriously? Please explain.
+What aspects of the development process should be adopted by other EGs?
+What aspects of the development process could have been improved?
+If you have participated in or interacted with other expert groups,
+what makes this EG unique? better? worse?
+Has it made any difference to the workings of this EG or interest 
+group that spec lead Doug Lea is not employed by a corporation?
+Has it made any difference to the workings of this EG or interest 
+group that spec lead Doug Lea was on the JCP Executive Committee?
+Is there anything else that a potential spec lead could learn from 
+this EG to apply to a new EG?
+How do you feel about the JCP's role in the working of this EG?
+
+If you prefer to discuss any of these on the phone, let me know. I 
+look forward to a blizzard of email from you. Thanks a bunch!
+
+-- Susan
+
+From noel@devtech.com  Mon Nov 24 20:06:11 2003
+From: noel@devtech.com (Noel J. Bergman)
+Date: Mon, 24 Nov 2003 15:06:11 -0500
+Subject: [concurrency-interest] Concurrency Utilities in Practice
+In-Reply-To: <20031124181227.19667.qmail@web41505.mail.yahoo.com>
+Message-ID: <NBBBJGEAGJAKLIDBKJOPAEBPFJAB.noel@devtech.com>
+
+> We're the concurrent package as a way to process
+> simultaneous request to the backend in an asynchronous
+> fashion
+
+> We found the concurrent package an an alternative to
+> the JMS API which usually require a J2EE container.
+
+If you are using the concurrency package between multiple JVMs as an
+alternative to JMS, I'd like to see the code, if that is OK.
+
+	--- Noel
+
+
+From jozart@csi.com  Mon Nov 24 20:06:35 2003
+From: jozart@csi.com (Joseph Bowbeer)
+Date: Mon, 24 Nov 2003 12:06:35 -0800
+Subject: [concurrency-interest] Re: Concurrency Utilities in Practice
+Message-ID: <03c201c3b2c6$76c9c7f0$c0987cce@REPLICANT2>
+
+David Biesack writes:
+
+>Is this based on or similar to FoxTrot, which was presented at J1 2003?
+
+My version of Hans Muller's SwingWorker is described in The Swing Connection
+
+http://java.sun.com/products/jfc/tsc/articles/threads/threads3.html
+
+and included in dl.u.c
+
+http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/misc/SwingWorker.html
+
+and then used as a punching bag on the FoxTrot site...
+
+http://foxtrot.sourceforge.net/
+
+(Btw, I believe Foxtrot was first presented at J1 2002 in a BOF...)
+
+> Has anyone on concurrency-interest done an analysis of Foxtrot for
+correctness?
+
+I have looked at FoxTrot and believe it is sound.  It can be simpler to work
+with than SwingWorker, though it may not apply to every situation.  At one
+time it was rumored that Swing was going to standardize some of the hooks
+that Foxtrot was using, but I don't know the current status.
+
+> I'd like to see a Java 1.5/JSR 166 version of Foxtrot.
+
+AFAIK, it should just work.  What additional support do you suggest?  (Given
+that mechanisms like FoxTrot and SwingWorker are constrained to use the UI's
+event thread and event queue, there's generally not a lot that j.u.c. can
+do.)
+
+While I'm at it, here are a couple more pointers:
+
+Jonathan Simon informed me about his article on java.net, which presents his
+technique:
+
+  http://today.java.net/pub/a/today/2003/10/24/swing.html
+
+And I was recently informed of Juipiter:
+
+  http://www.juipiter.org/
+
+
+----- Original Message ----- 
+From: "David J. Biesack" <David.Biesack@sas.com>
+Sent: Monday, November 24, 2003 6:09 AM
+Subject: Concurrency-interest digest, Vol 1 #168 - 7 msgs
+
+
+Is this based on or similar to FoxTrot, which was presented at JavaOne 2003?
+
+See http://foxtrot.sourceforge.net and
+http://servlet.java.sun.com/javaone/sf2003/conf/sessions/display-2476.en.jsp
+
+Has anyone on concurrency-interest done an analysis of Foxtrot for
+correctness?
+(Is Simone Bordet on this listserv?)  I'd like to see a Java 1.5/JSR 166
+version of
+Foxtrot.
+
+[...]
+
+
+
+From ogg@valaran.com  Mon Nov 24 21:00:26 2003
+From: ogg@valaran.com (Michael Ogg)
+Date: Mon, 24 Nov 2003 16:00:26 -0500
+Subject: [concurrency-interest] SwingWorker example (was Concurrency
+ Utilitiesin Practice)
+In-Reply-To: <3FC25317.763B830E@peierls.net>
+References: <200311241409.hAOE9bJ24319@mozart.unx.sas.com> <3FC21CB9.A2FF9207@peierls.net> <3FC23BB2.7050605@valaran.com> <3FC25317.763B830E@peierls.net>
+Message-ID: <3FC2716A.3030802@valaran.com>
+
+yes, they are short examples. in fact, I was impressed with how little 
+code was needed to produce a rock solid service.
+
+the migration to j.u.c is based on the advertized solidity. dl.u.c is 
+"production quality" whereas j.u.c is "buyer beware". now there may not 
+be much difference in fact, but since we're using this in product, we 
+have a more convincing story with dl.u.c. meaning we may not go to j.u.c 
+until JSR166 is passed.
+
+Michael
+
+Tim Peierls wrote:
+> Michael Ogg wrote:
+> 
+>>we've got an example of a PooledExecutor using a BoundedBuffer from real
+>>live code using dl.u.c. it's used to do overhead-free asynchronous
+>>monitoring to a remote service. upto the depth of the buffer, it
+>>swallows RemoteException. also got another example using
+>>dl.u.c.ClockDaemon (that will migrate to j.u.c.ScheduledExecutor) for a
+>>scheduling service.
+> 
+> 
+> These sound like good, short examples, thanks. Any estimate on when j.u.c
+> migration could happen?
+> 
+> --tim
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+> 
+
+-- 
+   +-----------------------------------------------------------+
+   | Michael Ogg              | e-mail: ogg@valaran.com        |
+   | CTO, Valaran Corporation | URL:    http://www.valaran.com |
+   | 212 Carnegie Center #201 | voice:  +1-609-945-7259        |
+   | Princeton NJ 08540       | fax:    +1-609-716-8463        |
+   +-----------------------------------------------------------+
+
+
+From jozart@blarg.net  Mon Nov 24 20:02:52 2003
+From: jozart@blarg.net (Joseph Bowbeer)
+Date: Mon, 24 Nov 2003 12:02:52 -0800
+Subject: [concurrency-interest] Re: Concurrency Utilities in Practice
+References: <200311241409.hAOE9bJ24319@mozart.unx.sas.com>
+Message-ID: <03ac01c3b2c5$f1c46fb0$c0987cce@REPLICANT2>
+
+David Biesack writes:
+
+>Is this based on or similar to FoxTrot, which was presented at J1 2003?
+
+My version of Hans Muller's SwingWorker is described in The Swing Connection
+
+http://java.sun.com/products/jfc/tsc/articles/threads/threads3.html
+
+and included in dl.u.c
+
+http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/misc/SwingWorker.html
+
+and then used as a punching bag on the FoxTrot site...
+http://foxtrot.sourceforge.net/
+
+(Btw, I believe Foxtrot was first presented at J1 2002 in a BOF...)
+
+> Has anyone on concurrency-interest done an analysis of Foxtrot for
+correctness?
+
+I have looked at FoxTrot and believe it is sound.  It can be simpler to work
+with than SwingWorker, though it may not apply to every situation.  At one
+time it was rumored that Swing was going to standardize some of the hooks
+that Foxtrot was using, but I don't know the current status.
+
+> I'd like to see a Java 1.5/JSR 166 version of Foxtrot.
+
+AFAIK, it should just work.  What additional support do you suggest?  (Given
+that mechanisms like FoxTrot and SwingWorker are constrained to use the UI's
+event thread and event queue, there's generally not a lot that j.u.c. can
+do.)
+
+While I'm at it, here are a couple more pointers:
+
+Jonathan Simon informed me about his article on java.net, which presents his
+technique:
+
+  http://today.java.net/pub/a/today/2003/10/24/swing.html
+
+And I was recently informed of Juipiter:
+
+  http://www.juipiter.org/
+
+
+----- Original Message ----- 
+From: "David J. Biesack" <David.Biesack@sas.com>
+Sent: Monday, November 24, 2003 6:09 AM
+Subject: Concurrency-interest digest, Vol 1 #168 - 7 msgs
+
+
+Is this based on or similar to FoxTrot, which was presented at JavaOne 2003?
+
+See http://foxtrot.sourceforge.net and
+http://servlet.java.sun.com/javaone/sf2003/conf/sessions/display-2476.en.jsp
+
+Has anyone on concurrency-interest done an analysis of Foxtrot for
+correctness?
+(Is Simone Bordet on this listserv?)  I'd like to see a Java 1.5/JSR 166
+version of
+Foxtrot.
+
+[...]
+
+
+
+From chussenet@yahoo.com  Mon Nov 24 20:48:40 2003
+From: chussenet@yahoo.com (Claude Hussenet)
+Date: Mon, 24 Nov 2003 12:48:40 -0800 (PST)
+Subject: [concurrency-interest] Concurrency Utilities in Practice
+In-Reply-To: <3FC25F20.3D1CFAAF@peierls.net>
+Message-ID: <20031124204840.82734.qmail@web41505.mail.yahoo.com>
+
+>   http://somnifugi.sourceforge.net/
+
+=> No.I didn't.I didn't know about it.
+
+=>What I did ,it's to develop a thin generic 
+=>framework on the top of the concurrent package 
+=> which helps drastically the support of parallel
+=> asynchronous request with timeout.
+=>So the team of application developers can now
+=>suppport the features listed above within a
+web-=>container without being an expert in thread
+=>programming or in the concurrent package .
+=>It required the implementation of 1 or 2 interfaces
+=>and that's it.
+
+=>I personaly found the JMS API as a too low level
+=>API for application programmers looking for solving
+=>concurrent problem.So somnifugi could be an other
+=>alternative but we would have to use it as an
+=>implementation solution of the current framework
+=>I will take a look in the future if we have problem
+=>that we can not solve with our current framework.
+
+Rgds,Claude
+
+
+
+
+
+
+
+
+
+
+
+I have developed a light framework
+on the top of the concurrent package which 
+
+
+--- Tim Peierls <tim@peierls.net> wrote:
+> Claude Hussenet wrote:
+> > We're the concurrent package as a way to process
+> simultaneous 
+> > request to the backend in an asynchronous fashion.
+> ... We found 
+> > the concurrent package an an alternative to the
+> JMS API which 
+> > usually require a J2EE container.
+> 
+> Have you considered Dave Walend's SomnifugiJMS? It
+> is essentially 
+> a JMS wrapper around the concurrency utilities
+> (forgive me, Dave, 
+> if I oversimplify).
+> 
+>   http://somnifugi.sourceforge.net/
+>   http://weblogs.java.net/pub/wlg/433
+> 
+> It would be nice to get a feeling for how to decide
+> between JMS-style 
+> designs and the direct use of the concurrency
+> utilities. If we had all 
+> the time in the world, I'd love to present things in
+> this order:
+> 
+>   1) a j.u.c implementation of SomnifugiJMS
+>   2) an example of asynch request processing using
+> 1)
+>   3) an example of asynch request processing using
+> "raw" j.u.c
+>      (as in Claude's financial site)
+> 
+> But we don't have much time. As interesting as all
+> of this is, I think 
+> our first priority is breadth of application of the
+> concurrency utilities. 
+> 
+> --tim
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+>
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+=====
+Claude Hussenet
+Independent Consultant.
+(516)942-8214 (Home Office)
+(516)782-2614 (Mobile Phone)
+www.portalsmart.com (Showcase Not Always up)
+
+__________________________________
+Do you Yahoo!?
+Free Pop-Up Blocker - Get it now
+http://companion.yahoo.com/
+
+From dl@cs.oswego.edu  Tue Nov 25 01:22:27 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Mon, 24 Nov 2003 20:22:27 -0500
+Subject: [concurrency-interest] ConcurrentMap.replace
+In-Reply-To: <3FC240A4.5000608@gemstone.com>
+References: <16319.22801.18128.679982@altair.cs.oswego.edu>
+ <3FC240A4.5000608@gemstone.com>
+Message-ID: <16322.44755.146905.552519@altair.cs.oswego.edu>
+
+> I can see how this replace method is the same as putIfPresent(K key, V
+> value, V expectedValue), but how would this method work for the case
+> where I don't care what the current value is, but I want to replace it
+> only if containsKey(key) is true? (e.g. I want to atomically replace
+> it regardless of its current value with my NullObject without the side
+> effect of adding the key it if it's been removed)?
+
+
+The bad news is that I still have a hard time thinking of a compelling
+use case where you'd want putIfPresent() but not replace(). And I
+worry about the slippery-slope problem here. For example, maybe you
+would like even better:
+  boolean putIf(K key, Predicate<V> predicate, C value)
+supplying a callback function that the map appliess to get(key); that
+could for example here return true if its argumentis non-null.  But as
+a matter of policy, we don't support callbacks in these kinds of
+classes because doing callbacks inside our internal sync schemes would
+make it impossible to provide guarantees about it working.
+
+The good news is that the new replace() method is a "universal"
+construction that allows you do do any of these things yourself,
+although not quite as efficiently as if each were built in.  For
+example, you can write yourself:
+
+boolean putIfPresent(ConcurrentMap m, K key, V value) {
+  for (;;) {
+     V old = m.get(key);
+     if (old == null) return false;  // *
+     if (m.replace(key, old, value)) return true;
+  }
+}
+
+This is basically equivalent to a classic compareAndSet (CAS) loop. 
+As with CAS, it will loop only if contended, i.e., hardly ever in
+most applications.
+
+You could replace line (*) with any predicate, thus getting
+the effect of the above nonexistent predicate version.
+
+Can you live with this?
+
+-Doug
+
+From eric.zoerner@gemstone.com  Tue Nov 25 17:46:11 2003
+From: eric.zoerner@gemstone.com (Eric Zoerner)
+Date: Tue, 25 Nov 2003 09:46:11 -0800
+Subject: [concurrency-interest] ConcurrentMap.replace
+In-Reply-To: <16322.44755.146905.552519@altair.cs.oswego.edu>
+References: <16319.22801.18128.679982@altair.cs.oswego.edu>	<3FC240A4.5000608@gemstone.com> <16322.44755.146905.552519@altair.cs.oswego.edu>
+Message-ID: <3FC39563.2080904@gemstone.com>
+
+By the way, I apologize for bringing this up so late before 1.5.
+I do understand your point about not wanting to add an arbitrary predicate, but 
+in my opinion putIfPresent is a basic operation that should be provided, and I 
+am not satisfied with the suggested workaround. Not only is there a potential 
+performance hit but there is also no guarantee of completion in a high 
+contention scenario. To me, the use case for an atomic putIfPresent is clear, 
+but perhaps I didn't explain it well. The use case is cache eviction without 
+destruction of the key. You evict the value regardless of its current value 
+leaving the key in place. The purpose is to evict an value from the cache, 
+either because it is stale or because you need to free up space. You do not want 
+to get rid of the key entirely because its presence provides the application 
+with the information that the key still exists and the value can be retrieved on 
+demand (e.g. from a database). There are 5 basic operations on a  named object 
+in a cache: get, create, destroy, replace, and invalidate (i.e. evict). All of 
+those operations can be implemented cleanly using the current ConcurrentMap API 
+except for invalidation which requires an atomic putIfPresent operation. You 
+cannot use a simple "put" because that may resurrect a key that may have just 
+been destroyed. The proposed replace operation, while useful for other cases, is 
+inadequate for this purpose because it requires the retry workaround which is 
+inefficent and has unpredictable performance in a highly concurrent environment.
+
+Because this operation is missing and the ConcurrentHashMap does not provide 
+sufficient access to its subclasses to add this operation, I would most likely 
+not use it.
+
+An alternative idea is to provide access to the update Lock that is used for a 
+particular key. This would allow applications to implement higher level atomic 
+operations (as well as arbitrary predicates) using a ConcurrentMap. For example, 
+the putIfPresent operation could then be implemented like so:
+
+/** @return the old value, or null if not present */
+Object putIfPresent(ConcurrentMap m, K key, V value) {
+    // implementation note: getUpdateLock actually returns the Segment for key
+    // which implements the Lock interface
+   Lock lock = m.getUpdateLock(key);
+   lock.lock();
+   try {
+     if (!m.containsKey(key))
+       return null;
+     return m.put(key, value);
+   }
+   finally {
+     lock.unlock();
+   }
+}
+
+
+
+Doug Lea wrote:
+>>I can see how this replace method is the same as putIfPresent(K key, V
+>>value, V expectedValue), but how would this method work for the case
+>>where I don't care what the current value is, but I want to replace it
+>>only if containsKey(key) is true? (e.g. I want to atomically replace
+>>it regardless of its current value with my NullObject without the side
+>>effect of adding the key it if it's been removed)?
+> 
+> 
+> 
+> The bad news is that I still have a hard time thinking of a compelling
+> use case where you'd want putIfPresent() but not replace(). And I
+> worry about the slippery-slope problem here. For example, maybe you
+> would like even better:
+>   boolean putIf(K key, Predicate<V> predicate, C value)
+> supplying a callback function that the map appliess to get(key); that
+> could for example here return true if its argumentis non-null.  But as
+> a matter of policy, we don't support callbacks in these kinds of
+> classes because doing callbacks inside our internal sync schemes would
+> make it impossible to provide guarantees about it working.
+> 
+> The good news is that the new replace() method is a "universal"
+> construction that allows you do do any of these things yourself,
+> although not quite as efficiently as if each were built in.  For
+> example, you can write yourself:
+> 
+> boolean putIfPresent(ConcurrentMap m, K key, V value) {
+>   for (;;) {
+>      V old = m.get(key);
+>      if (old == null) return false;  // *
+>      if (m.replace(key, old, value)) return true;
+>   }
+> }
+> 
+> This is basically equivalent to a classic compareAndSet (CAS) loop. 
+> As with CAS, it will loop only if contended, i.e., hardly ever in
+> most applications.
+> 
+> You could replace line (*) with any predicate, thus getting
+> the effect of the above nonexistent predicate version.
+> 
+> Can you live with this?
+> 
+> -Doug
+
+
+
+From david@walend.net  Tue Nov 25 19:12:07 2003
+From: david@walend.net (David Walend)
+Date: Tue, 25 Nov 2003 14:12:07 -0500
+Subject: [concurrency-interest] Re: Concurrency Utilities in Practice
+References: <20031124213200.29313.20488.Mailman@altair.cs.oswego.edu>
+Message-ID: <3FC3A987.2000605@walend.net>
+
+Thanks for the plug, Tim. You're not oversimplifying. SomnifugiJMS is 
+dl.u.c Channels in JMS clothing.
+
+Jonathan Simon and I proposed a Threading in Swing technical session 
+where we want to show a spectrum of solutions: running within the awt 
+Thread, using invokeLater(), spinning up worker Threads, putting work in 
+j.u.c queues with threaded feeders bound to slower resources, using 
+SomnifugiJMS queues, and using SomnifugiJMS topics. Different solutions 
+hit different scales and different developer skills. Jonathan and I want 
+to focus on Swing in particular, so our talk might make a good companion 
+talk. (Assuming we get to do it. You can always revisit the outline for 
+your talk after we all hear back. And I put in a BoF proposal for code 
+generation, with some examples from SomnifugiJMS. I could always squeeze 
+it in there if your BoF fills up.)
+
+My own (hugely biased) take on using raw j.u.c for work queues vs a fast 
+JMS: If there's N or fewer queues in the system, no topics, and amazing 
+developers who don't know JMS but do know j.u.c, use j.u.c queues. 
+Otherwise, use a fast JMS. I think for most projects, N will be about 3 
+before the overhead to manage the queues exceeds the overhead to use a 
+JMS implementation. It's about the point where you build a central 
+manager for the queues. For me, N is 1. (I know JMS well. dl.u.c just 
+fits between my ears, and this list is mental yoga for me. YMMV.)
+
+I hope that adds something,
+
+Dave
+
+---
+
+From: Tim Peierls <tim@peierls.net>
+To: Claude Hussenet <chussenet@yahoo.com>
+CC: concurrency-interest@altair.cs.oswego.edu
+Subject: Re: [concurrency-interest] Concurrency Utilities in Practice
+
+Claude Hussenet wrote:
+
+>> We're the concurrent package as a way to process simultaneous 
+>> request to the backend in an asynchronous fashion. ... We found 
+>> the concurrent package an an alternative to the JMS API which 
+>> usually require a J2EE container.
+>  
+>
+
+Have you considered Dave Walend's SomnifugiJMS? It is essentially 
+a JMS wrapper around the concurrency utilities (forgive me, Dave, 
+if I oversimplify).
+
+  http://somnifugi.sourceforge.net/
+  http://weblogs.java.net/pub/wlg/433
+
+It would be nice to get a feeling for how to decide between JMS-style 
+designs and the direct use of the concurrency utilities. If we had all 
+the time in the world, I'd love to present things in this order:
+
+  1) a j.u.c implementation of SomnifugiJMS
+  2) an example of asynch request processing using 1)
+  3) an example of asynch request processing using "raw" j.u.c
+     (as in Claude's financial site)
+
+But we don't have much time. As interesting as all of this is, I think 
+our first priority is breadth of application of the concurrency utilities. 
+
+--tim
+
+
+
+-- 
+David Walend
+david@walend.net
+http://www.walend.net
+
+
+
+From Andreas.Sterbenz@Sun.COM  Fri Nov 28 16:09:51 2003
+From: Andreas.Sterbenz@Sun.COM (Andreas Sterbenz)
+Date: Fri, 28 Nov 2003 16:09:51 +0000
+Subject: [concurrency-interest] daemon or not
+Message-ID: <3FC7734F.7060906@sun.com>
+
+Hi,
+
+I see that the recently added defaultThreadFactory() creates Threads as 
+non-daemon threads. I wonder if creating them as daemon would be a 
+better default.
+
+My reasoning is simple: if the default is (daemon == true) but you want 
+don't want the VM to exit, just create a thread to keep the VM alive 
+yourself (I suspect most apps have some form of such a thread anyway).
+
+On the other hand, if the default is (daemon == false) but you don't 
+want to have your VM kept running by the thread pool, you have to 
+implement your own ThreadFactory. Although simple that is obviously more 
+work.
+
+Andreas.
+
+
+From brian@quiotix.com  Fri Nov 28 16:24:22 2003
+From: brian@quiotix.com (Brian Goetz)
+Date: Fri, 28 Nov 2003 08:24:22 -0800
+Subject: [concurrency-interest] daemon or not
+In-Reply-To: <3FC7734F.7060906@sun.com>; from Andreas.Sterbenz@sun.com on Fri, Nov 28, 2003 at 04:09:51PM +0000
+References: <3FC7734F.7060906@sun.com>
+Message-ID: <20031128082422.B25611@lx.quiotix.com>
+
+> I see that the recently added defaultThreadFactory() creates Threads as 
+> non-daemon threads. I wonder if creating them as daemon would be a 
+> better default.
+
+I wondered that too, at first, but I came to the conclusion that this is 
+better.  
+
+ThreadFactory is used by the various Executor classes.  Since
+Executors are used to implement task queues, and task producers are
+expected to outstrip task consumers at least some of the time, having
+the executor threads go away when the non-daemon threads go away could
+leave unprocessed, or partially processed, tasks.  This is a bug
+waiting to bite you.
+
+The ExecutorService interface includes methods for "shutdown now", and
+"shutdown when currently queued tasks are finished."  This allows for
+deterministic application control.  And you can always create threads
+as daemon threads if you want.
+
+When choosing between the safe thing and the convenient thing, in a
+facility like j.u.c, the safe thing is almost always a better default.
+
+
+From dl@cs.oswego.edu  Sun Nov 30 00:41:37 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sat, 29 Nov 2003 19:41:37 -0500
+Subject: [concurrency-interest] ConcurrentMap.replace
+In-Reply-To: <3FC39563.2080904@gemstone.com>
+References: <16319.22801.18128.679982@altair.cs.oswego.edu>
+ <3FC240A4.5000608@gemstone.com>
+ <16322.44755.146905.552519@altair.cs.oswego.edu>
+ <3FC39563.2080904@gemstone.com>
+Message-ID: <16329.15553.828211.230152@altair.cs.oswego.edu>
+
+There is now a two-argument version of ConcurrentMap.replace (aka
+putIfPresent), that replaces a value only if key is already mapped.
+
+> Not only is there a potential performance hit 
+
+The delay on this was due to testing to make sure there is one (at
+least in ConcurrentHashMap). In fact, performance of the "manual"
+version in my last mail is almost indistinguishable from new built-in
+version except when using key types with nontrivial hashCode
+computations. Which makes it a marginal case, but still on the side of
+including it.
+
+> but there is
+> also no guarantee of completion in a high contention scenario. 
+
+(There's no guarantee you'll get a lock in a finite period of time
+under high contention either. The performance profiles of the two
+versions are basically the same.)
+
+> An alternative idea is to provide access to the update Lock that is
+> used for a particular key. 
+
+We can't. We need the freedom to replace this implementation with, for
+example, a lock-free version if/when we design or find one that
+performs better than current implementation.
+
+-Doug
+

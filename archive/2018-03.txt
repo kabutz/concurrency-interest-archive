@@ -1,0 +1,2658 @@
+From akarnokd at gmail.com  Thu Mar  1 04:56:42 2018
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Thu, 1 Mar 2018 10:56:42 +0100
+Subject: [concurrency-interest] Reactive Streams Utility API
+In-Reply-To: <CABY0rKMNfKWgi6i=z71Xdcppp59UU1LkxtrziuBx84LrtS25Ew@mail.gmail.com>
+References: <CABY0rKMNfKWgi6i=z71Xdcppp59UU1LkxtrziuBx84LrtS25Ew@mail.gmail.com>
+Message-ID: <CAAWwtm9Z=mVn9jdp78BhSw4hgnHC3NDm4bGEchirhKH_bytP2Q@mail.gmail.com>
+
+Hi,
+
+I have some observations:
+
+1) Building up the SPI on top of Processors is an overkill. As RxJava and
+Reactor demonstrate, a processing pipeline is a series (linked list) of
+Subscribers and there is no need to introduce an unicast subscription
+interface (aka the Publisher side of a Processor) to establish a chain. The
+chain of Subscribers has also the benefit of allowing multiple realization
+of the same cold Publisher as each chain will be independent of the other.
+A Processor suggest there is an inherent multicasting and coordination to
+happen, even if the chain is linear.
+
+2) Having an arbitrary processing graph, which may include cycles, looks
+great on paper but is rarely necessary in practice. Yes, there are cases
+with feedback loop such as issuing a HTTP request once the previous
+response has been processed by the chain, but that can often be implemented
+through a Processor at the front of the chain. In addition, thinking in
+linear or fork-join like flows is easier than thinking in arbitrary
+processing graphs.
+
+3) There are some semi-standard naming conventions for operators in RxJava
+and Reactor (or ReactiveX in general). If the naming in the SPI strays too
+much away, it adds an additional burden for the user to learn and match
+operators and concepts between these components.
+
+4) Having the SPI as a mediator may be adding a significant overhead in
+terms of internal allocations and indirections. These include the potential
+functional interface conversion in case a particular library allows checked
+exceptions via its own custom defined functional interfaces. Current RS
+implementation feature conversions to and from the Flow API as a very thin
+wrapper stage and the rest of the processing is expressed in the native DSL
+of the particular library. Given that RS is meant primarily as an interop
+library, such conversions shouldn't be much of a burden.
+
+5) C# has extension methods and expression trees for basically the same
+purpose as this proposal. Advocating for either or both may be more
+enabling not just for RS, but for other uses.
+
+6) About the reference implementation:
+
+-
+https://github.com/lightbend/reactive-streams-utils/blob/master/rxjava/src/main/java/com/lightbend/reactivestreams/rxjava/BridgedProcessor.java#L19
+
+Makes no sense, bind them directly together. Of course, a Processor in the
+middle makes it overcomplicated.
+
+-
+https://github.com/lightbend/reactive-streams-utils/blob/master/rxjava/src/main/java/com/lightbend/reactivestreams/rxjava/RxJavaEngine.java#L21
+
+Stages could have default implementations the SPI can reference back if the
+particular engine doesn't support it. I don't think failing the
+construction via
+UnsupportedStageException is a good idea.
+
+-
+https://github.com/lightbend/reactive-streams-utils/blob/master/rxjava/src/main/java/com/lightbend/reactivestreams/rxjava/TerminationWatchingSubscriber.java#L46
+
+Terminating the CompletableFuture should likely happen after the downstream
+has been notified so the termination includes the processing inside those
+handlers.
+
+
+
+
+2018-03-01 4:37 GMT+01:00 James Roper via Concurrency-interest <
+concurrency-interest at cs.oswego.edu>:
+
+> Hi all,
+>
+> We (Lightbend) would like to put forward a proposal for a Reactive Streams
+> utility API for building instances of juc.Flow interfaces. The rationale,
+> goals and non goals for this, along with our proposed approach to the API,
+> and an actual (incomplete) API proposal, TCK, with implementation examples
+> both in Akka Streams and RxJava, can be found here:
+>
+> https://github.com/lightbend/reactive-streams-utils
+>
+> We are also concurrently discussing this on the core-libs-dev mailing list:
+>
+> http://mail.openjdk.java.net/mailman/listinfo/core-libs-dev
+>
+> We would love to hear any feedback that people have.
+>
+> Regards,
+>
+> --
+> *James Roper*
+> *Senior Octonaut*
+>
+> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+> Twitter: @jroper <https://twitter.com/jroper>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180301/a5f488d5/attachment.html>
+
+From james at lightbend.com  Fri Mar  2 01:26:03 2018
+From: james at lightbend.com (James Roper)
+Date: Fri, 2 Mar 2018 17:26:03 +1100
+Subject: [concurrency-interest] Reactive Streams Utility API
+In-Reply-To: <CAAWwtm9Z=mVn9jdp78BhSw4hgnHC3NDm4bGEchirhKH_bytP2Q@mail.gmail.com>
+References: <CABY0rKMNfKWgi6i=z71Xdcppp59UU1LkxtrziuBx84LrtS25Ew@mail.gmail.com>
+ <CAAWwtm9Z=mVn9jdp78BhSw4hgnHC3NDm4bGEchirhKH_bytP2Q@mail.gmail.com>
+Message-ID: <CABY0rKNu497uu9T+n8=Yv7O9JyTkfstNiyNEVPx_3h3WnT9_6g@mail.gmail.com>
+
+Hi Dávid,
+
+Responses inline.
+
+On 1 March 2018 at 20:56, Dávid Karnok via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Hi,
+>
+> I have some observations:
+>
+> 1) Building up the SPI on top of Processors is an overkill. As RxJava and
+> Reactor demonstrate, a processing pipeline is a series (linked list) of
+> Subscribers and there is no need to introduce an unicast subscription
+> interface (aka the Publisher side of a Processor) to establish a chain. The
+> chain of Subscribers has also the benefit of allowing multiple realization
+> of the same cold Publisher as each chain will be independent of the other.
+> A Processor suggest there is an inherent multicasting and coordination to
+> happen, even if the chain is linear.
+>
+
+Could you give an example of building a chain of subscribers without having
+an initial publisher - eg, some the code that I would write in rx java to
+do it? Because I looked but couldn't find any way to do that. For example,
+how would I use rxjava to parse and process responses from the JDK9 HTTP
+client, which requires passing to the API a Function<HttpResponse,
+Subscriber<ByteBuffer>> in order to consume the bytes in the response?
+
+
+> 2) Having an arbitrary processing graph, which may include cycles, looks
+> great on paper but is rarely necessary in practice. Yes, there are cases
+> with feedback loop such as issuing a HTTP request once the previous
+> response has been processed by the chain, but that can often be implemented
+> through a Processor at the front of the chain. In addition, thinking in
+> linear or fork-join like flows is easier than thinking in arbitrary
+> processing graphs.
+>
+
+At this stage it's not likely that we'll offer any arbitrary graph
+features, I agree, it's not a common enough requirement and adds complexity
+to the conceptual modelling of an API that provides it.
+
+3) There are some semi-standard naming conventions for operators in RxJava
+> and Reactor (or ReactiveX in general). If the naming in the SPI strays too
+> much away, it adds an additional burden for the user to learn and match
+> operators and concepts between these components.
+>
+
+The naming of the stages in the SPI I've tried to make match the naming of
+the API methods that sit on top of them in the API, and the naming in the
+API I've tried to make match the naming in the JDK8 Streams API. I
+definitely think we should be looking to RxJava, Reactor and Akka Streams
+for inspiration for naming where the JDK8 Streams API lacks features that
+we want to add, but I think in order to reduce the burden of learning and
+matching operators for new users who aren't already selecting a streaming
+framework (because if they're already using RxJava, then why would they
+want to use this API? So those familiar with RxJava aren't the target
+audience), that we should stick as close to the JDK8 streams API as
+possible.
+
+
+> 4) Having the SPI as a mediator may be adding a significant overhead in
+> terms of internal allocations and indirections. These include the potential
+> functional interface conversion in case a particular library allows checked
+> exceptions via its own custom defined functional interfaces. Current RS
+> implementation feature conversions to and from the Flow API as a very thin
+> wrapper stage and the rest of the processing is expressed in the native DSL
+> of the particular library. Given that RS is meant primarily as an interop
+> library, such conversions shouldn't be much of a burden.
+>
+
+I don't think conversions to/from functional interface types are avoidable.
+
+
+>
+> 5) C# has extension methods and expression trees for basically the same
+> purpose as this proposal. Advocating for either or both may be more
+> enabling not just for RS, but for other uses.
+>
+
+> 6) About the reference implementation:
+>
+
+I wouldn't call this a reference implementation, it's just a proof of
+concept to show that the SPI can be implemented.
+
+- https://github.com/lightbend/reactive-streams-utils/blob/mas
+> ter/rxjava/src/main/java/com/lightbend/reactivestreams/rxja
+> va/BridgedProcessor.java#L19
+>
+> Makes no sense, bind them directly together. Of course, a Processor in the
+> middle makes it overcomplicated.
+>
+
+This goes back to the "how do I create a Subscriber with transforms like
+map/filter applied to it in rxjava without first having a Publisher". If
+there's a straight forward existing way to do that, then I agree, this can
+be removed.
+
+- https://github.com/lightbend/reactive-streams-utils/blob/mas
+> ter/rxjava/src/main/java/com/lightbend/reactivestreams/rxja
+> va/RxJavaEngine.java#L21
+>
+> Stages could have default implementations the SPI can reference back if
+> the particular engine doesn't support it. I don't think failing the
+> construction via
+> UnsupportedStageException is a good idea.
+>
+
+Lets say an implementation provides a tracing feature (such as Reactor),
+and I've selected that particular implementation because it does that
+tracing. A default implementation is likely to break that tracing, and
+cause messages traversing the graph to become dissociated with downstream
+messages emitted. In that case, I would rather it fail loudly to tell me
+that this would happen, rather than silently fail.
+
+- https://github.com/lightbend/reactive-streams-utils/blob/
+> master/rxjava/src/main/java/com/lightbend/reactivestreams/
+> rxjava/TerminationWatchingSubscriber.java#L46
+>
+> Terminating the CompletableFuture should likely happen after the
+> downstream has been notified so the termination includes the processing
+> inside those handlers.
+>
+
+Good point, I'll change it.
+
+
+>
+>
+>
+>
+> 2018-03-01 4:37 GMT+01:00 James Roper via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu>:
+>
+>> Hi all,
+>>
+>> We (Lightbend) would like to put forward a proposal for a Reactive
+>> Streams utility API for building instances of juc.Flow interfaces. The
+>> rationale, goals and non goals for this, along with our proposed approach
+>> to the API, and an actual (incomplete) API proposal, TCK, with
+>> implementation examples both in Akka Streams and RxJava, can be found here:
+>>
+>> https://github.com/lightbend/reactive-streams-utils
+>>
+>> We are also concurrently discussing this on the core-libs-dev mailing
+>> list:
+>>
+>> http://mail.openjdk.java.net/mailman/listinfo/core-libs-dev
+>>
+>> We would love to hear any feedback that people have.
+>>
+>> Regards,
+>>
+>> --
+>> *James Roper*
+>> *Senior Octonaut*
+>>
+>> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+>> Twitter: @jroper <https://twitter.com/jroper>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+>
+>
+> --
+> Best regards,
+> David Karnok
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+
+-- 
+*James Roper*
+*Senior Octonaut*
+
+Lightbend <https://www.lightbend.com/> – Build reactive apps!
+Twitter: @jroper <https://twitter.com/jroper>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180302/107bcf8a/attachment.html>
+
+From akarnokd at gmail.com  Fri Mar  2 03:38:30 2018
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Fri, 2 Mar 2018 09:38:30 +0100
+Subject: [concurrency-interest] Reactive Streams Utility API
+In-Reply-To: <CABY0rKNu497uu9T+n8=Yv7O9JyTkfstNiyNEVPx_3h3WnT9_6g@mail.gmail.com>
+References: <CABY0rKMNfKWgi6i=z71Xdcppp59UU1LkxtrziuBx84LrtS25Ew@mail.gmail.com>
+ <CAAWwtm9Z=mVn9jdp78BhSw4hgnHC3NDm4bGEchirhKH_bytP2Q@mail.gmail.com>
+ <CABY0rKNu497uu9T+n8=Yv7O9JyTkfstNiyNEVPx_3h3WnT9_6g@mail.gmail.com>
+Message-ID: <CAAWwtm9BPTz6-oZFjyrXgZSTBi=9nRA8wBQeZCziXG_LX2gSAA@mail.gmail.com>
+
+2018-03-02 7:26 GMT+01:00 James Roper <james at lightbend.com>:
+
+> Hi Dávid,
+>
+> Responses inline.
+>
+> On 1 March 2018 at 20:56, Dávid Karnok via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>> Hi,
+>>
+>> I have some observations:
+>>
+>> 1) Building up the SPI on top of Processors is an overkill. As RxJava and
+>> Reactor demonstrate, a processing pipeline is a series (linked list) of
+>> Subscribers and there is no need to introduce an unicast subscription
+>> interface (aka the Publisher side of a Processor) to establish a chain. The
+>> chain of Subscribers has also the benefit of allowing multiple realization
+>> of the same cold Publisher as each chain will be independent of the other.
+>> A Processor suggest there is an inherent multicasting and coordination to
+>> happen, even if the chain is linear.
+>>
+>
+> Could you give an example of building a chain of subscribers without
+> having an initial publisher - eg, some the code that I would write in rx
+> java to do it? Because I looked but couldn't find any way to do that.
+>
+
+It always starts with a Publisher, we never have the user create any chain
+of Subscribers directly. That's why I'm not fond of your SubscriberBuilder.
+
+
+> For example, how would I use rxjava to parse and process responses from
+> the JDK9 HTTP client, which requires passing to the API a
+> Function<HttpResponse, Subscriber<ByteBuffer>> in order to consume the
+> bytes in the response?
+>
+
+That looks like a bad design, there was no reason in the past years to have
+users provide a Subscriber for other than Publisher.subscribe(). If you
+wish to consume something from a provider, you should get a Publisher back.
+
+
+> - https://github.com/lightbend/reactive-streams-utils/blob/mas
+>> ter/rxjava/src/main/java/com/lightbend/reactivestreams/rxjav
+>> a/BridgedProcessor.java#L19
+>>
+>
+>> Makes no sense, bind them directly together. Of course, a Processor in
+>> the middle makes it overcomplicated.
+>>
+>
+> This goes back to the "how do I create a Subscriber with transforms like
+> map/filter applied to it in rxjava without first having a Publisher". If
+> there's a straight forward existing way to do that, then I agree, this can
+> be removed.
+>
+
+You don't, you create Publisher transformations. This way, a blueprint is
+saved on how to create a chain once the end Publisher is subscribed to.
+This is almost the same as Akka-Stream's Source type.
+
+
+>
+>>
+>>
+>>
+>>
+>> 2018-03-01 4:37 GMT+01:00 James Roper via Concurrency-interest <
+>> concurrency-interest at cs.oswego.edu>:
+>>
+>>> Hi all,
+>>>
+>>> We (Lightbend) would like to put forward a proposal for a Reactive
+>>> Streams utility API for building instances of juc.Flow interfaces. The
+>>> rationale, goals and non goals for this, along with our proposed approach
+>>> to the API, and an actual (incomplete) API proposal, TCK, with
+>>> implementation examples both in Akka Streams and RxJava, can be found here:
+>>>
+>>> https://github.com/lightbend/reactive-streams-utils
+>>>
+>>> We are also concurrently discussing this on the core-libs-dev mailing
+>>> list:
+>>>
+>>> http://mail.openjdk.java.net/mailman/listinfo/core-libs-dev
+>>>
+>>> We would love to hear any feedback that people have.
+>>>
+>>> Regards,
+>>>
+>>> --
+>>> *James Roper*
+>>> *Senior Octonaut*
+>>>
+>>> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+>>> Twitter: @jroper <https://twitter.com/jroper>
+>>>
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>>>
+>>
+>>
+>> --
+>> Best regards,
+>> David Karnok
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+>
+>
+> --
+> *James Roper*
+> *Senior Octonaut*
+>
+> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+> Twitter: @jroper <https://twitter.com/jroper>
+>
+
+
+
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180302/aa085998/attachment-0001.html>
+
+From james at lightbend.com  Fri Mar  2 05:00:42 2018
+From: james at lightbend.com (James Roper)
+Date: Fri, 2 Mar 2018 21:00:42 +1100
+Subject: [concurrency-interest] Reactive Streams Utility API
+In-Reply-To: <CAAWwtm9BPTz6-oZFjyrXgZSTBi=9nRA8wBQeZCziXG_LX2gSAA@mail.gmail.com>
+References: <CABY0rKMNfKWgi6i=z71Xdcppp59UU1LkxtrziuBx84LrtS25Ew@mail.gmail.com>
+ <CAAWwtm9Z=mVn9jdp78BhSw4hgnHC3NDm4bGEchirhKH_bytP2Q@mail.gmail.com>
+ <CABY0rKNu497uu9T+n8=Yv7O9JyTkfstNiyNEVPx_3h3WnT9_6g@mail.gmail.com>
+ <CAAWwtm9BPTz6-oZFjyrXgZSTBi=9nRA8wBQeZCziXG_LX2gSAA@mail.gmail.com>
+Message-ID: <CABY0rKPOYfK=TBYURtGgRuqoy=bORaEjrGH_KZN5fQATMG6nkQ@mail.gmail.com>
+
+On 2 March 2018 at 19:38, Dávid Karnok <akarnokd at gmail.com> wrote:
+
+>
+>
+> 2018-03-02 7:26 GMT+01:00 James Roper <james at lightbend.com>:
+>
+>> Hi Dávid,
+>>
+>> Responses inline.
+>>
+>> On 1 March 2018 at 20:56, Dávid Karnok via Concurrency-interest <
+>> concurrency-interest at cs.oswego.edu> wrote:
+>>
+>>> Hi,
+>>>
+>>> I have some observations:
+>>>
+>>> 1) Building up the SPI on top of Processors is an overkill. As RxJava
+>>> and Reactor demonstrate, a processing pipeline is a series (linked list) of
+>>> Subscribers and there is no need to introduce an unicast subscription
+>>> interface (aka the Publisher side of a Processor) to establish a chain. The
+>>> chain of Subscribers has also the benefit of allowing multiple realization
+>>> of the same cold Publisher as each chain will be independent of the other.
+>>> A Processor suggest there is an inherent multicasting and coordination to
+>>> happen, even if the chain is linear.
+>>>
+>>
+>> Could you give an example of building a chain of subscribers without
+>> having an initial publisher - eg, some the code that I would write in rx
+>> java to do it? Because I looked but couldn't find any way to do that.
+>>
+>
+> It always starts with a Publisher, we never have the user create any chain
+> of Subscribers directly. That's why I'm not fond of your SubscriberBuilder.
+>
+
+If we don't provide this, then the JDKs own Reactive Streams utilities
+library will be incompatible with its own Reactive Streams integrations,
+which makes no sense.
+
+For example, how would I use rxjava to parse and process responses from the
+>> JDK9 HTTP client, which requires passing to the API a
+>> Function<HttpResponse, Subscriber<ByteBuffer>> in order to consume the
+>> bytes in the response?
+>>
+>
+> That looks like a bad design, there was no reason in the past years to
+> have users provide a Subscriber for other than Publisher.subscribe(). If
+> you wish to consume something from a provider, you should get a Publisher
+> back.
+>
+
+There's actually some quite good reasons to design an API like this:
+
+* The response body must be consumed, if it's not, a connection will be
+leaked. By requiring the user to supply a Subscriber, the API can ensure
+that the body is always consumed, and so can safely protect users against
+inadvertent connection leaks. We've been providing streaming APIs for HTTP
+clients that work in this fashion since well before Reactive Streams was
+even thought of, and have found that it's a very good way to ensure that
+users don't accidentally stuff up.
+* Requiring users to supply a Subscriber also solves the problem of what to
+do if the user consumes a Publisher that represents a hot connection twice
+- by virtue of the fact that they can't, since there's no Publisher.
+* For APIs such as messaging APIs, you want a subscription to be restarted
+(typically after a backoff period) after failures are encountered. If you
+supply the stream of messages to the user as a Publisher, and require them
+to connect it to the Subscriber, then that also forces them to monitor the
+lifecycle of the stream, and implement the reconnect and backoff logic. In
+contrast, if the user supplies a Subscriber to the framework, the framework
+itself can then implement that logic for the user. We offer APIs like this
+and find it's a great way to provide simple, easy to use managed
+integration with message brokers, and MicroProfile is currently considering
+a proposal that offers this style of API.
+
+Of course, there's also drawbacks to this approach, for example if you want
+to connect an API that requires a Subscriber to an API that requires a
+Publisher, you need some sort of Processor bridge, just to name one. But
+it's not a clear cut one is better than the other, it's a trade off, and
+there a good reasons to use either approach. I don't think you can write it
+off as bad design. As it happens I did raise this as an issue on the
+net-dev list, that it wouldn't work well with RxJava, but the developers of
+the HTTP client weren't that interested. (
+http://mail.openjdk.java.net/pipermail/net-dev/2017-December/011063.html)
+
+At any rate, libraries are always going to want to be able to supply
+developers with Subscribers to do various things. This API allows the to
+build those Subscribers without having to implement them from scratch, they
+can use the map/filter etc functions before feeding the stream elsewhere.
+
+
+>
+>
+>> - https://github.com/lightbend/reactive-streams-utils/blob/mas
+>>> ter/rxjava/src/main/java/com/lightbend/reactivestreams/rxjav
+>>> a/BridgedProcessor.java#L19
+>>>
+>>
+>>> Makes no sense, bind them directly together. Of course, a Processor in
+>>> the middle makes it overcomplicated.
+>>>
+>>
+>> This goes back to the "how do I create a Subscriber with transforms like
+>> map/filter applied to it in rxjava without first having a Publisher". If
+>> there's a straight forward existing way to do that, then I agree, this can
+>> be removed.
+>>
+>
+> You don't, you create Publisher transformations. This way, a blueprint is
+> saved on how to create a chain once the end Publisher is subscribed to.
+> This is almost the same as Akka-Stream's Source type.
+>
+>
+>>
+>>>
+>>>
+>>>
+>>>
+>>> 2018-03-01 4:37 GMT+01:00 James Roper via Concurrency-interest <
+>>> concurrency-interest at cs.oswego.edu>:
+>>>
+>>>> Hi all,
+>>>>
+>>>> We (Lightbend) would like to put forward a proposal for a Reactive
+>>>> Streams utility API for building instances of juc.Flow interfaces. The
+>>>> rationale, goals and non goals for this, along with our proposed approach
+>>>> to the API, and an actual (incomplete) API proposal, TCK, with
+>>>> implementation examples both in Akka Streams and RxJava, can be found here:
+>>>>
+>>>> https://github.com/lightbend/reactive-streams-utils
+>>>>
+>>>> We are also concurrently discussing this on the core-libs-dev mailing
+>>>> list:
+>>>>
+>>>> http://mail.openjdk.java.net/mailman/listinfo/core-libs-dev
+>>>>
+>>>> We would love to hear any feedback that people have.
+>>>>
+>>>> Regards,
+>>>>
+>>>> --
+>>>> *James Roper*
+>>>> *Senior Octonaut*
+>>>>
+>>>> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+>>>> Twitter: @jroper <https://twitter.com/jroper>
+>>>>
+>>>> _______________________________________________
+>>>> Concurrency-interest mailing list
+>>>> Concurrency-interest at cs.oswego.edu
+>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>
+>>>>
+>>>
+>>>
+>>> --
+>>> Best regards,
+>>> David Karnok
+>>>
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>>>
+>>
+>>
+>> --
+>> *James Roper*
+>> *Senior Octonaut*
+>>
+>> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+>> Twitter: @jroper <https://twitter.com/jroper>
+>>
+>
+>
+>
+> --
+> Best regards,
+> David Karnok
+>
+
+
+
+-- 
+*James Roper*
+*Senior Octonaut*
+
+Lightbend <https://www.lightbend.com/> – Build reactive apps!
+Twitter: @jroper <https://twitter.com/jroper>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180302/f139b356/attachment.html>
+
+From akarnokd at gmail.com  Fri Mar  2 05:41:28 2018
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Fri, 2 Mar 2018 11:41:28 +0100
+Subject: [concurrency-interest] Reactive Streams Utility API
+In-Reply-To: <CABY0rKPOYfK=TBYURtGgRuqoy=bORaEjrGH_KZN5fQATMG6nkQ@mail.gmail.com>
+References: <CABY0rKMNfKWgi6i=z71Xdcppp59UU1LkxtrziuBx84LrtS25Ew@mail.gmail.com>
+ <CAAWwtm9Z=mVn9jdp78BhSw4hgnHC3NDm4bGEchirhKH_bytP2Q@mail.gmail.com>
+ <CABY0rKNu497uu9T+n8=Yv7O9JyTkfstNiyNEVPx_3h3WnT9_6g@mail.gmail.com>
+ <CAAWwtm9BPTz6-oZFjyrXgZSTBi=9nRA8wBQeZCziXG_LX2gSAA@mail.gmail.com>
+ <CABY0rKPOYfK=TBYURtGgRuqoy=bORaEjrGH_KZN5fQATMG6nkQ@mail.gmail.com>
+Message-ID: <CAAWwtm9RKQXM_dDtCjTH+B5EBz-TmY5quTZJp4nqwpc14tQfzg@mail.gmail.com>
+
+>  If we don't provide this, then the JDKs own Reactive Streams utilities
+library will be incompatible with its own Reactive Streams integrations,
+which makes no sense.
+
+Perhaps this is one point against doing this proposal inside the JDK. As
+the Akka-Stream architecture demonstrates, in complex frameworks it is
+better to expose a Publisher at the very end of a processing chain only so
+that the framework induced complications don't leak out to the user. In the
+HTTP client case, this complication comes from the underlying NIO
+interoperation.
+
+>  The response body must be consumed, if it's not, a connection will be
+leaked.
+
+Java 9 Introduced the Cleaner API that allows resolving such leaks of
+unconsumed components.
+
+>  For APIs such as messaging APIs, you want a subscription to be restarted
+
+Retrying and repeating sources is a common practice, but having a pre-build
+Subscriber chain won't work there and adds the burden to re-establish the
+whole chain to the end user of the API.
+
+>  As it happens I did raise this as an issue on the net-dev list, that it
+wouldn't work well with RxJava, but the developers of the HTTP client
+weren't that interested.
+
+I believe the success of RS was partly due to it being external and
+independent of JDK developments. People experienced in the respective
+technology but inexperienced with reactive programming tend to project
+habits of design and coding that doesn't work well in general (but only in
+narrow cases which tricks them to think it actually generalizes). It was
+also hinted to me that with big corporations, no amount of blogs,
+discussions or mailing list posts will likely change their minds (see ADBC).
+
+
+2018-03-02 11:00 GMT+01:00 James Roper <james at lightbend.com>:
+
+> On 2 March 2018 at 19:38, Dávid Karnok <akarnokd at gmail.com> wrote:
+>
+>>
+>>
+>> 2018-03-02 7:26 GMT+01:00 James Roper <james at lightbend.com>:
+>>
+>>> Hi Dávid,
+>>>
+>>> Responses inline.
+>>>
+>>> On 1 March 2018 at 20:56, Dávid Karnok via Concurrency-interest <
+>>> concurrency-interest at cs.oswego.edu> wrote:
+>>>
+>>>> Hi,
+>>>>
+>>>> I have some observations:
+>>>>
+>>>> 1) Building up the SPI on top of Processors is an overkill. As RxJava
+>>>> and Reactor demonstrate, a processing pipeline is a series (linked list) of
+>>>> Subscribers and there is no need to introduce an unicast subscription
+>>>> interface (aka the Publisher side of a Processor) to establish a chain. The
+>>>> chain of Subscribers has also the benefit of allowing multiple realization
+>>>> of the same cold Publisher as each chain will be independent of the other.
+>>>> A Processor suggest there is an inherent multicasting and coordination to
+>>>> happen, even if the chain is linear.
+>>>>
+>>>
+>>> Could you give an example of building a chain of subscribers without
+>>> having an initial publisher - eg, some the code that I would write in rx
+>>> java to do it? Because I looked but couldn't find any way to do that.
+>>>
+>>
+>> It always starts with a Publisher, we never have the user create any
+>> chain of Subscribers directly. That's why I'm not fond of your
+>> SubscriberBuilder.
+>>
+>
+> If we don't provide this, then the JDKs own Reactive Streams utilities
+> library will be incompatible with its own Reactive Streams integrations,
+> which makes no sense.
+>
+> For example, how would I use rxjava to parse and process responses from
+>>> the JDK9 HTTP client, which requires passing to the API a
+>>> Function<HttpResponse, Subscriber<ByteBuffer>> in order to consume the
+>>> bytes in the response?
+>>>
+>>
+>> That looks like a bad design, there was no reason in the past years to
+>> have users provide a Subscriber for other than Publisher.subscribe(). If
+>> you wish to consume something from a provider, you should get a Publisher
+>> back.
+>>
+>
+> There's actually some quite good reasons to design an API like this:
+>
+> * The response body must be consumed, if it's not, a connection will be
+> leaked. By requiring the user to supply a Subscriber, the API can ensure
+> that the body is always consumed, and so can safely protect users against
+> inadvertent connection leaks. We've been providing streaming APIs for HTTP
+> clients that work in this fashion since well before Reactive Streams was
+> even thought of, and have found that it's a very good way to ensure that
+> users don't accidentally stuff up.
+> * Requiring users to supply a Subscriber also solves the problem of what
+> to do if the user consumes a Publisher that represents a hot connection
+> twice - by virtue of the fact that they can't, since there's no Publisher.
+> * For APIs such as messaging APIs, you want a subscription to be restarted
+> (typically after a backoff period) after failures are encountered. If you
+> supply the stream of messages to the user as a Publisher, and require them
+> to connect it to the Subscriber, then that also forces them to monitor the
+> lifecycle of the stream, and implement the reconnect and backoff logic. In
+> contrast, if the user supplies a Subscriber to the framework, the framework
+> itself can then implement that logic for the user. We offer APIs like this
+> and find it's a great way to provide simple, easy to use managed
+> integration with message brokers, and MicroProfile is currently considering
+> a proposal that offers this style of API.
+>
+> Of course, there's also drawbacks to this approach, for example if you
+> want to connect an API that requires a Subscriber to an API that requires a
+> Publisher, you need some sort of Processor bridge, just to name one. But
+> it's not a clear cut one is better than the other, it's a trade off, and
+> there a good reasons to use either approach. I don't think you can write it
+> off as bad design. As it happens I did raise this as an issue on the
+> net-dev list, that it wouldn't work well with RxJava, but the developers of
+> the HTTP client weren't that interested. (http://mail.openjdk.java.net/
+> pipermail/net-dev/2017-December/011063.html)
+>
+> At any rate, libraries are always going to want to be able to supply
+> developers with Subscribers to do various things. This API allows the to
+> build those Subscribers without having to implement them from scratch, they
+> can use the map/filter etc functions before feeding the stream elsewhere.
+>
+>
+>>
+>>
+>>> - https://github.com/lightbend/reactive-streams-utils/blob/mas
+>>>> ter/rxjava/src/main/java/com/lightbend/reactivestreams/rxjav
+>>>> a/BridgedProcessor.java#L19
+>>>>
+>>>
+>>>> Makes no sense, bind them directly together. Of course, a Processor in
+>>>> the middle makes it overcomplicated.
+>>>>
+>>>
+>>> This goes back to the "how do I create a Subscriber with transforms like
+>>> map/filter applied to it in rxjava without first having a Publisher". If
+>>> there's a straight forward existing way to do that, then I agree, this can
+>>> be removed.
+>>>
+>>
+>> You don't, you create Publisher transformations. This way, a blueprint is
+>> saved on how to create a chain once the end Publisher is subscribed to.
+>> This is almost the same as Akka-Stream's Source type.
+>>
+>>
+>>>
+>>>>
+>>>>
+>>>>
+>>>>
+>>>> 2018-03-01 4:37 GMT+01:00 James Roper via Concurrency-interest <
+>>>> concurrency-interest at cs.oswego.edu>:
+>>>>
+>>>>> Hi all,
+>>>>>
+>>>>> We (Lightbend) would like to put forward a proposal for a Reactive
+>>>>> Streams utility API for building instances of juc.Flow interfaces. The
+>>>>> rationale, goals and non goals for this, along with our proposed approach
+>>>>> to the API, and an actual (incomplete) API proposal, TCK, with
+>>>>> implementation examples both in Akka Streams and RxJava, can be found here:
+>>>>>
+>>>>> https://github.com/lightbend/reactive-streams-utils
+>>>>>
+>>>>> We are also concurrently discussing this on the core-libs-dev mailing
+>>>>> list:
+>>>>>
+>>>>> http://mail.openjdk.java.net/mailman/listinfo/core-libs-dev
+>>>>>
+>>>>> We would love to hear any feedback that people have.
+>>>>>
+>>>>> Regards,
+>>>>>
+>>>>> --
+>>>>> *James Roper*
+>>>>> *Senior Octonaut*
+>>>>>
+>>>>> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+>>>>> Twitter: @jroper <https://twitter.com/jroper>
+>>>>>
+>>>>> _______________________________________________
+>>>>> Concurrency-interest mailing list
+>>>>> Concurrency-interest at cs.oswego.edu
+>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>
+>>>>>
+>>>>
+>>>>
+>>>> --
+>>>> Best regards,
+>>>> David Karnok
+>>>>
+>>>> _______________________________________________
+>>>> Concurrency-interest mailing list
+>>>> Concurrency-interest at cs.oswego.edu
+>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>
+>>>>
+>>>
+>>>
+>>> --
+>>> *James Roper*
+>>> *Senior Octonaut*
+>>>
+>>> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+>>> Twitter: @jroper <https://twitter.com/jroper>
+>>>
+>>
+>>
+>>
+>> --
+>> Best regards,
+>> David Karnok
+>>
+>
+>
+>
+> --
+> *James Roper*
+> *Senior Octonaut*
+>
+> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+> Twitter: @jroper <https://twitter.com/jroper>
+>
+
+
+
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180302/b618a751/attachment-0001.html>
+
+From james at lightbend.com  Fri Mar  2 06:35:40 2018
+From: james at lightbend.com (James Roper)
+Date: Fri, 2 Mar 2018 22:35:40 +1100
+Subject: [concurrency-interest] Reactive Streams Utility API
+In-Reply-To: <CAAWwtm9RKQXM_dDtCjTH+B5EBz-TmY5quTZJp4nqwpc14tQfzg@mail.gmail.com>
+References: <CABY0rKMNfKWgi6i=z71Xdcppp59UU1LkxtrziuBx84LrtS25Ew@mail.gmail.com>
+ <CAAWwtm9Z=mVn9jdp78BhSw4hgnHC3NDm4bGEchirhKH_bytP2Q@mail.gmail.com>
+ <CABY0rKNu497uu9T+n8=Yv7O9JyTkfstNiyNEVPx_3h3WnT9_6g@mail.gmail.com>
+ <CAAWwtm9BPTz6-oZFjyrXgZSTBi=9nRA8wBQeZCziXG_LX2gSAA@mail.gmail.com>
+ <CABY0rKPOYfK=TBYURtGgRuqoy=bORaEjrGH_KZN5fQATMG6nkQ@mail.gmail.com>
+ <CAAWwtm9RKQXM_dDtCjTH+B5EBz-TmY5quTZJp4nqwpc14tQfzg@mail.gmail.com>
+Message-ID: <CABY0rKN1bm_-cHqeHQVTnJSKjSHnCFgh4pAByWb1eov_dJc4Mw@mail.gmail.com>
+
+On 2 March 2018 at 21:41, Dávid Karnok <akarnokd at gmail.com> wrote:
+
+> >  If we don't provide this, then the JDKs own Reactive Streams utilities
+> library will be incompatible with its own Reactive Streams integrations,
+> which makes no sense.
+>
+> Perhaps this is one point against doing this proposal inside the JDK. As
+> the Akka-Stream architecture demonstrates, in complex frameworks it is
+> better to expose a Publisher at the very end of a processing chain only so
+> that the framework induced complications don't leak out to the user. In the
+> HTTP client case, this complication comes from the underlying NIO
+> interoperation.
+>
+
+I don't think the Akka-Stream architecture demonstrates this at all - Akka
+Streams works well with any shape of stream.
+
+
+> >  The response body must be consumed, if it's not, a connection will be
+> leaked.
+>
+> Java 9 Introduced the Cleaner API that allows resolving such leaks of
+> unconsumed components.
+>
+
+Relying on GC to clean up pooled resources is not a good design at all.
+
+>  For APIs such as messaging APIs, you want a subscription to be restarted
+>
+> Retrying and repeating sources is a common practice, but having a
+> pre-build Subscriber chain won't work there and adds the burden to
+> re-establish the whole chain to the end user of the API.
+>
+
+We provide APIs that allow a user to instantiate a new Subscriber per
+invocation. It works. It's being used in production.
+
+>  As it happens I did raise this as an issue on the net-dev list, that it
+> wouldn't work well with RxJava, but the developers of the HTTP client
+> weren't that interested.
+>
+> I believe the success of RS was partly due to it being external and
+> independent of JDK developments. People experienced in the respective
+> technology but inexperienced with reactive programming tend to project
+> habits of design and coding that doesn't work well in general (but only in
+> narrow cases which tricks them to think it actually generalizes). It was
+> also hinted to me that with big corporations, no amount of blogs,
+> discussions or mailing list posts will likely change their minds (see ADBC).
+>
+
+How can you write the choice of this API off as inexperience in reactive
+programming? I just told you Lightbend has been providing APIs like this
+for years, Play Framework 2, released in 2012, has always had a model where
+to consume a request body on the server, you supply a Subscriber (or
+equivalent interface, Sink, and Iteratee back before Akka Streams), and
+that it has worked very well for us. If the only reason the HTTP client
+developers chose that pattern is out of inexperience, then why is Lightbend
+using it? Are you saying Lightbend is inexperienced with reactive
+programming? These are tried and trusted patterns that have been proved to
+work well for reactive systems development. I'm not asking you to like
+them, but don't call people that choose to use them inexperienced.
+
+
+> 2018-03-02 11:00 GMT+01:00 James Roper <james at lightbend.com>:
+>
+>> On 2 March 2018 at 19:38, Dávid Karnok <akarnokd at gmail.com> wrote:
+>>
+>>>
+>>>
+>>> 2018-03-02 7:26 GMT+01:00 James Roper <james at lightbend.com>:
+>>>
+>>>> Hi Dávid,
+>>>>
+>>>> Responses inline.
+>>>>
+>>>> On 1 March 2018 at 20:56, Dávid Karnok via Concurrency-interest <
+>>>> concurrency-interest at cs.oswego.edu> wrote:
+>>>>
+>>>>> Hi,
+>>>>>
+>>>>> I have some observations:
+>>>>>
+>>>>> 1) Building up the SPI on top of Processors is an overkill. As RxJava
+>>>>> and Reactor demonstrate, a processing pipeline is a series (linked list) of
+>>>>> Subscribers and there is no need to introduce an unicast subscription
+>>>>> interface (aka the Publisher side of a Processor) to establish a chain. The
+>>>>> chain of Subscribers has also the benefit of allowing multiple realization
+>>>>> of the same cold Publisher as each chain will be independent of the other.
+>>>>> A Processor suggest there is an inherent multicasting and coordination to
+>>>>> happen, even if the chain is linear.
+>>>>>
+>>>>
+>>>> Could you give an example of building a chain of subscribers without
+>>>> having an initial publisher - eg, some the code that I would write in rx
+>>>> java to do it? Because I looked but couldn't find any way to do that.
+>>>>
+>>>
+>>> It always starts with a Publisher, we never have the user create any
+>>> chain of Subscribers directly. That's why I'm not fond of your
+>>> SubscriberBuilder.
+>>>
+>>
+>> If we don't provide this, then the JDKs own Reactive Streams utilities
+>> library will be incompatible with its own Reactive Streams integrations,
+>> which makes no sense.
+>>
+>> For example, how would I use rxjava to parse and process responses from
+>>>> the JDK9 HTTP client, which requires passing to the API a
+>>>> Function<HttpResponse, Subscriber<ByteBuffer>> in order to consume the
+>>>> bytes in the response?
+>>>>
+>>>
+>>> That looks like a bad design, there was no reason in the past years to
+>>> have users provide a Subscriber for other than Publisher.subscribe(). If
+>>> you wish to consume something from a provider, you should get a Publisher
+>>> back.
+>>>
+>>
+>> There's actually some quite good reasons to design an API like this:
+>>
+>> * The response body must be consumed, if it's not, a connection will be
+>> leaked. By requiring the user to supply a Subscriber, the API can ensure
+>> that the body is always consumed, and so can safely protect users against
+>> inadvertent connection leaks. We've been providing streaming APIs for HTTP
+>> clients that work in this fashion since well before Reactive Streams was
+>> even thought of, and have found that it's a very good way to ensure that
+>> users don't accidentally stuff up.
+>> * Requiring users to supply a Subscriber also solves the problem of what
+>> to do if the user consumes a Publisher that represents a hot connection
+>> twice - by virtue of the fact that they can't, since there's no Publisher.
+>> * For APIs such as messaging APIs, you want a subscription to be
+>> restarted (typically after a backoff period) after failures are
+>> encountered. If you supply the stream of messages to the user as a
+>> Publisher, and require them to connect it to the Subscriber, then that also
+>> forces them to monitor the lifecycle of the stream, and implement the
+>> reconnect and backoff logic. In contrast, if the user supplies a Subscriber
+>> to the framework, the framework itself can then implement that logic for
+>> the user. We offer APIs like this and find it's a great way to provide
+>> simple, easy to use managed integration with message brokers, and
+>> MicroProfile is currently considering a proposal that offers this style of
+>> API.
+>>
+>> Of course, there's also drawbacks to this approach, for example if you
+>> want to connect an API that requires a Subscriber to an API that requires a
+>> Publisher, you need some sort of Processor bridge, just to name one. But
+>> it's not a clear cut one is better than the other, it's a trade off, and
+>> there a good reasons to use either approach. I don't think you can write it
+>> off as bad design. As it happens I did raise this as an issue on the
+>> net-dev list, that it wouldn't work well with RxJava, but the developers of
+>> the HTTP client weren't that interested. (http://mail.openjdk.java.net/
+>> pipermail/net-dev/2017-December/011063.html)
+>>
+>> At any rate, libraries are always going to want to be able to supply
+>> developers with Subscribers to do various things. This API allows the to
+>> build those Subscribers without having to implement them from scratch, they
+>> can use the map/filter etc functions before feeding the stream elsewhere.
+>>
+>>
+>>>
+>>>
+>>>> - https://github.com/lightbend/reactive-streams-utils/blob/mas
+>>>>> ter/rxjava/src/main/java/com/lightbend/reactivestreams/rxjav
+>>>>> a/BridgedProcessor.java#L19
+>>>>>
+>>>>
+>>>>> Makes no sense, bind them directly together. Of course, a Processor in
+>>>>> the middle makes it overcomplicated.
+>>>>>
+>>>>
+>>>> This goes back to the "how do I create a Subscriber with transforms
+>>>> like map/filter applied to it in rxjava without first having a Publisher".
+>>>> If there's a straight forward existing way to do that, then I agree, this
+>>>> can be removed.
+>>>>
+>>>
+>>> You don't, you create Publisher transformations. This way, a blueprint
+>>> is saved on how to create a chain once the end Publisher is subscribed to.
+>>> This is almost the same as Akka-Stream's Source type.
+>>>
+>>>
+>>>>
+>>>>>
+>>>>>
+>>>>>
+>>>>>
+>>>>> 2018-03-01 4:37 GMT+01:00 James Roper via Concurrency-interest <
+>>>>> concurrency-interest at cs.oswego.edu>:
+>>>>>
+>>>>>> Hi all,
+>>>>>>
+>>>>>> We (Lightbend) would like to put forward a proposal for a Reactive
+>>>>>> Streams utility API for building instances of juc.Flow interfaces. The
+>>>>>> rationale, goals and non goals for this, along with our proposed approach
+>>>>>> to the API, and an actual (incomplete) API proposal, TCK, with
+>>>>>> implementation examples both in Akka Streams and RxJava, can be found here:
+>>>>>>
+>>>>>> https://github.com/lightbend/reactive-streams-utils
+>>>>>>
+>>>>>> We are also concurrently discussing this on the core-libs-dev mailing
+>>>>>> list:
+>>>>>>
+>>>>>> http://mail.openjdk.java.net/mailman/listinfo/core-libs-dev
+>>>>>>
+>>>>>> We would love to hear any feedback that people have.
+>>>>>>
+>>>>>> Regards,
+>>>>>>
+>>>>>> --
+>>>>>> *James Roper*
+>>>>>> *Senior Octonaut*
+>>>>>>
+>>>>>> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+>>>>>> Twitter: @jroper <https://twitter.com/jroper>
+>>>>>>
+>>>>>> _______________________________________________
+>>>>>> Concurrency-interest mailing list
+>>>>>> Concurrency-interest at cs.oswego.edu
+>>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>>
+>>>>>>
+>>>>>
+>>>>>
+>>>>> --
+>>>>> Best regards,
+>>>>> David Karnok
+>>>>>
+>>>>> _______________________________________________
+>>>>> Concurrency-interest mailing list
+>>>>> Concurrency-interest at cs.oswego.edu
+>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>
+>>>>>
+>>>>
+>>>>
+>>>> --
+>>>> *James Roper*
+>>>> *Senior Octonaut*
+>>>>
+>>>> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+>>>> Twitter: @jroper <https://twitter.com/jroper>
+>>>>
+>>>
+>>>
+>>>
+>>> --
+>>> Best regards,
+>>> David Karnok
+>>>
+>>
+>>
+>>
+>> --
+>> *James Roper*
+>> *Senior Octonaut*
+>>
+>> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+>> Twitter: @jroper <https://twitter.com/jroper>
+>>
+>
+>
+>
+> --
+> Best regards,
+> David Karnok
+>
+
+
+
+-- 
+*James Roper*
+*Senior Octonaut*
+
+Lightbend <https://www.lightbend.com/> – Build reactive apps!
+Twitter: @jroper <https://twitter.com/jroper>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180302/e7a4948a/attachment-0001.html>
+
+From akarnokd at gmail.com  Fri Mar  2 07:05:12 2018
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Fri, 2 Mar 2018 13:05:12 +0100
+Subject: [concurrency-interest] Reactive Streams Utility API
+In-Reply-To: <CABY0rKN1bm_-cHqeHQVTnJSKjSHnCFgh4pAByWb1eov_dJc4Mw@mail.gmail.com>
+References: <CABY0rKMNfKWgi6i=z71Xdcppp59UU1LkxtrziuBx84LrtS25Ew@mail.gmail.com>
+ <CAAWwtm9Z=mVn9jdp78BhSw4hgnHC3NDm4bGEchirhKH_bytP2Q@mail.gmail.com>
+ <CABY0rKNu497uu9T+n8=Yv7O9JyTkfstNiyNEVPx_3h3WnT9_6g@mail.gmail.com>
+ <CAAWwtm9BPTz6-oZFjyrXgZSTBi=9nRA8wBQeZCziXG_LX2gSAA@mail.gmail.com>
+ <CABY0rKPOYfK=TBYURtGgRuqoy=bORaEjrGH_KZN5fQATMG6nkQ@mail.gmail.com>
+ <CAAWwtm9RKQXM_dDtCjTH+B5EBz-TmY5quTZJp4nqwpc14tQfzg@mail.gmail.com>
+ <CABY0rKN1bm_-cHqeHQVTnJSKjSHnCFgh4pAByWb1eov_dJc4Mw@mail.gmail.com>
+Message-ID: <CAAWwtm9drPkQ2bu6xF_xwdiuSGYJeh4PQaLgcGPk9+7xC5K1JQ@mail.gmail.com>
+
+I can't speak for Lightbend, but rememeber that the Reactive Streams
+specification was finalized in 2015, setting the requirements and
+expectations of multi-valued asynchronous streams straight. In this aspect,
+I don't see Iteratees reemerging and competing against RS, even though I'm
+sure it did get the job done in its time. As did any older, non-reactive
+technologies, work, yet they are now being replaced by RS-based designs. Of
+course, what parts of RS is being/going to be used is the question here. I
+suggest not designing the API around Processor- and Subscriber-builders but
+instead Publisher transformations.
+
+2018-03-02 12:35 GMT+01:00 James Roper <james at lightbend.com>:
+
+>
+>
+> On 2 March 2018 at 21:41, Dávid Karnok <akarnokd at gmail.com> wrote:
+>
+>> >  If we don't provide this, then the JDKs own Reactive Streams
+>> utilities library will be incompatible with its own Reactive Streams
+>> integrations, which makes no sense.
+>>
+>> Perhaps this is one point against doing this proposal inside the JDK. As
+>> the Akka-Stream architecture demonstrates, in complex frameworks it is
+>> better to expose a Publisher at the very end of a processing chain only so
+>> that the framework induced complications don't leak out to the user. In the
+>> HTTP client case, this complication comes from the underlying NIO
+>> interoperation.
+>>
+>
+> I don't think the Akka-Stream architecture demonstrates this at all - Akka
+> Streams works well with any shape of stream.
+>
+>
+>> >  The response body must be consumed, if it's not, a connection will be
+>> leaked.
+>>
+>> Java 9 Introduced the Cleaner API that allows resolving such leaks of
+>> unconsumed components.
+>>
+>
+> Relying on GC to clean up pooled resources is not a good design at all.
+>
+> >  For APIs such as messaging APIs, you want a subscription to be
+>> restarted
+>>
+>> Retrying and repeating sources is a common practice, but having a
+>> pre-build Subscriber chain won't work there and adds the burden to
+>> re-establish the whole chain to the end user of the API.
+>>
+>
+> We provide APIs that allow a user to instantiate a new Subscriber per
+> invocation. It works. It's being used in production.
+>
+> >  As it happens I did raise this as an issue on the net-dev list, that
+>> it wouldn't work well with RxJava, but the developers of the HTTP client
+>> weren't that interested.
+>>
+>> I believe the success of RS was partly due to it being external and
+>> independent of JDK developments. People experienced in the respective
+>> technology but inexperienced with reactive programming tend to project
+>> habits of design and coding that doesn't work well in general (but only in
+>> narrow cases which tricks them to think it actually generalizes). It was
+>> also hinted to me that with big corporations, no amount of blogs,
+>> discussions or mailing list posts will likely change their minds (see ADBC).
+>>
+>
+> How can you write the choice of this API off as inexperience in reactive
+> programming? I just told you Lightbend has been providing APIs like this
+> for years, Play Framework 2, released in 2012, has always had a model where
+> to consume a request body on the server, you supply a Subscriber (or
+> equivalent interface, Sink, and Iteratee back before Akka Streams), and
+> that it has worked very well for us. If the only reason the HTTP client
+> developers chose that pattern is out of inexperience, then why is Lightbend
+> using it? Are you saying Lightbend is inexperienced with reactive
+> programming? These are tried and trusted patterns that have been proved to
+> work well for reactive systems development. I'm not asking you to like
+> them, but don't call people that choose to use them inexperienced.
+>
+>
+>> 2018-03-02 11:00 GMT+01:00 James Roper <james at lightbend.com>:
+>>
+>>> On 2 March 2018 at 19:38, Dávid Karnok <akarnokd at gmail.com> wrote:
+>>>
+>>>>
+>>>>
+>>>> 2018-03-02 7:26 GMT+01:00 James Roper <james at lightbend.com>:
+>>>>
+>>>>> Hi Dávid,
+>>>>>
+>>>>> Responses inline.
+>>>>>
+>>>>> On 1 March 2018 at 20:56, Dávid Karnok via Concurrency-interest <
+>>>>> concurrency-interest at cs.oswego.edu> wrote:
+>>>>>
+>>>>>> Hi,
+>>>>>>
+>>>>>> I have some observations:
+>>>>>>
+>>>>>> 1) Building up the SPI on top of Processors is an overkill. As RxJava
+>>>>>> and Reactor demonstrate, a processing pipeline is a series (linked list) of
+>>>>>> Subscribers and there is no need to introduce an unicast subscription
+>>>>>> interface (aka the Publisher side of a Processor) to establish a chain. The
+>>>>>> chain of Subscribers has also the benefit of allowing multiple realization
+>>>>>> of the same cold Publisher as each chain will be independent of the other.
+>>>>>> A Processor suggest there is an inherent multicasting and coordination to
+>>>>>> happen, even if the chain is linear.
+>>>>>>
+>>>>>
+>>>>> Could you give an example of building a chain of subscribers without
+>>>>> having an initial publisher - eg, some the code that I would write in rx
+>>>>> java to do it? Because I looked but couldn't find any way to do that.
+>>>>>
+>>>>
+>>>> It always starts with a Publisher, we never have the user create any
+>>>> chain of Subscribers directly. That's why I'm not fond of your
+>>>> SubscriberBuilder.
+>>>>
+>>>
+>>> If we don't provide this, then the JDKs own Reactive Streams utilities
+>>> library will be incompatible with its own Reactive Streams integrations,
+>>> which makes no sense.
+>>>
+>>> For example, how would I use rxjava to parse and process responses from
+>>>>> the JDK9 HTTP client, which requires passing to the API a
+>>>>> Function<HttpResponse, Subscriber<ByteBuffer>> in order to consume the
+>>>>> bytes in the response?
+>>>>>
+>>>>
+>>>> That looks like a bad design, there was no reason in the past years to
+>>>> have users provide a Subscriber for other than Publisher.subscribe(). If
+>>>> you wish to consume something from a provider, you should get a Publisher
+>>>> back.
+>>>>
+>>>
+>>> There's actually some quite good reasons to design an API like this:
+>>>
+>>> * The response body must be consumed, if it's not, a connection will be
+>>> leaked. By requiring the user to supply a Subscriber, the API can ensure
+>>> that the body is always consumed, and so can safely protect users against
+>>> inadvertent connection leaks. We've been providing streaming APIs for HTTP
+>>> clients that work in this fashion since well before Reactive Streams was
+>>> even thought of, and have found that it's a very good way to ensure that
+>>> users don't accidentally stuff up.
+>>> * Requiring users to supply a Subscriber also solves the problem of what
+>>> to do if the user consumes a Publisher that represents a hot connection
+>>> twice - by virtue of the fact that they can't, since there's no Publisher.
+>>> * For APIs such as messaging APIs, you want a subscription to be
+>>> restarted (typically after a backoff period) after failures are
+>>> encountered. If you supply the stream of messages to the user as a
+>>> Publisher, and require them to connect it to the Subscriber, then that also
+>>> forces them to monitor the lifecycle of the stream, and implement the
+>>> reconnect and backoff logic. In contrast, if the user supplies a Subscriber
+>>> to the framework, the framework itself can then implement that logic for
+>>> the user. We offer APIs like this and find it's a great way to provide
+>>> simple, easy to use managed integration with message brokers, and
+>>> MicroProfile is currently considering a proposal that offers this style of
+>>> API.
+>>>
+>>> Of course, there's also drawbacks to this approach, for example if you
+>>> want to connect an API that requires a Subscriber to an API that requires a
+>>> Publisher, you need some sort of Processor bridge, just to name one. But
+>>> it's not a clear cut one is better than the other, it's a trade off, and
+>>> there a good reasons to use either approach. I don't think you can write it
+>>> off as bad design. As it happens I did raise this as an issue on the
+>>> net-dev list, that it wouldn't work well with RxJava, but the developers of
+>>> the HTTP client weren't that interested. (http://mail.openjdk.java.net/
+>>> pipermail/net-dev/2017-December/011063.html)
+>>>
+>>> At any rate, libraries are always going to want to be able to supply
+>>> developers with Subscribers to do various things. This API allows the to
+>>> build those Subscribers without having to implement them from scratch, they
+>>> can use the map/filter etc functions before feeding the stream elsewhere.
+>>>
+>>>
+>>>>
+>>>>
+>>>>> - https://github.com/lightbend/reactive-streams-utils/blob/mas
+>>>>>> ter/rxjava/src/main/java/com/lightbend/reactivestreams/rxjav
+>>>>>> a/BridgedProcessor.java#L19
+>>>>>>
+>>>>>
+>>>>>> Makes no sense, bind them directly together. Of course, a Processor
+>>>>>> in the middle makes it overcomplicated.
+>>>>>>
+>>>>>
+>>>>> This goes back to the "how do I create a Subscriber with transforms
+>>>>> like map/filter applied to it in rxjava without first having a Publisher".
+>>>>> If there's a straight forward existing way to do that, then I agree, this
+>>>>> can be removed.
+>>>>>
+>>>>
+>>>> You don't, you create Publisher transformations. This way, a blueprint
+>>>> is saved on how to create a chain once the end Publisher is subscribed to.
+>>>> This is almost the same as Akka-Stream's Source type.
+>>>>
+>>>>
+>>>>>
+>>>>>>
+>>>>>>
+>>>>>>
+>>>>>>
+>>>>>> 2018-03-01 4:37 GMT+01:00 James Roper via Concurrency-interest <
+>>>>>> concurrency-interest at cs.oswego.edu>:
+>>>>>>
+>>>>>>> Hi all,
+>>>>>>>
+>>>>>>> We (Lightbend) would like to put forward a proposal for a Reactive
+>>>>>>> Streams utility API for building instances of juc.Flow interfaces. The
+>>>>>>> rationale, goals and non goals for this, along with our proposed approach
+>>>>>>> to the API, and an actual (incomplete) API proposal, TCK, with
+>>>>>>> implementation examples both in Akka Streams and RxJava, can be found here:
+>>>>>>>
+>>>>>>> https://github.com/lightbend/reactive-streams-utils
+>>>>>>>
+>>>>>>> We are also concurrently discussing this on the core-libs-dev
+>>>>>>> mailing list:
+>>>>>>>
+>>>>>>> http://mail.openjdk.java.net/mailman/listinfo/core-libs-dev
+>>>>>>>
+>>>>>>> We would love to hear any feedback that people have.
+>>>>>>>
+>>>>>>> Regards,
+>>>>>>>
+>>>>>>> --
+>>>>>>> *James Roper*
+>>>>>>> *Senior Octonaut*
+>>>>>>>
+>>>>>>> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+>>>>>>> Twitter: @jroper <https://twitter.com/jroper>
+>>>>>>>
+>>>>>>> _______________________________________________
+>>>>>>> Concurrency-interest mailing list
+>>>>>>> Concurrency-interest at cs.oswego.edu
+>>>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>>>
+>>>>>>>
+>>>>>>
+>>>>>>
+>>>>>> --
+>>>>>> Best regards,
+>>>>>> David Karnok
+>>>>>>
+>>>>>> _______________________________________________
+>>>>>> Concurrency-interest mailing list
+>>>>>> Concurrency-interest at cs.oswego.edu
+>>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>>
+>>>>>>
+>>>>>
+>>>>>
+>>>>> --
+>>>>> *James Roper*
+>>>>> *Senior Octonaut*
+>>>>>
+>>>>> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+>>>>> Twitter: @jroper <https://twitter.com/jroper>
+>>>>>
+>>>>
+>>>>
+>>>>
+>>>> --
+>>>> Best regards,
+>>>> David Karnok
+>>>>
+>>>
+>>>
+>>>
+>>> --
+>>> *James Roper*
+>>> *Senior Octonaut*
+>>>
+>>> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+>>> Twitter: @jroper <https://twitter.com/jroper>
+>>>
+>>
+>>
+>>
+>> --
+>> Best regards,
+>> David Karnok
+>>
+>
+>
+>
+> --
+> *James Roper*
+> *Senior Octonaut*
+>
+> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+> Twitter: @jroper <https://twitter.com/jroper>
+>
+
+
+
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180302/89f3563b/attachment-0001.html>
+
+From shade at redhat.com  Wed Mar 14 14:24:01 2018
+From: shade at redhat.com (Aleksey Shipilev)
+Date: Wed, 14 Mar 2018 19:24:01 +0100
+Subject: [concurrency-interest] C++ and inserting loads after null-checks
+Message-ID: <01b2486a-b4ab-00ab-f6cc-2e33ca4c150a@redhat.com>
+
+Hi,
+
+This is the question about C++ [pre-11] memory model. Hans?
+
+Suppose you have this code under the concurrent update to "*p":
+
+ int m(int** p) {
+   int* t = *p;
+   if (t != NULL) {
+     return *t; // <--- can it SEGV on NULL here?
+   }
+   return 0;
+ }
+
+It certainly cannot NPE in the similar code in Java. But the arguments in the recent bug reports [1]
+and bug fixes [2][3] seem to imply it would be legal for C++ compiler to reload *p after the
+null-check in the example above, and thus be exposed to the concurrent write of NULL.
+
+Is this a known thing in C++ MM? (Please say "no").
+Or is the "legality" interpretation in [1][2][3] wrong? (Please say "yes").
+
+-Aleksey
+
+[1] https://bugs.openjdk.java.net/browse/JDK-8129440
+[2] http://mail.openjdk.java.net/pipermail/hotspot-gc-dev/2017-December/020994.html
+[3] http://mail.openjdk.java.net/pipermail/hotspot-gc-dev/2015-June/013924.html
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 819 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180314/ce19356d/attachment.sig>
+
+From aph at redhat.com  Wed Mar 14 14:38:24 2018
+From: aph at redhat.com (Andrew Haley)
+Date: Wed, 14 Mar 2018 18:38:24 +0000
+Subject: [concurrency-interest] C++ and inserting loads after null-checks
+In-Reply-To: <01b2486a-b4ab-00ab-f6cc-2e33ca4c150a@redhat.com>
+References: <01b2486a-b4ab-00ab-f6cc-2e33ca4c150a@redhat.com>
+Message-ID: <8827fb35-7bc3-aba9-bb69-c8ed7e8e2e23@redhat.com>
+
+On 14/03/18 18:24, Aleksey Shipilev via Concurrency-interest wrote:
+> This is the question about C++ [pre-11] memory model. Hans?
+
+Is there one?
+
+> Suppose you have this code under the concurrent update to "*p":
+> 
+>  int m(int** p) {
+>    int* t = *p;
+>    if (t != NULL) {
+>      return *t; // <--- can it SEGV on NULL here?
+>    }
+>    return 0;
+>  }
+> 
+> It certainly cannot NPE in the similar code in Java. But the arguments in the recent bug reports [1]
+> and bug fixes [2][3] seem to imply it would be legal for C++ compiler to reload *p after the
+> null-check in the example above, and thus be exposed to the concurrent write of NULL.
+> 
+> Is this a known thing in C++ MM? (Please say "no").
+> Or is the "legality" interpretation in [1][2][3] wrong? (Please say "yes").
+
+You've got a data race on *p.  Undefined behaviour: do not pass Go, do
+not collect $200.  More generally, a C++ compiler is entitled to
+assume that no other threads exist unless told otherwise by
+atomic fences.
+
+-- 
+Andrew Haley
+Java Platform Lead Engineer
+Red Hat UK Ltd. <https://www.redhat.com>
+EAC8 43EB D3EF DB98 CC77 2FAD A5CD 6035 332F A671
+
+From boehm at acm.org  Wed Mar 14 14:43:33 2018
+From: boehm at acm.org (Hans Boehm)
+Date: Wed, 14 Mar 2018 11:43:33 -0700
+Subject: [concurrency-interest] C++ and inserting loads after null-checks
+In-Reply-To: <01b2486a-b4ab-00ab-f6cc-2e33ca4c150a@redhat.com>
+References: <01b2486a-b4ab-00ab-f6cc-2e33ca4c150a@redhat.com>
+Message-ID: <CAPUmR1a1wv2yepP9xhkJcn2nmdjiPYMtcqGTJoTpN7yFfhVhpw@mail.gmail.com>
+
+Pre-11, C++ was a single-threaded language.
+
+Post-11, there is a data race on the access to *p, so this generates
+undefined behavior. So yes, this is allowed.
+
+As a practical matter, I think gcc always allowed this, though it rarely
+generated code prone to this.
+
+The load from *p should be from an atomic. The correct way to do this is
+probably to use atomic_view<>, which doesn't really exist yet. A hack,
+that's not absolutely guaranteed to work, is to cast to an atomic before
+loading.
+
+On Wed, Mar 14, 2018 at 11:24 AM, Aleksey Shipilev <shade at redhat.com> wrote:
+
+> Hi,
+>
+> This is the question about C++ [pre-11] memory model. Hans?
+>
+> Suppose you have this code under the concurrent update to "*p":
+>
+>  int m(int** p) {
+>    int* t = *p;
+>    if (t != NULL) {
+>      return *t; // <--- can it SEGV on NULL here?
+>    }
+>    return 0;
+>  }
+>
+> It certainly cannot NPE in the similar code in Java. But the arguments in
+> the recent bug reports [1]
+> and bug fixes [2][3] seem to imply it would be legal for C++ compiler to
+> reload *p after the
+> null-check in the example above, and thus be exposed to the concurrent
+> write of NULL.
+>
+> Is this a known thing in C++ MM? (Please say "no").
+> Or is the "legality" interpretation in [1][2][3] wrong? (Please say "yes").
+>
+> -Aleksey
+>
+> [1] https://bugs.openjdk.java.net/browse/JDK-8129440
+> [2] http://mail.openjdk.java.net/pipermail/hotspot-gc-dev/2017-
+> December/020994.html
+> [3] http://mail.openjdk.java.net/pipermail/hotspot-gc-dev/2015-
+> June/013924.html
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180314/96143a41/attachment.html>
+
+From shade at redhat.com  Wed Mar 14 14:48:29 2018
+From: shade at redhat.com (Aleksey Shipilev)
+Date: Wed, 14 Mar 2018 19:48:29 +0100
+Subject: [concurrency-interest] C++ and inserting loads after null-checks
+In-Reply-To: <CAPUmR1a1wv2yepP9xhkJcn2nmdjiPYMtcqGTJoTpN7yFfhVhpw@mail.gmail.com>
+References: <01b2486a-b4ab-00ab-f6cc-2e33ca4c150a@redhat.com>
+ <CAPUmR1a1wv2yepP9xhkJcn2nmdjiPYMtcqGTJoTpN7yFfhVhpw@mail.gmail.com>
+Message-ID: <bab051b6-09e4-66ce-1a7c-a5299820ac3a@redhat.com>
+
+On 03/14/2018 07:43 PM, Hans Boehm wrote:
+> Pre-11, C++ was a single-threaded language.
+> 
+> Post-11, there is a data race on the access to *p, so this generates undefined behavior. So yes,
+> this is allowed.
+
+Okay, thanks. I was afraid of that. So with UB on our hands, it does not even matter we have a local
+variable that we have checked for NULL, right?
+
+> As a practical matter, I think gcc always allowed this, though it rarely generated code prone to this.
+> 
+> The load from *p should be from an atomic. The correct way to do this is probably to use
+> atomic_view<>, which doesn't really exist yet. A hack, that's not absolutely guaranteed to work, is
+> to cast to an atomic before loading.
+
+For the practical matter, in pre-11 world, what would you do? The fixes in [2][3] do "volatile",
+which seems to be wishful thinking as well.
+
+Thanks,
+-Aleksey
+
+>     [1] https://bugs.openjdk.java.net/browse/JDK-8129440
+>     [2] http://mail.openjdk.java.net/pipermail/hotspot-gc-dev/2017-December/020994.html
+>     [3] http://mail.openjdk.java.net/pipermail/hotspot-gc-dev/2015-June/013924.html
+
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 819 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180314/80f1ca46/attachment.sig>
+
+From shade at redhat.com  Wed Mar 14 15:27:37 2018
+From: shade at redhat.com (Aleksey Shipilev)
+Date: Wed, 14 Mar 2018 20:27:37 +0100
+Subject: [concurrency-interest] C++ and inserting loads after null-checks
+In-Reply-To: <8827fb35-7bc3-aba9-bb69-c8ed7e8e2e23@redhat.com>
+References: <01b2486a-b4ab-00ab-f6cc-2e33ca4c150a@redhat.com>
+ <8827fb35-7bc3-aba9-bb69-c8ed7e8e2e23@redhat.com>
+Message-ID: <67fb9574-7b71-8bfa-3d00-08b410c9cb3f@redhat.com>
+
+On 03/14/2018 07:38 PM, Andrew Haley wrote:
+> On 14/03/18 18:24, Aleksey Shipilev via Concurrency-interest wrote:
+>> Is this a known thing in C++ MM? (Please say "no").
+>> Or is the "legality" interpretation in [1][2][3] wrong? (Please say "yes").
+> 
+> You've got a data race on *p.  Undefined behaviour: do not pass Go, do
+> not collect $200.  More generally, a C++ compiler is entitled to
+> assume that no other threads exist unless told otherwise by
+> atomic fences.
+
+Yes-yes, I have successfully suppressed the memory that in C++ the data race is UB.
+Hard to unlearn this bit from Java, where data races can be benign.
+
+-Aleksey
+
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 819 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180314/41a16d1a/attachment.sig>
+
+From boehm at acm.org  Wed Mar 14 16:19:29 2018
+From: boehm at acm.org (Hans Boehm)
+Date: Wed, 14 Mar 2018 13:19:29 -0700
+Subject: [concurrency-interest] C++ and inserting loads after null-checks
+In-Reply-To: <bab051b6-09e4-66ce-1a7c-a5299820ac3a@redhat.com>
+References: <01b2486a-b4ab-00ab-f6cc-2e33ca4c150a@redhat.com>
+ <CAPUmR1a1wv2yepP9xhkJcn2nmdjiPYMtcqGTJoTpN7yFfhVhpw@mail.gmail.com>
+ <bab051b6-09e4-66ce-1a7c-a5299820ac3a@redhat.com>
+Message-ID: <CAPUmR1YKiS1BkM4s+nBnrSS9AHEaKqCh9ZLx6sYJzwudL0yvdw@mail.gmail.com>
+
+I would expect that making the load of *p volatile would indeed solve the
+problem in practice. The semantics of C++ volatiles are not crystal clear,
+but it is reasonably clear that the compiler should not reload one when the
+source doesn't ask it to.
+
+This of course isn't guaranteed to work, especially since C and C++
+volatile doesn't remove the data race, and it's conceivable that the load
+may not be atomic on some really old processors, but I think on modern
+processors it will generally do the right thing. Assuming you need no
+memory ordering, at least.
+
+On Wed, Mar 14, 2018 at 11:48 AM, Aleksey Shipilev <shade at redhat.com> wrote:
+
+> On 03/14/2018 07:43 PM, Hans Boehm wrote:
+> > Pre-11, C++ was a single-threaded language.
+> >
+> > Post-11, there is a data race on the access to *p, so this generates
+> undefined behavior. So yes,
+> > this is allowed.
+>
+> Okay, thanks. I was afraid of that. So with UB on our hands, it does not
+> even matter we have a local
+> variable that we have checked for NULL, right?
+>
+> > As a practical matter, I think gcc always allowed this, though it rarely
+> generated code prone to this.
+> >
+> > The load from *p should be from an atomic. The correct way to do this is
+> probably to use
+> > atomic_view<>, which doesn't really exist yet. A hack, that's not
+> absolutely guaranteed to work, is
+> > to cast to an atomic before loading.
+>
+> For the practical matter, in pre-11 world, what would you do? The fixes in
+> [2][3] do "volatile",
+> which seems to be wishful thinking as well.
+>
+> Thanks,
+> -Aleksey
+>
+> >     [1] https://bugs.openjdk.java.net/browse/JDK-8129440
+> >     [2] http://mail.openjdk.java.net/pipermail/hotspot-gc-dev/2017-
+> December/020994.html
+> >     [3] http://mail.openjdk.java.net/pipermail/hotspot-gc-dev/2015-
+> June/013924.html
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180314/f4105fce/attachment-0001.html>
+
+From aph at redhat.com  Wed Mar 14 16:21:47 2018
+From: aph at redhat.com (Andrew Haley)
+Date: Wed, 14 Mar 2018 20:21:47 +0000
+Subject: [concurrency-interest] C++ and inserting loads after null-checks
+In-Reply-To: <67fb9574-7b71-8bfa-3d00-08b410c9cb3f@redhat.com>
+References: <01b2486a-b4ab-00ab-f6cc-2e33ca4c150a@redhat.com>
+ <8827fb35-7bc3-aba9-bb69-c8ed7e8e2e23@redhat.com>
+ <67fb9574-7b71-8bfa-3d00-08b410c9cb3f@redhat.com>
+Message-ID: <f33ebc53-881b-016b-c4d1-d74cb7e04eb9@redhat.com>
+
+On 14/03/18 19:27, Aleksey Shipilev wrote:
+> On 03/14/2018 07:38 PM, Andrew Haley wrote:
+>> On 14/03/18 18:24, Aleksey Shipilev via Concurrency-interest wrote:
+>>> Is this a known thing in C++ MM? (Please say "no").
+>>> Or is the "legality" interpretation in [1][2][3] wrong? (Please say "yes").
+>>
+>> You've got a data race on *p.  Undefined behaviour: do not pass Go, do
+>> not collect $200.  More generally, a C++ compiler is entitled to
+>> assume that no other threads exist unless told otherwise by
+>> atomic fences.
+> 
+> Yes-yes, I have successfully suppressed the memory that in C++ the data race is UB.
+> Hard to unlearn this bit from Java, where data races can be benign.
+
+The easiest way to think about this is that "ordinary" Java memory
+accesses are sort-of equivalent to C++'s memory_order_relaxed atomic
+accesses.  It's not quite a perfect analogy, but it's close enough for
+most purposes.
+
+-- 
+Andrew Haley
+Java Platform Lead Engineer
+Red Hat UK Ltd. <https://www.redhat.com>
+EAC8 43EB D3EF DB98 CC77 2FAD A5CD 6035 332F A671
+
+From rl.stpuu at gmail.com  Mon Mar 19 21:57:43 2018
+From: rl.stpuu at gmail.com (Roussanka Loukanova)
+Date: Tue, 20 Mar 2018 10:57:43 +0900
+Subject: [concurrency-interest] CfP: LACompLing2018 - Logic and Algorithms
+ in Computational Linguistics 2018, Stockholm
+Message-ID: <CACAe74gBMEJo0a9d0M_hPvU7dET2xd4OYWQay0TRxybmBs+pfA@mail.gmail.com>
+
+CALL FOR PAPERS
+
+Symposium Logic and Algorithms in Computational Linguistics 2018
+(LACompLing2018)
+Stockholm, 28-31 August 2018
+Department of Mathematics, Stockholm University
+
+http://staff.math.su.se/rloukanova/LACompLing2018-web/
+================================================
+
+DESCRIPTION
+==
+Computational linguistics studies natural language in its various
+manifestations from a computational point of view, both on the theoretical
+level (modeling grammar modules dealing with natural language form and
+meaning, and the relation between these two) and on the practical level
+(developing applications for language and speech technology). Right from
+the start in the 1950ties, there have been strong links with computer
+science, logic, and many areas of mathematics - one can think of Chomsky's
+contributions to the theory of formal languages and automata, or Lambek's
+logical modeling of natural language syntax. The workshop assesses the
+place of logic, mathematics, and computer science in present day
+computational linguistics. It intends to be a forum for presenting new
+results as well as work in progress.
+--------------------------------
+
+SCOPE
+==
+The workshop focuses mainly on logical approaches to computational
+processing of natural language, and on the applicability of methods and
+techniques from the study of artificial languages (programming/logic) in
+computational linguistics. We invite participation and submissions from
+other relevant approaches too, especially if they can inspire new work and
+approaches.
+
+The topics of LACompLing2018 include, but are not limited to:
+
+- Computational theories of human language
+- Computational syntax
+- Computational semantics
+- Computational syntax-semantics interface
+- Interfaces between morphology, lexicon, syntax, semantics, speech, text,
+pragmatics
+- Computational grammar
+- Logic and reasoning systems for linguistics
+- Type theories for linguistics
+- Models of computation and algorithms for linguistics
+- Language processing
+- Parsing algorithms
+- Generation of language from semantic representations
+- Large-scale grammars of natural languages
+- Multilingual processing
+- Data science in language processing
+- Machine learning of language
+- Interdisciplinary methods
+- Integration of formal, computational, model theoretic, graphical,
+diagrammatic, statistical, and other related methods
+- Logic for information extraction or expression in written and spoken
+language
+- Language theories based on biological fundamentals of information and
+languages
+- Computational neuroscience of language
+
+IMPORTANT DATES
+==
+Submission deadline, regular papers: 15 May 2018 (Anywhere on Earth / AoE)
+Submission deadline, abstracts: 31 May 2018 (AoE)
+Notifications: 15 June 2018
+Final submissions: TBA
+LACompLing2018: between 28-31 Aug 2018 (few days, depending on the program)
+
+SUBMISSION INSTRUCTIONS
+==
+We invite original, regular papers that are not submitted concurrently to
+another conference or for publication elsewhere. Abstracts of presentations
+can be on work submitted or published elsewhere.
+
+- Regular papers: maximum 10 pages, including figures and references
+- Abstracts of contributed presentations: not more than 2 pages
+- The submissions of proposed papers and abstracts have to be in pdf
+- The camera-ready submissions require the pdf and their sources
+
+Authors are required to use Springer LNCS style files. Styles and templates
+can be downloaded from Springer, for LaTeX and Microsoft:
+
+http://www.springer.com/jp/computer-science/lncs/conference-proceedings-guidelines
+
+The submissions are via the EasyChair management system of LACompLing2018:
+
+https://easychair.org/conferences/?conf=lacompling2018
+
+PUBLICATIONS
+==
+- The proceedings of LACompLing2018 will be published digitally by the DiVA
+system of Stockholm University:
+http://su.diva-portal.org
+
+- Improved and extended versions of selected papers, which have been
+presented at the workshop LACompLing2018, will be published in a special
+issue of a journal after the workshop.
+
+ORGANIZERS
+==
+Krasimir Angelov, University of Gothenburg, Sweden
+Kristina Liefke, Ludwig-Maximilians-University Munich, Germany
+Roussanka Loukanova, Stockholm University, Sweden (chair)
+Michael Moortgat, Utrecht University, The Netherlands
+Satoshi Tojo, School of Information Science, JAIST, Japan
+
+CONTACT
+==
+Roussanka Loukanova (rloukanova at gmail.com)
+Kristina Liefke (Liefke at lingua.uni-frankfurt.de)
+--------------------------------
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180320/379b8990/attachment.html>
+
+From davidcholmes at aapt.net.au  Wed Mar 21 09:17:44 2018
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 21 Mar 2018 23:17:44 +1000
+Subject: [concurrency-interest] RFC Bug: 8154176: Threads Native ID should
+	be available from Thread and/or ThreadMXBean.getThreadInfo()
+Message-ID: <01c301d3c116$ff932130$feb96390$@aapt.net.au>
+
+I would be interested in getting some opinions on this enhancement request.
+
+https://bugs.openjdk.java.net/browse/JDK-8154176
+
+Thanks,
+David
+
+
+From david.lloyd at redhat.com  Wed Mar 21 09:34:54 2018
+From: david.lloyd at redhat.com (David Lloyd)
+Date: Wed, 21 Mar 2018 08:34:54 -0500
+Subject: [concurrency-interest] RFC Bug: 8154176: Threads Native ID
+ should be available from Thread and/or ThreadMXBean.getThreadInfo()
+In-Reply-To: <01c301d3c116$ff932130$feb96390$@aapt.net.au>
+References: <01c301d3c116$ff932130$feb96390$@aapt.net.au>
+Message-ID: <CANghgrQA=GC=-3nC_7YZiCNT5JHJeAQUbR7SMgj0afGzHjVoZA@mail.gmail.com>
+
+On Wed, Mar 21, 2018 at 8:17 AM, David Holmes via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+> I would be interested in getting some opinions on this enhancement request.
+>
+> https://bugs.openjdk.java.net/browse/JDK-8154176
+
+In your comment you state:
+
+> From a core API design perspective the problem is that there is no cross-platform notion of "native thread id" and that it infers a 1:1 mapping between Java threads and native threads which need not exist. That is why I feel it unsuitable as a method on Thread.
+
+I don't think that it is necessary for there to be a 1:1 mapping
+between Java and native threads for native ID to be present or useful
+on Thread.  If a thread has no native ID, a native ID getter could
+return a value representing "unknown".  OTOH having the native ID
+available to processes could be quite valuable; for example I could
+add it to my log when it is present, which may allow me to quickly
+correlate CPU-burning threads with their log activity, instead of the
+current approach of: convert thread PID to base16, grep for it in
+jstack output, then grep for thread name in log (hoping there aren't
+two threads with the same name for whatever reason).
+
+In short, if the value is present, it has potential value to the user;
+if it is absent, then we're no worse off than before.
+
+-- 
+- DML
+
+From kasperni at gmail.com  Wed Mar 21 16:24:54 2018
+From: kasperni at gmail.com (Kasper Nielsen)
+Date: Wed, 21 Mar 2018 21:24:54 +0100
+Subject: [concurrency-interest] RFC Bug: 8154176: Threads Native ID
+ should be available from Thread and/or ThreadMXBean.getThreadInfo()
+In-Reply-To: <01c301d3c116$ff932130$feb96390$@aapt.net.au>
+References: <01c301d3c116$ff932130$feb96390$@aapt.net.au>
+Message-ID: <CAPs6152aWFuLLSx+42tdg6bxOOt9t5cgjOt2GB9mXcyR-6Z-kg@mail.gmail.com>
+
+> I also agree it is a reasonable compromise to only export it via
+ThreadInfo / ThreadMXBean.
+
+This also means that people (Java >=9) that wants to use it, needs a
+dependency on "java.management".
+Process.pid() just needs "java.base".
+
+/Kasper
+
+
+On 21 March 2018 at 14:17, David Holmes via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> I would be interested in getting some opinions on this enhancement request.
+>
+> https://bugs.openjdk.java.net/browse/JDK-8154176
+>
+> Thanks,
+> David
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180321/2e00cecc/attachment.html>
+
+From amritanshu at gmail.com  Thu Mar 22 03:05:33 2018
+From: amritanshu at gmail.com (Amritanshu)
+Date: Thu, 22 Mar 2018 12:35:33 +0530
+Subject: [concurrency-interest] RFC Bug: 8154176: Threads Native ID
+ should be available from Thread and/or ThreadMXBean.getThreadInfo()
+In-Reply-To: <CAPs6152aWFuLLSx+42tdg6bxOOt9t5cgjOt2GB9mXcyR-6Z-kg@mail.gmail.com>
+References: <01c301d3c116$ff932130$feb96390$@aapt.net.au>
+ <CAPs6152aWFuLLSx+42tdg6bxOOt9t5cgjOt2GB9mXcyR-6Z-kg@mail.gmail.com>
+Message-ID: <CALRMP3nATnftmOOVr8R8TgeZ_bChpAbNAQGTaQan373hkd=s8A@mail.gmail.com>
+
+I am new to writing code in Java, so not sure why someone didn't bring this
+up yet.
+
+Beyond what is mentioned in the discussion around the enhancement request,
+it certainly improves debuggability of a java application which needs to
+interact with native components like custom APIs or applications that are
+interacting with device drivers.
+
+-Johri
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180322/9f2a16da/attachment.html>
+
+From dl at cs.oswego.edu  Fri Mar 30 07:52:25 2018
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 30 Mar 2018 07:52:25 -0400
+Subject: [concurrency-interest] CompletionStage.exceptionallyCompose
+Message-ID: <f7a662ec-a143-2909-c188-760b407b535e@cs.oswego.edu>
+
+
+Chris Hegarty noticed a nonuniformity in CompletionStage
+(and CompletableFuture) APIs: There is no analog to method
+exceptionally() for compose-based stages.
+
+Reminder: method exceptionally() is a more useful and
+convenient form of method handle() for cases in which
+the action is a no-op unless the source completed
+exceptionally:
+
+    public CompletionStage<T> exceptionally
+        (Function<Throwable, ? extends T> fn);
+
+This could also be provided with a function type returning
+another CompletionStage, not a value:
+
+  public CompletionStage<T> exceptionallyCompose
+          (Function<Throwable, ? extends CompletionStage<T>> fn);
+
+Not supporting this for compose-based cases forces ugly/awkward
+workarounds, so it should be added for the same reason as method
+exceptionally()
+
+It is possible to default-implement this is CompletionStage, with
+a better implementation in CompletableFuture.
+
+The main moral is that with fluent APIs, you always eventually
+end up supporting all possible combinations of capabilities.
+We somehow missed this one when adding methods in jdk9 update.
+Any thoughts about this or other cases would be welcome.
+
+-Doug
+
+From dl at cs.oswego.edu  Fri Mar 30 08:19:55 2018
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 30 Mar 2018 08:19:55 -0400
+Subject: [concurrency-interest] Reactive Streams Utility API
+In-Reply-To: <CABY0rKMNfKWgi6i=z71Xdcppp59UU1LkxtrziuBx84LrtS25Ew@mail.gmail.com>
+References: <CABY0rKMNfKWgi6i=z71Xdcppp59UU1LkxtrziuBx84LrtS25Ew@mail.gmail.com>
+Message-ID: <49ab6d99-3cfa-a792-4697-cd0502ea920a@cs.oswego.edu>
+
+On 02/28/2018 10:37 PM, James Roper via Concurrency-interest wrote:
+
+> We (Lightbend) would like to put forward a proposal for a Reactive
+> Streams utility API for building instances of juc.Flow interfaces. The
+> rationale, goals and non goals for this, along with our proposed
+> approach to the API, and an actual (incomplete) API proposal, TCK, with
+> implementation examples both in Akka Streams and RxJava, can be found here:
+> 
+> https://github.com/lightbend/reactive-streams-utils
+> 
+
+I initially sat this out hoping that more people using Flow and
+reactive-streams would comment. But not many. And I'm reminded by
+my last post about my main reservation, that history shows that
+fluent APIs always grow to cover all combinations of all capabilities.
+Which is an explicit non-goal of your proposal, but seems
+inevitable anyway. This is a little scary from the point of view
+creating JDK APIs. A much less ambitious first step would be
+to create some static utilities (in class Flow) for map(),
+collect() and a few others that could be used by layered
+third-party frameworks. A few of these were initially present
+in jsr166 prerelease versions but we killed them out of even
+more cowardice.
+
+To decide among these and other options, we do need some input
+from current and prospective users!
+
+-Doug
+
+From akarnokd at gmail.com  Fri Mar 30 08:45:29 2018
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Fri, 30 Mar 2018 14:45:29 +0200
+Subject: [concurrency-interest] CompletionStage.exceptionallyCompose
+In-Reply-To: <f7a662ec-a143-2909-c188-760b407b535e@cs.oswego.edu>
+References: <f7a662ec-a143-2909-c188-760b407b535e@cs.oswego.edu>
+Message-ID: <CAAWwtm9AA3TTzxooVbVG2_r8yfTLcTKrZQ92g-nNvtXoLr=XtA@mail.gmail.com>
+
+Hi.
+
+This sounds good. Will it be available with
+exceptionallyComposeAsync(Function [, Executor]) format as well?
+
+>  Any thoughts about this or other cases would be welcome.
+
+I could also think of:
+
+    // if the source completes or fails, allow mapping it to another stage
+    CompletionStage<U> handleCompose(BiFunction<T, Throwable,
+CompletionStage<U>> handler)
+
+    // signal the completion or error on the specified executor
+    CompletionStage<T> thenAsync(Executor executor)
+
+
+In addition, I could think of a bunch of static combinators (sorry if they
+are already there somewhere else):
+
+    // if any of the stages completes, consume its value and ignore the
+others
+    static CompletionStage<Void> acceptWhenAny(Stream<CompletionStage<T>>
+stages, Consumer<? super T> handler)
+
+    // if any of the stages completes, transform its result and ignore the
+others
+    static CompletionStage<U> applyWhenAny(Stream<CompletionStage<T>>
+stages, Function<? super T, U> handler)
+
+    // when all of the stages complete, provide the consumer with a list of
+values gathered
+    static CompletionStage<Void> thenCombineAll(Stream<CompletionStage<T>>
+stages, Consumer<? super List<T>> handler)
+
+    // when all stages complete, transform the list of results into some
+other value
+    static CompletionStage<U> thenCombineAll(Stream<CompletionStage<T>>
+stages, Function<? super List<T>, U> handler)
+
+    // when all of the stages complete or fail, provide the success values
+and the error values to a handler
+    static CompletionStage<Void> whenCompleteAll(Stream<CompletionStage<T>>
+stages, BiConsumer<? super List<T>, ? super List<Throwable>> handler)
+
+
+
+2018-03-30 13:52 GMT+02:00 Doug Lea via Concurrency-interest <
+concurrency-interest at cs.oswego.edu>:
+
+>
+> Chris Hegarty noticed a nonuniformity in CompletionStage
+> (and CompletableFuture) APIs: There is no analog to method
+> exceptionally() for compose-based stages.
+>
+> Reminder: method exceptionally() is a more useful and
+> convenient form of method handle() for cases in which
+> the action is a no-op unless the source completed
+> exceptionally:
+>
+>     public CompletionStage<T> exceptionally
+>         (Function<Throwable, ? extends T> fn);
+>
+> This could also be provided with a function type returning
+> another CompletionStage, not a value:
+>
+>   public CompletionStage<T> exceptionallyCompose
+>           (Function<Throwable, ? extends CompletionStage<T>> fn);
+>
+> Not supporting this for compose-based cases forces ugly/awkward
+> workarounds, so it should be added for the same reason as method
+> exceptionally()
+>
+> It is possible to default-implement this is CompletionStage, with
+> a better implementation in CompletableFuture.
+>
+> The main moral is that with fluent APIs, you always eventually
+> end up supporting all possible combinations of capabilities.
+> We somehow missed this one when adding methods in jdk9 update.
+> Any thoughts about this or other cases would be welcome.
+>
+> -Doug
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180330/3728d292/attachment.html>
+
+From alexei.kaigorodov at gmail.com  Fri Mar 30 14:03:26 2018
+From: alexei.kaigorodov at gmail.com (Alexei Kaigorodov)
+Date: Fri, 30 Mar 2018 11:03:26 -0700 (MST)
+Subject: [concurrency-interest] CompletionStage.exceptionallyCompose
+In-Reply-To: <f7a662ec-a143-2909-c188-760b407b535e@cs.oswego.edu>
+References: <f7a662ec-a143-2909-c188-760b407b535e@cs.oswego.edu>
+Message-ID: <1522433006137-0.post@n7.nabble.com>
+
+"you always eventually end up supporting all possible combinations of
+capabilities"
+This means that one should always try to factorize combinations of
+capabilities.
+The description of CompletionStage  reads:
+A stage of a possibly asynchronous computation, that performs an action or
+computes a value when another CompletionStage completes.
+This means that designers of CompletionStage suppose that actions of
+asynchronous computation are connected directly, and an action is performed
+when another action completes.
+First, this approach restricts parallelism. Second, it does not takes into
+account Petri Net computational model, where actions (transitions) are not
+connected directly, but via places for values (tokens). This means, that
+instead of considering all possible combinations of action-action
+interactions, we factorize them in action-place and place-action
+interactions.
+Action-place interaction is simple: actions just puts a value (or error
+token) into place like in any other collection. It need not to bother to
+make this in async way. Place-action interaction is slightly more complex,
+but still simple enough: action fires when all places are full. This is pure
+asynchronous procedure call, where tokens in places are considered as
+procedure arguments. Whether action executes in sync or async way, is
+defined by the author of the action's code: only he knows if overhead of
+async execution is worth the overhead and delay.
+So I consider CompletionStage flawed by design, and instead of fixing it, it
+should be deprecated in favor of a bipartite execution model.
+
+
+
+--
+Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+
+From peter.levart at gmail.com  Sat Mar 31 07:59:18 2018
+From: peter.levart at gmail.com (Peter Levart)
+Date: Sat, 31 Mar 2018 13:59:18 +0200
+Subject: [concurrency-interest] CompletionStage.exceptionallyCompose
+In-Reply-To: <1522433006137-0.post@n7.nabble.com>
+References: <f7a662ec-a143-2909-c188-760b407b535e@cs.oswego.edu>
+ <1522433006137-0.post@n7.nabble.com>
+Message-ID: <75d23e52-d9b9-85a6-1c34-41253f45d950@gmail.com>
+
+Hi Alexei,
+
+What you describe as "bipartite execution model" is exactly what 
+CompletableFuture (the implementation of CompletionStage) is about. At 
+least I see an analogue to your description...
+
+You describe an "action-place" interaction as: "actions just puts a 
+value (or error token) into place like in any other collection".  A 
+CompletableFuture is a "place" in your terminology. It might already be 
+"fused" with an action or not. Simply constructing new CompletableFuture 
+just creates a "place". When you say 
+CompletableFuture.supply[Async](Supplier [, Executor]), you create a 
+place which is already fused with an action.
+
+You also say "It need not to bother to make this in async way". Well, 
+you have to create an initial action somehow. How you execute an initial 
+action from graph-of-action-places constructing thread should be 
+decidable by the user - synchronously or asynchronously. This has 
+nothing to do with how an action-place interaction is performed. In 
+CompletableFuture it is always performed synchronously, as you describe. 
+After completion, the action just puts the value/exception into the place.
+
+What you describe in "place-action" interaction is also exactly what 
+CompletableFuture does: "action fires when all places are full". What 
+CompletableFuture mostly offers are two special cases of this: "action 
+fires when the place is full" and "action fires when both places are 
+full". CF mostly assumes that the action has a single or two "procedure 
+arguments". With .then[Accept|Apply][Async] you attach an action to a 
+place and decide whether this "next" action should execute synchronously 
+or asynchronously. With .then[AcceptBoth|Combine][Async] you bring two 
+places into play and a single tow-argument action triggered when both 
+are full. When I say that CF mostly offers two special cases of 
+"place-action" interaction, I'm referring to the fluent part of its API. 
+You can take N places and combine them into one "compound" place with 
+static method .allOf(CF ...) which you than can use to attach an action 
+further down the chain. There are all sorts of other methods. I just 
+mentioned those that are needed to implement you desctibed "bipartite 
+execution model".
+
+Speaking of CF.allOf(...) I wonder why its signature wasn't constructed 
+as following:
+
+     public static <T> CompletableFuture<T[]> allOf(CompletableFuture<? 
+extends T>... cfs)
+
+By analogy, the signature of CF.anyOf(...) could be the following:
+
+     public static <T> CompletableFuture<T> anyOf(CompletableFuture<? 
+extends T>... cfs)
+
+
+I wonder if this could be compatibly changed.
+
+
+
+Regards, Peter
+
+On 03/30/18 20:03, Alexei Kaigorodov via Concurrency-interest wrote:
+> "you always eventually end up supporting all possible combinations of
+> capabilities"
+> This means that one should always try to factorize combinations of
+> capabilities.
+> The description of CompletionStage  reads:
+> A stage of a possibly asynchronous computation, that performs an action or
+> computes a value when another CompletionStage completes.
+> This means that designers of CompletionStage suppose that actions of
+> asynchronous computation are connected directly, and an action is performed
+> when another action completes.
+> First, this approach restricts parallelism. Second, it does not takes into
+> account Petri Net computational model, where actions (transitions) are not
+> connected directly, but via places for values (tokens). This means, that
+> instead of considering all possible combinations of action-action
+> interactions, we factorize them in action-place and place-action
+> interactions.
+> Action-place interaction is simple: actions just puts a value (or error
+> token) into place like in any other collection. It need not to bother to
+> make this in async way. Place-action interaction is slightly more complex,
+> but still simple enough: action fires when all places are full. This is pure
+> asynchronous procedure call, where tokens in places are considered as
+> procedure arguments. Whether action executes in sync or async way, is
+> defined by the author of the action's code: only he knows if overhead of
+> async execution is worth the overhead and delay.
+> So I consider CompletionStage flawed by design, and instead of fixing it, it
+> should be deprecated in favor of a bipartite execution model.
+>
+>
+>
+> --
+> Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180331/8a0bf20e/attachment.html>
+
+From dl at cs.oswego.edu  Sat Mar 31 08:25:06 2018
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sat, 31 Mar 2018 08:25:06 -0400
+Subject: [concurrency-interest] CompletionStage.exceptionallyCompose
+In-Reply-To: <75d23e52-d9b9-85a6-1c34-41253f45d950@gmail.com>
+References: <f7a662ec-a143-2909-c188-760b407b535e@cs.oswego.edu>
+ <1522433006137-0.post@n7.nabble.com>
+ <75d23e52-d9b9-85a6-1c34-41253f45d950@gmail.com>
+Message-ID: <a1b3891b8097ea865767c0e569d7aaf0.squirrel@altair.cs.oswego.edu>
+
+On Sat, March 31, 2018 7:59 am, Peter Levart via Concurrency-interest wrote:
+
+>
+> Speaking of CF.allOf(...) I wonder why its signature wasn't constructed
+> as following:
+>
+>  public static <T> CompletableFuture<T[]> allOf(CompletableFuture<?
+extends T>... cfs)
+>
+> By analogy, the signature of CF.anyOf(...) could be the following:
+>
+> public static <T> CompletableFuture<T> anyOf(CompletableFuture<? extends
+T>... cfs)
+>
+>
+> I wonder if this could be compatibly changed.
+>
+
+These were done this way in part due to experience with
+ExecutorService.invokeAll, where the signature  was once
+more-or-less compatibly changed once. I think the main
+issue is that supplying only one form of any/all methods
+can't satisfy enough users. This might be a good time to
+contemplate additions.
+
+-Doug
+
+
+
+
+From peter.levart at gmail.com  Sat Mar 31 08:54:49 2018
+From: peter.levart at gmail.com (Peter Levart)
+Date: Sat, 31 Mar 2018 14:54:49 +0200
+Subject: [concurrency-interest] CompletionStage.exceptionallyCompose
+In-Reply-To: <CAAWwtm9AA3TTzxooVbVG2_r8yfTLcTKrZQ92g-nNvtXoLr=XtA@mail.gmail.com>
+References: <f7a662ec-a143-2909-c188-760b407b535e@cs.oswego.edu>
+ <CAAWwtm9AA3TTzxooVbVG2_r8yfTLcTKrZQ92g-nNvtXoLr=XtA@mail.gmail.com>
+Message-ID: <06224052-5cbe-8dea-6749-7a0e265be9dc@gmail.com>
+
+Hi David,
+
+On 03/30/18 14:45, Dávid Karnok via Concurrency-interest wrote:
+> Hi.
+>
+> This sounds good. Will it be available with 
+> exceptionallyComposeAsync(Function [, Executor]) format as well?
+>
+> > Any thoughts about this or other cases would be welcome.
+>
+> I could also think of:
+>
+> // if the source completes or fails, allow mapping it to another stage
+> CompletionStage<U> handleCompose(BiFunction<T, Throwable, 
+> CompletionStage<U>> handler)
+>
+> // signal the completion or error on the specified executor
+> CompletionStage<T> thenAsync(Executor executor)
+
+This one is a shortcut for thenApplyAsync(Function.identity(), 
+executor). This is sometimes useful (even with default executor) when 
+you have to return a CompletionStage and don't want the receiver of that 
+CS to use the thread(s) that are completing your original CS.
+
+Even better would be a way to hand-out a special "restricted" 
+CompletionStage (a super-type of it?) that would limit the user to 
+async-only methods. This way you force user to decide which threads to 
+use and those are not your threads. Useful on the API boundary when you 
+want to restrict usage of your internal threads to your internal tasks.
+
+>
+>
+> In addition, I could think of a bunch of static combinators (sorry if 
+> they are already there somewhere else):
+>
+> // if any of the stages completes, consume its value and ignore the others
+>     static CompletionStage<Void> 
+> acceptWhenAny(Stream<CompletionStage<T>> stages, Consumer<? super T> 
+> handler)
+
+This would be equivalent to:
+
+CompletableFuture.anyOf(toCompletableFutures(stages)).thenAccept(handler);
+
+If:
+
+- CompletableFuture.anyOf signature was:
+
+     public static <T> CompletableFuture<T> anyOf(CompletableFuture<? 
+extends T>... cfs)
+
+- and you had this utility method:
+
+     @SuppressWarnings("unchecked")
+     static <T> CompletableFuture<T>[] 
+toCompletableFutures(Stream<CompletionStage<T>> stages) {
+         return (CompletableFuture<T>[]) 
+stages.map(CompletionStage::toCompletableFuture).toArray(CompletableFuture[]::new);
+     }
+
+
+>
+> // if any of the stages completes, transform its result and ignore the 
+> others
+>     static CompletionStage<U> applyWhenAny(Stream<CompletionStage<T>> 
+> stages, Function<? super T, U> handler)
+>
+> // when all of the stages complete, provide the consumer with a list 
+> of values gathered
+>     static CompletionStage<Void> 
+> thenCombineAll(Stream<CompletionStage<T>> stages, Consumer<? super 
+> List<T>> handler)
+>
+> // when all stages complete, transform the list of results into some 
+> other value
+>     static CompletionStage<U> 
+> thenCombineAll(Stream<CompletionStage<T>> stages, Function<? super 
+> List<T>, U> handler)
+>
+> // when all of the stages complete or fail, provide the success values 
+> and the error values to a handler
+>     static CompletionStage<Void> 
+> whenCompleteAll(Stream<CompletionStage<T>> stages, BiConsumer<? super 
+> List<T>, ? super List<Throwable>> handler)
+
+I think it would be better to improve (make it type-safe) the way 
+multiple CompletableFutures are combined into one "compound" 
+CompletableFuture which can the be used to attach actions to in the 
+usual way. Less method(s) are needed that way.
+
+Regards, Peter
+
+>
+>
+>
+> 2018-03-30 13:52 GMT+02:00 Doug Lea via Concurrency-interest 
+> <concurrency-interest at cs.oswego.edu 
+> <mailto:concurrency-interest at cs.oswego.edu>>:
+>
+>
+>     Chris Hegarty noticed a nonuniformity in CompletionStage
+>     (and CompletableFuture) APIs: There is no analog to method
+>     exceptionally() for compose-based stages.
+>
+>     Reminder: method exceptionally() is a more useful and
+>     convenient form of method handle() for cases in which
+>     the action is a no-op unless the source completed
+>     exceptionally:
+>
+>         public CompletionStage<T> exceptionally
+>             (Function<Throwable, ? extends T> fn);
+>
+>     This could also be provided with a function type returning
+>     another CompletionStage, not a value:
+>
+>       public CompletionStage<T> exceptionallyCompose
+>               (Function<Throwable, ? extends CompletionStage<T>> fn);
+>
+>     Not supporting this for compose-based cases forces ugly/awkward
+>     workarounds, so it should be added for the same reason as method
+>     exceptionally()
+>
+>     It is possible to default-implement this is CompletionStage, with
+>     a better implementation in CompletableFuture.
+>
+>     The main moral is that with fluent APIs, you always eventually
+>     end up supporting all possible combinations of capabilities.
+>     We somehow missed this one when adding methods in jdk9 update.
+>     Any thoughts about this or other cases would be welcome.
+>
+>     -Doug
+>     _______________________________________________
+>     Concurrency-interest mailing list
+>     Concurrency-interest at cs.oswego.edu
+>     <mailto:Concurrency-interest at cs.oswego.edu>
+>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>     <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>
+>
+>
+>
+> -- 
+> Best regards,
+> David Karnok
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180331/8728049d/attachment-0001.html>
+
+From alexei.kaigorodov at gmail.com  Sat Mar 31 10:52:19 2018
+From: alexei.kaigorodov at gmail.com (Alexei Kaigorodov)
+Date: Sat, 31 Mar 2018 07:52:19 -0700 (MST)
+Subject: [concurrency-interest] CompletionStage.exceptionallyCompose
+In-Reply-To: <75d23e52-d9b9-85a6-1c34-41253f45d950@gmail.com>
+References: <f7a662ec-a143-2909-c188-760b407b535e@cs.oswego.edu>
+ <1522433006137-0.post@n7.nabble.com>
+ <75d23e52-d9b9-85a6-1c34-41253f45d950@gmail.com>
+Message-ID: <1522507939366-0.post@n7.nabble.com>
+
+Peter,
+you said CompletableFuture is a place. Then what is a transition? it is not
+defined explicitly. I can only guess that when I write
+
+CompletableFuture next = this.thenCombine(otherFuture, bifunction);
+
+method thenCombine() is internally interpreted something like:
+
+CompletableFuture out = new CompletableFuture();
+BiTransition trans = new BiTransition(bifunction, out);
+this.thenAccept(trans.firstArg);
+otherFuture.thenAccept(trans.secondArg);
+return out;
+
+Evidently, when API exposes only such complex procedures, it cannot cover
+all possible combinations of capabilities.
+
+So I want that type Transition should be explicitly exposed as a first-class
+citizen along with CompletableFuture, and I could freely compose an
+execution graph out of transitions and places. Now numerous methods of
+CompletableFuture still cannot cover all the needs of a programmer. For
+example, I cannot create a transition with 3 input arguments. I cannot
+create a transition with more than one output. This is because the execution
+model of CompletableFuture is not properly factorized.
+
+I cannot also create a reusable transition, which fires each time when all
+input places get filled. Akka's actor is an example of such a reusable
+transition, but again it is restricted: it has only 2 inputs, one for the
+state and another for a message. 
+
+Reusable transitions require also reusable places. We could consider
+java.util.stream.Stream as such a reusable place, but the whole
+java.util.stream design demonstrates the same linearity of thinking, where
+pipeline consists of homogeneous stages, and not of distinct places and
+transitions. As a result, an execution graph of arbitrary topology cannot be
+declared.
+
+
+
+--
+Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+

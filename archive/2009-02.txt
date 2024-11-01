@@ -1,0 +1,4315 @@
+From jpfourn at nortel.com  Mon Feb  9 08:59:51 2009
+From: jpfourn at nortel.com (Jean-Pierre Fournier)
+Date: Mon, 9 Feb 2009 08:59:51 -0500
+Subject: [concurrency-interest] backport: interpreting test results
+Message-ID: <200902090859.51308.jpfourn@nortel.com>
+
+
+
+Hi,
+
+As suggested on the concurrency backport site, I recently ran the tests in 
+our deployment environment (IBM VM 1.4 and 1.5 on windows 2003 server).
+
+As far as I can tell the tests look good.  "ant test" resulted in 1 
+failure, so I'm assuming as long as we stay away from this functionality 
+we should be ok.  Is this correct?:
+
+     [java] There was 1 failure:
+     [java] 1) 
+testAwaitNanos_Timeout(ReentrantReadWriteLockTest)junit.framework.AssertionFailedError
+     [java]  at 
+ReentrantReadWriteLockTest.testAwaitNanos_Timeout(ReentrantReadWriteLockTest.java:930)
+     [java]  at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+     [java]  at 
+sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:85)
+     [java]  at 
+sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:58)
+     [java]  at 
+sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:60)
+     [java] 
+     [java] FAILURES!!!
+     [java] Tests run: 1859,  Failures: 1,  Errors: 0
+
+
+For "ant test.loops" there were no obvious explosions.  If something had 
+failed in test.loops, would it fail in a very obvious way, or does one 
+need to understand the data it prints out?
+
+Any thoughts appreciated,
+
+jp
+
+
+
+From francois.valdy at gmail.com  Tue Feb 10 16:26:58 2009
+From: francois.valdy at gmail.com (Francois Valdy)
+Date: Tue, 10 Feb 2009 22:26:58 +0100
+Subject: [concurrency-interest] LinkedBlockingQueue extract and memory
+	"waste"
+Message-ID: <b411e2080902101326t5d758890g3ee384ca2aa494c5@mail.gmail.com>
+
+Hi,
+
+I'm having memory issues with LinkedBlockingQueue (don't worry, I
+won't come along saying there's a memory leak in the JDK).
+
+The issue is that the method extract() doesn't "help" the GC by
+dereferencing head.next prior to changing the head node (with
+head.next = null;).
+
+What comes then is that once a node has been put in old gen for
+whatever reason, all generated nodes from this LinkedBlockingQueue
+will be as well.
+You'll tell me that memory will be recovered upon a full gc, but my
+point is exactly to avoid full gc.
+
+Easiest way to reproduce issue is for force a gc (System.gc(), or
+JConsole/JVisualVM) during queue usage, as it'll promote the current
+used nodes to old gen.
+Prior to this step memory was recovered smoothly by minor gc's, after
+this step you're good for a full gc of only LinkedBlockingQueue nodes
+(16bytes in JRE32, 32bytes in JRE64).
+
+Doug, I understand your attempt at removing extraneous code, but maybe
+this one wasn't the best choice :)
+LinkedList for instance doesn't follow the same strategy, and
+explicitly dereferences next/previous (even if unnecessary from a
+memory leak pov).
+
+I'll now look for a workaround (might end up "recoding"
+LinkedBlockingQueue with one added line :) )
+
+Any thoughts ? (I won't consider moving to realtime java for just that :) )
+
+Cheers.
+
+(this might be the reason for all those unresolved threads about
+LinkedBlockingQueue memory consumption, just a guess)
+
+From martinrb at google.com  Wed Feb 11 02:56:06 2009
+From: martinrb at google.com (Martin Buchholz)
+Date: Tue, 10 Feb 2009 23:56:06 -0800
+Subject: [concurrency-interest] LinkedBlockingQueue extract and memory
+	"waste"
+In-Reply-To: <b411e2080902101326t5d758890g3ee384ca2aa494c5@mail.gmail.com>
+References: <b411e2080902101326t5d758890g3ee384ca2aa494c5@mail.gmail.com>
+Message-ID: <1ccfd1c10902102356l516e053fyf7638b7dc4f2c887@mail.gmail.com>
+
+Hi Francois,
+
+Your idea is very interesting.  I don't recall having seen it before.
+Is this a new rule of thumb, to null out fields of old about-to-become
+garbage objects if they are pointing at newer objects?
+
+Can you produce a synthetic benchmark where nulling out
+the next field doubles the performance?  That might get Doug
+to agree with you.
+
+Martin
+
+On Tue, Feb 10, 2009 at 13:26, Francois Valdy <francois.valdy at gmail.com> wrote:
+> Hi,
+>
+> I'm having memory issues with LinkedBlockingQueue (don't worry, I
+> won't come along saying there's a memory leak in the JDK).
+>
+> The issue is that the method extract() doesn't "help" the GC by
+> dereferencing head.next prior to changing the head node (with
+> head.next = null;).
+>
+> What comes then is that once a node has been put in old gen for
+> whatever reason, all generated nodes from this LinkedBlockingQueue
+> will be as well.
+> You'll tell me that memory will be recovered upon a full gc, but my
+> point is exactly to avoid full gc.
+>
+> Easiest way to reproduce issue is for force a gc (System.gc(), or
+> JConsole/JVisualVM) during queue usage, as it'll promote the current
+> used nodes to old gen.
+> Prior to this step memory was recovered smoothly by minor gc's, after
+> this step you're good for a full gc of only LinkedBlockingQueue nodes
+> (16bytes in JRE32, 32bytes in JRE64).
+>
+> Doug, I understand your attempt at removing extraneous code, but maybe
+> this one wasn't the best choice :)
+> LinkedList for instance doesn't follow the same strategy, and
+> explicitly dereferences next/previous (even if unnecessary from a
+> memory leak pov).
+>
+> I'll now look for a workaround (might end up "recoding"
+> LinkedBlockingQueue with one added line :) )
+>
+> Any thoughts ? (I won't consider moving to realtime java for just that :) )
+>
+> Cheers.
+>
+> (this might be the reason for all those unresolved threads about
+> LinkedBlockingQueue memory consumption, just a guess)
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From francois.valdy at gmail.com  Wed Feb 11 05:10:52 2009
+From: francois.valdy at gmail.com (Francois Valdy)
+Date: Wed, 11 Feb 2009 11:10:52 +0100
+Subject: [concurrency-interest] LinkedBlockingQueue extract and memory
+	"waste"
+In-Reply-To: <1ccfd1c10902102356l516e053fyf7638b7dc4f2c887@mail.gmail.com>
+References: <b411e2080902101326t5d758890g3ee384ca2aa494c5@mail.gmail.com>
+	<1ccfd1c10902102356l516e053fyf7638b7dc4f2c887@mail.gmail.com>
+Message-ID: <b411e2080902110210n4ea8aeddm5ad39f0a959b866d@mail.gmail.com>
+
+Sure here it is:
+I know it's a dummy use case, but still a valid one.
+LinkedBlockingQueues that survive a full gc will inevitably make old
+gen grow, even if empty !
+Following test will then output:
+Test 1 took: 1595ms
+Test 2 took: 2639ms
+Exception in thread "main" java.lang.AssertionError: Full GC has
+occured during the test: 47 times
+	at TestLBQ.main(TestLBQ.java:72)
+
+My workaround of null'ing head.next before moving the head works
+perfectly and displays (as expected):
+Test 1 took: 1629ms
+Test 2 took: 1592ms
+
+I understand it's a hard decision to make to change code based on JVM
+implementation but still I'd rather nullify it.
+
+If you want to be really frightened, see the output for G1 (JVM 1.7
+b44 with -XX:+UnlockExperimentalVMOptions -XX:+UseG1GC)
+
+JDK7 version:
+Test 1 took: 5456ms
+Test 2 took: 5575ms
+
+With null assignment:
+Test 1 took: 1698ms
+Test 2 took: 1602ms
+
+D'oh !
+
+public class TestLBQ
+{
+    static GarbageCollectorMXBean fullgcx;
+    static
+    {
+        for (GarbageCollectorMXBean gcx :
+ManagementFactory.getGarbageCollectorMXBeans().toArray(new
+GarbageCollectorMXBean[2]))
+        {
+            if (gcx == null) continue; // G1 MXBeans aren't defined yet it seems
+            if ("PS MarkSweep".equals(gcx.getName()) ||
+"MarkSweepCompact".equals(gcx.getName()))
+            {
+                fullgcx = gcx;
+            }
+            else if ("ConcurrentMarkSweep".equals(gcx.getName()))
+            {
+                throw new AssertionError("Test to be executed with PS
+MarkSweep (standard old collector)");
+            }
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException
+    {
+        long fullgc_count_ref=0, fullgc_count=0, start, end;
+
+        // first test, create the queue after GC, head node will be in young gen
+        System.gc();
+        LinkedBlockingQueue q = new LinkedBlockingQueue();
+        if (fullgcx != null) fullgc_count_ref = fullgcx.getCollectionCount();
+        Object DUMMY = new Object();
+        start = System.currentTimeMillis();
+        for (int i = 0; i < 10000000; i++)
+        {
+            q.offer(DUMMY);
+            q.take();
+        }
+        System.out.println("Test 1 took: " +
+(System.currentTimeMillis()-start) + "ms");
+        if (fullgcx != null) fullgc_count = fullgcx.getCollectionCount();
+        if (fullgc_count > fullgc_count_ref)
+            throw new AssertionError("Full GC has occured during the
+test: " + (fullgc_count-fullgc_count_ref) + " times"); // not thrown
+
+        // SAME test, but create the queue before GC, head node will
+be in old gen
+        q = new LinkedBlockingQueue();
+        System.gc();
+        if (fullgcx != null) fullgc_count_ref = fullgcx.getCollectionCount();
+        start = System.currentTimeMillis();
+        for (int i = 0; i < 10000000; i++)
+        {
+            q.offer(DUMMY);
+            q.take();
+        }
+        System.out.println("Test 2 took: " +
+(System.currentTimeMillis()-start) + "ms");
+        if (fullgcx != null) fullgc_count = fullgcx.getCollectionCount();
+        if (fullgc_count > fullgc_count_ref)
+            throw new AssertionError("Full GC has occured during the
+test: " + (fullgc_count-fullgc_count_ref) + " times"); // ERROR
+    }
+}
+
+
+On Wed, Feb 11, 2009 at 8:56 AM, Martin Buchholz <martinrb at google.com> wrote:
+> Hi Francois,
+>
+> Your idea is very interesting. ?I don't recall having seen it before.
+> Is this a new rule of thumb, to null out fields of old about-to-become
+> garbage objects if they are pointing at newer objects?
+>
+> Can you produce a synthetic benchmark where nulling out
+> the next field doubles the performance? ?That might get Doug
+> to agree with you.
+>
+> Martin
+>
+> On Tue, Feb 10, 2009 at 13:26, Francois Valdy <francois.valdy at gmail.com> wrote:
+>> Hi,
+>>
+>> I'm having memory issues with LinkedBlockingQueue (don't worry, I
+>> won't come along saying there's a memory leak in the JDK).
+>>
+>> The issue is that the method extract() doesn't "help" the GC by
+>> dereferencing head.next prior to changing the head node (with
+>> head.next = null;).
+>>
+>> What comes then is that once a node has been put in old gen for
+>> whatever reason, all generated nodes from this LinkedBlockingQueue
+>> will be as well.
+>> You'll tell me that memory will be recovered upon a full gc, but my
+>> point is exactly to avoid full gc.
+>>
+>> Easiest way to reproduce issue is for force a gc (System.gc(), or
+>> JConsole/JVisualVM) during queue usage, as it'll promote the current
+>> used nodes to old gen.
+>> Prior to this step memory was recovered smoothly by minor gc's, after
+>> this step you're good for a full gc of only LinkedBlockingQueue nodes
+>> (16bytes in JRE32, 32bytes in JRE64).
+>>
+>> Doug, I understand your attempt at removing extraneous code, but maybe
+>> this one wasn't the best choice :)
+>> LinkedList for instance doesn't follow the same strategy, and
+>> explicitly dereferences next/previous (even if unnecessary from a
+>> memory leak pov).
+>>
+>> I'll now look for a workaround (might end up "recoding"
+>> LinkedBlockingQueue with one added line :) )
+>>
+>> Any thoughts ? (I won't consider moving to realtime java for just that :) )
+>>
+>> Cheers.
+>>
+>> (this might be the reason for all those unresolved threads about
+>> LinkedBlockingQueue memory consumption, just a guess)
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+
+
+From Darron_Shaffer at stercomm.com  Wed Feb 11 10:30:54 2009
+From: Darron_Shaffer at stercomm.com (Shaffer, Darron)
+Date: Wed, 11 Feb 2009 10:30:54 -0500
+Subject: [concurrency-interest] LinkedBlockingQueue extract and
+	memory"waste"
+In-Reply-To: <b411e2080902101326t5d758890g3ee384ca2aa494c5@mail.gmail.com>
+Message-ID: <FC30D8A2D3DEE64D93E8DA54A1DB349A05F4FA1E@IWDUBCORMSG007.sci.local>
+
+I saw this issue in an earlier version of the libraries on one
+particular JVM.  We are now using an in-house copy of the class with the
+change described by Francois.
+
+Our testing at the time showed millions of garbage nodes sitting around
+and being collected very slowly.
+
+-- Darron Shaffer
+
+-----Original Message-----
+From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of
+Francois Valdy
+Sent: Tuesday, February 10, 2009 3:27 PM
+To: concurrency-interest at cs.oswego.edu
+Subject: [concurrency-interest] LinkedBlockingQueue extract and
+memory"waste"
+
+Hi,
+
+I'm having memory issues with LinkedBlockingQueue (don't worry, I
+won't come along saying there's a memory leak in the JDK).
+
+The issue is that the method extract() doesn't "help" the GC by
+dereferencing head.next prior to changing the head node (with
+head.next = null;).
+
+What comes then is that once a node has been put in old gen for
+whatever reason, all generated nodes from this LinkedBlockingQueue
+will be as well.
+You'll tell me that memory will be recovered upon a full gc, but my
+point is exactly to avoid full gc.
+
+Easiest way to reproduce issue is for force a gc (System.gc(), or
+JConsole/JVisualVM) during queue usage, as it'll promote the current
+used nodes to old gen.
+Prior to this step memory was recovered smoothly by minor gc's, after
+this step you're good for a full gc of only LinkedBlockingQueue nodes
+(16bytes in JRE32, 32bytes in JRE64).
+
+Doug, I understand your attempt at removing extraneous code, but maybe
+this one wasn't the best choice :)
+LinkedList for instance doesn't follow the same strategy, and
+explicitly dereferences next/previous (even if unnecessary from a
+memory leak pov).
+
+I'll now look for a workaround (might end up "recoding"
+LinkedBlockingQueue with one added line :) )
+
+Any thoughts ? (I won't consider moving to realtime java for just that
+:) )
+
+Cheers.
+
+(this might be the reason for all those unresolved threads about
+LinkedBlockingQueue memory consumption, just a guess)
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From francois.valdy at gmail.com  Wed Feb 11 10:54:22 2009
+From: francois.valdy at gmail.com (Francois Valdy)
+Date: Wed, 11 Feb 2009 16:54:22 +0100
+Subject: [concurrency-interest] LinkedBlockingQueue extract and
+	memory"waste"
+In-Reply-To: <FC30D8A2D3DEE64D93E8DA54A1DB349A05F4FA1E@IWDUBCORMSG007.sci.local>
+References: <b411e2080902101326t5d758890g3ee384ca2aa494c5@mail.gmail.com>
+	<FC30D8A2D3DEE64D93E8DA54A1DB349A05F4FA1E@IWDUBCORMSG007.sci.local>
+Message-ID: <b411e2080902110754i582987b6yd667d0bac56a9721@mail.gmail.com>
+
+Same road here, we're currently replacing all our LinkedBlockingQueues
+by the "so slightly" modified version.
+I'll try to follow-up anyway (here first then on sun bug tracking) as
+it's definitely something to fix (I might not be able to replace queue
+use in third party libraries).
+
+On Wed, Feb 11, 2009 at 4:30 PM, Shaffer, Darron
+<Darron_Shaffer at stercomm.com> wrote:
+> I saw this issue in an earlier version of the libraries on one
+> particular JVM. ?We are now using an in-house copy of the class with the
+> change described by Francois.
+>
+> Our testing at the time showed millions of garbage nodes sitting around
+> and being collected very slowly.
+>
+> -- Darron Shaffer
+>
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of
+> Francois Valdy
+> Sent: Tuesday, February 10, 2009 3:27 PM
+> To: concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] LinkedBlockingQueue extract and
+> memory"waste"
+>
+> Hi,
+>
+> I'm having memory issues with LinkedBlockingQueue (don't worry, I
+> won't come along saying there's a memory leak in the JDK).
+>
+> The issue is that the method extract() doesn't "help" the GC by
+> dereferencing head.next prior to changing the head node (with
+> head.next = null;).
+>
+> What comes then is that once a node has been put in old gen for
+> whatever reason, all generated nodes from this LinkedBlockingQueue
+> will be as well.
+> You'll tell me that memory will be recovered upon a full gc, but my
+> point is exactly to avoid full gc.
+>
+> Easiest way to reproduce issue is for force a gc (System.gc(), or
+> JConsole/JVisualVM) during queue usage, as it'll promote the current
+> used nodes to old gen.
+> Prior to this step memory was recovered smoothly by minor gc's, after
+> this step you're good for a full gc of only LinkedBlockingQueue nodes
+> (16bytes in JRE32, 32bytes in JRE64).
+>
+> Doug, I understand your attempt at removing extraneous code, but maybe
+> this one wasn't the best choice :)
+> LinkedList for instance doesn't follow the same strategy, and
+> explicitly dereferences next/previous (even if unnecessary from a
+> memory leak pov).
+>
+> I'll now look for a workaround (might end up "recoding"
+> LinkedBlockingQueue with one added line :) )
+>
+> Any thoughts ? (I won't consider moving to realtime java for just that
+> :) )
+>
+> Cheers.
+>
+> (this might be the reason for all those unresolved threads about
+> LinkedBlockingQueue memory consumption, just a guess)
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From martinrb at google.com  Wed Feb 11 12:00:01 2009
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 11 Feb 2009 09:00:01 -0800
+Subject: [concurrency-interest] Fwd: Question about Executors.
+In-Reply-To: <212322090902110756p2430daa6od1ea7dc2b25628a0@mail.gmail.com>
+References: <212322090902110756p2430daa6od1ea7dc2b25628a0@mail.gmail.com>
+Message-ID: <1ccfd1c10902110900h6fbdb5efsb588e5fe5246b61c@mail.gmail.com>
+
+Redirecting to concurrency-interest,
+where the people who designed Executors hang out.
+
+Martin
+
+---------- Forwarded message ----------
+From: Paulo Levi <i30817 at gmail.com>
+Date: Wed, Feb 11, 2009 at 07:56
+Subject: Question about Executors.
+To: "core-libs-dev at openjdk.java.net" <core-libs-dev at openjdk.java.net>
+
+
+Why is there no (a horrible name) newFixedCachedThreadPool() static factory?
+
+I think it makes sense for tasks that have a upper throughput, but
+still want to release the threads after some idle time. Or am i wrong?
+
+From ben_manes at yahoo.com  Wed Feb 11 13:42:55 2009
+From: ben_manes at yahoo.com (Ben Manes)
+Date: Wed, 11 Feb 2009 10:42:55 -0800 (PST)
+Subject: [concurrency-interest] Fwd: Question about Executors.
+References: <212322090902110756p2430daa6od1ea7dc2b25628a0@mail.gmail.com>
+	<1ccfd1c10902110900h6fbdb5efsb588e5fe5246b61c@mail.gmail.com>
+Message-ID: <84443.88637.qm@web38805.mail.mud.yahoo.com>
+
+I can't comment on the initial design discussions, but one can simulate it.  The ThreadExecutor offers the work to a queue, which all the threads block against trying to find new work (e.g. fixed pools).  If the work is rejected, then either a new thread is spawned if allowed or, if not, the rejection handler is invoked.  A cached executor uses a queue that always rejects work if it can't be immediately handed off, causing new threads to spawn.  This is a simple and elegant design, but doesn't handle all use-cases as you've noticed.
+
+What you want is an unbounded work queue with an upper and lower bound of workers.  You can coerce this by having a queue that rejects new work if the upper bound wasn't reached and otherwise accepts it.  This requires knowing exactly how the executor is implemented and behave, so you are prone to make incorrect assumptions (such as miss race condition issues).  Perhaps it should have been provided as an internal hack within the Executor framework, but its a hack nonetheless and dirties up an elegant system.  I've generally found that whenever I've wanted this feature, a better design alternative made it unnecessary and I never hacked together an implementation.  I'm sure others have, but you take risks by coupling yourself to the internal details of how the executor works.
+
+
+
+
+________________________________
+From: Martin Buchholz <martinrb at google.com>
+To: Paulo Levi <i30817 at gmail.com>; concurrency-interest at cs.oswego.edu
+Sent: Wednesday, February 11, 2009 9:00:01 AM
+Subject: [concurrency-interest] Fwd: Question about Executors.
+
+Redirecting to concurrency-interest,
+where the people who designed Executors hang out.
+
+Martin
+
+---------- Forwarded message ----------
+From: Paulo Levi <i30817 at gmail.com>
+Date: Wed, Feb 11, 2009 at 07:56
+Subject: Question about Executors.
+To: "core-libs-dev at openjdk.java.net" <core-libs-dev at openjdk.java.net>
+
+
+Why is there no (a horrible name) newFixedCachedThreadPool() static factory?
+
+I think it makes sense for tasks that have a upper throughput, but
+still want to release the threads after some idle time. Or am i wrong?
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+      
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090211/a1de161b/attachment.html>
+
+From hans.boehm at hp.com  Wed Feb 11 15:01:09 2009
+From: hans.boehm at hp.com (Boehm, Hans)
+Date: Wed, 11 Feb 2009 20:01:09 +0000
+Subject: [concurrency-interest] LinkedBlockingQueue extract and
+	memory	"waste"
+In-Reply-To: <b411e2080902110210n4ea8aeddm5ad39f0a959b866d@mail.gmail.com>
+References: <b411e2080902101326t5d758890g3ee384ca2aa494c5@mail.gmail.com>
+	<1ccfd1c10902102356l516e053fyf7638b7dc4f2c887@mail.gmail.com>
+	<b411e2080902110210n4ea8aeddm5ad39f0a959b866d@mail.gmail.com>
+Message-ID: <238A96A773B3934685A7269CC8A8D0424268F00EE6@GVW0436EXB.americas.hpqcorp.net>
+
+At the risk of advertising my own work, I think the issue here is exactly lack of "GC robustness", as defined in http://portal.acm.org/citation.cfm?doid=503272.503282 (or  http://www.hpl.hp.com/techreports/2001/HPL-2001-251.html).
+
+This is even more important with a conservatively collected implementation, such as gcj, or something that eventually promotes to an immortal, uncollected space.  But it also matters with any kind of generational collector.
+
+Hans
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu 
+> [mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf 
+> Of Francois Valdy
+> Sent: Wednesday, February 11, 2009 2:11 AM
+> To: concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] LinkedBlockingQueue 
+> extract and memory "waste"
+> 
+> Sure here it is:
+> I know it's a dummy use case, but still a valid one.
+> LinkedBlockingQueues that survive a full gc will inevitably 
+> make old gen grow, even if empty !
+> Following test will then output:
+> Test 1 took: 1595ms
+> Test 2 took: 2639ms
+> Exception in thread "main" java.lang.AssertionError: Full GC 
+> has occured during the test: 47 times
+> 	at TestLBQ.main(TestLBQ.java:72)
+> 
+> My workaround of null'ing head.next before moving the head 
+> works perfectly and displays (as expected):
+> Test 1 took: 1629ms
+> Test 2 took: 1592ms
+> 
+> I understand it's a hard decision to make to change code 
+> based on JVM implementation but still I'd rather nullify it.
+> 
+> If you want to be really frightened, see the output for G1 (JVM 1.7
+> b44 with -XX:+UnlockExperimentalVMOptions -XX:+UseG1GC)
+> 
+> JDK7 version:
+> Test 1 took: 5456ms
+> Test 2 took: 5575ms
+> 
+> With null assignment:
+> Test 1 took: 1698ms
+> Test 2 took: 1602ms
+> 
+> D'oh !
+> 
+> public class TestLBQ
+> {
+>     static GarbageCollectorMXBean fullgcx;
+>     static
+>     {
+>         for (GarbageCollectorMXBean gcx :
+> ManagementFactory.getGarbageCollectorMXBeans().toArray(new
+> GarbageCollectorMXBean[2]))
+>         {
+>             if (gcx == null) continue; // G1 MXBeans aren't 
+> defined yet it seems
+>             if ("PS MarkSweep".equals(gcx.getName()) ||
+> "MarkSweepCompact".equals(gcx.getName()))
+>             {
+>                 fullgcx = gcx;
+>             }
+>             else if ("ConcurrentMarkSweep".equals(gcx.getName()))
+>             {
+>                 throw new AssertionError("Test to be executed 
+> with PS MarkSweep (standard old collector)");
+>             }
+>         }
+>     }
+> 
+>     public static void main(String[] args) throws InterruptedException
+>     {
+>         long fullgc_count_ref=0, fullgc_count=0, start, end;
+> 
+>         // first test, create the queue after GC, head node 
+> will be in young gen
+>         System.gc();
+>         LinkedBlockingQueue q = new LinkedBlockingQueue();
+>         if (fullgcx != null) fullgc_count_ref = 
+> fullgcx.getCollectionCount();
+>         Object DUMMY = new Object();
+>         start = System.currentTimeMillis();
+>         for (int i = 0; i < 10000000; i++)
+>         {
+>             q.offer(DUMMY);
+>             q.take();
+>         }
+>         System.out.println("Test 1 took: " +
+> (System.currentTimeMillis()-start) + "ms");
+>         if (fullgcx != null) fullgc_count = 
+> fullgcx.getCollectionCount();
+>         if (fullgc_count > fullgc_count_ref)
+>             throw new AssertionError("Full GC has occured during the
+> test: " + (fullgc_count-fullgc_count_ref) + " times"); // not thrown
+> 
+>         // SAME test, but create the queue before GC, head 
+> node will be in old gen
+>         q = new LinkedBlockingQueue();
+>         System.gc();
+>         if (fullgcx != null) fullgc_count_ref = 
+> fullgcx.getCollectionCount();
+>         start = System.currentTimeMillis();
+>         for (int i = 0; i < 10000000; i++)
+>         {
+>             q.offer(DUMMY);
+>             q.take();
+>         }
+>         System.out.println("Test 2 took: " +
+> (System.currentTimeMillis()-start) + "ms");
+>         if (fullgcx != null) fullgc_count = 
+> fullgcx.getCollectionCount();
+>         if (fullgc_count > fullgc_count_ref)
+>             throw new AssertionError("Full GC has occured during the
+> test: " + (fullgc_count-fullgc_count_ref) + " times"); // ERROR
+>     }
+> }
+> 
+> 
+> On Wed, Feb 11, 2009 at 8:56 AM, Martin Buchholz 
+> <martinrb at google.com> wrote:
+> > Hi Francois,
+> >
+> > Your idea is very interesting. ?I don't recall having seen 
+> it before.
+> > Is this a new rule of thumb, to null out fields of old 
+> about-to-become 
+> > garbage objects if they are pointing at newer objects?
+> >
+> > Can you produce a synthetic benchmark where nulling out the 
+> next field 
+> > doubles the performance? ?That might get Doug to agree with you.
+> >
+> > Martin
+> >
+> > On Tue, Feb 10, 2009 at 13:26, Francois Valdy 
+> <francois.valdy at gmail.com> wrote:
+> >> Hi,
+> >>
+> >> I'm having memory issues with LinkedBlockingQueue (don't worry, I 
+> >> won't come along saying there's a memory leak in the JDK).
+> >>
+> >> The issue is that the method extract() doesn't "help" the GC by 
+> >> dereferencing head.next prior to changing the head node (with 
+> >> head.next = null;).
+> >>
+> >> What comes then is that once a node has been put in old gen for 
+> >> whatever reason, all generated nodes from this LinkedBlockingQueue 
+> >> will be as well.
+> >> You'll tell me that memory will be recovered upon a full 
+> gc, but my 
+> >> point is exactly to avoid full gc.
+> >>
+> >> Easiest way to reproduce issue is for force a gc (System.gc(), or
+> >> JConsole/JVisualVM) during queue usage, as it'll promote 
+> the current 
+> >> used nodes to old gen.
+> >> Prior to this step memory was recovered smoothly by minor 
+> gc's, after 
+> >> this step you're good for a full gc of only 
+> LinkedBlockingQueue nodes 
+> >> (16bytes in JRE32, 32bytes in JRE64).
+> >>
+> >> Doug, I understand your attempt at removing extraneous code, but 
+> >> maybe this one wasn't the best choice :) LinkedList for instance 
+> >> doesn't follow the same strategy, and explicitly dereferences 
+> >> next/previous (even if unnecessary from a memory leak pov).
+> >>
+> >> I'll now look for a workaround (might end up "recoding"
+> >> LinkedBlockingQueue with one added line :) )
+> >>
+> >> Any thoughts ? (I won't consider moving to realtime java for just 
+> >> that :) )
+> >>
+> >> Cheers.
+> >>
+> >> (this might be the reason for all those unresolved threads about 
+> >> LinkedBlockingQueue memory consumption, just a guess) 
+> >> _______________________________________________
+> >> Concurrency-interest mailing list
+> >> Concurrency-interest at cs.oswego.edu
+> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >>
+> >
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+From joe.bowbeer at gmail.com  Wed Feb 11 17:58:11 2009
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Wed, 11 Feb 2009 14:58:11 -0800
+Subject: [concurrency-interest] Fwd: Question about Executors.
+In-Reply-To: <1ccfd1c10902110900h6fbdb5efsb588e5fe5246b61c@mail.gmail.com>
+References: <212322090902110756p2430daa6od1ea7dc2b25628a0@mail.gmail.com>
+	<1ccfd1c10902110900h6fbdb5efsb588e5fe5246b61c@mail.gmail.com>
+Message-ID: <31f2a7bd0902111458x6eb9ea27jd94a214c5c840f38@mail.gmail.com>
+
+>
+> ---------- Forwarded message ----------
+> From: Paulo Levi <i30817 at gmail.com>
+> Date: Wed, Feb 11, 2009 at 07:56
+> Subject: Question about Executors.
+> To: "core-libs-dev at openjdk.java.net" <core-libs-dev at openjdk.java.net>
+>
+> Why is there no (a horrible name) newFixedCachedThreadPool() static
+> factory?
+>
+> I think it makes sense for tasks that have a upper throughput, but
+> still want to release the threads after some idle time. Or am i wrong?
+>
+
+It makes sense to me if you're concerned about managing resources.
+
+
+
+You can easily create one of these directly using the ThreadPoolExecutor
+constructor.
+
+
+
+If you can start with a fixed thread pool configuration, a method introduced
+in Java 6 will allow idle core threads to timeout:
+allowCoreThreadTimeOut(allow).
+
+
+
+Or you can start with a cached thread pool configuration, but set the
+maximum number of threads.
+
+
+
+In addition, you may want to use a fixed-length queue and a "discard" or
+"caller runs" rejected execution handler in order to throttle over-demand.
+
+
+
+Joe
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090211/054b35e6/attachment.html>
+
+From dl at cs.oswego.edu  Wed Feb 11 20:02:18 2009
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 11 Feb 2009 20:02:18 -0500
+Subject: [concurrency-interest] LinkedBlockingQueue extract and memory
+ "waste"
+In-Reply-To: <b411e2080902101326t5d758890g3ee384ca2aa494c5@mail.gmail.com>
+References: <b411e2080902101326t5d758890g3ee384ca2aa494c5@mail.gmail.com>
+Message-ID: <4993751A.9040608@cs.oswego.edu>
+
+Sorry for delay on this (and on some other concurrency-interest issues) --
+I've been swamped with unrelated things.
+
+> The issue is that the method extract() doesn't "help" the GC by
+> dereferencing head.next prior to changing the head node (with
+> head.next = null;).
+> 
+
+Thanks for the empirical demonstration that this is worth doing.
+I don't have any religious stance about whether to aggressively
+null linkages -- sometimes it is worthwhile and sometimes it
+is just unnecessary overhead. I almost always do quick checks
+about this when developing classes. While I don't have any
+specific recollection, it may be that the effects didn't show
+up on the tests, machines, VMs I was using. But these are
+subject to transient changes, so it is good to revisit them.
+
+I checked this change into our CVS. Feel free to help get
+it into the JDK/openJDK by filing a performance bug report.
+
+-Doug
+
+From ktlam at cs.hku.hk  Thu Feb 12 06:27:45 2009
+From: ktlam at cs.hku.hk (Lam King Tin)
+Date: Thu, 12 Feb 2009 19:27:45 +0800
+Subject: [concurrency-interest] Backport of java.util.concurrent correct?
+Message-ID: <00a901c98d04$ee86b140$f8b10893@ktlampc>
+
+
+Dear all,
+
+I would like to ask an important question about the backport version of
+java.util.concurrent. 
+http://backport-jsr166.sourceforge.net/index.php
+
+I have some special needs to use an old JDK 1.2. So I download the package
+backport-util-concurrent-Java12-3.1. In particular, I am just interested in
+ConcurrentHashMap.
+
+As far as I know, JDK 1.3 and older should be using the old Java memory
+model (JMM) and the volatile field semantics are less strict than now. The
+old JMM made promises only about the visibility of the variable being read
+or written, and no promises about the visibility of writes to other
+variables. (Ref: http://www.ibm.com/developerworks/library/j-jtp03304/)
+
+But the implementation simply uses a pair of volatile read and write on the
+count field in the get and put methods respectively in attempt to pass
+updates that happen before the volatile write to the next volatile reader.
+In the old JMM, I think only the update on count will be seen but other
+updates, e.g. on the hash entries inside, may not be passed on. So I wonder
+if the package is correct or not?
+
+Thank you very much.
+  
+
+        Object get(Object key, int hash) {
+            if (count != 0) { // read-volatile
+                HashEntry e = getFirst(hash);
+                while (e != null) {
+                    if (e.hash == hash && key.equals(e.key)) {
+                        Object v = e.value;
+                        if (v != null)
+                            return v;
+                        return readValueUnderLock(e); // recheck
+                    }
+                    e = e.next;
+                }
+            }
+            return null;
+        }
+
+        Object put(Object key, int hash, Object value, boolean onlyIfAbsent)
+{
+            lock();
+            try {
+                int c = count;
+                if (c++ > threshold) // ensure capacity
+                    rehash();
+                HashEntry[] tab = table;
+                int index = hash & (tab.length - 1);
+                HashEntry first = tab[index];
+                HashEntry e = first;
+                while (e != null && (e.hash != hash || !key.equals(e.key)))
+                    e = e.next;
+
+                Object oldValue;
+                if (e != null) {
+                    oldValue = e.value;
+                    if (!onlyIfAbsent)
+                        e.value = value;
+                }
+                else {
+                    oldValue = null;
+                    ++modCount;
+                    tab[index] = new HashEntry(key, hash, first, value);
+                    count = c; // write-volatile
+                }
+                return oldValue;
+            } finally {
+                unlock();
+            }
+        } 
+
+Best regards,
+Tin
+ 
+
+
+
+From gkorland at gmail.com  Thu Feb 12 07:21:49 2009
+From: gkorland at gmail.com (Guy Korland)
+Date: Thu, 12 Feb 2009 14:21:49 +0200
+Subject: [concurrency-interest] Backport of JDK7
+Message-ID: <79be5fa30902120421k4cfeeb98tc1d110d0aad6c0ff@mail.gmail.com>
+
+Hi,
+
+It seems like JDK 6u14 will include many bug fixes from JDK 7 (at lease
+according to the beta release note).
+Are there any plans to backport fixes of the concurrency package also?
+
+e.g.
+Excessive ThreadLocal storage used by ReentrantReadWriteLock.  bugs.sun.com;
+Bug Database; Bug Detail
+(6625723)<http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6625723>
+10-Fix Delivered 7(b25)   ThreadPoolExecutor
+poolSize might shrink below corePoolSize after timeout bugs.sun.com; Bug
+Database; Bug Detail
+(6458662)<http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6458662>
+10-Fix Delivered 7(b08)
+-- 
+Guy
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090212/a856fa87/attachment.html>
+
+From greggwon at cox.net  Mon Feb 16 12:33:18 2009
+From: greggwon at cox.net (Gregg Wonderly)
+Date: Mon, 16 Feb 2009 11:33:18 -0600
+Subject: [concurrency-interest] Thread subclass check locking is a bottleneck
+Message-ID: <4999A35E.90604@cox.net>
+
+I have an old application that implements it's own thread pooling.  But, 
+this is an issue simply related to the java.lang.Thread constructor 
+locking on subclass construction.  I am seeing stuck threads of the form:
+
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at java.lang.Thread.isCCLOverridden(Thread.java:1521)
+        - waiting to lock <0xaca0a778> (a sun.misc.SoftCache)
+        at java.lang.Thread.init(Thread.java:338)
+        at java.lang.Thread.<init>(Thread.java:419)
+
+The global lock used there seems to be an unfortunate choice.  The code 
+I see on the internet is:
+
+ 1615       private static boolean isCCLOverridden(Class cl) {
+ 1616           if (cl == Thread.class)
+ 1617               return false;
+ 1618           Boolean result = null;
+ 1619           synchronized (subclassAudits) {
+ 1620               result = (Boolean) subclassAudits.get(cl);
+ 1621               if (result == null) {
+ 1622                   /*
+ 1623                    * Note: only new Boolean instances (i.e., not Boolean.TRUE or
+ 1624                    * Boolean.FALSE) must be used as cache values, otherwise cache
+ 1625                    * entry will pin associated class.
+ 1626                    */
+ 1627                   result = new Boolean(auditSubclass(cl));
+ 1628                   subclassAudits.put(cl, result);
+ 1629               }
+ 1630           }
+ 1631           return result.booleanValue();
+ 1632       }
+
+Wouldn't it be more prudent for the lock held during auditSubclass to be on cl and not the global table?
+
+Gregg Wonderly
+
+
+
+From hanson.char at gmail.com  Mon Feb 16 15:48:48 2009
+From: hanson.char at gmail.com (Hanson Char)
+Date: Mon, 16 Feb 2009 12:48:48 -0800
+Subject: [concurrency-interest] WaitPolicy for ThreadPoolExecutor ?
+Message-ID: <ca53c8f80902161248q11fc7c70ua11722503fd78c66@mail.gmail.com>
+
+Hi,
+
+A question was asked on how one can configure ThreadPoolExecutor using a
+blocking queue with a limited capacity such that when the queue is full, the
+"submit" method would wait for space to become available, instead of using
+one of the 4 existing rejection policies (aborting, running in the caller
+thread or discarding).  This seems to naturally beg for a WaitPolicy
+implementation.
+
+Does the simple wait policy below look reasonable (or any bug) ?  Why isn't
+there already one (which seems like a common need) in the JDK ?
+
+Thanks,
+Hanson
+
+public class WaitPolicy implements RejectedExecutionHandler {
+    private final long time;
+    private final TimeUnit unit;
+
+    public WaitPolicy(long time, TimeUnit unit) {
+        this.time = time;
+        this.unit = unit;
+    }
+
+    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
+        if (e.isShutdown() || e.isTerminated() || e.isTerminating())
+            return;
+        try {
+            if (!e.getQueue().offer(r, time, unit))
+                throw new RejectedExecutionException();
+        } catch (InterruptedException ex) {
+            throw new RejectedExecutionException(ex);
+        }
+     }
+}
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090216/de996357/attachment.html>
+
+From martinrb at google.com  Mon Feb 16 16:35:56 2009
+From: martinrb at google.com (Martin Buchholz)
+Date: Mon, 16 Feb 2009 13:35:56 -0800
+Subject: [concurrency-interest] WaitPolicy for ThreadPoolExecutor ?
+In-Reply-To: <ca53c8f80902161248q11fc7c70ua11722503fd78c66@mail.gmail.com>
+References: <ca53c8f80902161248q11fc7c70ua11722503fd78c66@mail.gmail.com>
+Message-ID: <1ccfd1c10902161335xf1b53ccvd868eb7f3158f3c2@mail.gmail.com>
+
+It's not safe in general to manipulate the queue directly.
+Also, the code below has a race with concurrent call to shutdown.
+
+I think a new thread pool implementation should be written,
+trying to improve on ThreadPoolExecutor.  I'd even like to
+do this myself...
+
+Martin
+
+On Mon, Feb 16, 2009 at 12:48, Hanson Char <hanson.char at gmail.com> wrote:
+> Hi,
+>
+> A question was asked on how one can configure ThreadPoolExecutor using a
+> blocking queue with a limited capacity such that when the queue is full, the
+> "submit" method would wait for space to become available, instead of using
+> one of the 4 existing rejection policies (aborting, running in the caller
+> thread or discarding).  This seems to naturally beg for a WaitPolicy
+> implementation.
+>
+> Does the simple wait policy below look reasonable (or any bug) ?  Why isn't
+> there already one (which seems like a common need) in the JDK ?
+>
+> Thanks,
+> Hanson
+>
+> public class WaitPolicy implements RejectedExecutionHandler {
+>     private final long time;
+>     private final TimeUnit unit;
+>
+>     public WaitPolicy(long time, TimeUnit unit) {
+>         this.time = time;
+>         this.unit = unit;
+>     }
+>
+>     public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {
+>         if (e.isShutdown() || e.isTerminated() || e.isTerminating())
+>             return;
+>         try {
+>             if (!e.getQueue().offer(r, time, unit))
+>                 throw new RejectedExecutionException();
+>         } catch (InterruptedException ex) {
+>             throw new RejectedExecutionException(ex);
+>         }
+>      }
+> }
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+From hanson.char at gmail.com  Mon Feb 16 17:04:39 2009
+From: hanson.char at gmail.com (Hanson Char)
+Date: Mon, 16 Feb 2009 14:04:39 -0800
+Subject: [concurrency-interest] WaitPolicy for ThreadPoolExecutor ?
+In-Reply-To: <1ccfd1c10902161335xf1b53ccvd868eb7f3158f3c2@mail.gmail.com>
+References: <ca53c8f80902161248q11fc7c70ua11722503fd78c66@mail.gmail.com>
+	<1ccfd1c10902161335xf1b53ccvd868eb7f3158f3c2@mail.gmail.com>
+Message-ID: <ca53c8f80902161404i16364a88k47ea47195b16e4de@mail.gmail.com>
+
+An alternative would be to configure a custom LBQ that would wait upon the
+offer method instead immediately returning.  Would that be better ?
+
+Hanson
+
+public class SynchronousLinkedBlockingQueue<E> extends
+LinkedBlockingQueue<E>{
+    private final long timeout;
+    private final TimeUnit unit;
+
+    public SynchronousLinkedBlockingQueue(int capacity, long timeout,
+TimeUnit unit) {
+        super(capacity);
+        this.timeout = timeout;
+        this.unit = unit;
+    }
+
+    /**
+     * @return true always
+     * @throws OfferTimeoutException if time out occurred
+     */
+    @Override
+    public boolean offer(E e) {
+        try {
+            boolean b = super.offer(e, timeout, unit);
+            if (b) return b;
+            throw new OfferTimeoutException("Timed out " + timeout + " " +
+unit);
+        } catch (InterruptedException e1) {
+            throw new IllegalStateException("Interrupted", e1);
+        }
+    }
+
+    private static class OfferTimeoutException extends RuntimeException {
+        private OfferTimeoutException(String msg) { super(msg); }
+    }
+}
+
+On Mon, Feb 16, 2009 at 1:35 PM, Martin Buchholz <martinrb at google.com>wrote:
+
+> It's not safe in general to manipulate the queue directly.
+> Also, the code below has a race with concurrent call to shutdown.
+>
+> I think a new thread pool implementation should be written,
+> trying to improve on ThreadPoolExecutor.  I'd even like to
+> do this myself...
+>
+> Martin
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090216/b2ca5a2f/attachment.html>
+
+From dcholmes at optusnet.com.au  Mon Feb 16 17:25:45 2009
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Tue, 17 Feb 2009 08:25:45 +1000
+Subject: [concurrency-interest] Thread subclass check locking is a
+	bottleneck
+In-Reply-To: <4999A35E.90604@cox.net>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEJJHPAA.dcholmes@optusnet.com.au>
+
+Hi Greg,
+
+The "table" is an unsynchronized data structure hence it has to be protected
+by a global lock of some form. I don't see any reason to synchronize on the
+Class object as we're not updating state in the Class.
+
+It would certainly be better to have some kind of concurrently accessible
+structure - especially as it is called twice per construction (once for
+current class, once for parent class). If the SoftCache were a concurrent
+map then I don't think any synchronization would be needed
+
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Gregg
+> Wonderly
+> Sent: Tuesday, 17 February 2009 3:33 AM
+> To: concurrency-interest
+> Subject: [concurrency-interest] Thread subclass check locking is a
+> bottleneck
+>
+>
+> I have an old application that implements it's own thread pooling.  But,
+> this is an issue simply related to the java.lang.Thread constructor
+> locking on subclass construction.  I am seeing stuck threads of the form:
+>
+>    java.lang.Thread.State: BLOCKED (on object monitor)
+>         at java.lang.Thread.isCCLOverridden(Thread.java:1521)
+>         - waiting to lock <0xaca0a778> (a sun.misc.SoftCache)
+>         at java.lang.Thread.init(Thread.java:338)
+>         at java.lang.Thread.<init>(Thread.java:419)
+>
+> The global lock used there seems to be an unfortunate choice.  The code
+> I see on the internet is:
+>
+>  1615       private static boolean isCCLOverridden(Class cl) {
+>  1616           if (cl == Thread.class)
+>  1617               return false;
+>  1618           Boolean result = null;
+>  1619           synchronized (subclassAudits) {
+>  1620               result = (Boolean) subclassAudits.get(cl);
+>  1621               if (result == null) {
+>  1622                   /*
+>  1623                    * Note: only new Boolean instances
+> (i.e., not Boolean.TRUE or
+>  1624                    * Boolean.FALSE) must be used as cache
+> values, otherwise cache
+>  1625                    * entry will pin associated class.
+>  1626                    */
+>  1627                   result = new Boolean(auditSubclass(cl));
+>  1628                   subclassAudits.put(cl, result);
+>  1629               }
+>  1630           }
+>  1631           return result.booleanValue();
+>  1632       }
+>
+> Wouldn't it be more prudent for the lock held during
+> auditSubclass to be on cl and not the global table?
+>
+> Gregg Wonderly
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From gregg at cytetech.com  Mon Feb 16 17:36:58 2009
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Mon, 16 Feb 2009 16:36:58 -0600
+Subject: [concurrency-interest] Thread subclass check locking is a
+	bottleneck
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCEEJJHPAA.dcholmes@optusnet.com.au>
+References: <NFBBKALFDCPFIDBNKAPCEEJJHPAA.dcholmes@optusnet.com.au>
+Message-ID: <4999EA8A.4050801@cytetech.com>
+
+David Holmes wrote:
+> Hi Greg,
+> 
+> The "table" is an unsynchronized data structure hence it has to be protected
+> by a global lock of some form. I don't see any reason to synchronize on the
+> Class object as we're not updating state in the Class.
+> 
+> It would certainly be better to have some kind of concurrently accessible
+> structure - especially as it is called twice per construction (once for
+> current class, once for parent class). If the SoftCache were a concurrent
+> map then I don't think any synchronization would be needed
+
+I guess the question is whether it's safe to perform the audit on the same 
+class, simultaneously.  If that's okay, then I agree that using a concurrent map 
+would be more in line with the fact that this is a concurrently accessed bit of 
+code that seems to have a highly contested (in my application) lock.
+
+Gregg Wonderly
+
+> David Holmes
+> 
+>> -----Original Message-----
+>> From: concurrency-interest-bounces at cs.oswego.edu
+>> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Gregg
+>> Wonderly
+>> Sent: Tuesday, 17 February 2009 3:33 AM
+>> To: concurrency-interest
+>> Subject: [concurrency-interest] Thread subclass check locking is a
+>> bottleneck
+>>
+>>
+>> I have an old application that implements it's own thread pooling.  But,
+>> this is an issue simply related to the java.lang.Thread constructor
+>> locking on subclass construction.  I am seeing stuck threads of the form:
+>>
+>>    java.lang.Thread.State: BLOCKED (on object monitor)
+>>         at java.lang.Thread.isCCLOverridden(Thread.java:1521)
+>>         - waiting to lock <0xaca0a778> (a sun.misc.SoftCache)
+>>         at java.lang.Thread.init(Thread.java:338)
+>>         at java.lang.Thread.<init>(Thread.java:419)
+>>
+>> The global lock used there seems to be an unfortunate choice.  The code
+>> I see on the internet is:
+>>
+>>  1615       private static boolean isCCLOverridden(Class cl) {
+>>  1616           if (cl == Thread.class)
+>>  1617               return false;
+>>  1618           Boolean result = null;
+>>  1619           synchronized (subclassAudits) {
+>>  1620               result = (Boolean) subclassAudits.get(cl);
+>>  1621               if (result == null) {
+>>  1622                   /*
+>>  1623                    * Note: only new Boolean instances
+>> (i.e., not Boolean.TRUE or
+>>  1624                    * Boolean.FALSE) must be used as cache
+>> values, otherwise cache
+>>  1625                    * entry will pin associated class.
+>>  1626                    */
+>>  1627                   result = new Boolean(auditSubclass(cl));
+>>  1628                   subclassAudits.put(cl, result);
+>>  1629               }
+>>  1630           }
+>>  1631           return result.booleanValue();
+>>  1632       }
+>>
+>> Wouldn't it be more prudent for the lock held during
+>> auditSubclass to be on cl and not the global table?
+>>
+>> Gregg Wonderly
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+> 
+> 
+
+
+From gregg at cytetech.com  Mon Feb 16 17:44:51 2009
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Mon, 16 Feb 2009 16:44:51 -0600
+Subject: [concurrency-interest] Thread subclass check locking is a
+	bottleneck
+In-Reply-To: <4999EA8A.4050801@cytetech.com>
+References: <NFBBKALFDCPFIDBNKAPCEEJJHPAA.dcholmes@optusnet.com.au>
+	<4999EA8A.4050801@cytetech.com>
+Message-ID: <4999EC63.8010603@cytetech.com>
+
+Gregg Wonderly wrote:
+> David Holmes wrote:
+>> The "table" is an unsynchronized data structure hence it has to be 
+>> protected
+>> by a global lock of some form. I don't see any reason to synchronize 
+>> on the
+>> Class object as we're not updating state in the Class.
+
+We are validating the usability of that class and writing that into the 
+softCache.  The comment below,
+
+ > I guess the question is whether it's safe to perform the audit on the
+ > same class, simultaneously.
+
+goes back to locking on the Class.  The data structure needs to be queried, some 
+action performed, and then the result of that action put into the table.  The 
+first and last steps do require synchronized access to the concurrently updated 
+table.  However the validation step may only require the step to be performed 
+exactly once, and/or not concurrently with another thread.  So that's why I'm 
+suggesting locking on the class.
+
+I was inferring the lock on cl to be in a context like the following
+
+private static boolean isCCLOverridden(Class cl) {
+     if (cl == Thread.class)
+         return false;
+     Boolean result = null;
+     synchronized (subclassAudits) {
+         result = (Boolean) subclassAudits.get(cl);
+     }
+
+     if (result == null) {
+         synchronized( cl ) {
+             /*
+             * Note: only new Boolean instances (i.e., not Boolean.TRUE or
+             * Boolean.FALSE) must be used as cache values, otherwise cache
+             * entry will pin associated class.
+             */
+             result = new Boolean(auditSubclass(cl));
+         }
+         synchronized (subclassAudits) {
+	    Boolean nresult;
+             if( (nresult = subclassAudits.get(cl)) == null )
+                 subclassAudits.put(cl, result);
+	    else
+		result = nresult;
+         }
+     }
+
+     return result.booleanValue();
+}
+
+this looks very much like putIfAbsent and exactly the locking perspective that 
+would occur with the use of ConcurrentHashMap.  The only issue is whether we 
+want to do the locking on Class while the audit occurs.
+
+Gregg Wonderly
+
+>> It would certainly be better to have some kind of concurrently accessible
+>> structure - especially as it is called twice per construction (once for
+>> current class, once for parent class). If the SoftCache were a concurrent
+>> map then I don't think any synchronization would be needed
+> 
+> I guess the question is whether it's safe to perform the audit on the 
+> same class, simultaneously.  If that's okay, then I agree that using a 
+> concurrent map would be more in line with the fact that this is a 
+> concurrently accessed bit of code that seems to have a highly contested 
+> (in my application) lock.
+> 
+> Gregg Wonderly
+> 
+>> David Holmes
+>>
+>>> -----Original Message-----
+>>> From: concurrency-interest-bounces at cs.oswego.edu
+>>> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Gregg
+>>> Wonderly
+>>> Sent: Tuesday, 17 February 2009 3:33 AM
+>>> To: concurrency-interest
+>>> Subject: [concurrency-interest] Thread subclass check locking is a
+>>> bottleneck
+>>>
+>>>
+>>> I have an old application that implements it's own thread pooling.  But,
+>>> this is an issue simply related to the java.lang.Thread constructor
+>>> locking on subclass construction.  I am seeing stuck threads of the 
+>>> form:
+>>>
+>>>    java.lang.Thread.State: BLOCKED (on object monitor)
+>>>         at java.lang.Thread.isCCLOverridden(Thread.java:1521)
+>>>         - waiting to lock <0xaca0a778> (a sun.misc.SoftCache)
+>>>         at java.lang.Thread.init(Thread.java:338)
+>>>         at java.lang.Thread.<init>(Thread.java:419)
+>>>
+>>> The global lock used there seems to be an unfortunate choice.  The code
+>>> I see on the internet is:
+>>>
+>>>  1615       private static boolean isCCLOverridden(Class cl) {
+>>>  1616           if (cl == Thread.class)
+>>>  1617               return false;
+>>>  1618           Boolean result = null;
+>>>  1619           synchronized (subclassAudits) {
+>>>  1620               result = (Boolean) subclassAudits.get(cl);
+>>>  1621               if (result == null) {
+>>>  1622                   /*
+>>>  1623                    * Note: only new Boolean instances
+>>> (i.e., not Boolean.TRUE or
+>>>  1624                    * Boolean.FALSE) must be used as cache
+>>> values, otherwise cache
+>>>  1625                    * entry will pin associated class.
+>>>  1626                    */
+>>>  1627                   result = new Boolean(auditSubclass(cl));
+>>>  1628                   subclassAudits.put(cl, result);
+>>>  1629               }
+>>>  1630           }
+>>>  1631           return result.booleanValue();
+>>>  1632       }
+>>>
+>>> Wouldn't it be more prudent for the lock held during
+>>> auditSubclass to be on cl and not the global table?
+>>>
+>>> Gregg Wonderly
+>>>
+>>>
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+>>
+> 
+> 
+> 
+
+
+From dcholmes at optusnet.com.au  Mon Feb 16 17:51:13 2009
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Tue, 17 Feb 2009 08:51:13 +1000
+Subject: [concurrency-interest] Thread subclass check locking is a
+	bottleneck
+In-Reply-To: <4999EC63.8010603@cytetech.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEJKHPAA.dcholmes@optusnet.com.au>
+
+Gregg,
+
+There is no need to lock the class at all. The check is a reflective check
+for the existence of an overridden set/getContextClassLoader method - there
+are no concurrency issues there (the answer can never change for a given
+class). The synchronization is needed to update the table, nothing more.
+
+Cheers,
+David
+
+> -----Original Message-----
+> From: Gregg Wonderly [mailto:gregg at cytetech.com]
+> Sent: Tuesday, 17 February 2009 8:45 AM
+> To: gregg.wonderly at pobox.com
+> Cc: dholmes at ieee.org; concurrency-interest
+> Subject: Re: [concurrency-interest] Thread subclass check locking is a
+> bottleneck
+>
+>
+> Gregg Wonderly wrote:
+> > David Holmes wrote:
+> >> The "table" is an unsynchronized data structure hence it has to be
+> >> protected
+> >> by a global lock of some form. I don't see any reason to synchronize
+> >> on the
+> >> Class object as we're not updating state in the Class.
+>
+> We are validating the usability of that class and writing that into the
+> softCache.  The comment below,
+>
+>  > I guess the question is whether it's safe to perform the audit on the
+>  > same class, simultaneously.
+>
+> goes back to locking on the Class.  The data structure needs to
+> be queried, some
+> action performed, and then the result of that action put into the
+> table.  The
+> first and last steps do require synchronized access to the
+> concurrently updated
+> table.  However the validation step may only require the step to
+> be performed
+> exactly once, and/or not concurrently with another thread.  So
+> that's why I'm
+> suggesting locking on the class.
+>
+> I was inferring the lock on cl to be in a context like the following
+>
+> private static boolean isCCLOverridden(Class cl) {
+>      if (cl == Thread.class)
+>          return false;
+>      Boolean result = null;
+>      synchronized (subclassAudits) {
+>          result = (Boolean) subclassAudits.get(cl);
+>      }
+>
+>      if (result == null) {
+>          synchronized( cl ) {
+>              /*
+>              * Note: only new Boolean instances (i.e., not Boolean.TRUE or
+>              * Boolean.FALSE) must be used as cache values,
+> otherwise cache
+>              * entry will pin associated class.
+>              */
+>              result = new Boolean(auditSubclass(cl));
+>          }
+>          synchronized (subclassAudits) {
+> 	    Boolean nresult;
+>              if( (nresult = subclassAudits.get(cl)) == null )
+>                  subclassAudits.put(cl, result);
+> 	    else
+> 		result = nresult;
+>          }
+>      }
+>
+>      return result.booleanValue();
+> }
+>
+> this looks very much like putIfAbsent and exactly the locking
+> perspective that
+> would occur with the use of ConcurrentHashMap.  The only issue is
+> whether we
+> want to do the locking on Class while the audit occurs.
+>
+> Gregg Wonderly
+>
+> >> It would certainly be better to have some kind of concurrently
+> accessible
+> >> structure - especially as it is called twice per construction (once for
+> >> current class, once for parent class). If the SoftCache were a
+> concurrent
+> >> map then I don't think any synchronization would be needed
+> >
+> > I guess the question is whether it's safe to perform the audit on the
+> > same class, simultaneously.  If that's okay, then I agree that using a
+> > concurrent map would be more in line with the fact that this is a
+> > concurrently accessed bit of code that seems to have a highly contested
+> > (in my application) lock.
+> >
+> > Gregg Wonderly
+> >
+> >> David Holmes
+> >>
+> >>> -----Original Message-----
+> >>> From: concurrency-interest-bounces at cs.oswego.edu
+> >>> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Gregg
+> >>> Wonderly
+> >>> Sent: Tuesday, 17 February 2009 3:33 AM
+> >>> To: concurrency-interest
+> >>> Subject: [concurrency-interest] Thread subclass check locking is a
+> >>> bottleneck
+> >>>
+> >>>
+> >>> I have an old application that implements it's own thread
+> pooling.  But,
+> >>> this is an issue simply related to the java.lang.Thread constructor
+> >>> locking on subclass construction.  I am seeing stuck threads of the
+> >>> form:
+> >>>
+> >>>    java.lang.Thread.State: BLOCKED (on object monitor)
+> >>>         at java.lang.Thread.isCCLOverridden(Thread.java:1521)
+> >>>         - waiting to lock <0xaca0a778> (a sun.misc.SoftCache)
+> >>>         at java.lang.Thread.init(Thread.java:338)
+> >>>         at java.lang.Thread.<init>(Thread.java:419)
+> >>>
+> >>> The global lock used there seems to be an unfortunate choice.
+>  The code
+> >>> I see on the internet is:
+> >>>
+> >>>  1615       private static boolean isCCLOverridden(Class cl) {
+> >>>  1616           if (cl == Thread.class)
+> >>>  1617               return false;
+> >>>  1618           Boolean result = null;
+> >>>  1619           synchronized (subclassAudits) {
+> >>>  1620               result = (Boolean) subclassAudits.get(cl);
+> >>>  1621               if (result == null) {
+> >>>  1622                   /*
+> >>>  1623                    * Note: only new Boolean instances
+> >>> (i.e., not Boolean.TRUE or
+> >>>  1624                    * Boolean.FALSE) must be used as cache
+> >>> values, otherwise cache
+> >>>  1625                    * entry will pin associated class.
+> >>>  1626                    */
+> >>>  1627                   result = new Boolean(auditSubclass(cl));
+> >>>  1628                   subclassAudits.put(cl, result);
+> >>>  1629               }
+> >>>  1630           }
+> >>>  1631           return result.booleanValue();
+> >>>  1632       }
+> >>>
+> >>> Wouldn't it be more prudent for the lock held during
+> >>> auditSubclass to be on cl and not the global table?
+> >>>
+> >>> Gregg Wonderly
+> >>>
+> >>>
+> >>> _______________________________________________
+> >>> Concurrency-interest mailing list
+> >>> Concurrency-interest at cs.oswego.edu
+> >>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >>
+> >>
+> >>
+> >
+> >
+> >
+>
+
+
+From gregg at cytetech.com  Mon Feb 16 17:59:58 2009
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Mon, 16 Feb 2009 16:59:58 -0600
+Subject: [concurrency-interest] Thread subclass check locking is a
+	bottleneck
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCAEJKHPAA.dcholmes@optusnet.com.au>
+References: <NFBBKALFDCPFIDBNKAPCAEJKHPAA.dcholmes@optusnet.com.au>
+Message-ID: <4999EFEE.8000801@cytetech.com>
+
+David Holmes wrote:
+> There is no need to lock the class at all. The check is a reflective check
+> for the existence of an overridden set/getContextClassLoader method - there
+> are no concurrency issues there (the answer can never change for a given
+> class). The synchronization is needed to update the table, nothing more.
+
+Okay, that's good, so it really should just be a concurrent map with the data 
+race on update, no problem!  This seems to be a big barrier in my application 
+right now.  Was this a recent change?  I haven't been seeing this kind of 
+contention in my thread pool which has been active in this application for about 
+10 years now.
+
+Gregg Wonderly
+
+From dcholmes at optusnet.com.au  Mon Feb 16 18:05:36 2009
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Tue, 17 Feb 2009 09:05:36 +1000
+Subject: [concurrency-interest] Thread subclass check locking is a
+	bottleneck
+In-Reply-To: <4999EFEE.8000801@cytetech.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEJKHPAA.dcholmes@optusnet.com.au>
+
+Gregg,
+
+This is old code. If the behaviour has suddenly changed there must be a
+different underlying reason as to why the threads are suddenly piling up
+here. You aren't suddenly running on a large multi-core system for the first
+time? :-)
+
+More seriously has anything in your environment changed, JDK version ?
+
+David
+
+> -----Original Message-----
+> From: Gregg Wonderly [mailto:gregg at cytetech.com]
+> Sent: Tuesday, 17 February 2009 9:00 AM
+> To: dholmes at ieee.org
+> Cc: gregg.wonderly at pobox.com; concurrency-interest
+> Subject: Re: [concurrency-interest] Thread subclass check locking is a
+> bottleneck
+>
+>
+> David Holmes wrote:
+> > There is no need to lock the class at all. The check is a
+> reflective check
+> > for the existence of an overridden set/getContextClassLoader
+> method - there
+> > are no concurrency issues there (the answer can never change for a given
+> > class). The synchronization is needed to update the table, nothing more.
+>
+> Okay, that's good, so it really should just be a concurrent map
+> with the data
+> race on update, no problem!  This seems to be a big barrier in my
+> application
+> right now.  Was this a recent change?  I haven't been seeing this kind of
+> contention in my thread pool which has been active in this
+> application for about
+> 10 years now.
+>
+> Gregg Wonderly
+
+
+From hanson.char at gmail.com  Mon Feb 16 21:16:08 2009
+From: hanson.char at gmail.com (Hanson Char)
+Date: Mon, 16 Feb 2009 18:16:08 -0800
+Subject: [concurrency-interest] WaitPolicy for ThreadPoolExecutor ?
+In-Reply-To: <ca53c8f80902161404i16364a88k47ea47195b16e4de@mail.gmail.com>
+References: <ca53c8f80902161248q11fc7c70ua11722503fd78c66@mail.gmail.com>
+	<1ccfd1c10902161335xf1b53ccvd868eb7f3158f3c2@mail.gmail.com>
+	<ca53c8f80902161404i16364a88k47ea47195b16e4de@mail.gmail.com>
+Message-ID: <ca53c8f80902161816r6d14be4ct2178382443564cf5@mail.gmail.com>
+
+On 2nd thought, to avoid any unwanted side effects to the internal state of
+ThreadPoolExecutor, SynchronousLBQ should return false after the timeout
+instead of throwing a timeout exception, (and simply let the rejection
+handler to deal with it in the usual way.)
+
+public class SynchronousLinkedBlockingQueue<E> extends
+LinkedBlockingQueue<E> {
+    private static final long serialVersionUID = 1L;
+    private final long timeout;
+    private final TimeUnit unit;
+
+    public SynchronousLinkedBlockingQueue(int capacity, long timeout,
+TimeUnit unit) {
+        super(capacity);
+        this.timeout = timeout;
+        this.unit = unit;
+    }
+
+    /** Same as offer but waits if necessary for space to become available
+up to a pre-configured timeout. */
+    @Override
+    public boolean offer(E e) {
+        try {
+            return super.offer(e, timeout, unit);
+        } catch (InterruptedException e1) {
+            Thread.currentThread().interrupt();
+        }
+        return false;
+    }
+}
+
+On Mon, Feb 16, 2009 at 2:04 PM, Hanson Char <hanson.char at gmail.com> wrote:
+
+> An alternative would be to configure a custom LBQ that would wait upon the
+> offer method instead immediately returning.  Would that be better ?
+>
+> Hanson
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090216/bf22797a/attachment.html>
+
+From gregg at cytetech.com  Mon Feb 16 21:42:28 2009
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Mon, 16 Feb 2009 20:42:28 -0600
+Subject: [concurrency-interest] Thread subclass check locking is a
+	bottleneck
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCKEJKHPAA.dcholmes@optusnet.com.au>
+References: <NFBBKALFDCPFIDBNKAPCKEJKHPAA.dcholmes@optusnet.com.au>
+Message-ID: <499A2414.5010701@cytetech.com>
+
+David Holmes wrote:
+> Gregg,
+> 
+> This is old code. If the behaviour has suddenly changed there must be a
+> different underlying reason as to why the threads are suddenly piling up
+> here. You aren't suddenly running on a large multi-core system for the first
+> time? :-)
+> 
+> More seriously has anything in your environment changed, JDK version ?
+
+Over the years, JDK1.1.8 -> JDK1.3.1->JDK1.4.1->JDK1.4.2->JDK1.5->JDK1.6. 
+Recently I upgraded to JDK1.6.0_11 and now _12 to see if that's part of behavior 
+change.  The machine in question is a 4 processor machine that was running 
+JDK1.5.0 and an older release of my software.  Recently I upgraded that machine 
+to a newer release (no thread pool use changes, just new software features) of 
+my software and the associated move to JDK1.6.  The predominate change I made in 
+this software release was support for a new TCP based interface that uses a 
+single thread and NIO for the accept loop.  It dispatches all reads in that same 
+thread as well.
+
+I guess the other thing visible in the stack is the YJP profiler.  I did 
+recently upgrade it from v5.1.6 to v7.5.11 (I think that's the right v7 revision 
+number).  I don't see that has amplifying the contention though.
+
+I have a thread dump with 1039 active threads, the locking thread is performing 
+the override test as shown here
+
+    java.lang.Thread.State: RUNNABLE
+         at java.lang.Thread$1.run(Thread.java:1551)
+         at java.security.AccessController.$$YJP$$doPrivileged(Native Method)
+         at java.security.AccessController.doPrivileged(AccessController.java)
+         at java.lang.Thread.auditSubclass(Thread.java:1541)
+         at java.lang.Thread.isCCLOverridden(Thread.java:1528)
+         - locked <0xaca0a778> (a sun.misc.SoftCache)
+         at java.lang.Thread.init(Thread.java:338)
+         at java.lang.Thread.<init>(Thread.java:503)
+
+
+There are 39 threads in this state:
+
+    java.lang.Thread.State: BLOCKED (on object monitor)
+         at java.lang.Thread.isCCLOverridden(Thread.java:1521)
+         - waiting to lock <0xaca0a778> (a sun.misc.SoftCache)
+         at java.lang.Thread.init(Thread.java:338)
+         at java.lang.Thread.<init>(Thread.java:419)
+
+and because one of the 39 threads has another lock asserted thats another big 
+contention point in 3rd party code, there are 234 total threads at "waiting to 
+lock"...
+
+So, nearly 1/4 of the application is contending for this one point, in single 
+file...  The load on this machine (4-way with HT), with 1000+ threads creates a 
+scheduling delay that will allow context switches out of threads holding these 
+kinds of locks to be major players in the throughput.
+
+Gregg Wonderly
+
+From jason_mehrens at hotmail.com  Tue Feb 17 11:51:08 2009
+From: jason_mehrens at hotmail.com (Jason Mehrens)
+Date: Tue, 17 Feb 2009 10:51:08 -0600
+Subject: [concurrency-interest] WaitPolicy for ThreadPoolExecutor ?
+In-Reply-To: <1ccfd1c10902161335xf1b53ccvd868eb7f3158f3c2@mail.gmail.com>
+References: <ca53c8f80902161248q11fc7c70ua11722503fd78c66@mail.gmail.com>
+	<1ccfd1c10902161335xf1b53ccvd868eb7f3158f3c2@mail.gmail.com>
+Message-ID: <BLU134-W3992C1C8088E9654F2180683B40@phx.gbl>
+
+
+If a wait policy rejected execution handler was added to the TPE itself then the wait policy would have visibility of all the internal state to avoid race conditions, starvation, etc.
+
+ 
+
+Jason Mehrens
+ 
+> Date: Mon, 16 Feb 2009 13:35:56 -0800
+> From: martinrb at google.com
+> To: hanson.char at gmail.com
+> CC: concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] WaitPolicy for ThreadPoolExecutor ?
+> 
+> It's not safe in general to manipulate the queue directly.
+> Also, the code below has a race with concurrent call to shutdown.
+> 
+> I think a new thread pool implementation should be written,
+> trying to improve on ThreadPoolExecutor. I'd even like to
+> do this myself...
+> 
+> Martin
+
+_________________________________________________________________
+Stay up to date on your PC, the Web, and your mobile phone with Windows Live.
+http://clk.atdmt.com/MRT/go/msnnkwxp1020093185mrt/direct/01/
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090217/23ede735/attachment.html>
+
+From hanson.char at gmail.com  Tue Feb 17 12:17:08 2009
+From: hanson.char at gmail.com (Hanson Char)
+Date: Tue, 17 Feb 2009 09:17:08 -0800
+Subject: [concurrency-interest] WaitPolicy for ThreadPoolExecutor ?
+In-Reply-To: <BLU134-W3992C1C8088E9654F2180683B40@phx.gbl>
+References: <ca53c8f80902161248q11fc7c70ua11722503fd78c66@mail.gmail.com>
+	<1ccfd1c10902161335xf1b53ccvd868eb7f3158f3c2@mail.gmail.com>
+	<BLU134-W3992C1C8088E9654F2180683B40@phx.gbl>
+Message-ID: <ca53c8f80902170917h1a7d98c8i58f85d1ea717e8e6@mail.gmail.com>
+
+Right.
+
+Thus far, however, it seems the least path to resistance (or least
+change or hack? ) that would result in the effect (of a WaitPolicy) is
+to plug in a custom LBQ to TPE that have the LBQ#offer method
+overridden so that it would wait if necessary (when full until
+timeout) in stead of immediately returning.  Since TPE internally
+invokes LBQ#offer, this would block as necessary when the queue is
+full.
+
+Maybe not the prettiest solution, but it's simple and pragmatic.  Can
+anyone spot any flaw to this line of thought ?
+
+Thanks,
+Hanson
+
+On Tue, Feb 17, 2009 at 8:51 AM, Jason Mehrens
+<jason_mehrens at hotmail.com> wrote:
+> If a wait policy rejected execution handler was added to the TPE itself then
+> the wait policy would have visibility of all the internal state to avoid
+> race conditions, starvation, etc.
+>
+> Jason Mehrens
+>
+>> Date: Mon, 16 Feb 2009 13:35:56 -0800
+>> From: martinrb at google.com
+>> To: hanson.char at gmail.com
+>> CC: concurrency-interest at cs.oswego.edu
+>> Subject: Re: [concurrency-interest] WaitPolicy for ThreadPoolExecutor ?
+>>
+>> It's not safe in general to manipulate the queue directly.
+>> Also, the code below has a race with concurrent call to shutdown.
+>>
+>> I think a new thread pool implementation should be written,
+>> trying to improve on ThreadPoolExecutor. I'd even like to
+>> do this myself...
+>>
+>> Martin
+>
+> ________________________________
+> Stay up to date on your PC, the Web, and your mobile phone with Windows
+> Live. See Now
+
+From joe.bowbeer at gmail.com  Tue Feb 17 15:57:06 2009
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Tue, 17 Feb 2009 12:57:06 -0800
+Subject: [concurrency-interest] WaitPolicy for ThreadPoolExecutor ?
+In-Reply-To: <ca53c8f80902170917h1a7d98c8i58f85d1ea717e8e6@mail.gmail.com>
+References: <ca53c8f80902161248q11fc7c70ua11722503fd78c66@mail.gmail.com>
+	<1ccfd1c10902161335xf1b53ccvd868eb7f3158f3c2@mail.gmail.com>
+	<BLU134-W3992C1C8088E9654F2180683B40@phx.gbl>
+	<ca53c8f80902170917h1a7d98c8i58f85d1ea717e8e6@mail.gmail.com>
+Message-ID: <31f2a7bd0902171257h65feba00rf357a0c9f5613ed3@mail.gmail.com>
+
+Hanson,
+
+You may want to verify that your implementation can handle tricky scenarios
+such as calling shutdownNow() during an invokeAll().  (Note that shutdownNow
+returns a list of tasks that were still on the queue, uncompleted and
+uninterrupted; is the task in limbo on the queue?)
+
+More importantly: We need a good FAQ entry for this.
+
+This question has come up several times since 2003 and I can't find a good
+summary.  Sometimes I can't even find the earlier discussion...
+
+Some history follows.
+
+Doug implemented a WaitWhenBlocked variant of the BlockedExecutionHandler in
+the original dl.u.c. PooledExecutor:
+
+http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/PooledExecutor.java
+
+As I recall, this variant was removed from the standard thread pool
+implementation (java.util.concurrent) because of complications -- but I
+can't find the original discussion with the details.
+
+Holger Hoffst?tte ported the Wait policy to his version of the backported
+thread pool in '07.
+
+source:
+<http://fisheye.codehaus.org/browse/mule/trunk/mule/core/src/main/java/org/mule/util/concurrent/WaitPolicy.java?r=trunk>
+http://fisheye.codehaus.org/browse/mule/branches/mule-2.x/core/src/main/java/org/mule/util/concurrent/WaitPolicy.java
+
+test case:
+<http://fisheye.codehaus.org/browse/mule/trunk/mule/tests/core/src/test/java/org/mule/test/util/concurrent/WaitPolicyTestCase.java?r=trunk>
+http://fisheye.codehaus.org/browse/mule/branches/mule-2.x/core/src/test/java/org/mule/util/concurrent/WaitPolicyTestCase.java
+
+Unfortunately, the above implementation is not problem free.  Some problems
+have been mentioned already in this thread.
+
+My inclination, by the way, is to handle this on the client side if at all
+possible.  Here's one method using an ExecutorCompletionService and a
+counter:
+
+  final int THREADS = 5;
+  final int MAX_PENDING = 10;
+  ExecutorService es = Executors.newFixedThreadPool(THREADS);
+  CompletionService<?> ecs = new ExecutorCompletionService<Object>(es);
+  int pending = 0;
+  for (Runnable task : tasks) {
+      if (pending == MAX_PENDING) {
+          cs.take();
+          pending--;
+      }
+      cs.submit(task, null);
+      pending++;
+  }
+
+Unfortunately, it's not as general as a handler.
+
+Joe
+
+On Tue, Feb 17, 2009 at 9:17 AM, Hanson Char wrote:
+
+> Right.
+>
+> Thus far, however, it seems the least path to resistance (or least
+> change or hack? ) that would result in the effect (of a WaitPolicy) is
+> to plug in a custom LBQ to TPE that have the LBQ#offer method
+> overridden so that it would wait if necessary (when full until
+> timeout) in stead of immediately returning.  Since TPE internally
+> invokes LBQ#offer, this would block as necessary when the queue is
+> full.
+>
+> Maybe not the prettiest solution, but it's simple and pragmatic.  Can
+> anyone spot any flaw to this line of thought ?
+>
+> Thanks,
+> Hanson
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090217/f6ca9cfe/attachment.html>
+
+From hanson.char at gmail.com  Tue Feb 17 16:27:08 2009
+From: hanson.char at gmail.com (Hanson Char)
+Date: Tue, 17 Feb 2009 13:27:08 -0800
+Subject: [concurrency-interest] WaitPolicy for ThreadPoolExecutor ?
+In-Reply-To: <31f2a7bd0902171257h65feba00rf357a0c9f5613ed3@mail.gmail.com>
+References: <ca53c8f80902161248q11fc7c70ua11722503fd78c66@mail.gmail.com>
+	<1ccfd1c10902161335xf1b53ccvd868eb7f3158f3c2@mail.gmail.com>
+	<BLU134-W3992C1C8088E9654F2180683B40@phx.gbl>
+	<ca53c8f80902170917h1a7d98c8i58f85d1ea717e8e6@mail.gmail.com>
+	<31f2a7bd0902171257h65feba00rf357a0c9f5613ed3@mail.gmail.com>
+Message-ID: <ca53c8f80902171327s1bc3c309o39f0441e194d5d12@mail.gmail.com>
+
+Thanks Joe.
+
+We've also found the BoundedExecutor (to wrap a TPE) as suggested in
+your book JCiP that would probably satisfy our need (for the
+equivalence of a WaitPolicy) by modifying the semaphore #acquire to
+#tryAcquire with a timeout configured via the constructor.
+
+  http://jcip.net/listings/BoundedExecutor.java
+
+Any caveat ?
+
+Hanson
+
+On Tue, Feb 17, 2009 at 12:57 PM, Joe Bowbeer <joe.bowbeer at gmail.com> wrote:
+> Hanson,
+>
+> You may want to verify that your implementation can handle tricky scenarios
+> such as calling shutdownNow() during an invokeAll().  (Note that shutdownNow
+> returns a list of tasks that were still on the queue, uncompleted and
+> uninterrupted; is the task in limbo on the queue?)
+>
+> More importantly: We need a good FAQ entry for this.
+>
+> This question has come up several times since 2003 and I can't find a good
+> summary.  Sometimes I can't even find the earlier discussion...
+>
+> Some history follows.
+>
+> Doug implemented a WaitWhenBlocked variant of the BlockedExecutionHandler in
+> the original dl.u.c. PooledExecutor:
+>
+> http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/PooledExecutor.java
+>
+> As I recall, this variant was removed from the standard thread pool
+> implementation (java.util.concurrent) because of complications -- but I
+> can't find the original discussion with the details.
+>
+> Holger Hoffst?tte ported the Wait policy to his version of the backported
+> thread pool in '07.
+>
+> source:
+> http://fisheye.codehaus.org/browse/mule/branches/mule-2.x/core/src/main/java/org/mule/util/concurrent/WaitPolicy.java
+>
+> test case:
+> http://fisheye.codehaus.org/browse/mule/branches/mule-2.x/core/src/test/java/org/mule/util/concurrent/WaitPolicyTestCase.java
+>
+> Unfortunately, the above implementation is not problem free.  Some problems
+> have been mentioned already in this thread.
+>
+> My inclination, by the way, is to handle this on the client side if at all
+> possible.  Here's one method using an ExecutorCompletionService and a
+> counter:
+>
+>   final int THREADS = 5;
+>   final int MAX_PENDING = 10;
+>   ExecutorService es = Executors.newFixedThreadPool(THREADS);
+>   CompletionService<?> ecs = new ExecutorCompletionService<Object>(es);
+>   int pending = 0;
+>   for (Runnable task : tasks) {
+>       if (pending == MAX_PENDING) {
+>           cs.take();
+>           pending--;
+>       }
+>       cs.submit(task, null);
+>       pending++;
+>   }
+>
+> Unfortunately, it's not as general as a handler.
+>
+> Joe
+>
+> On Tue, Feb 17, 2009 at 9:17 AM, Hanson Char wrote:
+>>
+>> Right.
+>>
+>> Thus far, however, it seems the least path to resistance (or least
+>> change or hack? ) that would result in the effect (of a WaitPolicy) is
+>> to plug in a custom LBQ to TPE that have the LBQ#offer method
+>> overridden so that it would wait if necessary (when full until
+>> timeout) in stead of immediately returning.  Since TPE internally
+>> invokes LBQ#offer, this would block as necessary when the queue is
+>> full.
+>>
+>> Maybe not the prettiest solution, but it's simple and pragmatic.  Can
+>> anyone spot any flaw to this line of thought ?
+>>
+>> Thanks,
+>> Hanson
+>>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+
+From joe.bowbeer at gmail.com  Tue Feb 17 16:44:42 2009
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Tue, 17 Feb 2009 13:44:42 -0800
+Subject: [concurrency-interest] WaitPolicy for ThreadPoolExecutor ?
+In-Reply-To: <ca53c8f80902171327s1bc3c309o39f0441e194d5d12@mail.gmail.com>
+References: <ca53c8f80902161248q11fc7c70ua11722503fd78c66@mail.gmail.com>
+	<1ccfd1c10902161335xf1b53ccvd868eb7f3158f3c2@mail.gmail.com>
+	<BLU134-W3992C1C8088E9654F2180683B40@phx.gbl>
+	<ca53c8f80902170917h1a7d98c8i58f85d1ea717e8e6@mail.gmail.com>
+	<31f2a7bd0902171257h65feba00rf357a0c9f5613ed3@mail.gmail.com>
+	<ca53c8f80902171327s1bc3c309o39f0441e194d5d12@mail.gmail.com>
+Message-ID: <31f2a7bd0902171344w4769cb1ap4006ff56f19201ab@mail.gmail.com>
+
+Thanks Hanson.
+
+BoundedExecutor is a good encapsulation of this feature.
+
+The weak link is still shutdown.  You'll need to shutdown the underlying
+executor service directly, since BoundedExecutor is just an Executor.
+
+Joe
+
+On Tue, Feb 17, 2009 at 1:27 PM, Hanson Char wrote:
+
+> Thanks Joe.
+>
+> We've also found the BoundedExecutor (to wrap a TPE) as suggested in
+> your book JCiP that would probably satisfy our need (for the
+> equivalence of a WaitPolicy) by modifying the semaphore #acquire to
+> #tryAcquire with a timeout configured via the constructor.
+>
+>  http://jcip.net/listings/BoundedExecutor.java
+>
+> Any caveat ?
+>
+> Hanson
+>
+> On Tue, Feb 17, 2009 at 12:57 PM, Joe Bowbeer wrote:
+> > Hanson,
+> >
+> > You may want to verify that your implementation can handle tricky
+> scenarios
+> > such as calling shutdownNow() during an invokeAll().  (Note that
+> shutdownNow
+> > returns a list of tasks that were still on the queue, uncompleted and
+> > uninterrupted; is the task in limbo on the queue?)
+> >
+> > More importantly: We need a good FAQ entry for this.
+> >
+> > This question has come up several times since 2003 and I can't find a
+> good
+> > summary.  Sometimes I can't even find the earlier discussion...
+> >
+> > Some history follows.
+> >
+> > Doug implemented a WaitWhenBlocked variant of the BlockedExecutionHandler
+> in
+> > the original dl.u.c. PooledExecutor:
+> >
+> >
+> http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/PooledExecutor.java
+> >
+> > As I recall, this variant was removed from the standard thread pool
+> > implementation (java.util.concurrent) because of complications -- but I
+> > can't find the original discussion with the details.
+> >
+> > Holger Hoffst?tte ported the Wait policy to his version of the backported
+> > thread pool in '07.
+> >
+> > source:
+> >
+> http://fisheye.codehaus.org/browse/mule/branches/mule-2.x/core/src/main/java/org/mule/util/concurrent/WaitPolicy.java
+> >
+> > test case:
+> >
+> http://fisheye.codehaus.org/browse/mule/branches/mule-2.x/core/src/test/java/org/mule/util/concurrent/WaitPolicyTestCase.java
+> >
+> > Unfortunately, the above implementation is not problem free.  Some
+> problems
+> > have been mentioned already in this thread.
+> >
+> > My inclination, by the way, is to handle this on the client side if at
+> all
+> > possible.  Here's one method using an ExecutorCompletionService and a
+> > counter:
+> >
+> >   final int THREADS = 5;
+> >   final int MAX_PENDING = 10;
+> >   ExecutorService es = Executors.newFixedThreadPool(THREADS);
+> >   CompletionService<?> ecs = new ExecutorCompletionService<Object>(es);
+> >   int pending = 0;
+> >   for (Runnable task : tasks) {
+> >       if (pending == MAX_PENDING) {
+> >           cs.take();
+> >           pending--;
+> >       }
+> >       cs.submit(task, null);
+> >       pending++;
+> >   }
+> >
+> > Unfortunately, it's not as general as a handler.
+> >
+> > Joe
+> >
+> > On Tue, Feb 17, 2009 at 9:17 AM, Hanson Char wrote:
+> >>
+> >> Right.
+> >>
+> >> Thus far, however, it seems the least path to resistance (or least
+> >> change or hack? ) that would result in the effect (of a WaitPolicy) is
+> >> to plug in a custom LBQ to TPE that have the LBQ#offer method
+> >> overridden so that it would wait if necessary (when full until
+> >> timeout) in stead of immediately returning.  Since TPE internally
+> >> invokes LBQ#offer, this would block as necessary when the queue is
+> >> full.
+> >>
+> >> Maybe not the prettiest solution, but it's simple and pragmatic.  Can
+> >> anyone spot any flaw to this line of thought ?
+> >>
+> >> Thanks,
+> >> Hanson
+> >>
+> >
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090217/af6a6952/attachment-0001.html>
+
+From peter.jones at sun.com  Tue Feb 17 16:54:53 2009
+From: peter.jones at sun.com (Peter Jones)
+Date: Tue, 17 Feb 2009 16:54:53 -0500
+Subject: [concurrency-interest] Thread subclass check locking is
+	a	bottleneck
+In-Reply-To: <4999EFEE.8000801@cytetech.com>
+References: <NFBBKALFDCPFIDBNKAPCAEJKHPAA.dcholmes@optusnet.com.au>
+	<4999EFEE.8000801@cytetech.com>
+Message-ID: <20090217215453.GA24190@east>
+
+On Mon, Feb 16, 2009 at 04:59:58PM -0600, Gregg Wonderly wrote:
+> David Holmes wrote:
+>> There is no need to lock the class at all. The check is a reflective check
+>> for the existence of an overridden set/getContextClassLoader method - there
+>> are no concurrency issues there (the answer can never change for a given
+>> class). The synchronization is needed to update the table, nothing more.
+>
+> Okay, that's good, so it really should just be a concurrent map with the 
+> data race on update, no problem!
+
+The slight catch is the need to avoid strongly referencing the audited
+subclasses forever, the reason for the (rather awkward!) use of
+sun.misc.SoftCache there.  This subclass audit cache in Thread matches
+earlier code in ObjectInputStream and ObjectOutputStream, but those
+classes were changed to use a ConcurrentHashMap with weakly-referenced
+Class keys for 5056445-- Thread should probably be changed similarly.
+
+-- Peter
+
+From gregg at cytetech.com  Tue Feb 17 18:14:57 2009
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Tue, 17 Feb 2009 17:14:57 -0600
+Subject: [concurrency-interest] Thread subclass check locking is a
+	bottleneck
+In-Reply-To: <20090217215453.GA24190@east>
+References: <NFBBKALFDCPFIDBNKAPCAEJKHPAA.dcholmes@optusnet.com.au>
+	<4999EFEE.8000801@cytetech.com> <20090217215453.GA24190@east>
+Message-ID: <499B44F1.9080701@cytetech.com>
+
+Peter Jones wrote:
+> On Mon, Feb 16, 2009 at 04:59:58PM -0600, Gregg Wonderly wrote:
+>> David Holmes wrote:
+>>> There is no need to lock the class at all. The check is a reflective check
+>>> for the existence of an overridden set/getContextClassLoader method - there
+>>> are no concurrency issues there (the answer can never change for a given
+>>> class). The synchronization is needed to update the table, nothing more.
+>> Okay, that's good, so it really should just be a concurrent map with the 
+>> data race on update, no problem!
+> 
+> The slight catch is the need to avoid strongly referencing the audited
+> subclasses forever, the reason for the (rather awkward!) use of
+> sun.misc.SoftCache there.  This subclass audit cache in Thread matches
+> earlier code in ObjectInputStream and ObjectOutputStream, but those
+> classes were changed to use a ConcurrentHashMap with weakly-referenced
+> Class keys for 5056445-- Thread should probably be changed similarly.
+
+It could just lock for the get(), do the check unlocked and then lock for the 
+put() since those steps will have some locking applied.  CHM has the key 
+distribution strategy which tries to spread the locking out.  In my application, 
+there are exactly two subclasses.  Mine and the com.sun.jini threadpool one, so 
+the key distribution won't really help much for my case.
+
+Gregg Wonderly
+
+From gregg at cytetech.com  Tue Feb 17 18:15:15 2009
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Tue, 17 Feb 2009 17:15:15 -0600
+Subject: [concurrency-interest] Thread subclass check locking is a
+	bottleneck
+In-Reply-To: <20090217215453.GA24190@east>
+References: <NFBBKALFDCPFIDBNKAPCAEJKHPAA.dcholmes@optusnet.com.au>
+	<4999EFEE.8000801@cytetech.com> <20090217215453.GA24190@east>
+Message-ID: <499B4503.8090203@cytetech.com>
+
+Peter Jones wrote:
+> On Mon, Feb 16, 2009 at 04:59:58PM -0600, Gregg Wonderly wrote:
+>> David Holmes wrote:
+>>> There is no need to lock the class at all. The check is a reflective check
+>>> for the existence of an overridden set/getContextClassLoader method - there
+>>> are no concurrency issues there (the answer can never change for a given
+>>> class). The synchronization is needed to update the table, nothing more.
+>> Okay, that's good, so it really should just be a concurrent map with the 
+>> data race on update, no problem!
+> 
+> The slight catch is the need to avoid strongly referencing the audited
+> subclasses forever, the reason for the (rather awkward!) use of
+> sun.misc.SoftCache there.  This subclass audit cache in Thread matches
+> earlier code in ObjectInputStream and ObjectOutputStream, but those
+> classes were changed to use a ConcurrentHashMap with weakly-referenced
+> Class keys for 5056445-- Thread should probably be changed similarly.
+
+Should I open a bug report on this issue?
+
+Gregg Wonderly
+
+From dcholmes at optusnet.com.au  Tue Feb 17 18:28:27 2009
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed, 18 Feb 2009 09:28:27 +1000
+Subject: [concurrency-interest] Thread subclass check locking is
+	abottleneck
+In-Reply-To: <499B4503.8090203@cytetech.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIEKGHPAA.dcholmes@optusnet.com.au>
+
+Gregg,
+
+Peter has filed a bug for this: 6806649
+
+David
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Gregg
+> Wonderly
+> Sent: Wednesday, 18 February 2009 9:15 AM
+> To: Peter Jones
+> Cc: concurrency-interest; gregg.wonderly at pobox.com
+> Subject: Re: [concurrency-interest] Thread subclass check locking is
+> abottleneck
+> 
+> 
+> Peter Jones wrote:
+> > On Mon, Feb 16, 2009 at 04:59:58PM -0600, Gregg Wonderly wrote:
+> >> David Holmes wrote:
+> >>> There is no need to lock the class at all. The check is a 
+> reflective check
+> >>> for the existence of an overridden set/getContextClassLoader 
+> method - there
+> >>> are no concurrency issues there (the answer can never change 
+> for a given
+> >>> class). The synchronization is needed to update the table, 
+> nothing more.
+> >> Okay, that's good, so it really should just be a concurrent 
+> map with the 
+> >> data race on update, no problem!
+> > 
+> > The slight catch is the need to avoid strongly referencing the audited
+> > subclasses forever, the reason for the (rather awkward!) use of
+> > sun.misc.SoftCache there.  This subclass audit cache in Thread matches
+> > earlier code in ObjectInputStream and ObjectOutputStream, but those
+> > classes were changed to use a ConcurrentHashMap with weakly-referenced
+> > Class keys for 5056445-- Thread should probably be changed similarly.
+> 
+> Should I open a bug report on this issue?
+> 
+> Gregg Wonderly
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From gregg at cytetech.com  Wed Feb 18 09:47:16 2009
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Wed, 18 Feb 2009 08:47:16 -0600
+Subject: [concurrency-interest] Thread subclass check locking is
+	abottleneck
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCIEKGHPAA.dcholmes@optusnet.com.au>
+References: <NFBBKALFDCPFIDBNKAPCIEKGHPAA.dcholmes@optusnet.com.au>
+Message-ID: <499C1F74.70902@cytetech.com>
+
+David Holmes wrote:
+> Gregg,
+> 
+> Peter has filed a bug for this: 6806649
+
+Okay, I'll watch for this to become visible.  It looks like the bug database web 
+server app is having some issues.  I get lots of errors in finding resources...
+
+Gregg Wonderly
+
+From brett.bernstein at gmail.com  Fri Feb 20 23:00:19 2009
+From: brett.bernstein at gmail.com (Brett Bernstein)
+Date: Fri, 20 Feb 2009 23:00:19 -0500
+Subject: [concurrency-interest] Multi consumer queue
+Message-ID: <11F3540B1E724C328BDC4CA1BB02D7FB@BrettPC>
+
+I apologize in advance if the following question has an obvious answer, or has already been discussed:
+
+I am trying to implement a queue with the following semantics in Java:
+1) Single producer
+2) Multiple consumers each of which must "consume" every produced object 
+3) Each consumer should block if there are no items left for it to consume.  
+4) Bounded size (implemented in an array lets say)
+5) The producer should block if there is no room left to write elements.
+
+I think I can produce something that satisfies these requirements (except 3,5) by spinning on volatile variables, but as mentioned above, blocking would be nicer.  
+Thanks in advance for any suggestions,
+Brett
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090220/3eca6c1e/attachment.html>
+
+From dcholmes at optusnet.com.au  Sat Feb 21 02:26:43 2009
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Sat, 21 Feb 2009 17:26:43 +1000
+Subject: [concurrency-interest] Multi consumer queue
+In-Reply-To: <11F3540B1E724C328BDC4CA1BB02D7FB@BrettPC>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOELDHPAA.dcholmes@optusnet.com.au>
+
+Brett Bernstein writes:
+
+> I am trying to implement a queue with the following semantics in Java:
+> 1) Single producer
+
+Is this a requirement (ie producer has to register with the queue and queue
+checks only the expected producer produces) ? Or just a usage pattern.
+
+> 2) Multiple consumers each of which must "consume" every produced object
+
+This is the tricky part :) I take this as meaning that given N consumers all
+N must "consume" the head element of the queue before any can consume the
+next element - is that right?
+
+Then it comes down to the exact semantics. One way to achieve this would be
+to use a CyclicBarrier such that a take operation on the queue does:
+
+   Object o = queue.peek();
+   barrier.await();
+
+and the barrier action does the queue.take() to really remove the head
+element. This gives the semantic "no consumer can consume the head element
+until all consumers are ready to do so".
+
+But that might not be what you want. If you want a consumer to be able to do
+this:
+
+   queue.take(); // sees head
+   queue.take(); // blocks until all other consumers have seen previous head
+
+then it is a lot harder as you have to maintain state across the take()
+calls - probably using thread-locals to keep track of different consumers.
+
+Or you might intend something different ...
+
+> 3) Each consumer should block if there are no items left for it to
+consume.
+> 4) Bounded size (implemented in an array lets say)
+> 5) The producer should block if there is no room left to write elements.
+
+These parts are easy.
+
+> I think I can produce something that satisfies these requirements (except
+3,5) by
+> spinning on volatile variables, but as mentioned above, blocking would be
+nicer.
+
+Spinning is bad. Blocking isn't hard but you have to decide under what exact
+conditions you need to block.
+
+David Holmes
+
+
+From joe.bowbeer at gmail.com  Sat Feb 21 02:39:38 2009
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Fri, 20 Feb 2009 23:39:38 -0800
+Subject: [concurrency-interest] Multi consumer queue
+In-Reply-To: <11F3540B1E724C328BDC4CA1BB02D7FB@BrettPC>
+References: <11F3540B1E724C328BDC4CA1BB02D7FB@BrettPC>
+Message-ID: <31f2a7bd0902202339h23bc2ad1pa551920eb8c71f42@mail.gmail.com>
+
+If each item is only consumed once, you can use one of the implementations
+of BlockingQueue:
+
+http://java.sun.com/javase/6/docs/api/index.html?java/util/concurrent/BlockingQueue.html
+
+Or does each consumer really consume each item that is produced?  That is,
+if there are N items produced and C consumers, are a total of N*C items
+consumed, as if there were C separate blocking queues?
+
+Joe
+
+On Fri, Feb 20, 2009 at 8:00 PM, Brett Bernstein wrote:
+
+>  I apologize in advance if the following question has an obvious answer,
+> or has already been discussed:
+>
+> I am trying to implement a queue with the following semantics in Java:
+> 1) Single producer
+> 2) Multiple consumers each of which must "consume" every produced object
+> 3) Each consumer should block if there are no items left for it to
+> consume.
+> 4) Bounded size (implemented in an array lets say)
+> 5) The producer should block if there is no room left to write elements.
+>
+> I think I can produce something that satisfies these requirements (except
+> 3,5) by spinning on volatile variables, but as mentioned above, blocking
+> would be nicer.
+> Thanks in advance for any suggestions,
+> Brett
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090220/abf91cff/attachment.html>
+
+From ben_manes at yahoo.com  Sat Feb 21 02:43:33 2009
+From: ben_manes at yahoo.com (Ben Manes)
+Date: Fri, 20 Feb 2009 23:43:33 -0800 (PST)
+Subject: [concurrency-interest] Multi consumer queue
+References: <11F3540B1E724C328BDC4CA1BB02D7FB@BrettPC>
+Message-ID: <151764.23601.qm@web38802.mail.mud.yahoo.com>
+
+I wouldn't use a spin lock for blocking, since producing or processing an element may take quite a while. Are you looking for something like...
+
+producer
+  - Only supports put/offers, fails on poll/take
+  - Each consumer has its own blocking queue
+  - Offer/Put guarded by a ReentrantLock
+  - Notified when consumers take an element.  Maintains a global free slot count.
+  - When slot is free (all consumed element), lock condition is signaled so put/offer proceeds
+  - When element added, it consumes a free slot.  When no free slots, blocked on method's timeout
+
+consumer
+  - individual queue (decorators of a standard j.u.c. BlockingQueue)
+  - Each can consume at their own rate, but slowest defines global speed.
+  - Only supports poll/take, fails on put/offer
+  - Removing an element notifies the producer.
+  
+
+
+
+________________________________
+From: Brett Bernstein <brett.bernstein at gmail.com>
+To: concurrency-interest at cs.oswego.edu
+Sent: Friday, February 20, 2009 8:00:19 PM
+Subject: [concurrency-interest] Multi consumer queue
+
+ 
+I apologize in advance if the following question 
+has an obvious answer, or has already been discussed:
+ 
+I am trying to implement a queue with the following 
+semantics in Java:
+1) Single producer
+2) Multiple consumers each of which 
+must "consume" every produced object 
+3) Each consumer should block if there are no items 
+left for it to consume.  
+4) Bounded size (implemented in an array lets 
+say)
+5) The producer should block if there is no room 
+left to write elements.
+ 
+I think I can produce something that satisfies 
+these requirements (except 3,5) by spinning on volatile variables, but as 
+mentioned above, blocking would be nicer.  
+Thanks in advance for any suggestions,
+Brett
+
+
+      
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090220/1b064fb9/attachment.html>
+
+From gregg at cytetech.com  Sun Feb 22 09:33:28 2009
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Sun, 22 Feb 2009 08:33:28 -0600
+Subject: [concurrency-interest] java.util.logging contention
+Message-ID: <49A16238.7030603@cytetech.com>
+
+The same application which I had a query about contention in Thread construction 
+about, also has some pretty common logging paths, which can be turned off, but 
+which yield some useful flow information.
+
+The java.util.logging stuff doesn't make use of a queue between the application 
+and the log file and this means that multiple writers require locking as visible 
+in this dump.
+
+    java.lang.Thread.State: BLOCKED (on object monitor)
+         at java.util.logging.FileHandler.publish(FileHandler.java)
+         - waiting to lock <0xacacbf50> (a java.util.logging.FileHandler)
+         at java.util.logging.Logger.log(Logger.java:458)
+         at java.util.logging.Logger.doLog(Logger.java:480)
+         at java.util.logging.Logger.log(Logger.java:503)
+         at java.util.logging.Logger.info(Logger.java:1022)
+
+It seems that a fixed depth queue would be a good idea, and that a thread 
+performing a write when the queue is non-empty, would enqueue the LogEntry 
+unless the queue was full, in which case they would block.
+
+Any thread performing a write with no locks in place, would drain the queue into 
+the log file and then write the entry that they were posting.
+
+This would keep threads from waiting, and while burdening a single thread with a 
+task that it, perhaps doesn't have true ownership of, would keep lock "waiting" 
+from happening.
+
+Any thoughts?
+
+Gregg Wonderly
+
+From brett.bernstein at gmail.com  Sun Feb 22 11:33:30 2009
+From: brett.bernstein at gmail.com (Brett Bernstein)
+Date: Sun, 22 Feb 2009 11:33:30 -0500
+Subject: [concurrency-interest] Multi consumer queue
+In-Reply-To: <151764.23601.qm@web38802.mail.mud.yahoo.com>
+References: <11F3540B1E724C328BDC4CA1BB02D7FB@BrettPC>
+	<151764.23601.qm@web38802.mail.mud.yahoo.com>
+Message-ID: <A3586230ECE64F548D75AA22E6230AA2@BrettPC>
+
+Would prefer not to have multiple queue objects.  As a side note, I have a bit of a qualm with ReentrantLock.  Specifically the fact that waiting on the lock requires new to be called, which in some apps/situations I try to avoid.  -Brett
+  ----- Original Message ----- 
+  From: Ben Manes 
+  To: Brett Bernstein ; concurrency-interest at cs.oswego.edu 
+  Sent: Saturday, February 21, 2009 2:43 AM
+  Subject: Re: [concurrency-interest] Multi consumer queue
+
+
+  I wouldn't use a spin lock for blocking, since producing or processing an element may take quite a while. Are you looking for something like...
+
+  producer
+    - Only supports put/offers, fails on poll/take
+    - Each consumer has its own blocking queue
+    - Offer/Put guarded by a ReentrantLock
+    - Notified when consumers take an element.  Maintains a global free slot count.
+    - When slot is free (all consumed element), lock condition is signaled so put/offer proceeds
+    - When element added, it consumes a free slot.  When no free slots, blocked on method's timeout
+
+  consumer
+    - individual queue (decorators of a standard j.u.c. BlockingQueue)
+    - Each can consume at their own rate, but slowest defines global speed.
+    - Only supports poll/take, fails on put/offer
+    - Removing an element notifies the producer.
+    
+
+
+
+------------------------------------------------------------------------------
+  From: Brett Bernstein <brett.bernstein at gmail.com>
+  To: concurrency-interest at cs.oswego.edu
+  Sent: Friday, February 20, 2009 8:00:19 PM
+  Subject: [concurrency-interest] Multi consumer queue
+
+
+  I apologize in advance if the following question has an obvious answer, or has already been discussed:
+
+  I am trying to implement a queue with the following semantics in Java:
+  1) Single producer
+  2) Multiple consumers each of which must "consume" every produced object 
+  3) Each consumer should block if there are no items left for it to consume.  
+  4) Bounded size (implemented in an array lets say)
+  5) The producer should block if there is no room left to write elements.
+
+  I think I can produce something that satisfies these requirements (except 3,5) by spinning on volatile variables, but as mentioned above, blocking would be nicer.  
+  Thanks in advance for any suggestions,
+  Brett
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090222/c512c85d/attachment.html>
+
+From brett.bernstein at gmail.com  Sun Feb 22 11:35:42 2009
+From: brett.bernstein at gmail.com (Brett Bernstein)
+Date: Sun, 22 Feb 2009 11:35:42 -0500
+Subject: [concurrency-interest] Multi consumer queue
+In-Reply-To: <31f2a7bd0902202339h23bc2ad1pa551920eb8c71f42@mail.gmail.com>
+References: <11F3540B1E724C328BDC4CA1BB02D7FB@BrettPC>
+	<31f2a7bd0902202339h23bc2ad1pa551920eb8c71f42@mail.gmail.com>
+Message-ID: <FBDC73B0D6D94AB7ABD7DA28F154F37E@BrettPC>
+
+N*C.  I have something of an implementation in mind where I have a head and tail pointer into an array, both of which are guarded by a lock/condition variable.  Not sure if there is a better way.  In addition, as I said in the other reply, it sometimes annoys me to use ReentrantLock.  I could just use the primitive locks, but I would like the interruptible functionality. -Brett
+  ----- Original Message ----- 
+  From: Joe Bowbeer 
+  To: concurrency-interest at cs.oswego.edu 
+  Sent: Saturday, February 21, 2009 2:39 AM
+  Subject: Re: [concurrency-interest] Multi consumer queue
+
+
+  If each item is only consumed once, you can use one of the implementations of BlockingQueue:
+
+  http://java.sun.com/javase/6/docs/api/index.html?java/util/concurrent/BlockingQueue.html
+
+  Or does each consumer really consume each item that is produced?  That is, if there are N items produced and C consumers, are a total of N*C items consumed, as if there were C separate blocking queues?
+
+  Joe
+
+
+  On Fri, Feb 20, 2009 at 8:00 PM, Brett Bernstein wrote:
+
+    I apologize in advance if the following question has an obvious answer, or has already been discussed:
+
+    I am trying to implement a queue with the following semantics in Java:
+    1) Single producer
+    2) Multiple consumers each of which must "consume" every produced object 
+    3) Each consumer should block if there are no items left for it to consume.  
+    4) Bounded size (implemented in an array lets say)
+    5) The producer should block if there is no room left to write elements.
+
+    I think I can produce something that satisfies these requirements (except 3,5) by spinning on volatile variables, but as mentioned above, blocking would be nicer.  
+    Thanks in advance for any suggestions,
+    Brett
+
+
+
+
+------------------------------------------------------------------------------
+
+
+  _______________________________________________
+  Concurrency-interest mailing list
+  Concurrency-interest at cs.oswego.edu
+  http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090222/3615ec5d/attachment.html>
+
+From joe.bowbeer at gmail.com  Sun Feb 22 18:03:24 2009
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Sun, 22 Feb 2009 15:03:24 -0800
+Subject: [concurrency-interest] Multi consumer queue
+In-Reply-To: <FBDC73B0D6D94AB7ABD7DA28F154F37E@BrettPC>
+References: <11F3540B1E724C328BDC4CA1BB02D7FB@BrettPC>
+	<31f2a7bd0902202339h23bc2ad1pa551920eb8c71f42@mail.gmail.com>
+	<FBDC73B0D6D94AB7ABD7DA28F154F37E@BrettPC>
+Message-ID: <31f2a7bd0902221503l1c71e13av5d8c7483777f6020@mail.gmail.com>
+
+Brett,
+
+You *can* implement something from nuts and bolts, like the following, but I
+expect it would be more performant and possibly correct if you used a
+bounded LinkedBlockingQueue per consumer instead.
+
+The prefab constructions in java.util.concurrent were written so that you
+don't have to.
+
+public class MyQueue<T> {
+    private final int numConsumers;
+    private final int capacity;
+    private final Object[] elements;
+    private final AtomicInteger[] counters;
+    private int head;
+    private int tail;
+    private final Object headLock = new Object();
+    private final Object tailLock = new Object();
+    private final ThreadLocal<Integer> consumeNext =
+            new ThreadLocal<Integer>() {
+                @Override
+                protected Integer initialValue() {
+                    return 0;
+                }
+            };
+    public MyQueue(int numConsumers, int capacity) {
+        this.numConsumers = numConsumers;
+        this.capacity = capacity;
+        elements = new Object[capacity];
+        counters = new AtomicInteger[capacity];
+    }
+    public void put(T element) throws InterruptedException {
+        int next = (tail + 1) % capacity;
+        synchronized (headLock) {
+            while (next == head)
+                headLock.wait();
+        }
+        elements[tail] = element;
+        counters[tail] = new AtomicInteger(numConsumers);
+        synchronized (tailLock) {
+            tail = next;
+            tailLock.notifyAll();
+        }
+    }
+    public T take() throws InterruptedException {
+        int next = consumeNext.get();
+        synchronized (tailLock) {
+            while (next == tail)
+                tailLock.wait();
+        }
+        T element = (T) elements[next];
+        boolean free = counters[next].decrementAndGet() == 0;
+        next = (next + 1) % capacity;
+        consumeNext.set(next);
+        if (free) {
+            synchronized (headLock) {
+                elements[head] = null;  // free
+                counters[head] = null;  //
+                head = next;
+                headLock.notifyAll();
+            }
+        }
+        return element;
+    }
+}
+
+Joe
+
+
+On Sun, Feb 22, 2009 at 8:35 AM, Brett Bernstein wrote:
+
+>  N*C.  I have something of an implementation in mind where I have a head
+> and tail pointer into an array, both of which are guarded by a
+> lock/condition variable.  Not sure if there is a better way.  In addition,
+> as I said in the other reply, it sometimes annoys me to use ReentrantLock.
+> I could just use the primitive locks, but I would like the interruptible
+> functionality. -Brett
+>
+> ----- Original Message -----
+> *From:* Joe Bowbeer <joe.bowbeer at gmail.com>
+> *To:* concurrency-interest at cs.oswego.edu
+> *Sent:* Saturday, February 21, 2009 2:39 AM
+> *Subject:* Re: [concurrency-interest] Multi consumer queue
+>
+> If each item is only consumed once, you can use one of the implementations
+> of BlockingQueue:
+>
+>
+> http://java.sun.com/javase/6/docs/api/index.html?java/util/concurrent/BlockingQueue.html
+>
+> Or does each consumer really consume each item that is produced?  That is,
+> if there are N items produced and C consumers, are a total of N*C items
+> consumed, as if there were C separate blocking queues?
+>
+> Joe
+>
+> On Fri, Feb 20, 2009 at 8:00 PM, Brett Bernstein wrote:
+>
+>>  I apologize in advance if the following question has an obvious answer,
+>> or has already been discussed:
+>>
+>> I am trying to implement a queue with the following semantics in Java:
+>> 1) Single producer
+>> 2) Multiple consumers each of which must "consume" every produced object
+>> 3) Each consumer should block if there are no items left for it to
+>> consume.
+>> 4) Bounded size (implemented in an array lets say)
+>> 5) The producer should block if there is no room left to write elements.
+>>
+>> I think I can produce something that satisfies these requirements (except
+>> 3,5) by spinning on volatile variables, but as mentioned above, blocking
+>> would be nicer.
+>> Thanks in advance for any suggestions,
+>> Brett
+>>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090222/e2b50781/attachment.html>
+
+From dl at cs.oswego.edu  Sun Feb 22 18:14:23 2009
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 22 Feb 2009 18:14:23 -0500
+Subject: [concurrency-interest] Multi consumer queue
+In-Reply-To: <A3586230ECE64F548D75AA22E6230AA2@BrettPC>
+References: <11F3540B1E724C328BDC4CA1BB02D7FB@BrettPC>	<151764.23601.qm@web38802.mail.mud.yahoo.com>
+	<A3586230ECE64F548D75AA22E6230AA2@BrettPC>
+Message-ID: <49A1DC4F.8060403@cs.oswego.edu>
+
+Brett Bernstein wrote:
+> As a side note, I 
+> have a bit of a qualm with ReentrantLock.  Specifically the fact that 
+> waiting on the lock requires new to be called, which in some 
+> apps/situations I try to avoid. 
+> 
+
+I assume you mean internal queue nodes constructed when threads block
+waiting for locks? Of course the same thing happens inside builtin locks,
+but uses the JVM's internal memory management, which in most JVMs does
+not have the benefit of sitting on a high-performance garbage collector.
+
+There are a bunch of situations in (concurrent) programming where
+allocating memory is a bad idea, but waiting for locks is not
+often among them. But if you would like to trade off more time
+spinning rather than  allocating and blocking, you can precede
+calls to lock() with some number of calls to tryLock.
+
+-Doug
+
+
+From jdmarshall at gmail.com  Sun Feb 22 19:27:00 2009
+From: jdmarshall at gmail.com (jason marshall)
+Date: Sun, 22 Feb 2009 16:27:00 -0800
+Subject: [concurrency-interest] java.util.logging contention
+In-Reply-To: <49A16238.7030603@cytetech.com>
+References: <49A16238.7030603@cytetech.com>
+Message-ID: <3cf41bb90902221627y1ed926e3o81aad2a51176457d@mail.gmail.com>
+
+It seems that sooner or later everyone comes back to this question (recently
+this came up on an I/O bound app, when the team finally realized, "Oh hey,
+if I write a bunch of junk to the log file, that kills our throughput!")
+
+Logging is a very good case of the tension between the last two criteria of
+Make it Work, Make it Right, Make it Fast.
+
+Loggers tend to do worse than just lock between each message.  They often
+flush() to disk as well.  They do this for one very good reason:  Because if
+your app crashes, you want to know what it was doing -when it crashed- not
+what it was doing 100 milliseconds before it crashed.
+
+Has anyone written a good buffered queuing algorithm that has a max delay
+for attempted delivery?  Can this be pulled off without adding tons of extra
+contention to the threads that are trying to cooperate?  This would
+basically be what you'd need to make sure that a log queue wasn't delayed an
+indeterminant amount of time.  If you have a cleanup thread that wakes up
+infrequently and checks if it needs to do any work.  If it only writes 1
+line to the log every time it wakes up, that could potentially lose hours of
+log entries.
+
+
+And 'Crashed' has so many meanings, few can agree which they mean (some
+individuals are inconsistent in what they mean).  I think it would be
+possible today to write a logger that will attempt to flush to disk using
+the shutdown hook in the VM, but that only covers your app exiting, and I
+suspect it gets trickier with heavily multithreaded apps.   You're still
+left with Hotspot errors, or the OS rebooting/crashing.
+
+What I do in my apps is try to unask the question.  As much as possible,
+avoid logging in your critical bottlenecks (parse parameters beforehand,
+reverify the results after and report rare anomalies), and you don't have to
+worry so much about the locking.
+
+
+On Sun, Feb 22, 2009 at 6:33 AM, Gregg Wonderly <gregg at cytetech.com> wrote:
+
+> The same application which I had a query about contention in Thread
+> construction about, also has some pretty common logging paths, which can be
+> turned off, but which yield some useful flow information.
+>
+> The java.util.logging stuff doesn't make use of a queue between the
+> application and the log file and this means that multiple writers require
+> locking as visible in this dump.
+>
+>   java.lang.Thread.State: BLOCKED (on object monitor)
+>        at java.util.logging.FileHandler.publish(FileHandler.java)
+>        - waiting to lock <0xacacbf50> (a java.util.logging.FileHandler)
+>        at java.util.logging.Logger.log(Logger.java:458)
+>        at java.util.logging.Logger.doLog(Logger.java:480)
+>        at java.util.logging.Logger.log(Logger.java:503)
+>        at java.util.logging.Logger.info(Logger.java:1022)
+>
+> It seems that a fixed depth queue would be a good idea, and that a thread
+> performing a write when the queue is non-empty, would enqueue the LogEntry
+> unless the queue was full, in which case they would block.
+>
+> Any thread performing a write with no locks in place, would drain the queue
+> into the log file and then write the entry that they were posting.
+>
+> This would keep threads from waiting, and while burdening a single thread
+> with a task that it, perhaps doesn't have true ownership of, would keep lock
+> "waiting" from happening.
+>
+> Any thoughts?
+>
+> Gregg Wonderly
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+-- 
+- Jason
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090222/19f0029f/attachment.html>
+
+From jdmarshall at gmail.com  Sun Feb 22 22:10:16 2009
+From: jdmarshall at gmail.com (jason marshall)
+Date: Sun, 22 Feb 2009 19:10:16 -0800
+Subject: [concurrency-interest] Multi consumer queue
+In-Reply-To: <31f2a7bd0902221503l1c71e13av5d8c7483777f6020@mail.gmail.com>
+References: <11F3540B1E724C328BDC4CA1BB02D7FB@BrettPC>
+	<31f2a7bd0902202339h23bc2ad1pa551920eb8c71f42@mail.gmail.com>
+	<FBDC73B0D6D94AB7ABD7DA28F154F37E@BrettPC>
+	<31f2a7bd0902221503l1c71e13av5d8c7483777f6020@mail.gmail.com>
+Message-ID: <3cf41bb90902221910j2658a5abp9866b4e0c8fd9159@mail.gmail.com>
+
+On Sun, Feb 22, 2009 at 3:03 PM, Joe Bowbeer <joe.bowbeer at gmail.com> wrote:
+
+> Brett,
+>
+> You *can* implement something from nuts and bolts, like the following, but
+> I expect it would be more performant and possibly correct if you used a
+> bounded LinkedBlockingQueue per consumer instead.
+>
+
+Agreed.  Multiplexing events to distinct queues per consumer is going to be
+pretty simple (maintainable), and each consumer thread has its own private
+data structure and locks instead of a big shared one.
+
+-- 
+- Jason
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090222/8324844e/attachment-0001.html>
+
+From Christopher.Hegarty at Sun.COM  Mon Feb 23 06:02:39 2009
+From: Christopher.Hegarty at Sun.COM (Christopher Hegarty - Sun Microsystems Ireland)
+Date: Mon, 23 Feb 2009 11:02:39 +0000
+Subject: [concurrency-interest] Thread subclass check locking
+	is	abottleneck
+In-Reply-To: <499C1F74.70902@cytetech.com>
+References: <NFBBKALFDCPFIDBNKAPCIEKGHPAA.dcholmes@optusnet.com.au>
+	<499C1F74.70902@cytetech.com>
+Message-ID: <49A2824F.5020905@Sun.COM>
+
+JDK 7 changes for this issue: 
+http://mail.openjdk.java.net/pipermail/core-libs-dev/2009-February/001122.html
+
+-Chris.
+
+On 02/18/09 14:47, Gregg Wonderly wrote:
+> David Holmes wrote:
+>> Gregg,
+>>
+>> Peter has filed a bug for this: 6806649
+> 
+> Okay, I'll watch for this to become visible.  It looks like the bug 
+> database web server app is having some issues.  I get lots of errors in 
+> finding resources...
+> 
+> Gregg Wonderly
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From gregg at cytetech.com  Mon Feb 23 11:49:07 2009
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Mon, 23 Feb 2009 10:49:07 -0600
+Subject: [concurrency-interest] java.util.logging contention
+In-Reply-To: <3cf41bb90902221627y1ed926e3o81aad2a51176457d@mail.gmail.com>
+References: <49A16238.7030603@cytetech.com>
+	<3cf41bb90902221627y1ed926e3o81aad2a51176457d@mail.gmail.com>
+Message-ID: <49A2D383.6090703@cytetech.com>
+
+ From a concurrency perspective, this is a latency management issue.  For any 
+particular operation that your threads perform, your ultimate throughput is 
+controlled/limited by the maximal latency of the operations performed.  If you 
+are generating more latency through waiting to do I/O and flushing each entry 
+etc, that is the controlling limit.  The largest latency in I/O are operations 
+such as the flush() that you discuss.  If things are happening so fast, that you 
+can't afford the latency of all such operations to log them at the speed which 
+they are occuring, then you can't really express what is happening with logging.
+
+What I think, is that if all entries in the queue are written between sync 
+calls, and if there are some other attention to the details of minimizing 
+interactions with the OS and disk scheduling, than there can be a minimization 
+of this latency.
+
+Based on what I see, I think there is room for improvement, and I think a good 
+improvement in performance.   I'm gonna workup a subclass of the FileHandler to 
+see how well it works.
+
+Gregg Wonderly
+
+jason marshall wrote:
+> It seems that sooner or later everyone comes back to this question 
+> (recently this came up on an I/O bound app, when the team finally 
+> realized, "Oh hey, if I write a bunch of junk to the log file, that 
+> kills our throughput!")
+> 
+> Logging is a very good case of the tension between the last two criteria 
+> of Make it Work, Make it Right, Make it Fast.
+> 
+> Loggers tend to do worse than just lock between each message.  They 
+> often flush() to disk as well.  They do this for one very good reason:  
+> Because if your app crashes, you want to know what it was doing -when it 
+> crashed- not what it was doing 100 milliseconds before it crashed. 
+> 
+> Has anyone written a good buffered queuing algorithm that has a max 
+> delay for attempted delivery?  Can this be pulled off without adding 
+> tons of extra contention to the threads that are trying to cooperate?  
+> This would basically be what you'd need to make sure that a log queue 
+> wasn't delayed an indeterminant amount of time.  If you have a cleanup 
+> thread that wakes up infrequently and checks if it needs to do any 
+> work.  If it only writes 1 line to the log every time it wakes up, that 
+> could potentially lose hours of log entries.
+> 
+> 
+> And 'Crashed' has so many meanings, few can agree which they mean (some 
+> individuals are inconsistent in what they mean).  I think it would be 
+> possible today to write a logger that will attempt to flush to disk 
+> using the shutdown hook in the VM, but that only covers your app 
+> exiting, and I suspect it gets trickier with heavily multithreaded apps. 
+>   You're still left with Hotspot errors, or the OS rebooting/crashing.
+> 
+> What I do in my apps is try to unask the question.  As much as possible, 
+> avoid logging in your critical bottlenecks (parse parameters beforehand, 
+> reverify the results after and report rare anomalies), and you don't 
+> have to worry so much about the locking.
+> 
+> 
+> On Sun, Feb 22, 2009 at 6:33 AM, Gregg Wonderly <gregg at cytetech.com 
+> <mailto:gregg at cytetech.com>> wrote:
+> 
+>     The same application which I had a query about contention in Thread
+>     construction about, also has some pretty common logging paths, which
+>     can be turned off, but which yield some useful flow information.
+> 
+>     The java.util.logging stuff doesn't make use of a queue between the
+>     application and the log file and this means that multiple writers
+>     require locking as visible in this dump.
+> 
+>       java.lang.Thread.State: BLOCKED (on object monitor)
+>            at java.util.logging.FileHandler.publish(FileHandler.java)
+>            - waiting to lock <0xacacbf50> (a java.util.logging.FileHandler)
+>            at java.util.logging.Logger.log(Logger.java:458)
+>            at java.util.logging.Logger.doLog(Logger.java:480)
+>            at java.util.logging.Logger.log(Logger.java:503)
+>            at java.util.logging.Logger.info
+>     <http://java.util.logging.Logger.info>(Logger.java:1022)
+> 
+>     It seems that a fixed depth queue would be a good idea, and that a
+>     thread performing a write when the queue is non-empty, would enqueue
+>     the LogEntry unless the queue was full, in which case they would block.
+> 
+>     Any thread performing a write with no locks in place, would drain
+>     the queue into the log file and then write the entry that they were
+>     posting.
+> 
+>     This would keep threads from waiting, and while burdening a single
+>     thread with a task that it, perhaps doesn't have true ownership of,
+>     would keep lock "waiting" from happening.
+> 
+>     Any thoughts?
+> 
+>     Gregg Wonderly
+>     _______________________________________________
+>     Concurrency-interest mailing list
+>     Concurrency-interest at cs.oswego.edu
+>     <mailto:Concurrency-interest at cs.oswego.edu>
+>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+> 
+> 
+> 
+> -- 
+> - Jason
+
+
+From gregg at cytetech.com  Mon Feb 23 12:07:01 2009
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Mon, 23 Feb 2009 11:07:01 -0600
+Subject: [concurrency-interest] Thread subclass check locking is
+	abottleneck
+In-Reply-To: <49A2824F.5020905@Sun.COM>
+References: <NFBBKALFDCPFIDBNKAPCIEKGHPAA.dcholmes@optusnet.com.au>
+	<499C1F74.70902@cytetech.com> <49A2824F.5020905@Sun.COM>
+Message-ID: <49A2D7B5.3080405@cytetech.com>
+
+Cool, thanks for the update!
+
+Gregg Wonderly
+
+Christopher Hegarty - Sun Microsystems Ireland wrote:
+> JDK 7 changes for this issue: 
+> http://mail.openjdk.java.net/pipermail/core-libs-dev/2009-February/001122.html 
+> 
+> 
+> -Chris.
+> 
+> On 02/18/09 14:47, Gregg Wonderly wrote:
+>> David Holmes wrote:
+>>> Gregg,
+>>>
+>>> Peter has filed a bug for this: 6806649
+>>
+>> Okay, I'll watch for this to become visible.  It looks like the bug 
+>> database web server app is having some issues.  I get lots of errors 
+>> in finding resources...
+>>
+>> Gregg Wonderly
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+> 
+
+
+From mthornton at optrak.co.uk  Mon Feb 23 12:20:44 2009
+From: mthornton at optrak.co.uk (Mark Thornton)
+Date: Mon, 23 Feb 2009 17:20:44 +0000
+Subject: [concurrency-interest] java.util.logging contention
+In-Reply-To: <3cf41bb90902221627y1ed926e3o81aad2a51176457d@mail.gmail.com>
+References: <49A16238.7030603@cytetech.com>
+	<3cf41bb90902221627y1ed926e3o81aad2a51176457d@mail.gmail.com>
+Message-ID: <49A2DAEC.6020809@optrak.co.uk>
+
+jason marshall wrote:
+> It seems that sooner or later everyone comes back to this question 
+> (recently this came up on an I/O bound app, when the team finally 
+> realized, "Oh hey, if I write a bunch of junk to the log file, that 
+> kills our throughput!")
+>
+> Logging is a very good case of the tension between the last two 
+> criteria of Make it Work, Make it Right, Make it Fast.
+>
+> Loggers tend to do worse than just lock between each message.  They 
+> often flush() to disk as well.  They do this for one very good 
+> reason:  Because if your app crashes, you want to know what it was 
+> doing -when it crashed- not what it was doing 100 milliseconds before 
+> it crashed. 
+However it is reasonable to use several handlers, with FileHandler just
+used for logging serious events and doing a flush after each message,
+and a faster handler logging everything but also using a queue and
+flushing only every 5 minutes. This is what I do (and I have a handler
+that will manage at least 10MB/s of log text).
+
+Mark Thornton
+
+
+
+From joe.bowbeer at gmail.com  Mon Feb 23 12:34:24 2009
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Mon, 23 Feb 2009 09:34:24 -0800
+Subject: [concurrency-interest] Multi consumer queue
+In-Reply-To: <31f2a7bd0902221503l1c71e13av5d8c7483777f6020@mail.gmail.com>
+References: <11F3540B1E724C328BDC4CA1BB02D7FB@BrettPC>
+	<31f2a7bd0902202339h23bc2ad1pa551920eb8c71f42@mail.gmail.com>
+	<FBDC73B0D6D94AB7ABD7DA28F154F37E@BrettPC>
+	<31f2a7bd0902221503l1c71e13av5d8c7483777f6020@mail.gmail.com>
+Message-ID: <31f2a7bd0902230934t4e235acexfce267e7e15cb02@mail.gmail.com>
+
+Update:
+
+In case anyone's checking, the following makes it clear that one cell of the
+circular buffer is sacrificed (empty).
+
+
+public class MyQueue<T> {
+    private final int numConsumers;
+    private final int numCells;
+    private final Object[] elements;
+    private final AtomicInteger[] counters;
+    private int head;
+    private int tail;
+    private final Object headLock = new Object();
+    private final Object tailLock = new Object();
+    private final ThreadLocal<Integer> consumeNext =
+            new ThreadLocal<Integer>() {
+                @Override
+                protected Integer initialValue() {
+                    return 0;
+                }
+            };
+    public MyQueue(int numConsumers, int capacity) {
+        assert numConsumers > 0;
+        assert capacity > 0;
+        this.numConsumers = numConsumers;
+        numCells = capacity + 1; // one cell empty
+        elements = new Object[numCells];
+        counters = new AtomicInteger[numCells];
+    }
+    public void put(T element) throws InterruptedException {
+        int next = (tail + 1) % numCells;
+        synchronized (headLock) {
+            while (next == head)
+                headLock.wait();
+        }
+        elements[tail] = element;
+        counters[tail] = new AtomicInteger(numConsumers);
+        synchronized (tailLock) {
+            tail = next;
+            tailLock.notifyAll();
+        }
+    }
+    public T take() throws InterruptedException {
+        int next = consumeNext.get();
+        synchronized (tailLock) {
+            while (next == tail)
+                tailLock.wait();
+        }
+        T element = (T) elements[next];
+        boolean free = counters[next].decrementAndGet() == 0;
+        next = (next + 1) % numCells;
+        consumeNext.set(next);
+        if (free) {
+            synchronized (headLock) {
+                elements[head] = null;  // free
+                counters[head] = null;  //
+                head = next;
+                headLock.notifyAll();
+            }
+        }
+        return element;
+    }
+}
+
+Joe
+
+On Sun, Feb 22, 2009 at 3:03 PM, Joe Bowbeer wrote:
+
+> Brett,
+>
+> You *can* implement something from raw materials, like the following, but I
+> expect it would be more performant and possibly more correct if you used a
+> bounded LinkedBlockingQueue per consumer instead.
+>
+> The prefab constructions in java.util.concurrent were written so that you
+> don't have to.
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090223/c79ee815/attachment.html>
+
+From gregg at cytetech.com  Mon Feb 23 13:14:31 2009
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Mon, 23 Feb 2009 12:14:31 -0600
+Subject: [concurrency-interest] java.util.logging contention
+In-Reply-To: <49A2DAEC.6020809@optrak.co.uk>
+References: <49A16238.7030603@cytetech.com>
+	<3cf41bb90902221627y1ed926e3o81aad2a51176457d@mail.gmail.com>
+	<49A2DAEC.6020809@optrak.co.uk>
+Message-ID: <49A2E787.5040701@cytetech.com>
+
+Mark Thornton wrote:
+> jason marshall wrote:
+>> It seems that sooner or later everyone comes back to this question 
+>> (recently this came up on an I/O bound app, when the team finally 
+>> realized, "Oh hey, if I write a bunch of junk to the log file, that 
+>> kills our throughput!")
+>>
+>> Logging is a very good case of the tension between the last two 
+>> criteria of Make it Work, Make it Right, Make it Fast.
+>>
+>> Loggers tend to do worse than just lock between each message.  They 
+>> often flush() to disk as well.  They do this for one very good 
+>> reason:  Because if your app crashes, you want to know what it was 
+>> doing -when it crashed- not what it was doing 100 milliseconds before 
+>> it crashed. 
+> However it is reasonable to use several handlers, with FileHandler just
+> used for logging serious events and doing a flush after each message,
+> and a faster handler logging everything but also using a queue and
+> flushing only every 5 minutes. This is what I do (and I have a handler
+> that will manage at least 10MB/s of log text).
+
+My quick hack with a rewrite of FileHandler shows that there is nearly a 3 to 1 
+improvement in throughput using a 40 deep queue with 20 threads writting 
+simultaneously.
+
+Gregg Wonderly
+
+From jdmarshall at gmail.com  Mon Feb 23 23:51:41 2009
+From: jdmarshall at gmail.com (jason marshall)
+Date: Mon, 23 Feb 2009 20:51:41 -0800
+Subject: [concurrency-interest] Thread subclass check locking is
+	abottleneck
+In-Reply-To: <49A2D7B5.3080405@cytetech.com>
+References: <NFBBKALFDCPFIDBNKAPCIEKGHPAA.dcholmes@optusnet.com.au>
+	<499C1F74.70902@cytetech.com> <49A2824F.5020905@Sun.COM>
+	<49A2D7B5.3080405@cytetech.com>
+Message-ID: <3cf41bb90902232051i91421e9xc30688cc8449f54b@mail.gmail.com>
+
+I'm just happy we've reached a point where you can construct threads so
+quickly that a constructor lock constitutes a bottleneck (not the system
+call).  "A good problem to have."
+
+
+I still remember the days of preallocating threads.  Not very fondly, mind
+you.
+
+-Jason
+
+
+
+
+
+On Mon, Feb 23, 2009 at 9:07 AM, Gregg Wonderly <gregg at cytetech.com> wrote:
+
+> Cool, thanks for the update!
+>
+> Gregg Wonderly
+>
+>
+> Christopher Hegarty - Sun Microsystems Ireland wrote:
+>
+>> JDK 7 changes for this issue:
+>> http://mail.openjdk.java.net/pipermail/core-libs-dev/2009-February/001122.html
+>>
+>> -Chris.
+>>
+>> On 02/18/09 14:47, Gregg Wonderly wrote:
+>>
+>>> David Holmes wrote:
+>>>
+>>>> Gregg,
+>>>>
+>>>> Peter has filed a bug for this: 6806649
+>>>>
+>>>
+>>> Okay, I'll watch for this to become visible.  It looks like the bug
+>>> database web server app is having some issues.  I get lots of errors in
+>>> finding resources...
+>>>
+>>> Gregg Wonderly
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>>
+>>
+>>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+-- 
+- Jason
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090223/809dd83b/attachment-0001.html>
+
+From dcholmes at optusnet.com.au  Tue Feb 24 00:00:37 2009
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Tue, 24 Feb 2009 15:00:37 +1000
+Subject: [concurrency-interest] Thread subclass check locking
+	isabottleneck
+In-Reply-To: <3cf41bb90902232051i91421e9xc30688cc8449f54b@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEELNHPAA.dcholmes@optusnet.com.au>
+
+Constructing threads should never have used a system call (in the JDK). Now
+starting a thread is another matter ...
+
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of jason
+marshall
+  Sent: Tuesday, 24 February 2009 2:52 PM
+  To: concurrency-interest
+  Subject: Re: [concurrency-interest] Thread subclass check locking
+isabottleneck
+
+
+  I'm just happy we've reached a point where you can construct threads so
+quickly that a constructor lock constitutes a bottleneck (not the system
+call).  "A good problem to have."
+
+
+  I still remember the days of preallocating threads.  Not very fondly, mind
+you.
+
+  -Jason
+
+
+
+
+
+
+  On Mon, Feb 23, 2009 at 9:07 AM, Gregg Wonderly <gregg at cytetech.com>
+wrote:
+
+    Cool, thanks for the update!
+
+    Gregg Wonderly
+
+
+    Christopher Hegarty - Sun Microsystems Ireland wrote:
+
+      JDK 7 changes for this issue:
+http://mail.openjdk.java.net/pipermail/core-libs-dev/2009-February/001122.ht
+ml
+
+      -Chris.
+
+      On 02/18/09 14:47, Gregg Wonderly wrote:
+
+        David Holmes wrote:
+
+          Gregg,
+
+          Peter has filed a bug for this: 6806649
+
+
+        Okay, I'll watch for this to become visible.  It looks like the bug
+database web server app is having some issues.  I get lots of errors in
+finding resources...
+
+        Gregg Wonderly
+        _______________________________________________
+        Concurrency-interest mailing list
+        Concurrency-interest at cs.oswego.edu
+        http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest at cs.oswego.edu
+    http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+  --
+  - Jason
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090224/62f4f5e6/attachment.html>
+
+From ganzhi at gmail.com  Thu Feb 26 02:49:26 2009
+From: ganzhi at gmail.com (James Gan)
+Date: Thu, 26 Feb 2009 15:49:26 +0800
+Subject: [concurrency-interest] A question about
+	ConcurrentLinkedQueue.remove()
+Message-ID: <70c070d80902252349k38762963lc4dca21c52e314dd@mail.gmail.com>
+
+I'm a little confused by code of ConcurrentLinkedQueue.
+
+Let's consider following scenario. Assume thread A is removing the element
+inside first node and thread B is popping, it seems to me that both of them
+can succeed.
+
+    // THREAD A
+    public boolean remove(Object o) {
+        if (o == null) return false;
+        for (Node<E> p = first(); p != null; p = p.getNext()) {
+            E item = p.getItem();
+            if (item != null &&
+                o.equals(item) &&
+                                                 // <--- thread A here
+                p.casItem(item, null))
+                return true;
+        }
+        return false;
+    }
+
+    // THREAD B
+    public E poll() {
+        for (;;) {
+            Node<E> h = head;
+            Node<E> t = tail;
+            Node<E> first = h.getNext();
+            if (h == head) {
+                if (h == t) {
+                    if (first == null)
+                        return null;
+                    else
+                        casTail(t, first);
+                } else if (casHead(h, first)) {
+                    E item = first.getItem();
+                    if (item != null) {
+                                                   //<--- thread B is here.
+                        first.setItem(null);
+                        return item;
+                    }
+                }
+            }
+        }
+    }
+
+Is it as-design or is it actually impossible to observe above situation?
+Thanks a lot!
+
+-- 
+Best Regards
+James Gan
+Current Project: Concurrent Building Block at
+http://amino-cbbs.sourceforge.net/
+Blog: http://ganzhi.blogspot.com
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090226/becdddfe/attachment.html>
+
+From dcholmes at optusnet.com.au  Thu Feb 26 03:42:55 2009
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Thu, 26 Feb 2009 18:42:55 +1000
+Subject: [concurrency-interest] A question
+	aboutConcurrentLinkedQueue.remove()
+In-Reply-To: <70c070d80902252349k38762963lc4dca21c52e314dd@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEMLHPAA.dcholmes@optusnet.com.au>
+
+Hi James,
+
+Yes it is possible for a concurrent remove(o) and poll() to both succeed and
+have poll() return o.
+This looks like a bug to me - looking at the code I think poll() should use
+casItem rather than setItem(null) so that it can detect a concurrent
+remove().
+
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of James Gan
+  Sent: Thursday, 26 February 2009 5:49 PM
+  To: Concurrency-interest at cs.oswego.edu
+  Subject: [concurrency-interest] A question
+aboutConcurrentLinkedQueue.remove()
+
+
+  I'm a little confused by code of ConcurrentLinkedQueue.
+
+  Let's consider following scenario. Assume thread A is removing the element
+inside first node and thread B is popping, it seems to me that both of them
+can succeed.
+
+      // THREAD A
+      public boolean remove(Object o) {
+          if (o == null) return false;
+          for (Node<E> p = first(); p != null; p = p.getNext()) {
+              E item = p.getItem();
+              if (item != null &&
+                  o.equals(item) &&
+                                                   // <--- thread A here
+                  p.casItem(item, null))
+                  return true;
+          }
+          return false;
+      }
+
+      // THREAD B
+      public E poll() {
+          for (;;) {
+              Node<E> h = head;
+              Node<E> t = tail;
+              Node<E> first = h.getNext();
+              if (h == head) {
+                  if (h == t) {
+                      if (first == null)
+                          return null;
+                      else
+                          casTail(t, first);
+                  } else if (casHead(h, first)) {
+                      E item = first.getItem();
+                      if (item != null) {
+                                                     //<--- thread B is
+here.
+                          first.setItem(null);
+                          return item;
+                      }
+                  }
+              }
+          }
+      }
+
+  Is it as-design or is it actually impossible to observe above situation?
+Thanks a lot!
+
+  --
+  Best Regards
+  James Gan
+  Current Project: Concurrent Building Block at
+http://amino-cbbs.sourceforge.net/
+  Blog: http://ganzhi.blogspot.com
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090226/153a0b95/attachment.html>
+
+From martinrb at google.com  Thu Feb 26 04:11:26 2009
+From: martinrb at google.com (Martin Buchholz)
+Date: Thu, 26 Feb 2009 01:11:26 -0800
+Subject: [concurrency-interest] A question
+	aboutConcurrentLinkedQueue.remove()
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCCEMLHPAA.dcholmes@optusnet.com.au>
+References: <70c070d80902252349k38762963lc4dca21c52e314dd@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCCEMLHPAA.dcholmes@optusnet.com.au>
+Message-ID: <1ccfd1c10902260111y48305197p2b037d9473815793@mail.gmail.com>
+
+I agree with David's evaluation.
+
+Martin
+
+On Thu, Feb 26, 2009 at 00:42, David Holmes <dcholmes at optusnet.com.au> wrote:
+> Hi James,
+>
+> Yes it is possible for a concurrent remove(o) and poll() to both succeed and
+> have poll() return o.
+> This looks like a bug to me - l
+> ooking at the code I think poll() should use casItem rather than
+> setItem(null) so that it can detect a concurrent remove().
+>
+> David Holmes
+>
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of James Gan
+> Sent: Thursday, 26 February 2009 5:49 PM
+> To: Concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] A question
+> aboutConcurrentLinkedQueue.remove()
+>
+> I'm a little confused by code of ConcurrentLinkedQueue.
+>
+> Let's consider following scenario. Assume thread A is removing the element
+> inside first node and thread B is popping, it seems to me that both of them
+> can succeed.
+>
+> ??? // THREAD A
+> ??? public boolean remove(Object o) {
+> ??????? if (o == null) return false;
+> ??????? for (Node<E> p = first(); p != null; p = p.getNext()) {
+> ??????????? E item = p.getItem();
+> ??????????? if (item != null &&
+> ??????????????? o.equals(item) &&
+> ???????????????????????????????????????????????? // <--- thread A here
+> ??????????????? p.casItem(item, null))
+> ??????????????? return true;
+> ??????? }
+> ??????? return false;
+> ??? }
+>
+> ??? // THREAD B
+> ??? public E poll() {
+> ??????? for (;;) {
+> ??????????? Node<E> h = head;
+> ??????????? Node<E> t = tail;
+> ??????????? Node<E> first = h.getNext();
+> ??????????? if (h == head) {
+> ??????????????? if (h == t) {
+> ??????????????????? if (first == null)
+> ??????????????????????? return null;
+> ??????????????????? else
+> ??????????????????????? casTail(t, first);
+> ??????????????? } else if (casHead(h, first)) {
+> ??????????????????? E item = first.getItem();
+> ??????????????????? if (item != null) {
+> ?????????????????????????????????????????????????? //<--- thread B is here.
+> ??????????????????????? first.setItem(null);
+> ??????????????????????? return item;
+> ??????????????????? }
+> ??????????????? }
+> ??????????? }
+> ??????? }
+> ??? }
+>
+> Is it as-design or is it actually impossible to observe above situation?
+> Thanks a lot!
+>
+> --
+> Best Regards
+> James Gan
+> Current Project: Concurrent Building Block at
+> http://amino-cbbs.sourceforge.net/
+> Blog: http://ganzhi.blogspot.com
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+
+From dl at cs.oswego.edu  Fri Feb 27 06:55:12 2009
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 27 Feb 2009 06:55:12 -0500
+Subject: [concurrency-interest] A question
+	about	ConcurrentLinkedQueue.remove()
+In-Reply-To: <70c070d80902252349k38762963lc4dca21c52e314dd@mail.gmail.com>
+References: <70c070d80902252349k38762963lc4dca21c52e314dd@mail.gmail.com>
+Message-ID: <49A7D4A0.6060106@cs.oswego.edu>
+
+James Gan wrote:
+> 
+> Let's consider following scenario. Assume thread A is removing the 
+> element inside first node and thread B is popping, it seems to me that 
+> both of them can succeed. 
+> 
+
+This is a byproduct of a spec decision that is worth
+revisiting. The question is: What should be the return value
+of remove when the item was present on entry but not on return
+of the method? The spec is a little vague ...
+
+   Returns true if this queue contained the specified element (or
+   equivalently, if this queue changed as a result of the call).
+
+... especially since the "equivalently" clause is not exactly
+equivalent under most people's interpretations! If the item was in
+the process of being polled, then you might (and you did!) conclude
+that the queue did not change as a result of the remove call but
+of the poll. As David mentioned, your interpretation, which
+is probably more common, could be ensured by using
+casItem in poll. We probably ought to do this, and then strengthen
+and clarify the spec/javadoc.
+
+While I'm at it: jsr166y.LinkedTransferQueue, which can be used as
+a plain ConcurrentLinkedQueue, not only doesn't have this
+issue, but also includes an internal node cleanup algorithm,
+which prevents the accumulation of embedded cancelled/removed nodes,
+so is always preferable if you do this a lot. In fact, for Java7.
+there is no reason not to replace the internals of CLQ by delegating
+to LTQ, so we will probably do this.
+
+-Doug
+
+
+
+
+From alexdmiller at yahoo.com  Fri Feb 27 12:30:07 2009
+From: alexdmiller at yahoo.com (Alex Miller)
+Date: Fri, 27 Feb 2009 09:30:07 -0800 (PST)
+Subject: [concurrency-interest] TransferQueue motivation?
+References: <mailman.1.1235754001.19118.concurrency-interest@cs.oswego.edu>
+Message-ID: <60136.30699.qm@web32202.mail.mud.yahoo.com>
+
+
+I was wondering if there was any background on the addition of TransferQueue/LinkedTransferQueue for Java 7?  Specifically, what are the use cases that motivate its inclusion?  
+
+I've used SynchronousQueue in the past to do handoff from one thread to another and I kind of get that TransferQueue is an expansion of that idea.  But I haven't run into a case where I needed something like that.  I miss a little bit what the expected behavior is if the queue has stuff in it already and transfer is called.  At that point, it waits for the queue to empty including the transferred element?
+
+Thanks...
+
+
+From joe.bowbeer at gmail.com  Fri Feb 27 12:35:02 2009
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Fri, 27 Feb 2009 09:35:02 -0800
+Subject: [concurrency-interest] A question about
+	ConcurrentLinkedQueue.remove()
+In-Reply-To: <49A7D4A0.6060106@cs.oswego.edu>
+References: <70c070d80902252349k38762963lc4dca21c52e314dd@mail.gmail.com>
+	<49A7D4A0.6060106@cs.oswego.edu>
+Message-ID: <31f2a7bd0902270935p55d3f262y970e9140588587eb@mail.gmail.com>
+
+I agree that poll should be coded as:
+
+    if (item != null && first.casItem(item, null)) {
+        return item;
+    }
+
+That's how I read "equivalently" in the spec.
+
+Note that this remove method is specified by Collection, and the two
+phrasings were equivalent before concurrent collections arrived on the
+scene.  The object was either present *and* removed, or it wasn't, or there
+was a ConcurrentModificationException.
+
+The proposed implementation is also more testable.  It should be the case
+that the number of items inserted is equal to the number of successful polls
+plus the number of successful removals.
+
+Joe
+
+On Fri, Feb 27, 2009 at 3:55 AM, Doug Lea wrote:
+
+> James Gan wrote:
+>
+>>
+>> Let's consider following scenario. Assume thread A is removing the element
+>> inside first node and thread B is popping, it seems to me that both of them
+>> can succeed.
+>>
+>
+> This is a byproduct of a spec decision that is worth
+> revisiting. The question is: What should be the return value
+> of remove when the item was present on entry but not on return
+> of the method? The spec is a little vague ...
+>
+>  Returns true if this queue contained the specified element (or
+>  equivalently, if this queue changed as a result of the call).
+>
+> ... especially since the "equivalently" clause is not exactly
+> equivalent under most people's interpretations! If the item was in
+> the process of being polled, then you might (and you did!) conclude
+> that the queue did not change as a result of the remove call but
+> of the poll. As David mentioned, your interpretation, which
+> is probably more common, could be ensured by using
+> casItem in poll. We probably ought to do this, and then strengthen
+> and clarify the spec/javadoc.
+>
+> While I'm at it: jsr166y.LinkedTransferQueue, which can be used as
+> a plain ConcurrentLinkedQueue, not only doesn't have this
+> issue, but also includes an internal node cleanup algorithm,
+> which prevents the accumulation of embedded cancelled/removed nodes,
+> so is always preferable if you do this a lot. In fact, for Java7.
+> there is no reason not to replace the internals of CLQ by delegating
+> to LTQ, so we will probably do this.
+>
+> -Doug
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090227/cb9e4cbd/attachment.html>
+
+From joe.bowbeer at gmail.com  Fri Feb 27 22:58:54 2009
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Fri, 27 Feb 2009 19:58:54 -0800
+Subject: [concurrency-interest] TransferQueue motivation?
+In-Reply-To: <60136.30699.qm@web32202.mail.mud.yahoo.com>
+References: <mailman.1.1235754001.19118.concurrency-interest@cs.oswego.edu>
+	<60136.30699.qm@web32202.mail.mud.yahoo.com>
+Message-ID: <31f2a7bd0902271958k7d0d990dx83e1b809625be87c@mail.gmail.com>
+
+On Fri, Feb 27, 2009 at 9:30 AM, Alex Miller wrote:
+
+>
+> I was wondering if there was any background on the addition of
+> TransferQueue/LinkedTransferQueue for Java 7?  Specifically, what are the
+> use cases that motivate its inclusion?
+>
+> I've used SynchronousQueue in the past to do handoff from one thread to
+> another and I kind of get that TransferQueue is an expansion of that idea.
+>  But I haven't run into a case where I needed something like that.  I miss a
+> little bit what the expected behavior is if the queue has stuff in it
+> already and transfer is called.  At that point, it waits for the queue to
+> empty including the transferred element?
+>
+> Thanks...
+>
+
+I don't know the answers, but I'm adding some related information and
+quoting a previous response from Doug below...
+
+1. The most descriptive documentation is in the LinkedTransferQueue
+implementation, which references the following paper by Bill Scherer, Doug
+Lea and Michael Scott:
+
+http://www.cs.rice.edu/~wns1/papers/2006-PPoPP-SQ.pdf<http://www.cs.rice.edu/%7Ewns1/papers/2006-PPoPP-SQ.pdf>
+
+Abstract:
+
+We present two new nonblocking and contention-free implementations of
+> synchronous queues ,concurrent transfer channels in which producers wait for
+> consumers just as consumers wait for producers. Our implementations extend
+> our previous work in dual queues and dual stacks to effect very
+> high-performance handoff. We present performance results on 16-processor
+> SPARC and 4-processor Opteron machines. We compare our algorithms to
+> commonly used alternatives from the literature and from the Java SE 5.0
+> class java. util. concurrent. *SynchronousQueue* both directly in
+> synthetic microbenchmarks and indirectly as the core of Java's *
+> Thread-PoolExecutor* mechanism (which in turn is the core of many Java
+> server programs).Our new algorithms consistently outperform the Java SE 5.0
+> *SynchronousQueue* by factors of three in unfair mode and 14 in fair mode;
+> this translates to factors of two and ten for the *ThreadPoolExecutor*.
+>
+
+2. In response to a similar question by Geoffrey Wiseman in 2007, Doug
+wrote:
+
+"TransferQueues are a little niche-y, but when you need them, nothing else
+will do. One of the motivations is to create a simpler-to-use thread pool,
+in which sometimes tasks must be synchronously transferred."
+
+> At that point, it waits for the queue to empty including the transferred
+element?
+
+According to LinkedBlockingQueue source, I think the answer is "yes".
+
+Joe
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090227/5b88f94d/attachment.html>
+
+From joe.bowbeer at gmail.com  Fri Feb 27 23:02:19 2009
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Fri, 27 Feb 2009 20:02:19 -0800
+Subject: [concurrency-interest] TransferQueue motivation?
+In-Reply-To: <31f2a7bd0902271958k7d0d990dx83e1b809625be87c@mail.gmail.com>
+References: <mailman.1.1235754001.19118.concurrency-interest@cs.oswego.edu>
+	<60136.30699.qm@web32202.mail.mud.yahoo.com>
+	<31f2a7bd0902271958k7d0d990dx83e1b809625be87c@mail.gmail.com>
+Message-ID: <31f2a7bd0902272002n125741f7t20f2f859d6a7dc9d@mail.gmail.com>
+
+On Fri, Feb 27, 2009 at 7:58 PM, Joe Bowbeer wrote:
+
+>
+> > At that point, it waits for the queue to empty including the transferred
+> element?
+>
+> According to LinkedBlockingQueue source, I think the answer is "yes".
+>
+> Joe
+>
+
+I mean "LinkedTransferQueue" source.
+
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/jsr166y/LinkedTransferQueue.java
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090227/37d070f2/attachment.html>
+
+From dl at cs.oswego.edu  Sat Feb 28 10:57:09 2009
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sat, 28 Feb 2009 10:57:09 -0500
+Subject: [concurrency-interest] TransferQueue motivation?
+In-Reply-To: <60136.30699.qm@web32202.mail.mud.yahoo.com>
+References: <mailman.1.1235754001.19118.concurrency-interest@cs.oswego.edu>
+	<60136.30699.qm@web32202.mail.mud.yahoo.com>
+Message-ID: <49A95ED5.10205@cs.oswego.edu>
+
+Alex Miller wrote:
+> I was wondering if there was any background on the addition of
+> TransferQueue/LinkedTransferQueue for Java 7?  
+
+The simplest answer is that we realized that we should
+have had this in the first place in Java5 rather than
+some others, but didn't know it. Better late than never.
+
+The capabilities are a superset of those in
+  * ConcurrentLinkedQueue,
+  * SynchronousQueue, in "fair" mode,
+  * LinkedBlockingQueues that are not capacity bounded.
+And better not only because you can now mix these capabilities,
+but also because the implementation includes better techniques
+we've discovered. So it seems like a good choice to place
+in java.util.concurrent. The fact that there are already a bunch
+of queues in j.u.c makes it a little confusing,
+but we cannot pull out the others. However, as I mentioned in a
+previous post, we'll probably kill some of the internals
+of some of these classes and delegate to LTQ.
+
+There are only a few common cases where you really need
+the full combination of methods offered by LTQ. For example
+if you are using them for messaging, and have combinations
+of asynchronous and synchronous messages. Also, they
+are needed for EvenBetterThreadPools we aim to supply someday.
+
+> 
+> I miss a
+> little bit what the expected behavior is if the queue has stuff in it already
+> and transfer is called.  At that point, it waits for the queue to empty
+> including the transferred element?
+> 
+
+Yes, it waits for all items up to and including the offered item.
+
+-Doug
+
+
+From alexdmiller at yahoo.com  Sat Feb 28 15:10:11 2009
+From: alexdmiller at yahoo.com (Alex Miller)
+Date: Sat, 28 Feb 2009 12:10:11 -0800 (PST)
+Subject: [concurrency-interest] TransferQueue motivation?
+References: <mailman.1.1235754001.19118.concurrency-interest@cs.oswego.edu>
+	<60136.30699.qm@web32202.mail.mud.yahoo.com>
+	<49A95ED5.10205@cs.oswego.edu>
+Message-ID: <65865.76442.qm@web32205.mail.mud.yahoo.com>
+
+
+Thanks Doug, that's very helpful.  And thanks Joe for the paper reference.  The paper talks about a ThreadPoolExecutor benchmark but I'm guessing from your comment below that the existing executor code will not be retrofitted to use LTQ, instead we'll need to wait for a future implementation that does that?
+
+BTW, I wrote a little blog on TQ/LTQ here:
+http://tech.puredanger.com/2009/02/28/java-7-transferqueue/
+
+
+Alex
+
+
+
+----- Original Message ----
+From: Doug Lea <dl at cs.oswego.edu>
+To: Alex Miller <alexdmiller at yahoo.com>
+Cc: concurrency-interest at cs.oswego.edu
+Sent: Saturday, February 28, 2009 9:57:09 AM
+Subject: Re: [concurrency-interest] TransferQueue motivation?
+
+Alex Miller wrote:
+> I was wondering if there was any background on the addition of
+> TransferQueue/LinkedTransferQueue for Java 7?  
+
+The simplest answer is that we realized that we should
+have had this in the first place in Java5 rather than
+some others, but didn't know it. Better late than never.
+
+The capabilities are a superset of those in
+* ConcurrentLinkedQueue,
+* SynchronousQueue, in "fair" mode,
+* LinkedBlockingQueues that are not capacity bounded.
+And better not only because you can now mix these capabilities,
+but also because the implementation includes better techniques
+we've discovered. So it seems like a good choice to place
+in java.util.concurrent. The fact that there are already a bunch
+of queues in j.u.c makes it a little confusing,
+but we cannot pull out the others. However, as I mentioned in a
+previous post, we'll probably kill some of the internals
+of some of these classes and delegate to LTQ.
+
+There are only a few common cases where you really need
+the full combination of methods offered by LTQ. For example
+if you are using them for messaging, and have combinations
+of asynchronous and synchronous messages. Also, they
+are needed for EvenBetterThreadPools we aim to supply someday.
+
+> 
+> I miss a
+> little bit what the expected behavior is if the queue has stuff in it already
+> and transfer is called.  At that point, it waits for the queue to empty
+> including the transferred element?
+> 
+
+Yes, it waits for all items up to and including the offered item.
+
+-Doug
+
+From martinrb at google.com  Sat Feb 28 17:37:42 2009
+From: martinrb at google.com (Martin Buchholz)
+Date: Sat, 28 Feb 2009 14:37:42 -0800
+Subject: [concurrency-interest] TransferQueue motivation?
+In-Reply-To: <65865.76442.qm@web32205.mail.mud.yahoo.com>
+References: <mailman.1.1235754001.19118.concurrency-interest@cs.oswego.edu>
+	<60136.30699.qm@web32202.mail.mud.yahoo.com>
+	<49A95ED5.10205@cs.oswego.edu>
+	<65865.76442.qm@web32205.mail.mud.yahoo.com>
+Message-ID: <1ccfd1c10902281437k3ed3766fv33f370026f6f363@mail.gmail.com>
+
+Alex,
+
+Thanks very much for your jdk summaries on puredanger.com.
+
+Having helped maintain ThreadPoolExecutor for a few years,
+I'm also motivated to write a new thread pool implementation
+that is easier to use in the common case, and fixes the problem
+that personally bugs me, that a new thread may be created to
+run a new task even when an existing thread is waiting for work.
+
+If I could fork myself 10 times, one of the 10 mes would work on this new
+thread pool.  Unfortunately, biotech hasn't made the necessary progress.
+
+I do worry that the new thread pool will be the most important
+customer for TransferQueue, but we won't know till we try
+whether some little detail from the
+existing TransferQueue spec is missing, and then it will be
+too late to change, if it's already in jdk7.
+
+Martin
+
+On Sat, Feb 28, 2009 at 12:10, Alex Miller <alexdmiller at yahoo.com> wrote:
+>
+> Thanks Doug, that's very helpful. ?And thanks Joe for the paper reference. ?The paper talks about a ThreadPoolExecutor benchmark but I'm guessing from your comment below that the existing executor code will not be retrofitted to use LTQ, instead we'll need to wait for a future implementation that does that?
+>
+> BTW, I wrote a little blog on TQ/LTQ here:
+> http://tech.puredanger.com/2009/02/28/java-7-transferqueue/
+>
+>
+> Alex
+>
+>
+>
+> ----- Original Message ----
+> From: Doug Lea <dl at cs.oswego.edu>
+> To: Alex Miller <alexdmiller at yahoo.com>
+> Cc: concurrency-interest at cs.oswego.edu
+> Sent: Saturday, February 28, 2009 9:57:09 AM
+> Subject: Re: [concurrency-interest] TransferQueue motivation?
+>
+> Alex Miller wrote:
+>> I was wondering if there was any background on the addition of
+>> TransferQueue/LinkedTransferQueue for Java 7?
+>
+> The simplest answer is that we realized that we should
+> have had this in the first place in Java5 rather than
+> some others, but didn't know it. Better late than never.
+>
+> The capabilities are a superset of those in
+> * ConcurrentLinkedQueue,
+> * SynchronousQueue, in "fair" mode,
+> * LinkedBlockingQueues that are not capacity bounded.
+> And better not only because you can now mix these capabilities,
+> but also because the implementation includes better techniques
+> we've discovered. So it seems like a good choice to place
+> in java.util.concurrent. The fact that there are already a bunch
+> of queues in j.u.c makes it a little confusing,
+> but we cannot pull out the others. However, as I mentioned in a
+> previous post, we'll probably kill some of the internals
+> of some of these classes and delegate to LTQ.
+>
+> There are only a few common cases where you really need
+> the full combination of methods offered by LTQ. For example
+> if you are using them for messaging, and have combinations
+> of asynchronous and synchronous messages. Also, they
+> are needed for EvenBetterThreadPools we aim to supply someday.
+>
+>>
+>> I miss a
+>> little bit what the expected behavior is if the queue has stuff in it already
+>> and transfer is called. ?At that point, it waits for the queue to empty
+>> including the transferred element?
+>>
+>
+> Yes, it waits for all items up to and including the offered item.
+>
+> -Doug
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From tgautier at terracottatech.com  Sat Feb 28 17:43:26 2009
+From: tgautier at terracottatech.com (Taylor Gautier)
+Date: Sat, 28 Feb 2009 14:43:26 -0800 (PST)
+Subject: [concurrency-interest] Fire and forget api for queing vs.
+ BlockingQueue interface (TransferQueue will be inefficient?)
+In-Reply-To: <16136879.35901235860843669.JavaMail.tgautier@corvette.local>
+Message-ID: <8620303.35921235861002700.JavaMail.tgautier@corvette.local>
+
+
+Hi. 
+
+I have a rather strange question. It comes as a result of spending some number of years working with the BlockingQueue and specifically the LinkedBlockingQueue interface across process boundaries using the clustering capabilities of Terracotta. But this post isn't about Terracotta at all - it is to validate conclusions I have made about the BQ interface which are a result of working within it's constraints using Terracotta. 
+
+(disclaimer: I work at Terracotta) 
+
+What I've noticed is that the interface of BlockingQueue implements both the Producer and Consumer side of the interface. This forces a certain amount of what I call "back pressure" on the underlying implementation. Let me try to explain. 
+
+In my understanding of the BlockingQueue interface, it's use is two fold: 
+1) as a traditional queue (many producers, many consumers) 
+2) as a means of communication between two cooperating threads (one producer, one consumer), e.g. point-to-point communication 
+
+My concern is with use case #2. Especially when the producer never consumes, and the consumer never produces. 
+
+What I mean specifically is that the presence of the consumer operations in the interface forces the queue to always maintain a consistent state - on both "sides" of the "fence" (fence meaning thread boundary, in Terracotta, it's a process boundary usually) 
+
+An example is this: 
+
+Time T0: Thread A puts object foo. 
+Time T1: Thread A puts object bar. 
+Time T2: Thread B takes object foo. 
+
+As part of the contract enforced by the BlockingQueue interface, Thread A must be able to see the action of Thread B taking foo - in other words it must also be guaranteed that at time Time T3 were it to perform any consumer operations on the queue, it must be guaranteed (i.e. have knowledge about) that those operations will show bar, not foo. 
+
+Because of these constraints, the underlying implementation is forced to use a queue-like implementation, which I understand in LBQ to be a linked list with head and tail pointers, one lock per side of the queue. 
+
+However, if we examine use case #2's requirements, we don't necessarily NEED a queue which holds data for the entire queue (as a linked list does). For sending data from one thread to another thread, an ordered stream is sufficient. The analogy I think of here is sockets. When you open a socket communication using TCP between processes, each side of the communication does not hold the entire pending data transfer in memory, each simply holds the data that is unprocessed by it's side of the conversation (when you send TCP data, your TCP stack queues up data until it is acknowledge received by the receiving side - you don't care when the receiver actually consumes the data, and so you only get acks back from TCP that the receiver has gotten your data, but you don't get acks back that he has "consumed" it making the conversation efficient). 
+
+In other words, use case #2 only requires that the producer's view of the queue is bounded by the amount of data that the consumer's side has not yet RECEIVED -- however, that is different than what it has consumed). 
+
+Yet to honor the semantics of the BlockingQueue interface, any BQ implementation must ensure access to the full data set that is unconsumed. So using a BQ interface for use case #2 - point-to-point communications, adds an additional overhead that is burdensome to implement. 
+
+To be more clear, if we break up data in the queue as the following: 
+
+1) data that is produced, but not acknowledged as received by the consumer 
+2) data that is received by the consumer, but not consume d 
+
+Then we have the following: 
+
+An LBQ must keep both types of data, 1 & 2 in memory at the producers side (in a JVM, this might correlate to the L1 cache of the CPU where a thread resides) 
+
+A socket-like implementation only needs to keep data of type 1 in the producers side, and data of type 2 in the consumer side. 
+
+This post is getting long, but let's take an example in a single JVM: 
+
+Thread A is on CPU 1 and has access to an LBQ, it is loaded into the L1 cache of the CPU, and it has no elements. 
+Thread B is on CPU 2 and has access to the same LBQ, and it is loaded into the L1 cache of the CPU. 
+
+Thread A performs a put operation, now the LBQ and the new element are in L1 cache of CPU 1, this also performs a notify on Thread B (an optimization here could be to push asynchronously the new element into CPU 2 cache but an LBQ makes this very difficult to do correctly across all use cases) 
+==> This process repeats for 3 more times so that there are now 4 items in the queue 
+Thread B is woken up and walks through the same memory barrier, pulling in the new LBQ representation and possibly the new elements that were put by Thread A (if not, each element get will be a synchronous call to the L2 cache or main memory bus which will be slow) 
+==> notice at this time, Thread A on CPU 1 and Thread B on CPU 2 now share some subset of elements in the LBQ, at a minimum they both have the first element that was put into the queue 
+Thread B now takes from the LBQ which updates the memory for the first element in the LBQ and also the LBQ itself 
+==> notice how at this point in time, the update to the memory of the LBQ by Thread B has disrupted the state of the memory held in the CPU 1 cache where A resides and so the L1 cache in CPU 1 must be updated. THIS IS MY CENTRAL THESIS. 
+
+So here is where I have been going in this long winded post. 
+
+1) Thread A could have optimized it's usage of the L1 cache by evicting parts of the queue in it's cache that it knows it won't need later - but it CANNOT know this because of the nature of the combined consumer/producer interface presented by BlockingQueue 
+2) TransferQueue (nice writeup by Alex Miller here: http://tech.puredanger.com/2009/02/28/java-7-transferqueue/) seems designed to implement the use case #2 as I describe in this post for p2p handoffs between threads 
+3) TransferQueue extends BlockingQueue thus it will suffer the same problems that regular queues do under the conditions I describe, unless the producer and consumer portions are split apart 
+
+I don't know if any of this is a problem on our limited hardware today - e.g. dual cpu quad-core machines with high speed interconnects for cache-coherency protocols. But as we move into the age where more and more cores/threads will be a commonplace part of our applications, and likewise cache-coherency protocols become inherently more expensive -- doesn't this become more problematic? 
+
+Finally - because I work at Terracotta - we see the boundary between "local memory" and "remote" memory in much sharper contrast than most people (when Terracotta is in place, the memory transfers described above go across the network). My conclusions in this post are born from observation - the queue interface does not seem to be an ideal interface to base thread-communication semantics on, but that observation is based on a somewhat distorted view of normal JVM concerns - LBQ and it's ilk are designed to work in a single memory environment, Terracotta extends that across process and host system boundaries. 
+
+In other words, the fire and forget nature of sockets and message passing interfaces (e.g. Actors in Scala and or Erlang) seem more suitable for cross-thread communication, and that leaves me wondering what the point of TransferQueue is (based on Alex's post, I can see that it is much better at thread-thread handoffs than LBQ, which is good, but I wonder if it needs to or should have BQ as a superinterface) 
+
+Well, I hope you read this far, does any of this make sense or am I just way out in left field here? 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20090228/d4706853/attachment.html>
+

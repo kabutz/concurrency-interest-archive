@@ -1,0 +1,1734 @@
+From guillaume.berche@eloquant.com  Tue Feb  3 13:24:16 2004
+From: guillaume.berche@eloquant.com (Guillaume Berche)
+Date: Tue, 3 Feb 2004 14:24:16 +0100
+Subject: [concurrency-interest] SynchronousQueue to use a LIFO for waitingTakes?
+Message-ID: <ELEGLIHGLLIBFPCIGAKGAEEODNAA.guillaume.berche@eloquant.com>
+
+Hello,
+
+I've been happily using the concurrentLib version 1.3.1 for a long time, and
+find it a great library, thanks to Doug Lea for making it available to the
+community! I would like to suggest an optimization in the implementation of
+the JSR-166 with respect to the ThreadPoolExecutor's keep alive mechanism
+when using the a SynchronousQueue.
+
+If I read the code well (and did not miss subtle differences with
+concurrentLib version 1.3.1), the java.util.concurrent.SynchronousQueue uses
+an internal FIFO to manage "waitingTakes". As a result, the threads which
+have been waiting for the longuest time get new incoming "puts" first. As a
+consequence, in the following scenario, the keep-alive mechanism would not
+optimally operate as the number of threads would not decrease:
+
+1- configure ThreadPoolExecutor's keep alive mechanism when using the a
+SynchronousQueue, and a maximum pool thread of 100.
+2- request a burst of work which creates 100 threads
+3- once the burst is done, request a low but steady amount of work which in
+average keeps 1 thread busy.
+4- observe thread count remain to 100 instead of slowly decreasing to 1
+
+If I understood the code well, this could be optimized by having
+SynchronousQueue use a LIFO for managing waitingTakes, and hence ask the
+same threads to work, letting extra idle threads being reclaimed when their
+keep alive time is reached.
+
+I hope the following code fragement written to use concurrentLib version
+1.3.1 may be helpful in writing a Junit test to validate this optimization.
+
+I hope this helps,
+
+Guillaume.
+
+-------------------------
+
+/**
+ * Tests the Executor instanciated by the ExecutorFactory
+ */
+public class TestExecutorFactory extends TestCase {
+
+	public TestExecutorFactory(String name) {
+		super(name);
+	}
+
+
+	/**
+	 * Tests that when requested to run more than one task in concurrence, the
+executor indeed runs them in concurrence.
+	 * @throws Exception
+	 */
+	public void testConcurrentThreads() throws Exception {
+		int maxThreads = 10;
+		int maxTasks = 10;
+		int taskSleepTime = 1000;
+		int keepAliveTime = 5*1000;
+
+		int expectedTimeToExecuteAllTasks = 500;
+		int expectedMaxTimeToStartEachTask = 500;
+
+		//
+		// 1. tests that when smaller than maximun tasks are executed.
+		//
+
+		ThreadGroup threadGroup = new ThreadGroup("TestExecutorFactory");
+
+		//Note: we don't use a buffer: we want to execute at most max threads in
+concurrence and then
+		//start blocking the caller thread when reached. Using a buffer has two
+drawbacks:
+		//1- it does not have flow control unless the buffer is bounded
+		//2- the PooledExecutor will always prefer queuing if nb current threads >
+minThreadPool. More over
+		//it will try to create minThreadPool threads even if some threads are
+idle waiting for some work.
+		PooledExecutor pooledExecutor1 = new PooledExecutor(maxThreads);
+
+		//Have a slightly lower priority to let core threads have more priority.
+This is supposed
+		//to avoid concurrent fetches
+		pooledExecutor1.setThreadFactory(new
+ThreadFactoryImpl(Thread.MAX_PRIORITY, "TestExecutorFactory", threadGroup));
+
+		//10 minutes keep alive time to avoid garbage collecting threads too
+		//frequently (in previous JDK versions this used to induce memory leaks)
+		pooledExecutor1.setKeepAliveTime(keepAliveTime);
+
+		pooledExecutor1.waitWhenBlocked();
+		Executor pooledExecutor = pooledExecutor1;
+		TestRunnable [] startedRunnables = new TestRunnable [maxTasks];
+
+		long startRequestTime = System.currentTimeMillis();
+
+		//First start all runables.
+		for (int taskIndex=0; taskIndex<maxTasks; taskIndex++) {
+			TestRunnable testRunnable = new TestRunnable(taskSleepTime);
+			pooledExecutor.execute(testRunnable);
+			startedRunnables[taskIndex] = testRunnable;
+		}
+
+		//Then wait for all task to be started
+		for (int taskIndex=0; taskIndex<maxTasks; taskIndex++) {
+			TestRunnable testRunnable = startedRunnables[taskIndex];
+			Semaphore wasStartedSemaphore = testRunnable.getWasStartedSemaphore();
+			assertTrue("task #" + taskIndex + " not started within expected timeout",
+wasStartedSemaphore.attempt(expectedMaxTimeToStartEachTask));
+		}
+
+		long requestsAllStartedTime = System.currentTimeMillis();
+		assertTrue("request probably did not start in concurrence since time to
+start them all is larger than task sleep time", requestsAllStartedTime -
+startRequestTime < taskSleepTime);
+
+		//Then wait for all tasks to complete
+		for (int taskIndex=0; taskIndex<maxTasks; taskIndex++) {
+			TestRunnable testRunnable = startedRunnables[taskIndex];
+			Semaphore completedSemaphore = testRunnable.getCompletedSemaphore();
+			assertTrue("task #" + taskIndex + " not completed within expected
+timeout", completedSemaphore.attempt(taskSleepTime * 2));
+		}
+
+		long requestsCompletedTime = System.currentTimeMillis();
+		assertTrue("problem completing tasks. took longer than expected",
+requestsCompletedTime - startRequestTime < taskSleepTime +
+expectedTimeToExecuteAllTasks);
+
+        assertEquals("invalid number of active threads", maxTasks,
+threadGroup.activeCount());
+
+
+		//
+		// 2. test that after high load is gone, number of threads properly
+decrease
+		//
+
+		int maxTestDuration = 30 * 1000;
+        long startTime = System.currentTimeMillis();
+		int extraTimeAfterKeepAllive = 5000;
+
+		while(System.currentTimeMillis() - startTime < maxTestDuration) {
+
+			//Start a task
+			TestRunnable testRunnable = new TestRunnable(taskSleepTime);
+			pooledExecutor.execute(testRunnable);
+			Semaphore wasStartedSemaphore = testRunnable.getWasStartedSemaphore();
+			assertTrue("task not started within expected timeout",
+wasStartedSemaphore.attempt(expectedMaxTimeToStartEachTask));
+			Semaphore completedSemaphore = testRunnable.getCompletedSemaphore();
+			assertTrue("task not completed within expected timeout",
+completedSemaphore.attempt(taskSleepTime * 2));
+
+			//sleep a while
+			Thread.sleep(10);
+
+			if (System.currentTimeMillis() - startTime > keepAliveTime +
+extraTimeAfterKeepAllive) {
+				assertEquals("expected other threads to be stopped by now. threadGroup:"
++ threadGroup, 1, threadGroup.activeCount());
+			}
+		}
+
+	}
+
+	/**
+	 * A dummy task which simply sleeps for a given time. This is necessary to
+make sure different thread indeed run in concurrence.
+	 */
+	private static class TestRunnable implements Runnable {
+
+		private Semaphore _wasStartedSemaphore = new Semaphore(0);
+		private Semaphore _completedSemaphore = new Semaphore(0);
+		private int _sleepTime;
+
+		//
+		// Runnable API
+		//
+
+		public void run() {
+			_wasStartedSemaphore.release();
+			try {
+				Thread.sleep(_sleepTime);
+			} catch (InterruptedException e) {
+				if (Assert.enabled) {
+					Assert.condition(false, "unexpected interruption!");
+				}
+			}
+			_completedSemaphore.release();
+		}
+
+		//
+		// Test API
+		//
+
+		public TestRunnable(int sleepTime) {
+			_sleepTime = sleepTime;
+		}
+
+		/**
+		 * Provides the semaphore which indicates the task was started
+		 */
+		public Semaphore getWasStartedSemaphore() {
+			return _wasStartedSemaphore;
+		}
+
+		/**
+		 * Provides the semaphore which indicates the task completed.
+		 */
+		public Semaphore getCompletedSemaphore() {
+			return _completedSemaphore;
+		}
+
+	}
+
+}
+
+
+
+From dl@cs.oswego.edu  Tue Feb  3 15:44:13 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Tue, 3 Feb 2004 10:44:13 -0500
+Subject: [concurrency-interest] SynchronousQueue to use a LIFO for waitingTakes?
+In-Reply-To: <ELEGLIHGLLIBFPCIGAKGAEEODNAA.guillaume.berche@eloquant.com>
+References: <ELEGLIHGLLIBFPCIGAKGAEEODNAA.guillaume.berche@eloquant.com>
+Message-ID: <16415.49613.972532.993216@altair.cs.oswego.edu>
+
+Hi Guillaume,
+
+(First, sorry about not yet replying to your related mail on this a
+while ago.)
+
+Using LIFO taker-queuing inside SynchronousQueue is indeed usually a
+good idea (and probably even the best default choice) when used for
+work queues. But in most other applications of SynchronousQueues, it
+is usually a bad idea.
+
+The logistic problem here is that unlike dl.util.concurrent, we can't
+leave the insides of the j.u.c.SynchronousQueue class open enough for
+people to make simple subclasses etc to get this effect. Which means
+that the only reasonable alternative is to make LIFO/FIFO selectable
+in a new SynchronousQueue constructor. This has the effect of any
+restricting future re-implementations to also support this, which
+might be a small enough price to pay. We'll think it over. If we can
+do it this way, it might be possible to get this in to Tiger, since
+the API change would just be an added constructor.
+
+-Doug
+
+
+
+
+From larryr@saturn.sdsu.edu  Tue Feb  3 17:53:44 2004
+From: larryr@saturn.sdsu.edu (Larry Riedel)
+Date: 3 Feb 2004 17:53:44 -0000
+Subject: [concurrency-interest] Re: SynchronousQueue to use a LIFO for waitingTakes?
+In-Reply-To: <16415.49613.972532.993216@altair.cs.oswego.edu>
+Message-ID: <20040203175344.3948.qmail@home19.riedel.org>
+
+> unlike dl.util.concurrent, we can't leave the insides of the
+> j.u.c.SynchronousQueue class open enough for people to make
+> simple subclasses etc to get this effect.
+
+What is it that distinguishes j.u.c classes so?
+
+
+> the only reasonable alternative is to make LIFO/FIFO
+> selectable in a new SynchronousQueue constructor.
+
+Assuming having different classes representing different
+combinations of orthogonal aspects of behavior is
+undesirable or unacceptable, I think it might be nice to
+have something like a setQueueingStrategy method, maybe
+from an interface indicating that classes which implement
+that interface have some queue style look and feel but
+are not partial to a particular queueing strategy.  But
+then again PriorityBlockingQueue vs LinkedBlockingQueue
+gives me the impression that having different classes to
+support orthogonal behavior /is/ acceptable....
+
+
+Larry
+
+
+From news@kav.dk  Sun Feb  8 23:15:50 2004
+From: news@kav.dk (Kasper Nielsen)
+Date: Mon, 09 Feb 2004 00:15:50 +0100
+Subject: [concurrency-interest] java.util.collections
+Message-ID: <4026C326.6080608@kav.dk>
+
+hi,
+
+we should probably, for consistancy, add some methods to 
+java.util.Collections
+
+Collections.unmodifiableQueue(Queue<T> s)
+Collections.synchronizedQueue(Queue<T> s)
+Collections.checkedQueue(Queue<T> s)
+
+and perhaps also
+Collections.emptyQueue()
+Collections.singletonQueue(T o)
+
+- Kasper
+
+From dl@cs.oswego.edu  Tue Feb 10 15:19:08 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Tue, 10 Feb 2004 10:19:08 -0500
+Subject: [concurrency-interest] Case study
+Message-ID: <16424.63084.113853.693430@altair.cs.oswego.edu>
+
+The JCP JSR166 case study that some of you participated in is now
+up at http://www.jcp.org/en/resources/guide/166-casestudy
+
+-Doug
+
+From williamh@bulletinwireless.com  Wed Feb 11 10:51:40 2004
+From: williamh@bulletinwireless.com (williamh@bulletinwireless.com)
+Date: Wed, 11 Feb 2004 23:51:40 +1300 (NZDT)
+Subject: [concurrency-interest] Case study
+In-Reply-To: <16424.63084.113853.693430@altair.cs.oswego.edu>
+References: <16424.63084.113853.693430@altair.cs.oswego.edu>
+Message-ID: <1448.210.54.22.223.1076496700.squirrel@extra.jungledrum.co.nz>
+
+1.5b is out, and JSR166 is probably the most significant part of it.
+
+Autoboxing, the "enhanced" for loop, enums, static import and varargs are
+just syntactic sugar. Annotations can add some accuracy to the build
+process and generics can increase type safety. None of this really
+enhances the language, but this seems to be all that anyone is writing
+about.
+
+166 and the improvements to the memory model that accompany it make
+multithreaded Java applications far more portable, far easier to write,
+and far more robust that those written for any preceeding platfrom.
+
+In my opinion this is the best part of 1.5. Doug and the team deserve some
+praise.
+
+-- Will
+
+>
+> The JCP JSR166 case study that some of you participated in is now
+> up at http://www.jcp.org/en/resources/guide/166-casestudy
+>
+> -Doug
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+From dmitry.kiriy@db.com  Wed Feb 11 11:43:39 2004
+From: dmitry.kiriy@db.com (Dmitry Kiriy)
+Date: Wed, 11 Feb 2004 14:43:39 +0300
+Subject: [concurrency-interest] Case study
+Message-ID: <OF14E9A4BD.7CA6100C-ONC3256E37.00403C4B-C3256E37.00406BE1@db.com>
+
+Will,
+        I used concurrent.jar probably  more then 3 years.
+        Nothing really changed with including it to SDK, because I 
+allready there.
+
+________________________________
+Dmitriy Kiriy
+
+Derivatives IT Dept.
+Global Markets,
+Deutsche Bank Moscow
+
+Ph.: +7 095 7830367
+Ph. local: 1367
+
+
+
+
+williamh@bulletinwireless.com
+Sent by: concurrency-interest-admin@cs.oswego.edu
+11.02.2004 13:51
+
+ 
+        To:     "Doug Lea" <dl@altair.cs.oswego.edu>
+        cc:     concurrency-interest@altair.cs.oswego.edu
+        Subject:        Re: [concurrency-interest] Case study
+
+
+1.5b is out, and JSR166 is probably the most significant part of it.
+
+Autoboxing, the "enhanced" for loop, enums, static import and varargs are
+just syntactic sugar. Annotations can add some accuracy to the build
+process and generics can increase type safety. None of this really
+enhances the language, but this seems to be all that anyone is writing
+about.
+
+166 and the improvements to the memory model that accompany it make
+multithreaded Java applications far more portable, far easier to write,
+and far more robust that those written for any preceeding platfrom.
+
+In my opinion this is the best part of 1.5. Doug and the team deserve some
+praise.
+
+-- Will
+
+>
+> The JCP JSR166 case study that some of you participated in is now
+> up at http://www.jcp.org/en/resources/guide/166-casestudy
+>
+> -Doug
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+From dmitry.kiriy@db.com  Wed Feb 11 11:48:43 2004
+From: dmitry.kiriy@db.com (Dmitry Kiriy)
+Date: Wed, 11 Feb 2004 14:48:43 +0300
+Subject: [concurrency-interest] Map<K,V> Collections.concurrentMap(Map<K,V>)
+Message-ID: <OF66DC04F1.890ECDE7-ONC3256E37.00406EE1-C3256E37.0040E2BA@db.com>
+
+Dear Sirs.
+
+Just quickly evaluate the code of ConcurrentHashMap in JSK 1.5b1.
+May be I miss something, but I realise that it pretty easy
+(well, not SO easy but possible)
+write 
+        Map Collections.concurrentMap(Map map)
+as wrapper. 
+
+Because it will obviously need ConcurrentTreeMap and it just ugly to
+write the lock/ unlock  and duplication the code of TreeMap too.
+
+Throughts?
+
+        Cheers,
+                Dmitriy
+________________________________
+Dmitriy Kiriy
+
+Derivatives IT Dept.
+Global Markets,
+Deutsche Bank Moscow
+
+Ph.: +7 095 7830367
+Ph. local: 1367
+
+From dl@cs.oswego.edu  Wed Feb 11 12:34:16 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Wed, 11 Feb 2004 07:34:16 -0500
+Subject: [concurrency-interest] java.util.collections
+In-Reply-To: <4026C326.6080608@kav.dk>
+References: <4026C326.6080608@kav.dk>
+Message-ID: <16426.8520.468242.599981@altair.cs.oswego.edu>
+
+Kaspar wrote:
+
+> we should probably, for consistancy, add some methods to 
+> java.util.Collections
+> 
+> Collections.unmodifiableQueue(Queue<T> s)
+> Collections.synchronizedQueue(Queue<T> s)
+> Collections.checkedQueue(Queue<T> s)
+> 
+> and perhaps also
+> Collections.emptyQueue()
+> Collections.singletonQueue(T o)
+
+You are right that adding such static methods in Collections might
+have been a nice touch. (Well, except for synchronizedQueue. See
+below.)  But I can't see it happening for Tiger. While I can't rule it
+out, we are now at the point in release process where the only changes
+that are supposed to make it in are bugfixes.  
+
+(There is an inevitable clash here between JCP JSR process and JDK
+release process. Even if we decided to officially add such things to
+JSR166 spec, they wouldn't make release, so there is not much point in
+doing so.)
+
+Dmitry wrote on the similar...
+
+> Just quickly evaluate the code of ConcurrentHashMap in JSK 1.5b1.
+> May be I miss something, but I realise that it pretty easy
+> (well, not SO easy but possible)
+> write 
+>         Map Collections.concurrentMap(Map map)
+> as wrapper. 
+> 
+> Because it will obviously need ConcurrentTreeMap and it just ugly to
+> write the lock/ unlock  and duplication the code of TreeMap too.
+> 
+
+We thought about things along these lines. It would be possible to
+create a wrapper using ReentrantReadWriteLocks to produce classes that
+have approximately the same properties as ConcurrentHashMap, but for
+other map implementations. These wouldn't be as fast as custom classes
+like ConcurrentHashMap, but are still sometimes useful.
+(dl.util.concurrent contains a similar wrapper.)  And in the
+particular case of TreeMap, this works pretty well -- a code sketch of
+how to do this is in the ReentrantReadWriteLock javadoc as a usage
+example, and one of our JSR166 test programs does it out more fully to
+check functionality and performance.
+
+But this technique works only if the underlying Map class conforms to
+assumptions that pure read/retrieval methods have no
+writes/side-effects. There's no way that a wrapper class can check
+such assumptions, and we can't expect users of this class to always
+know if the assumptions hold. And when they do not hold, you can get
+serious corruption of underlying data structures.  So the only
+conclusion we could reach is that we should not supply it, but
+tell/show people how to do it themselves when they are sure it
+applies.
+
+-Doug
+
+From dmitry.kiriy@db.com  Wed Feb 11 13:08:18 2004
+From: dmitry.kiriy@db.com (Dmitry Kiriy)
+Date: Wed, 11 Feb 2004 16:08:18 +0300
+Subject: [concurrency-interest] java.util.collections
+Message-ID: <OFA02BD72E.90F5179F-ONC3256E37.00481412-C3256E37.00482C1F@db.com>
+
+(Doug, I'am sorry, my email client reply you directly)
+
+Doug,
+
+>>>>> But this technique works only if the underlying Map class conforms 
+to
+>>>>> assumptions that pure read/retrieval methods have no
+>>>>> writes/side-effects. There's no way that a wrapper class can check
+>>>>> such assumptions, and we can't expect users of this class to always
+>>>>> know if the assumptions hold. And when they do not hold, you can get
+>>>>> serious corruption of underlying data structures.  So the only
+>>>>> conclusion we could reach is that we should not supply it, but
+>>>>> tell/show people how to do it themselves when they are sure it
+>>>>> applies.
+
+I think, here we miss something really important.
+
+There at least 2 types of Java developers:
+
+1. Application developers (Business software)
+2. System developers (App servers, Concurrent utils :), Special types of 
+Maps (Apache))
+
+Bring Concurrent in SDK is moving quality, relible, rubust bla-bla 
+Concurrent programming from
+system developers level (you) to widest range of development.
+
+Application developers not ever create implementations of Map or Queue.
+So, possible side-effect IS NOT an issue, case just probably really 3-5 of 
+Map implementations used worldwide (compare to million java developers).
+
+So, I try comment your words keep im mind above:
+
+>>>>>But this technique works only if the underlying Map class conforms to
+>>>>> assumptions that pure read/retrieval methods have no
+>>>>> writes/side-effects. 
+        Apache should care about.
+
+>>>>> There's no way that a wrapper class can check
+>>>>> such assumptions, and we can't expect users of this class to always
+>>>>> know if the assumptions hold. 
+        Still Apache troubles here
+
+>>>>> So the only
+>>>>> conclusion we could reach is that we should not supply it, but
+>>>>> tell/show people how to do it themselves when they are sure it
+>>>>> applies.
+
+        We can explain that Apache commons project directly.
+
+        regs,
+
+                Dmitriy
+
+__________________________
+Dmitriy Kiriy
+
+Derivatives IT Dept.
+Global Markets,
+Deutsche Bank Moscow
+
+Ph.: +7 095 7830367
+Ph. local: 1367
+
+
+
+From dl@cs.oswego.edu  Wed Feb 11 15:03:04 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Wed, 11 Feb 2004 10:03:04 -0500
+Subject: [concurrency-interest] java.util.collections
+In-Reply-To: <OFA02BD72E.90F5179F-ONC3256E37.00481412-C3256E37.00482C1F@db.com>
+References: <OFA02BD72E.90F5179F-ONC3256E37.00481412-C3256E37.00482C1F@db.com>
+Message-ID: <16426.17448.904442.406056@altair.cs.oswego.edu>
+
+> There at least 2 types of Java developers:
+
+Hoping to preempt another different-types-of-developers discussion,
+here's a different view.  In retrospect, I guess the API design
+philosphy in effect here is an "obviousness rule"; something like:
+
+  A JDK API should be easy to use only if it always does what someone
+  otherwise unfamiliar with it would expect it to do.  If you cannot
+  make an API sufficiently obvious, then you should either make it so
+  hard to use that only experts will try to use it, or leave it out
+  entirely.
+
+So, in the case of concurrent maps via read-write locks, any expert
+developer can do this themselves, especially given the guidance we
+provide. They'll be unhappy that they are forced to do something so
+tedious. But the net result is probably better this way than if we
+made it too easy to apply concurrentMaps to, for example, those Apache
+commons collections that they wouldn't work right for.
+
+(On the other hand, classes like AbstractQueuedSynchronizer, which
+will do what you want only after hard work and experimentation, are so
+scary-looking that no one is going to try to use them by accident.)
+
+-Doug
+
+From dmitry.kiriy@db.com  Wed Feb 11 15:13:09 2004
+From: dmitry.kiriy@db.com (Dmitry Kiriy)
+Date: Wed, 11 Feb 2004 18:13:09 +0300
+Subject: [concurrency-interest] java.util.collections
+Message-ID: <OF9055764E.60C21178-ONC3256E37.00537E49-C3256E37.00539A17@db.com>
+
+Thats why Java community raise something good - different point of view :)
+________________________________
+Dmitriy Kiriy
+
+
+
+
+
+Doug Lea <dl@cs.oswego.edu>
+Sent by: concurrency-interest-admin@cs.oswego.edu
+11.02.2004 18:03
+
+ 
+        To:     Dmitry Kiriy/Moscow/DMG UK/DeuBa@DMG UK
+        cc:     concurrency-interest@altair.cs.oswego.edu
+        Subject:        Re: [concurrency-interest] java.util.collections
+
+
+> There at least 2 types of Java developers:
+
+Hoping to preempt another different-types-of-developers discussion,
+here's a different view.  In retrospect, I guess the API design
+philosphy in effect here is an "obviousness rule"; something like:
+
+  A JDK API should be easy to use only if it always does what someone
+  otherwise unfamiliar with it would expect it to do.  If you cannot
+  make an API sufficiently obvious, then you should either make it so
+  hard to use that only experts will try to use it, or leave it out
+  entirely.
+
+So, in the case of concurrent maps via read-write locks, any expert
+developer can do this themselves, especially given the guidance we
+provide. They'll be unhappy that they are forced to do something so
+tedious. But the net result is probably better this way than if we
+made it too easy to apply concurrentMaps to, for example, those Apache
+commons collections that they wouldn't work right for.
+
+(On the other hand, classes like AbstractQueuedSynchronizer, which
+will do what you want only after hard work and experimentation, are so
+scary-looking that no one is going to try to use them by accident.)
+
+-Doug
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+From matthias.ernst@coremedia.com  Fri Feb 13 11:12:34 2004
+From: matthias.ernst@coremedia.com (matthias.ernst@coremedia.com)
+Date: Fri, 13 Feb 2004 12:12:34 +0100 (CET)
+Subject: [concurrency-interest] Tiger 1.5 beta 1: ThreadPoolExecutor uses 100% CPU
+Message-ID: <Pine.LNX.4.33.0402131205050.8191-100000@bebop.coremedia.com>
+
+Sorry to bother you here but would anybody try to run the attached
+testcase on a win xp machine ?
+
+On my machine (XP SP 2, 1 CPU), running with
+
+  java ThreadPool 10
+
+it will consume 100% CPU after finishing work when actually it should be
+idle.
+
+
+I filed a Bug with Sun but they don't seem able (enough?) to reproduce it.
+Can anyone confirm before I go through this !@#!@# report procedure again?
+http://developer.java.sun.com/developer/bugParade/bugs/4990885.html
+
+
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class ThreadPool {
+  public static void main(String[] args) {
+    int n = Integer.parseInt(args[0]);
+    final AtomicInteger todo = new AtomicInteger(2*n);
+
+    ExecutorService p = Executors.newFixedThreadPool(n);
+    for(int i=0; i<2*n; i++) {
+      p.execute(new Runnable() { public void run() {
+	System.out.println(todo.decrementAndGet());
+      }});
+    }
+  }
+}
+
+
+Thanks a lot
+Matthias
+
+-- 
+Matthias Ernst
+CoreMedia - The Content Technology Experts
+
+"Toll takes its time."
+
+
+From dmitry.kiriy@db.com  Fri Feb 13 11:44:29 2004
+From: dmitry.kiriy@db.com (Dmitry Kiriy)
+Date: Fri, 13 Feb 2004 14:44:29 +0300
+Subject: [concurrency-interest] Tiger 1.5 beta 1: ThreadPoolExecutor uses 100% CPU
+Message-ID: <OFE3B9A140.20123AE0-ONC3256E39.00407521-C3256E39.00407F69@db.com>
+
+Just put at the end System.exit(0);
+________________________________
+Dmitriy Kiriy
+
+Derivatives IT Dept.
+Global Markets,
+Deutsche Bank Moscow
+
+Ph.: +7 095 7830367
+Ph. local: 1367
+
+
+
+
+<matthias.ernst@coremedia.com>
+Sent by: concurrency-interest-admin@cs.oswego.edu
+13.02.2004 14:12
+
+ 
+        To:     <concurrency-interest@altair.cs.oswego.edu>
+        cc: 
+        Subject:        [concurrency-interest] Tiger 1.5 beta 1: ThreadPoolExecutor uses 100% CPU
+
+
+Sorry to bother you here but would anybody try to run the attached
+testcase on a win xp machine ?
+
+On my machine (XP SP 2, 1 CPU), running with
+
+  java ThreadPool 10
+
+it will consume 100% CPU after finishing work when actually it should be
+idle.
+
+
+I filed a Bug with Sun but they don't seem able (enough?) to reproduce it.
+Can anyone confirm before I go through this !@#!@# report procedure again?
+http://developer.java.sun.com/developer/bugParade/bugs/4990885.html
+
+
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class ThreadPool {
+  public static void main(String[] args) {
+    int n = Integer.parseInt(args[0]);
+    final AtomicInteger todo = new AtomicInteger(2*n);
+
+    ExecutorService p = Executors.newFixedThreadPool(n);
+    for(int i=0; i<2*n; i++) {
+      p.execute(new Runnable() { public void run() {
+                 System.out.println(todo.decrementAndGet());
+      }});
+    }
+  }
+}
+
+
+Thanks a lot
+Matthias
+
+-- 
+Matthias Ernst
+CoreMedia - The Content Technology Experts
+
+"Toll takes its time."
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+From matthias.ernst@coremedia.com  Sat Feb 14 10:53:15 2004
+From: matthias.ernst@coremedia.com (Ernst, Matthias)
+Date: Sat, 14 Feb 2004 11:53:15 +0100
+Subject: [concurrency-interest] Tiger 1.5 beta 1: ThreadPoolExecutor uses 100% CPU
+Message-ID: <F34C8A704C489B46B9E9FBDBD1B91D5F0DDE54@MARS.coremedia.com>
+
+This is a multi-part message in MIME format.
+
+------_=_NextPart_001_01C3F2E8.F750420D
+Content-Type: text/plain;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+Thanks for reproducing, I reopened the case with Sun.
+=20
+Matthias
+=20
+
+________________________________
+
+From: concurrency-interest-admin@cs.oswego.edu on behalf of =
+matthias.ernst@coremedia.com
+Sent: Fri 2/13/2004 12:12 PM
+To: concurrency-interest@altair.cs.oswego.edu
+Subject: [concurrency-interest] Tiger 1.5 beta 1: ThreadPoolExecutor =
+uses 100% CPU
+
+
+
+Sorry to bother you here but would anybody try to run the attached
+testcase on a win xp machine ?
+
+On my machine (XP SP 2, 1 CPU), running with
+
+  java ThreadPool 10
+
+it will consume 100% CPU after finishing work when actually it should be
+idle.
+...
+
+
+
+------_=_NextPart_001_01C3F2E8.F750420D
+Content-Type: text/html;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+<META HTTP-EQUIV=3D"Content-Type" CONTENT=3D"text/html; =
+charset=3Diso-8859-1">=0A=
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">=0A=
+<HTML>=0A=
+<HEAD>=0A=
+=0A=
+<META NAME=3D"Generator" CONTENT=3D"MS Exchange Server version =
+6.5.6944.0">=0A=
+<TITLE>[concurrency-interest] Tiger 1.5 beta 1: ThreadPoolExecutor uses =
+100% CPU</TITLE>=0A=
+</HEAD>=0A=
+<BODY>=0A=
+<DIV id=3DidOWAReplyText23403 dir=3Dltr>=0A=
+<DIV dir=3Dltr><FONT face=3D"Courier New" color=3D#000000 =
+size=3D2>Thanks for =0A=
+reproducing, </FONT><FONT face=3D"Courier New" size=3D2>I reopened the =
+case with =0A=
+Sun.</FONT></DIV>=0A=
+<DIV dir=3Dltr><FONT face=3D"Courier New" size=3D2></FONT>&nbsp;</DIV>=0A=
+<DIV dir=3Dltr><FONT face=3D"Courier New" size=3D2>Matthias</FONT></DIV>=0A=
+<DIV dir=3Dltr><FONT face=3D"Courier New" =
+size=3D2></FONT>&nbsp;</DIV></DIV>=0A=
+<DIV dir=3Dltr><BR>=0A=
+<HR tabIndex=3D-1>=0A=
+<FONT face=3DTahoma size=3D2><B>From:</B> =
+concurrency-interest-admin@cs.oswego.edu =0A=
+on behalf of matthias.ernst@coremedia.com<BR><B>Sent:</B> Fri 2/13/2004 =
+12:12 =0A=
+PM<BR><B>To:</B> =
+concurrency-interest@altair.cs.oswego.edu<BR><B>Subject:</B> =0A=
+[concurrency-interest] Tiger 1.5 beta 1: ThreadPoolExecutor uses 100% =0A=
+CPU<BR></FONT><BR></DIV>=0A=
+<DIV>=0A=
+<P><FONT size=3D2>Sorry to bother you here but would anybody try to run =
+the =0A=
+attached<BR>testcase on a win xp machine ?<BR><BR>On my machine (XP SP =
+2, 1 =0A=
+CPU), running with<BR><BR>&nbsp; java ThreadPool 10<BR><BR>it will =
+consume 100% =0A=
+CPU after finishing work when actually it should =0A=
+be<BR>idle.<BR>...<BR></FONT></P></DIV>=0A=
+=0A=
+</BODY>=0A=
+</HTML>
+------_=_NextPart_001_01C3F2E8.F750420D--
+
+
+From langer@camelot.de  Wed Feb 18 19:28:56 2004
+From: langer@camelot.de (Angelika Langer)
+Date: Wed, 18 Feb 2004 20:28:56 +0100
+Subject: [concurrency-interest] Changes since initial public review spec
+In-Reply-To: <16357.49898.3976.139301@altair.cs.oswego.edu>
+References: <16357.49898.3976.139301@altair.cs.oswego.edu>
+Message-ID: <4033BCF8.5070507@camelot.de>
+
+Forgive me if this is an entirely silly question ...
+
+In an early release of the concurrency utilities there was a class Locks 
+which had a method newConditionFor(Object o).  In the current beta 
+release of Tiger I cannot find it anymore and the list of changes does 
+not mention it either.
+
+What happened to it?  Has it been replaced by anything?
+
+Thanks,
+Angelika Langer
+-- 
+----------------------------------------------------------------
+Angelika Langer
+Email: langer@camelot.de
+http://www.langer.camelot.de/
+----------------------------------------------------------------
+
+
+Doug Lea wrote:
+
+> We just posted a summary of changes since the initial
+> public review version of spec (in September), linked from the usual place:
+>   http://gee.cs.oswego.edu/dl/concurrency-interest/index.html
+> Also pasted in below.
+> 
+> As we head toward final spec, we just made a few sanity-check passes
+> through APIs, making sure that things we've added or changed have
+> consistent names and specs. This led to a few minor changes, only one
+> worth mentioning: We replaced class PriviligedFutureTask (added in
+> October) with factory method Executors.priviligedCallable. There was
+> no reason to combine access control mechanics with Future mechanics.
+> Now you can use a priviligedCallable as the basis for any Future
+> implementation, not just the particular FutureTask implementation we
+> provide.
+> 
+> If you notice any other issues along these lines, please let us know.
+> 
+> Some of the listed changes will NOT appear in the first early-access
+> and beta1 Tiger releases. See the directions on the above web page for
+> how to use current versions anyway using -Xbootclasspath.
+> 
+> ,,,
+> 
+> 
+> JSR166 changes since public review
+> 
+> The JSR166 expert group made the following changes since the initial
+> JCP public review version of the specification. Most of these were
+> responses to requests and comments from members of the concurrency
+> interest list. Additionally, several APIs were refactored to better
+> accommodate further possible extensions and adaptations brought to our
+> attention, in particular, those expected for J2EE. Besides numerous
+> minor specification and implementation improvements, and some
+> renamings to improve API consistency, the changes include:
+> 
+> 
+>    1. Execution methods producing Futures that were previously in the
+>       Executors "toolkit" class were renamed as submit and moved to
+>       the ExecutorService interface, with default implementations in a
+>       new AbstractExecutorService class. This enables extended
+>       implementations of ExecutorService to override these methods.
+> 
+>    2. Declarations of scheduling methods were abstracted into the new
+>       ScheduledExecutorService interface, and the implementation class
+>       was renamed to ScheduledThreadPoolExecutor. This enables other
+>       implementations to share the same interface.
+> 
+>    3. Methods from the Cancellable interface were merged into the
+>       Future interface, and CancellableTask implementation merged into
+>       FutureTask. This eliminates the unhelpful distinction between
+>       cancellability and the ability to wait for termination, that
+>       complicated both usage and extensibility. (Previous uses of
+>       Cancellable can be rephrased as Future<?>.)
+> 
+>    4. Support was added for coordinating execution of multiple tasks:
+>       ExecutorService now contains methods invokeAll and invokeAny,
+>       which handle some very common cases. Interface CompletionService
+>       and concrete class ExecutorCompletionService provide a way to
+>       control processing of a set of submitted tasks. Together, these
+>       provide standardized APIs for dealing with common asynchronous
+>       programming problems that were previously lacking.
+> 
+>    5. The ExecutorService shutdown methods are more carefully
+>       specified (and implemented) to cleanly fail when invoked by
+>       callers that do not have permission to modify threads.
+> 
+>    6. The Executors class now exports its methods producing "wrappers"
+>       that hide configuration settings of concrete ExecutorServices,
+>       so the methods can be used with any other ExecutorService
+>       implementation.
+> 
+>    7. The Executors class now provides methods to convert various
+>       other common "closure" types to Callables so they can be more
+>       readily used in contexts producing Futures.
+> 
+>    8. The Executors class now provides a defaultThreadFactory that
+>       places new threads in known states with respect to priority,
+>       daemon status, etc.
+> 
+>    9. There is now better support for execution of tasks requiring
+>       special security settings. Method
+>       Executors.privilegedThreadFactory creates threads with the
+>       prevailing access control settings, and
+>       Executors.privilegedCallable and related methods create actions
+>       that run, if allowed, within the settings prevailing when the
+>       actions are created.
+> 
+>   10. New replace() methods were added to interface ConcurrentMap and
+>       implementation ConcurrentHashMap. These address some common use
+>       cases previously overlooked.
+> 
+>   11. Instrumentation methods were added to the reentrant lock
+>       classes, to enable monitoring for contention etc. The reentrant
+>       lock classes also underwent some internal refactoring visible
+>       only in that they now inherit from new AbstractReentrantLock
+>       class. (This class is exported for the sake of providing
+>       javadocs but is not currently designed for extension outside of
+>       the package.)
+> 
+>   12. Instrumentation methods and "protected" utility methods were
+>       added to Semaphore, and the "fair" variant is now selectable
+>       using a constructor argument rather than being a subclass. These
+>       broaden the range of usefulness of this class.
+> 
+>   13. BlockingQueue now supports method drainTo, a bulk-poll operation
+>       that extracts some or all queued elements.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+
+
+From dholmes@dltech.com.au  Wed Feb 18 21:18:33 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Thu, 19 Feb 2004 07:18:33 +1000
+Subject: [concurrency-interest] Changes since initial public review spec
+In-Reply-To: <4033BCF8.5070507@camelot.de>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIEJDDNAA.dholmes@dltech.com.au>
+
+> In an early release of the concurrency utilities there was a class Locks
+> which had a method newConditionFor(Object o).  In the current beta
+> release of Tiger I cannot find it anymore and the list of changes does
+> not mention it either.
+>
+> What happened to it?  Has it been replaced by anything?
+
+It is gone. It turned out that the idea of adding multiple Conditions
+associated with the monitor lock of an arbitrary object was impractical for
+a number of reasons. Doug touched on these reasons here:
+
+http://altair.cs.oswego.edu/pipermail/concurrency-interest/2003-June/000467.
+html
+
+Basically such a change to the semantics associated with synchronized and
+Object would break every development tool out there that thought it knew
+anything about the built-in synchronization features of Java.
+
+David Holmes
+
+
+From langer@camelot.de  Thu Feb 19 06:19:59 2004
+From: langer@camelot.de (Angelika Langer)
+Date: Thu, 19 Feb 2004 07:19:59 +0100
+Subject: [concurrency-interest] Changes since initial public review spec
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCIEJDDNAA.dholmes@dltech.com.au>
+References: <NFBBKALFDCPFIDBNKAPCIEJDDNAA.dholmes@dltech.com.au>
+Message-ID: <4034558F.7060700@camelot.de>
+
+Thanks for pointing to the piece of information I was missing.
+
+Another question:  I've been playing around with the ThreadMBean and its 
+deadlock detection feature.  It only works for the built-in locks, but 
+not for any of the explicit locks.  Is this because we are talking about 
+a beta release?  Or will it remain that way?  From a user's perspective, 
+it's kind of puzzling that deadlock detection works for the built-in 
+lock, but not for ReentrantLock.
+
+Angelika Langer
+
+
+-- 
+----------------------------------------------------------------
+Angelika Langer
+Email: langer@camelot.de
+http://www.langer.camelot.de/
+----------------------------------------------------------------
+
+
+David Holmes wrote:
+
+>>In an early release of the concurrency utilities there was a class Locks
+>>which had a method newConditionFor(Object o).  In the current beta
+>>release of Tiger I cannot find it anymore and the list of changes does
+>>not mention it either.
+>>
+>>What happened to it?  Has it been replaced by anything?
+> 
+> 
+> It is gone. It turned out that the idea of adding multiple Conditions
+> associated with the monitor lock of an arbitrary object was impractical for
+> a number of reasons. Doug touched on these reasons here:
+> 
+> http://altair.cs.oswego.edu/pipermail/concurrency-interest/2003-June/000467.
+> html
+> 
+> Basically such a change to the semantics associated with synchronized and
+> Object would break every development tool out there that thought it knew
+> anything about the built-in synchronization features of Java.
+> 
+> David Holmes
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+
+
+From dl@cs.oswego.edu  Fri Feb 20 13:24:09 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 20 Feb 2004 08:24:09 -0500
+Subject: [concurrency-interest] dl.util.concurrent 1.3.3
+Message-ID: <16438.2681.252023.195806@altair.cs.oswego.edu>
+
+I put out a couple of minor changes to dl.util.concurrent as version
+1.3.3.  It mostly includes adjustments to PooledExecutor that make it
+work as expected when minimum pool size is set to zero, but other
+policies are set in ways that sometimes require at least one
+thread. (As mentioned in some postings a while ago, JDK1.5
+ThreadPoolExecutor avoids the issues here, mainly because "core" pool
+size settings replace dl.u.c "minimum" sizes).
+
+See http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/intro.html
+
+We hope people are planning to migrate to the improved JDK1.5 versions
+of things. The dl.u.c package is going into maintenance mode.
+
+-Doug
+
+
+
+
+
+From ogg@valaran.com  Fri Feb 20 15:31:49 2004
+From: ogg@valaran.com (Michael Ogg)
+Date: Fri, 20 Feb 2004 10:31:49 -0500
+Subject: [concurrency-interest] dl.util.concurrent 1.3.3
+In-Reply-To: <16438.2681.252023.195806@altair.cs.oswego.edu>
+References: <16438.2681.252023.195806@altair.cs.oswego.edu>
+Message-ID: <40362865.7010500@valaran.com>
+
+am I missing something? I just downloaded the latest and greatest 
+following the link to:
+http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/current/concurrent.tar.gz
+but it seems to be identical to the last release.
+
+Michael
+
+Doug Lea wrote:
+> I put out a couple of minor changes to dl.util.concurrent as version
+> 1.3.3.  It mostly includes adjustments to PooledExecutor that make it
+> work as expected when minimum pool size is set to zero, but other
+> policies are set in ways that sometimes require at least one
+> thread. (As mentioned in some postings a while ago, JDK1.5
+> ThreadPoolExecutor avoids the issues here, mainly because "core" pool
+> size settings replace dl.u.c "minimum" sizes).
+> 
+> See http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/intro.html
+> 
+> We hope people are planning to migrate to the improved JDK1.5 versions
+> of things. The dl.u.c package is going into maintenance mode.
+> 
+> -Doug
+> 
+> 
+> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+> 
+
+-- 
+   +-----------------------------------------------------------+
+   | Michael Ogg              | e-mail: ogg@valaran.com        |
+   | CTO, Valaran Corporation | URL:    http://www.valaran.com |
+   | 212 Carnegie Center #201 | voice:  +1-609-945-7259        |
+   | Princeton NJ 08540       | fax:    +1-609-716-8463        |
+   +-----------------------------------------------------------+
+
+
+From dl@cs.oswego.edu  Fri Feb 20 15:34:54 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 20 Feb 2004 10:34:54 -0500
+Subject: [concurrency-interest] dl.util.concurrent 1.3.3
+In-Reply-To: <40362865.7010500@valaran.com>
+References: <16438.2681.252023.195806@altair.cs.oswego.edu>
+ <40362865.7010500@valaran.com>
+Message-ID: <16438.10526.412095.771911@altair.cs.oswego.edu>
+
+> am I missing something? 
+
+No. I was missing a symlink change. Sorry. It is there now.
+
+-Doug
+
+From ogg@valaran.com  Fri Feb 20 15:52:15 2004
+From: ogg@valaran.com (Michael Ogg)
+Date: Fri, 20 Feb 2004 10:52:15 -0500
+Subject: [concurrency-interest] dl.util.concurrent 1.3.3
+In-Reply-To: <16438.10526.412095.771911@altair.cs.oswego.edu>
+References: <16438.2681.252023.195806@altair.cs.oswego.edu>	<40362865.7010500@valaran.com> <16438.10526.412095.771911@altair.cs.oswego.edu>
+Message-ID: <40362D2F.6030807@valaran.com>
+
+got it, thanks.
+
+Doug Lea wrote:
+>>am I missing something? 
+> 
+> 
+> No. I was missing a symlink change. Sorry. It is there now.
+> 
+> -Doug
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+> 
+
+-- 
+   +-----------------------------------------------------------+
+   | Michael Ogg              | e-mail: ogg@valaran.com        |
+   | CTO, Valaran Corporation | URL:    http://www.valaran.com |
+   | 212 Carnegie Center #201 | voice:  +1-609-945-7259        |
+   | Princeton NJ 08540       | fax:    +1-609-716-8463        |
+   +-----------------------------------------------------------+
+
+
+From news@kav.dk  Tue Feb 24 15:41:53 2004
+From: news@kav.dk (Kasper Nielsen)
+Date: Tue, 24 Feb 2004 16:41:53 +0100
+Subject: [concurrency-interest] 100% cpu usage on winXP
+Message-ID: <403B70C1.1020908@kav.dk>
+
+Hi,
+
+Im having a problem with 100 % cpu usage on a windows platform, both on 
+beta1 and beta1 + newest jsr166.jar
+
+I've included a test case.
+
+try running it first with
+ > java Tester
+and then
+ > java Tester 100
+
+The latter run should result in 100 % cpu usage on windows
+
+regards
+   Kasper
+-------------------------------
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.LinkedBlockingQueue;
+
+public class Tester implements Runnable
+{
+     private static final Callable NULL_CALLABLE = new Callable() {
+         public Object call() throws Exception
+         {
+             return null;
+         }
+     };
+
+     private SetFutureTask future;
+
+     public Tester(SetFutureTask future) {
+         this.future = future;
+     }
+
+     public static void main(String[] args) throws Exception
+     {
+         SetFutureTask future=new SetFutureTask();
+         new Thread(new Tester(future)).start();
+	if (args.length>0 && args[0].equals("100"))
+           future.get();
+         System.out.println("Start taking");	
+         new LinkedBlockingQueue().take();
+     }
+
+     public void run()
+     {
+         future.set(new Object());
+     }
+
+     private static class SetFutureTask extends FutureTask
+     {
+         private SetFutureTask() {
+             super(NULL_CALLABLE);
+         }
+         protected void set(Object arg0)
+         {
+             super.set(arg0);
+         }
+     }
+}
+---------------------------
+
+From dl@cs.oswego.edu  Tue Feb 24 15:54:21 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Tue, 24 Feb 2004 10:54:21 -0500
+Subject: [concurrency-interest] 100% cpu usage on winXP
+In-Reply-To: <403B70C1.1020908@kav.dk>
+References: <403B70C1.1020908@kav.dk>
+Message-ID: <16443.29613.548671.323940@altair.cs.oswego.edu>
+
+> Im having a problem with 100 % cpu usage on a windows platform, 
+
+Yes, this is a Windows-only JVM problem that will be fixed in beta2
+(builds 40+). Sorry about problems.
+
+-Doug
+
+From news@kav.dk  Wed Feb 25 10:07:23 2004
+From: news@kav.dk (Kasper Nielsen)
+Date: Wed, 25 Feb 2004 11:07:23 +0100
+Subject: [concurrency-interest] 100% cpu usage on winXP
+In-Reply-To: <16443.29613.548671.323940@altair.cs.oswego.edu>
+References: <403B70C1.1020908@kav.dk> <16443.29613.548671.323940@altair.cs.oswego.edu>
+Message-ID: <403C73DB.4070802@kav.dk>
+
+Doug Lea wrote:
+>>Im having a problem with 100 % cpu usage on a windows platform, 
+> 
+> 
+> Yes, this is a Windows-only JVM problem that will be fixed in beta2
+> (builds 40+). Sorry about problems.
+> 
+> -Doug
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+Any idea when it will be public available - its a rather annoying bug - 
+or is it possible to circumvent it in any way?
+I guess im having problem understanding what the actual problem is.
+
+- Kasper
+
+From Guy_Katz@icomverse.com  Wed Feb 25 07:36:12 2004
+From: Guy_Katz@icomverse.com (Katz Guy)
+Date: Wed, 25 Feb 2004 09:36:12 +0200
+Subject: [concurrency-interest] Which lock to use
+Message-ID: <385D702A9C11D511A9E90008C7160AD5074AF480@ISMAIL1>
+
+This message is in MIME format. Since your mail reader does not understand
+this format, some or all of this message may not be legible.
+
+------_=_NextPart_001_01C3FB71.46E9D874
+Content-Type: text/plain
+
+Hi;
+I have an application that is based on cached data that is being updated
+periodically (once every 5 hours).
+I have a scheduler that is responsible for invalidating data so that data
+refresh can be made.
+My problem is which locking system to use for the time of data refresh
+operation (I still have data readers coming in but need to hold them until I
+refresh the data).
+Are Objects like ReadWriteLock suitable for this kind of case? Should I stay
+with regular synch? What options do I have here?
+Any help would be appreciated.
+Thanks in advance.
+
+------_=_NextPart_001_01C3FB71.46E9D874
+Content-Type: text/html
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+<HEAD>
+<META HTTP-EQUIV=3D"Content-Type" CONTENT=3D"text/html; =
+charset=3Dus-ascii">
+<META NAME=3D"Generator" CONTENT=3D"MS Exchange Server version =
+5.5.2655.35">
+<TITLE>Which lock to use</TITLE>
+</HEAD>
+<BODY>
+
+<P><FONT SIZE=3D2 FACE=3D"Arial">Hi;</FONT>
+<BR><FONT SIZE=3D2 FACE=3D"Arial">I have an application that is based =
+on cached data that is being updated periodically (once every 5 =
+hours).</FONT>
+<BR><FONT SIZE=3D2 FACE=3D"Arial">I have a scheduler that is =
+responsible for invalidating data so that data refresh can be =
+made.</FONT>
+<BR><FONT SIZE=3D2 FACE=3D"Arial">My problem is which locking system to =
+use for the time of data refresh operation (I still have data readers =
+coming in but need to hold them until I refresh the data).</FONT></P>
+
+<P><FONT SIZE=3D2 FACE=3D"Arial">Are Objects like ReadWriteLock =
+suitable for this kind of case? Should I stay with regular synch? What =
+options do I have here?</FONT></P>
+
+<P><FONT SIZE=3D2 FACE=3D"Arial">Any help would be appreciated.</FONT>
+<BR><FONT SIZE=3D2 FACE=3D"Arial">Thanks in advance.</FONT>
+</P>
+
+</BODY>
+</HTML>
+------_=_NextPart_001_01C3FB71.46E9D874--
+
+From dl@cs.oswego.edu  Wed Feb 25 12:08:49 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Wed, 25 Feb 2004 07:08:49 -0500
+Subject: [concurrency-interest] 100% cpu usage on winXP
+In-Reply-To: <403C73DB.4070802@kav.dk>
+References: <403B70C1.1020908@kav.dk>
+ <16443.29613.548671.323940@altair.cs.oswego.edu>
+ <403C73DB.4070802@kav.dk>
+Message-ID: <16444.36945.188922.892887@altair.cs.oswego.edu>
+
+> Any idea when it will be public available - its a rather annoying bug - 
+
+I think about 4 weeks. I might be able to get substitute jvm
+libraries to people desperate for them sooner. (But not yet.)
+
+> or is it possible to circumvent it in any way?
+
+Well, this doesn't affect Solaris or Linux versions.
+
+> I guess im having problem understanding what the actual problem is.
+
+An underlying synchronization event that helps implement park was not
+reset properly.
+
+-Doug
+
+From dl@cs.oswego.edu  Wed Feb 25 12:23:21 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Wed, 25 Feb 2004 07:23:21 -0500
+Subject: [concurrency-interest] Which lock to use
+In-Reply-To: <385D702A9C11D511A9E90008C7160AD5074AF480@ISMAIL1>
+References: <385D702A9C11D511A9E90008C7160AD5074AF480@ISMAIL1>
+Message-ID: <16444.37817.394759.377446@altair.cs.oswego.edu>
+
+> I have an application that is based on cached data that is being updated
+> periodically (once every 5 hours).
+> I have a scheduler that is responsible for invalidating data so that data
+> refresh can be made.
+> My problem is which locking system to use for the time of data refresh
+> operation (I still have data readers coming in but need to hold them until I
+> refresh the data).
+> Are Objects like ReadWriteLock suitable for this kind of case? Should I stay
+> with regular synch? What options do I have here?
+> Any help would be appreciated.
+
+This doesn't say enough to make a concrete recommendation but it is
+the sort of situation where read/write locks should work well.  Also,
+if (1) your cache is structured as a map (2) it is OK for readers to
+use previous values even while updates are being performed (rather
+than blocking until updates complete), then you should be able to use
+a ConcurrentHashMap as the cache, without any custom coding.
+
+-Doug
+
+
+
+
+
+From Guy_Katz@icomverse.com  Wed Feb 25 12:34:37 2004
+From: Guy_Katz@icomverse.com (Katz Guy)
+Date: Wed, 25 Feb 2004 14:34:37 +0200
+Subject: [concurrency-interest] Which lock to use
+Message-ID: <385D702A9C11D511A9E90008C7160AD5074AF485@ISMAIL1>
+
+This message is in MIME format. Since your mail reader does not understand
+this format, some or all of this message may not be legible.
+
+------_=_NextPart_001_01C3FB9B.BB04FDB8
+Content-Type: text/plain
+
+Thanks for the quick reply,
+I am actually listening to your J1 presentation as we speak.
+I want to provide some more info so maybe the recommendation can be more
+decisive.
+My application is a J2EE application where many users are viewing with JSPs
+data that is held in regular java beans (not hashmap) in the application
+scope.
+Like you mentioned, I do not need to get a lock from the start of the update
+process(going to the DB) but only need to get the lock before I invoke any
+of the setters on the java beans. 
+My biggest fear is that for each web hit requesting the data, the read
+operations will try to acquire the lock even though, as I mentioned, I
+update the data rarely but I have many readers of that data between updates.
+Does this shed some more light?
+Thanks.
+
+-----Original Message-----
+From: Doug Lea [mailto:dl@cs.oswego.edu] 
+Sent: Wednesday, February 25, 2004 2:23 PM
+To: Katz Guy
+Cc: 'concurrency-interest@altair.cs.oswego.edu'
+Subject: Re: [concurrency-interest] Which lock to use
+
+
+> I have an application that is based on cached data that is being updated
+> periodically (once every 5 hours).
+> I have a scheduler that is responsible for invalidating data so that data
+> refresh can be made.
+> My problem is which locking system to use for the time of data refresh
+> operation (I still have data readers coming in but need to hold them until
+I
+> refresh the data).
+> Are Objects like ReadWriteLock suitable for this kind of case? Should I
+stay
+> with regular synch? What options do I have here?
+> Any help would be appreciated.
+
+This doesn't say enough to make a concrete recommendation but it is
+the sort of situation where read/write locks should work well.  Also,
+if (1) your cache is structured as a map (2) it is OK for readers to
+use previous values even while updates are being performed (rather
+than blocking until updates complete), then you should be able to use
+a ConcurrentHashMap as the cache, without any custom coding.
+
+-Doug
+
+
+
+
+______________________________________________________________________
+  This email message has been scanned by PineApp Mail-Secure and has been
+found clean.
+
+------_=_NextPart_001_01C3FB9B.BB04FDB8
+Content-Type: text/html
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+<HEAD>
+<META HTTP-EQUIV=3D"Content-Type" CONTENT=3D"text/html; =
+charset=3Dus-ascii">
+<META NAME=3D"Generator" CONTENT=3D"MS Exchange Server version =
+5.5.2655.35">
+<TITLE>RE: [concurrency-interest] Which lock to use</TITLE>
+</HEAD>
+<BODY>
+
+<P><FONT SIZE=3D2>Thanks for the quick reply,</FONT>
+<BR><FONT SIZE=3D2>I am actually listening to your J1 presentation as =
+we speak.</FONT>
+<BR><FONT SIZE=3D2>I want to provide some more info so maybe the =
+recommendation can be more decisive.</FONT>
+<BR><FONT SIZE=3D2>My application is a J2EE application where many =
+users are viewing with JSPs data that is held in regular java beans =
+(not hashmap) in the application scope.</FONT></P>
+
+<P><FONT SIZE=3D2>Like you mentioned, I do not need to get a lock from =
+the start of the update process(going to the DB) but only need to get =
+the lock before I invoke any of the setters on the java beans. =
+</FONT></P>
+
+<P><FONT SIZE=3D2>My biggest fear is that for each web hit requesting =
+the data, the read operations will try to acquire the lock even though, =
+as I mentioned, I update the data rarely but I have many readers of =
+that data between updates.</FONT></P>
+
+<P><FONT SIZE=3D2>Does this shed some more light?</FONT>
+<BR><FONT SIZE=3D2>Thanks.</FONT>
+</P>
+
+<P><FONT SIZE=3D2>-----Original Message-----</FONT>
+<BR><FONT SIZE=3D2>From: Doug Lea [<A =
+HREF=3D"mailto:dl@cs.oswego.edu">mailto:dl@cs.oswego.edu</A>] </FONT>
+<BR><FONT SIZE=3D2>Sent: Wednesday, February 25, 2004 2:23 PM</FONT>
+<BR><FONT SIZE=3D2>To: Katz Guy</FONT>
+<BR><FONT SIZE=3D2>Cc: =
+'concurrency-interest@altair.cs.oswego.edu'</FONT>
+<BR><FONT SIZE=3D2>Subject: Re: [concurrency-interest] Which lock to =
+use</FONT>
+</P>
+<BR>
+
+<P><FONT SIZE=3D2>&gt; I have an application that is based on cached =
+data that is being updated</FONT>
+<BR><FONT SIZE=3D2>&gt; periodically (once every 5 hours).</FONT>
+<BR><FONT SIZE=3D2>&gt; I have a scheduler that is responsible for =
+invalidating data so that data</FONT>
+<BR><FONT SIZE=3D2>&gt; refresh can be made.</FONT>
+<BR><FONT SIZE=3D2>&gt; My problem is which locking system to use for =
+the time of data refresh</FONT>
+<BR><FONT SIZE=3D2>&gt; operation (I still have data readers coming in =
+but need to hold them until I</FONT>
+<BR><FONT SIZE=3D2>&gt; refresh the data).</FONT>
+<BR><FONT SIZE=3D2>&gt; Are Objects like ReadWriteLock suitable for =
+this kind of case? Should I stay</FONT>
+<BR><FONT SIZE=3D2>&gt; with regular synch? What options do I have =
+here?</FONT>
+<BR><FONT SIZE=3D2>&gt; Any help would be appreciated.</FONT>
+</P>
+
+<P><FONT SIZE=3D2>This doesn't say enough to make a concrete =
+recommendation but it is</FONT>
+<BR><FONT SIZE=3D2>the sort of situation where read/write locks should =
+work well.&nbsp; Also,</FONT>
+<BR><FONT SIZE=3D2>if (1) your cache is structured as a map (2) it is =
+OK for readers to</FONT>
+<BR><FONT SIZE=3D2>use previous values even while updates are being =
+performed (rather</FONT>
+<BR><FONT SIZE=3D2>than blocking until updates complete), then you =
+should be able to use</FONT>
+<BR><FONT SIZE=3D2>a ConcurrentHashMap as the cache, without any custom =
+coding.</FONT>
+</P>
+
+<P><FONT SIZE=3D2>-Doug</FONT>
+</P>
+<BR>
+<BR>
+<BR>
+
+<P><FONT =
+SIZE=3D2>_______________________________________________________________=
+_______</FONT>
+<BR><FONT SIZE=3D2>&nbsp; This email message has been scanned by =
+PineApp Mail-Secure and has been found clean.</FONT>
+</P>
+
+</BODY>
+</HTML>
+------_=_NextPart_001_01C3FB9B.BB04FDB8--
+
+From larryr@saturn.sdsu.edu  Wed Feb 25 13:45:38 2004
+From: larryr@saturn.sdsu.edu (Larry Riedel)
+Date: 25 Feb 2004 13:45:38 -0000
+Subject: [concurrency-interest] Re: Which lock to use
+In-Reply-To: <385D702A9C11D511A9E90008C7160AD5074AF485@ISMAIL1>
+Message-ID: <20040225134538.3480.qmail@home19.riedel.org>
+
+> I have an application that is based on cached data that is being
+> updated periodically (once every 5 hours).  I have a scheduler
+> that is responsible for invalidating data so that data refresh can
+> be made.  My problem is which locking system to use for the time
+> of data refresh operation (I still have data readers coming in but
+> need to hold them until I refresh the data).
+> [...]
+> My application is a J2EE application where many users are viewing
+> with JSPs data that is held in regular java beans (not hashmap)
+> in the application scope...  I do not need to get a lock from the
+> start of the update process(going to the DB) but only need to get
+> the lock before I invoke any of the setters on the java beans.  My
+> biggest fear is that for each web hit requesting the data, the
+> read operations will try to acquire the lock even though, as I
+> mentioned, I update the data rarely but I have many readers of
+> that data between updates.
+
+I think from a per-request latency perspective, needlessly acquiring
+a read lock would be a negligible overhead, but maybe the total
+overhead for all the requests will make the application running on
+the server slow.  If there is a "bean" which has several properties
+that need to be all be changed as part of one atomic transaction
+which comprises a sequence of updates to individual properties,
+I would be inclined to make the bean a lightweight thing, a dumb
+snapshot data object, and have updates occur by replacing an
+old bean object with a new bean object whose properties are all
+uptodate, and once that has occurred, no changes will be made to the
+new bean object until after it is itself replaced and nobody has a
+reference to it.  If it is ok for different JSP view pages to have
+different ideas of what the state of the bean is, and there will
+only be one thread updating (replacing) the beans at a particular
+time, then maybe no locking is necessary at all?
+
+
+Larry
+
+
+From richard.beton@roke.co.uk  Thu Feb 26 10:03:27 2004
+From: richard.beton@roke.co.uk (Beton, Richard)
+Date: Thu, 26 Feb 2004 10:03:27 +0000
+Subject: [concurrency-interest] Java theory and practice: Fixing the Java Memory Model
+Message-ID: <403DC46F.4060208@roke.co.uk>
+
+What is the Java Memory Model, and how was it broken in the first place?
+
+http://www-106.ibm.com/developerworks/library/j-jtp02244.html
+
+
+-- 
+Registered Office: Roke Manor Research Ltd, Siemens House, Oldbury, Bracknell,
+Berkshire. RG12 8FZ
+
+The information contained in this e-mail and any attachments is confidential to
+Roke Manor Research Ltd and must not be passed to any third party without
+permission. This communication is for information only and shall not create or
+change any contractual relationship.
+
+

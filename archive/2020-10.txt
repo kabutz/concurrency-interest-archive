@@ -1,0 +1,662 @@
+From lukas.rytz at lightbend.com  Thu Oct  1 08:14:47 2020
+From: lukas.rytz at lightbend.com (Lukas Rytz)
+Date: Thu, 1 Oct 2020 14:14:47 +0200
+Subject: [concurrency-interest] ForkJoinPool sometimes blocks an outer on a
+ nested task (Java 9 and later)
+Message-ID: <CAO6Pz2FtBqbTo6HRYoKfAPGMTWTiduE7ahzBZEqhZhJX=CmuFA@mail.gmail.com>
+
+Dear Experts
+
+I'm new on this list and not a concurrency expert. I'm the lead of the
+Scala team at Lightbend which maintains the compiler and standard library.
+
+We recently had a bug report of a parallel collections operation being
+blocked on the termination of a Future started within the operation body. I
+managed to reproduce the behavior in a fairly small Java-only example using
+ForkJoinPool, the code is here:
+https://gist.github.com/lrytz/a622c541d91336030a8cb788273bdc66
+
+The code starts a task, which forks two subtasks and joins them, the
+subtasks recursively do the same, until some depth. Each one of these tasks
+is fast (2ms). Additionally, the first task creates a subtask that is slow
+(200ms), but does *not* join on it. On Java 8, each top-level task returns
+quickly. On Java 9 and later, from time to time the top-level task gets
+blocked on the slow subtask and only returns after 200+ ms. I tested Java
+1.8.0_261-b12 for 8, and 9+181, 11.0.6+10, 14.0.1+7, 15+36-1562.
+
+The issue is more common when the pool's parallelism is lower. With a
+parallelism of 4, I did a 10 seconds flight recording, and there is a
+pretty obvious difference: on Java 8 there were > 20 pool threads, while on
+Java 11 there were only 5 of them. The screenshots show the long wait
+periods on Java 11:
+https://github.com/scala/bug/issues/12106#issuecomment-701978100.
+
+I did a short search of this list's archive and found one thread that looks
+somewhat related, though if I understand correctly that older discussion is
+about tasks that involve some sort of blocking, which is not the case in
+this example.
+http://altair.cs.oswego.edu/pipermail/concurrency-interest/2014-May/012669.html
+
+I'd like to know whether the Java 9+ behavior is a bug or within spec - I
+hope it's an appropriate question for this list.
+https://docs.oracle.com/javase/9/docs/api/java/util/concurrent/ForkJoinPool.html
+says:
+>  The pool attempts to maintain enough active (or available) threads by
+dynamically adding, suspending, or resuming internal worker threads, even
+if some tasks are stalled waiting to join others
+
+Best,
+Lukas
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201001/c62a825a/attachment.htm>
+
+From kineolyan at protonmail.com  Thu Oct  1 16:04:28 2020
+From: kineolyan at protonmail.com (Olivier Peyrusse)
+Date: Thu, 01 Oct 2020 20:04:28 +0000
+Subject: [concurrency-interest] ForkJoinPool sometimes blocks an outer
+ on a nested task (Java 9 and later)
+In-Reply-To: <CAO6Pz2FtBqbTo6HRYoKfAPGMTWTiduE7ahzBZEqhZhJX=CmuFA@mail.gmail.com>
+References: <CAO6Pz2FtBqbTo6HRYoKfAPGMTWTiduE7ahzBZEqhZhJX=CmuFA@mail.gmail.com>
+Message-ID: <73laEnW3YLl4yRHdmUTTP4yCUi_gGMDe6wfLX03U3gPSupOVSg3-VbfG0WGlFwPaQhyCZvIwTO6eaAi5UAC8lCqPMu6SV2huVzh7B2p1f1w=@protonmail.com>
+
+Hello Lukas,
+
+I haven't found the exact lines of code that causes your problem, but basically, it comes from the change to the ForkJoinPool algorithm to create less additonal threads.
+While previously calling #join() would create a new side thread to help completing the task being joined, the new algorithm tries in place to consume submitted tasks (I am still looking for the commit that changed that)
+
+The thing is that calling #execute from within a ForkJoinThread, like you do within Test$T, is detected by the code [1], causing the task with the long sleep to be recorded in the same work queue as your other Test$T tasks. And it behaves differently than an ForkJoinPool#externalPush, as it could occurs when called from your main for example.
+So when calling #join(), some workers may consider that executing the long-sleep task helps in the join. As a consequence, even if not joining explicitly on it, you do.
+
+Changing Test$T#compute() to the following code highlights that it is what happens.
+```java
+for (T t : subtasks) {
+final long begin = System.nanoTime();
+t.join();
+long duration = (System.nanoTime() - begin) / 1000_000;
+if (duration > 200) {
+System.out.println("Long sleep picked on a join");
+}
+}
+```
+
+Not being a maintainer of the FJP, I cannot tell if this is an intended design or some edge-case.
+
+Cheers
+Olivier
+
+[1] https://github.com/openjdk/jdk/blob/3c4e824aa5fd99337759fa5000f5673ab2430750/src/java.base/share/classes/java/util/concurrent/ForkJoinPool.java#L1921-L1931
+
+‐‐‐‐‐‐‐ Original Message ‐‐‐‐‐‐‐
+Le jeudi 1 octobre 2020 14:14, Lukas Rytz via Concurrency-interest <concurrency-interest at cs.oswego.edu> a écrit :
+
+> Dear Experts
+>
+> I'm new on this list and not a concurrency expert. I'm the lead of the Scala team at Lightbend which maintains the compiler and standard library.
+>
+> We recently had a bug report of a parallel collections operation being blocked on the termination of a Future started within the operation body. I managed to reproduce the behavior in a fairly small Java-only example using ForkJoinPool, the code is here: https://gist.github.com/lrytz/a622c541d91336030a8cb788273bdc66
+>
+> The code starts a task, which forks two subtasks and joins them, the subtasks recursively do the same, until some depth. Each one of these tasks is fast (2ms). Additionally, the first task creates a subtask that is slow (200ms), but does *not* join on it. On Java 8, each top-level task returns quickly. On Java 9 and later, from time to time the top-level task gets blocked on the slow subtask and only returns after 200+ ms. I tested Java 1.8.0_261-b12 for 8, and 9+181, 11.0.6+10, 14.0.1+7, 15+36-1562.
+>
+> The issue is more common when the pool's parallelism is lower. With a parallelism of 4, I did a 10 seconds flight recording, and there is a pretty obvious difference: on Java 8 there were > 20 pool threads, while on Java 11 there were only 5 of them. The screenshots show the long wait periods on Java 11: https://github.com/scala/bug/issues/12106#issuecomment-701978100.
+>
+> I did a short search of this list's archive and found one thread that looks somewhat related, though if I understand correctly that older discussion is about tasks that involve some sort of blocking, which is not the case in this example. http://altair.cs.oswego.edu/pipermail/concurrency-interest/2014-May/012669.html
+>
+> I'd like to know whether the Java 9+ behavior is a bug or within spec - I hope it's an appropriate question for this list. https://docs.oracle.com/javase/9/docs/api/java/util/concurrent/ForkJoinPool.html says:
+>> The pool attempts to maintain enough active (or available) threads by dynamically adding, suspending, or resuming internal worker threads, even if some tasks are stalled waiting to join others
+>
+> Best,
+> Lukas
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201001/1ca099b2/attachment.htm>
+
+From jw_list at headissue.com  Wed Oct 14 23:33:19 2020
+From: jw_list at headissue.com (Jens Wilke)
+Date: Thu, 15 Oct 2020 13:33:19 +1000
+Subject: [concurrency-interest] CompletableFuture.get() swallows thread
+ interrupt flag on Java 11
+Message-ID: <f90b41a0-6c64-f8d4-21a5-313bd69b0372@headissue.com>
+
+Hello everyone,
+
+finally I am using more of the Java 8 concurrency code (yay!) and found 
+something strange.
+
+Here is the test code:
+
+     Executor executor = Executors.newCachedThreadPool();
+     Thread t = new Thread(() -> {
+       while (!Thread.interrupted()) {
+         CompletableFuture<Void> future = new CompletableFuture<>();
+         executor.execute(() -> future.complete(null));
+         try {
+           future.get();
+         } catch (InterruptedException e) {
+           return;
+         } catch (ExecutionException e) {
+           e.printStackTrace();
+         }
+       }
+     });
+     t.start();
+     Thread.sleep(1000);
+     t.interrupt();
+     t.join();
+
+This is supposed to terminate after 1s.
+
+Java version which does not terminate:
+openjdk version "11.0.8" 2020-07-14
+OpenJDK Runtime Environment (build 11.0.8+10-post-Ubuntu-0ubuntu120.04)
+OpenJDK 64-Bit Server VM (build 11.0.8+10-post-Ubuntu-0ubuntu120.04, 
+mixed mode, sharing)
+
+Java version which does terminate:
+java version "1.8.0_162"
+Java(TM) SE Runtime Environment (build 1.8.0_162-b12)
+Java HotSpot(TM) 64-Bit Server VM (build 25.162-b12, mixed mode)
+
+Debugging into the CompletableFuture.get() in Java 11 I can find a code 
+path that resets the interrupt flag but neither restores it or throws 
+the InterruptedException.
+
+Can "someone" give that a closer look?
+
+Warm regards,
+
+Jens
+
+From oleksandr.otenko at gmail.com  Thu Oct 15 02:23:41 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Thu, 15 Oct 2020 07:23:41 +0100
+Subject: [concurrency-interest] CompletableFuture.get() swallows thread
+ interrupt flag on Java 11
+In-Reply-To: <f90b41a0-6c64-f8d4-21a5-313bd69b0372@headissue.com>
+References: <f90b41a0-6c64-f8d4-21a5-313bd69b0372@headissue.com>
+Message-ID: <CANkgWKi+_JSP-pfakhFAOHweHgSGhBZL_2PTWMk=8D+RBi+HNw@mail.gmail.com>
+
+Does it reproduce if you remove the line that completes the future?
+
+On Thu, 15 Oct 2020, 04:36 Jens Wilke via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Hello everyone,
+>
+> finally I am using more of the Java 8 concurrency code (yay!) and found
+> something strange.
+>
+> Here is the test code:
+>
+>      Executor executor = Executors.newCachedThreadPool();
+>      Thread t = new Thread(() -> {
+>        while (!Thread.interrupted()) {
+>          CompletableFuture<Void> future = new CompletableFuture<>();
+>          executor.execute(() -> future.complete(null));
+>          try {
+>            future.get();
+>          } catch (InterruptedException e) {
+>            return;
+>          } catch (ExecutionException e) {
+>            e.printStackTrace();
+>          }
+>        }
+>      });
+>      t.start();
+>      Thread.sleep(1000);
+>      t.interrupt();
+>      t.join();
+>
+> This is supposed to terminate after 1s.
+>
+> Java version which does not terminate:
+> openjdk version "11.0.8" 2020-07-14
+> OpenJDK Runtime Environment (build 11.0.8+10-post-Ubuntu-0ubuntu120.04)
+> OpenJDK 64-Bit Server VM (build 11.0.8+10-post-Ubuntu-0ubuntu120.04,
+> mixed mode, sharing)
+>
+> Java version which does terminate:
+> java version "1.8.0_162"
+> Java(TM) SE Runtime Environment (build 1.8.0_162-b12)
+> Java HotSpot(TM) 64-Bit Server VM (build 25.162-b12, mixed mode)
+>
+> Debugging into the CompletableFuture.get() in Java 11 I can find a code
+> path that resets the interrupt flag but neither restores it or throws
+> the InterruptedException.
+>
+> Can "someone" give that a closer look?
+>
+> Warm regards,
+>
+> Jens
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201015/08d54226/attachment.htm>
+
+From jw_list at headissue.com  Thu Oct 15 03:02:18 2020
+From: jw_list at headissue.com (Jens Wilke)
+Date: Thu, 15 Oct 2020 17:02:18 +1000
+Subject: [concurrency-interest] CompletableFuture.get() swallows thread
+ interrupt flag on Java 11
+In-Reply-To: <CANkgWKi+_JSP-pfakhFAOHweHgSGhBZL_2PTWMk=8D+RBi+HNw@mail.gmail.com>
+References: <f90b41a0-6c64-f8d4-21a5-313bd69b0372@headissue.com>
+ <CANkgWKi+_JSP-pfakhFAOHweHgSGhBZL_2PTWMk=8D+RBi+HNw@mail.gmail.com>
+Message-ID: <2f231206-46e2-4c31-e14e-0b5588d14b2a@headissue.com>
+
+No. Interruption works.
+
+The problem is triggered when interruption and completion happen at the 
+same time.
+
+On 15/10/20 4:23 pm, Alex Otenko wrote:
+> Does it reproduce if you remove the line that completes the future?
+
+From davidcholmes at aapt.net.au  Thu Oct 15 03:55:09 2020
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Thu, 15 Oct 2020 17:55:09 +1000
+Subject: [concurrency-interest] CompletableFuture.get() swallows thread
+ interrupt flag on Java 11
+In-Reply-To: <2f231206-46e2-4c31-e14e-0b5588d14b2a@headissue.com>
+References: <f90b41a0-6c64-f8d4-21a5-313bd69b0372@headissue.com>
+ <CANkgWKi+_JSP-pfakhFAOHweHgSGhBZL_2PTWMk=8D+RBi+HNw@mail.gmail.com>
+ <2f231206-46e2-4c31-e14e-0b5588d14b2a@headissue.com>
+Message-ID: <038b01d6a2c8$81adfab0$8509f010$@aapt.net.au>
+
+I think I can see how this happens. At the end of waitingGet we may have been interrupted and already caught the IE, but because we are interruptible we don't re-assert the interrupt status. If we return null that indicates reportGet should throw IE. But before we return from waitingGet we reload from "result" which may now be non-null, so we return non-null and hence never rethrow the IE.
+
+There needs to be a further check of q.interrupted and a re-assertion of the interrupt state, but I'm not certain of the exact state that needs to be checked. Possibly:
+
+If (r != null || (r = result) != null) {
+  postComplete();
+ + if (q != null && q.interrupted && interruptible)
+ +   Thread.currentThread().interrupt();
+}
+
+Cheers,
+David
+
+-----Original Message-----
+From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> On Behalf Of Jens Wilke via Concurrency-interest
+Sent: Thursday, 15 October 2020 5:02 PM
+To: Alex Otenko <oleksandr.otenko at gmail.com>
+Cc: concurrency-interest <concurrency-interest at cs.oswego.edu>
+Subject: Re: [concurrency-interest] CompletableFuture.get() swallows thread interrupt flag on Java 11
+
+No. Interruption works.
+
+The problem is triggered when interruption and completion happen at the 
+same time.
+
+On 15/10/20 4:23 pm, Alex Otenko wrote:
+> Does it reproduce if you remove the line that completes the future?
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From dl at cs.oswego.edu  Fri Oct 16 07:49:19 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 16 Oct 2020 07:49:19 -0400
+Subject: [concurrency-interest] CompletableFuture.get() swallows thread
+ interrupt flag on Java 11
+In-Reply-To: <f90b41a0-6c64-f8d4-21a5-313bd69b0372@headissue.com>
+References: <f90b41a0-6c64-f8d4-21a5-313bd69b0372@headissue.com>
+Message-ID: <bedd3117-780c-e33d-ae75-9cdc293601e8@cs.oswego.edu>
+
+Thanks for reporting this; sorry for problems. As David noticed, there 
+was a path that did not re-establish interrupt status. Now updated to 
+place this check along common path.
+
+(While I'm at it: sorry that teaching and CS dept chairing during 
+pandemic make for  slow response to just about everything.)
+
+
+
+@@ -1855,25 +1855,25 @@
+              }
+              else if (!queued)
+                  queued = tryPushStack(q);
++            else if (interruptible && q.interrupted) {
++                q.thread = null;
++                cleanStack();
++                return null;
++            }
+              else {
+                  try {
+                      ForkJoinPool.managedBlock(q);
+                  } catch (InterruptedException ie) { // currently 
+cannot happen
+                      q.interrupted = true;
+                  }
+-                if (q.interrupted && interruptible)
+-                    break;
+              }
+          }
+-        if (q != null && queued) {
++        if (q != null) {
+              q.thread = null;
+-            if (!interruptible && q.interrupted)
++            if (q.interrupted)
+                  Thread.currentThread().interrupt();
+-            if (r == null)
+-                cleanStack();
+          }
+-        if (r != null || (r = result) != null)
+-            postComplete();
++        postComplete();
+          return r;
+      }
+
+
+
+On 10/14/20 11:33 PM, Jens Wilke via Concurrency-interest wrote:
+> Hello everyone,
+>
+> finally I am using more of the Java 8 concurrency code (yay!) and 
+> found something strange.
+>
+> Here is the test code:
+>
+>     Executor executor = Executors.newCachedThreadPool();
+>     Thread t = new Thread(() -> {
+>       while (!Thread.interrupted()) {
+>         CompletableFuture<Void> future = new CompletableFuture<>();
+>         executor.execute(() -> future.complete(null));
+>         try {
+>           future.get();
+>         } catch (InterruptedException e) {
+>           return;
+>         } catch (ExecutionException e) {
+>           e.printStackTrace();
+>         }
+>       }
+>     });
+>     t.start();
+>     Thread.sleep(1000);
+>     t.interrupt();
+>     t.join();
+>
+> This is supposed to terminate after 1s.
+>
+> Java version which does not terminate:
+> openjdk version "11.0.8" 2020-07-14
+> OpenJDK Runtime Environment (build 11.0.8+10-post-Ubuntu-0ubuntu120.04)
+> OpenJDK 64-Bit Server VM (build 11.0.8+10-post-Ubuntu-0ubuntu120.04, 
+> mixed mode, sharing)
+>
+> Java version which does terminate:
+> java version "1.8.0_162"
+> Java(TM) SE Runtime Environment (build 1.8.0_162-b12)
+> Java HotSpot(TM) 64-Bit Server VM (build 25.162-b12, mixed mode)
+>
+> Debugging into the CompletableFuture.get() in Java 11 I can find a 
+> code path that resets the interrupt flag but neither restores it or 
+> throws the InterruptedException.
+>
+> Can "someone" give that a closer look?
+>
+> Warm regards,
+>
+> Jens
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From matthias.schmalz at digitalasset.com  Wed Oct 21 10:52:25 2020
+From: matthias.schmalz at digitalasset.com (Matthias Schmalz)
+Date: Wed, 21 Oct 2020 16:52:25 +0200
+Subject: [concurrency-interest] ForkJoinPool deadlock - bug?
+Message-ID: <CAA_PF5TY6iee8K_LxKMd5HQUSUBLAEmiPL0QW8s1FrAd9emRmA@mail.gmail.com>
+
+Dear experts,
+
+We are using ForkJoinPool as part of a software project. In our integration
+tests, we occasionally observe deadlocks with the following characteristics:
+- The ForkJoinPool stops executing new tasks.
+- All worker threads are waiting inside of ForkJoinPool.managedBlock.
+- The number of running threads is 0, the number of active threads is 1.
+
+After increasing the "parallelism" parameter, the problem still occurred.
+Increasing the "minimumRunnable" parameter from 1 to 2 made the problem
+disappear. So we have a workaround for the moment.
+
+Further investigations revealed that worker threads may be SIGNALLED or
+UNSIGNALLED. When a worker thread is UNSIGNALLED, it will be parked soon
+after. However, an UNSIGNALLED thread scans the work queues before being
+parked; so UNSIGNALLED worker threads may actually execute tasks.
+
+It seems, if an UNSIGNALLED thread executes "managedBlock", the RC variable
+may temporarily be too high by one. Which ultimately results in the
+deadlock we have observed.
+
+Below, you can find a unit test that reproduces the issue quite reliably
+(on my machine). It has been compiled with Scala 2.12.11 (I hope Scala is
+ok, if not I can convert it to Java) and executed with OpenJDK 11.0.6.
+
+I kindly ask you to critically review my observations and let me know if
+they are correct. Also, if there is a bug in ForkJoinPool, how can I
+request a fix? Lastly, if this is not the right place to discuss such
+observations, I would be glad if you could point me to the right place.
+
+Thank you very much in advance and have a nice day!
+
+Matthias Schmalz
+
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.{ForkJoinPool, ForkJoinWorkerThread,
+Semaphore, TimeUnit}
+
+import org.scalatest.{Matchers, WordSpec}
+
+/**
+  * Demonstrates a deadlock in ForkJoinPool.
+  *
+  * Compiled with Scala 2.12.11
+  * Executed with OpenJDK 11.0.6
+  */
+class ForkJoinPoolTest extends WordSpec with Matchers {
+
+  lazy val forkJoinPool = new ForkJoinPool(
+    1, // The problem can also be reproduced with parallelism = 2.
+    ForkJoinPool.defaultForkJoinWorkerThreadFactory,
+    ((_, t) => t.printStackTrace()): Thread.UncaughtExceptionHandler,
+    true
+  )
+
+  val MinDelayCycles = 50000
+  val MaxDelayCycles = 100000
+  val Iterations     = MaxDelayCycles - MinDelayCycles
+
+  "A task may run on an UNSIGNALLED work queue" in {
+    val completedTasks               = new Semaphore(0)
+    val tasksOnUnsignalledWorkQueues = new AtomicInteger()
+
+    for (delay <- MinDelayCycles until MaxDelayCycles) {
+      forkJoinPool.execute(() => {
+        if (!isSignalled) {
+          tasksOnUnsignalledWorkQueues.getAndIncrement()
+        }
+        completedTasks.release()
+      })
+
+      busyWait(delay)
+    }
+
+    // All tasks scheduled. Awaiting termination.
+    completedTasks.tryAcquire(Iterations, 10, TimeUnit.SECONDS) shouldBe true
+
+    Console.err.println(s"Hits: ${tasksOnUnsignalledWorkQueues.get()},
+Total: $Iterations")
+    tasksOnUnsignalledWorkQueues.get() should be > 0
+  }
+
+  "If several blocking tasks run on SIGNALLED work queues, all tasks
+complete" in {
+    val startedTasks = new Semaphore(0)
+    val blocker      = new Semaphore(0)
+    val blockLimit   = new AtomicInteger(100)
+
+    for (delay <- MinDelayCycles until MaxDelayCycles) {
+      forkJoinPool.execute(() => {
+        startedTasks.release()
+        if (isSignalled && blockLimit.getAndDecrement() > 0) {
+          blocking {
+            blocker.acquire()
+          }
+        }
+      })
+
+      busyWait(delay)
+    }
+
+    // As ForkJoinPool.managedBlock will create extra threads,
+    // all tasks will eventually be started.
+    startedTasks.tryAcquire(Iterations, 10, TimeUnit.SECONDS) shouldBe true
+
+    // Cleanup for next test
+    blocker.release(100)
+  }
+
+  "If several blocking tasks run on UNSIGNALLED work queues, the pool
+may deadlock" in {
+    val runningTasks = new Semaphore(0)
+    val blockers     = new Semaphore(0)
+    val blockLimit   = new AtomicInteger(10)
+
+    for (delay <- MinDelayCycles until MaxDelayCycles) {
+      forkJoinPool.execute(() => {
+        runningTasks.release()
+        if (!isSignalled && blockLimit.getAndDecrement() > 0) {
+          blocking {
+            blockers.acquire()
+          }
+        }
+      })
+
+      busyWait(delay)
+    }
+
+    // PROBLEM: runningTasks can no longer be acquired, so
+ForkJoinPool is running out of threads.
+    runningTasks.tryAcquire(Iterations, 10, TimeUnit.SECONDS) shouldBe false
+
+    // Looking at the output, all threads are parked or inside of
+ForkJoinPool.managedBlock,
+    // so apparently it failed to release an extra thread.
+    printStackTraces()
+
+    // The activeThreadCount seems to be off by one.
+    forkJoinPool.getRunningThreadCount shouldBe 0
+    forkJoinPool.getActiveThreadCount shouldBe 1
+  }
+
+  def busyWait(delay: Int): Long = {
+    var result = 0L
+    for (i <- 0 until delay) {
+      result += i * i
+    }
+    result
+  }
+
+  def isSignalled: Boolean = {
+    val workQueueField =
+classOf[ForkJoinWorkerThread].getDeclaredField("workQueue")
+    workQueueField.setAccessible(true)
+    val q = workQueueField.get(Thread.currentThread())
+
+    val phaseField =
+Class.forName("java.util.concurrent.ForkJoinPool$WorkQueue").getDeclaredField("phase")
+    phaseField.setAccessible(true)
+    val phase = phaseField.get(q).asInstanceOf[Int]
+
+    phase >= 0
+  }
+
+  def blocking(thunk: => Unit): Unit = {
+    val blocker: ForkJoinPool.ManagedBlocker = new ForkJoinPool.ManagedBlocker {
+      private[this] var done: Boolean = false
+      override def block(): Boolean = {
+        try {
+          if (!done) {
+            thunk
+          }
+        } finally {
+          done = true
+        }
+
+        true
+      }
+
+      override def isReleasable: Boolean = done
+    }
+    ForkJoinPool.managedBlock(blocker)
+  }
+
+  private def printStackTraces(): Unit = {
+    val traces = {
+      import scala.collection.JavaConverters._
+      Thread.getAllStackTraces.asScala.toMap
+        .collect {
+          case (thread, stackTrace) if
+thread.getName.startsWith("ForkJoinPool") =>
+            s"$thread state=${thread.getState.toString}" +
+stackTrace.mkString("\n\t", "\n\t", "\n")
+        }
+        .mkString("\n")
+    }
+    Console.out.println(s"Here are the stack-traces of ForkJoinPool
+worker threads:\n$traces")
+  }
+}
+
+-- 
+Dr. Matthias Schmalz
+Senior Software Engineer
+e: matthias.schmalz at digitalasset.com ￼
+Digital Asset (Switzerland) GmbH
+Luggwegstrasse 9
+8048 Zurich, Switzerland
+digitalasset.com <http://www.digitalasset.com/>
+
+-- 
+This message, and any attachments, is for the intended recipient(s) only, 
+may contain information that is privileged, confidential and/or proprietary 
+and subject to important terms and conditions available at 
+http://www.digitalasset.com/emaildisclaimer.html 
+<http://www.digitalasset.com/emaildisclaimer.html>. If you are not the 
+intended recipient, please delete this message.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20201021/2eb8e27e/attachment-0001.htm>
+
+From dl at cs.oswego.edu  Wed Oct 21 11:44:10 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 21 Oct 2020 11:44:10 -0400
+Subject: [concurrency-interest] ForkJoinPool deadlock - bug?
+In-Reply-To: <CAA_PF5TY6iee8K_LxKMd5HQUSUBLAEmiPL0QW8s1FrAd9emRmA@mail.gmail.com>
+References: <CAA_PF5TY6iee8K_LxKMd5HQUSUBLAEmiPL0QW8s1FrAd9emRmA@mail.gmail.com>
+Message-ID: <841f117c-5da1-e195-28bb-373761227f27@cs.oswego.edu>
+
+Thanks for the report. It appears to be a bug. I'll further investigate.
+
+On 10/21/20 10:52 AM, Matthias Schmalz via Concurrency-interest wrote:
+> Dear experts,
+>
+> We are using ForkJoinPool as part of a software project. In our 
+> integration tests, we occasionally observe deadlocks with the 
+> following characteristics:
+> - The ForkJoinPool stops executing new tasks.
+> - All worker threads are waiting inside of ForkJoinPool.managedBlock.
+> - The number of running threads is 0, the number of active threads is 1.
+>
+> After increasing the "parallelism" parameter, the problem still 
+> occurred. Increasing the "minimumRunnable" parameter from 1 to 2 made 
+> the problem disappear. So we have a workaround for the moment.
+

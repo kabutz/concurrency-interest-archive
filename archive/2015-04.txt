@@ -1,0 +1,3596 @@
+From jh at squareup.com  Wed Apr  1 00:10:24 2015
+From: jh at squareup.com (Josh Humphries)
+Date: Wed, 1 Apr 2015 00:10:24 -0400
+Subject: [concurrency-interest] API request for JSR166,
+	AtomicMarkableReference
+Message-ID: <CAHJZN-s=Az_hAqvKmr_6HAfbo8+PGZESOOrgEiAhR5v0NX3wvA@mail.gmail.com>
+
+I've used AtomicMarkableReference in a couple of places, and I feel its API
+really falls short for what I've been doing.
+
+The methods it exposes seem to imply some intended semantics on how the
+mark relates to the reference. However, in the cases I've used it, I'm
+really trying to store a reference and a flag together -- so the flag isn't
+a "mark" that relates to the reference, rather they are two (independent?)
+elements that I need to update atomically and whose "shape" fits that of
+the markable reference.
+
+So I'm inclined to make these requests to simplify my own usage. I'm
+curious what others think:
+
+   - Exposing the internal [ref, boolean] tuple type and deprecating the
+   APIs that require callers to construct and pass in a boolean array would
+   make much joy. E.g.:
+
+MarkedReference<T> get();
+
+@Deprecated T get(boolean[] markHolder);
+
+
+   - This class is missing atomic get-and-set mechanisms:
+
+T getAndSetReference(T newValue);
+
+boolean getAndSetMark(boolean newMark);
+MarkedReference<T> getAndSet(T newValue, boolean newMark);
+
+
+   - This class is also missing the complement of attemptMark:
+
+boolean attemptSet(boolean expectedMark, T newValue);
+
+
+   - Finally, a reliable attemptMark (that returns false only when the
+   value does not match expected; never spuriously) would certainly be a nice
+   to have. I find myself having to wrap the existing method in a CAS-style
+   loop every single time to get the behavior I actually need. (Same goes for
+   the attemptSet operation requested above.)
+
+I'm curious about others that might use this class and what they think
+about the above API amendments. Are my use cases far from the norm or were
+these operations just overlooked when the class was originally created?
+
+I'm tempted to just write my own thing on top of AtomicReference to do what
+I need. But it feels a little like "reinventing the wheel" when there's a
+standard API class that is so close just not quite..
+
+----
+*Josh Humphries*
+Manager, Shared Systems  |  Platform Engineering
+Atlanta, GA  |  678-400-4867
+*Square* (www.squareup.com)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150401/7bff3863/attachment.html>
+
+From jh at squareup.com  Wed Apr  1 00:33:42 2015
+From: jh at squareup.com (Josh Humphries)
+Date: Wed, 1 Apr 2015 00:33:42 -0400
+Subject: [concurrency-interest] Faking time
+Message-ID: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+
+A number of times, I've found myself battling unit tests for code that uses
+multiple threads, schedules tasks, observes the system clock, etc. These
+tests can be difficult to make deterministic, so they end up being flaky...
+or very slow... or both.
+
+I've built some fairly complicated machinery that handles many cases in a
+way that "just works". We have a FakeClockScheduledExecutorService that can
+be injected into code that needs to schedule things. The FakeClock on which
+it is based has a fairly complicated internal implementation, due to the
+explicit intent that it be thread-safe.
+
+But there are still a lot of cases where it doesn't really work. And cases
+where it is excessively difficult to make it work: very intrusive changes
+required to the code-under-test, the tests themselves end up too "white
+box" where it must know many trivial intermediate steps (points in time)
+and assert them along the way, etc.
+
+I've toyed with the idea of using a class loader and/or agent that could
+transform classes so that accesses to Thread.sleep, LockSupport.park, etc
+could be re-written to use "fake time" mechanisms. But the more I think
+about it, the more really nasty sharp corners I see on an approach like
+this (and all other approaches I've considered, really).
+
+
+So... does anyone here know of any prior art for mocking the notion of time
+in tests? Is there anything that does it really well? Is it even feasible
+that something that does it well *could* exist? :)
+
+
+----
+*Josh Humphries*
+Manager, Shared Systems  |  Platform Engineering
+Atlanta, GA  |  678-400-4867
+*Square* (www.squareup.com)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150401/f2d32e7d/attachment.html>
+
+From davidcholmes at aapt.net.au  Wed Apr  1 00:37:37 2015
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 1 Apr 2015 14:37:37 +1000
+Subject: [concurrency-interest] API request for JSR166,
+	AtomicMarkableReference
+In-Reply-To: <CAHJZN-s=Az_hAqvKmr_6HAfbo8+PGZESOOrgEiAhR5v0NX3wvA@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIEMLKOAA.davidcholmes@aapt.net.au>
+
+Hi Josh,
+
+I think you are trying to make this class something it is not. It is not a general purpose API for managing two distinct entities as an atomic pair. What it was abstractly representing was the situation where you can steal a "mark" bit from a reference and so treat it as a "reference plus a mark bit". This is useful in algorithms that would ideally like a CAS2 (atomic CAS of 2 independent variables) but can be degenerately written using CAS if the bits for the second variable can be colocated within the bits of the first - specifically if a reference/pointer is suitably aligned then you can utilise the low order bit(s).
+
+The Pair type that is used is purely an internal representation detail for a cross-platform implementation - a "real" implementation would use native code or Unsafe to directly manipulate the mark bit within the object reference. Given the "mark" bit is intended to tell you something about the reference itself it really doesn't make sense to set the reference indepedent of the mark bit ala your attemptSet method.
+
+I do agree though that attemptMark failing spuriously seems odd - I don't recall why we did that.
+
+Cheers,
+David
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Josh Humphries
+  Sent: Wednesday, 1 April 2015 2:10 PM
+  To: concurrency-interest at cs.oswego.edu
+  Subject: [concurrency-interest] API request for JSR166,AtomicMarkableReference
+
+
+  I've used AtomicMarkableReference in a couple of places, and I feel its API really falls short for what I've been doing.
+
+
+  The methods it exposes seem to imply some intended semantics on how the mark relates to the reference. However, in the cases I've used it, I'm really trying to store a reference and a flag together -- so the flag isn't a "mark" that relates to the reference, rather they are two (independent?) elements that I need to update atomically and whose "shape" fits that of the markable reference.
+
+
+  So I'm inclined to make these requests to simplify my own usage. I'm curious what others think:
+    a.. Exposing the internal [ref, boolean] tuple type and deprecating the APIs that require callers to construct and pass in a boolean array would make much joy. E.g.:
+
+    MarkedReference<T> get();
+    @Deprecated T get(boolean[] markHolder);
+    a.. This class is missing atomic get-and-set mechanisms:
+    T getAndSetReference(T newValue);
+
+    boolean getAndSetMark(boolean newMark);
+    MarkedReference<T> getAndSet(T newValue, boolean newMark);
+    a.. This class is also missing the complement of attemptMark:
+    boolean attemptSet(boolean expectedMark, T newValue);
+    a.. Finally, a reliable attemptMark (that returns false only when the value does not match expected; never spuriously) would certainly be a nice to have. I find myself having to wrap the existing method in a CAS-style loop every single time to get the behavior I actually need. (Same goes for the attemptSet operation requested above.)
+  I'm curious about others that might use this class and what they think about the above API amendments. Are my use cases far from the norm or were these operations just overlooked when the class was originally created?
+
+
+  I'm tempted to just write my own thing on top of AtomicReference to do what I need. But it feels a little like "reinventing the wheel" when there's a standard API class that is so close just not quite..
+
+
+  ----
+  Josh Humphries
+  Manager, Shared Systems  |  Platform Engineering
+
+  Atlanta, GA  |  678-400-4867
+  Square (www.squareup.com)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150401/3bbe5862/attachment.html>
+
+From davidcholmes at aapt.net.au  Wed Apr  1 00:49:43 2015
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 1 Apr 2015 14:49:43 +1000
+Subject: [concurrency-interest] Faking time
+In-Reply-To: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEMMKOAA.davidcholmes@aapt.net.au>
+
+Hi Josh,
+
+I don't understand what you mean by "faking time" here.
+
+David
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Josh Humphries
+  Sent: Wednesday, 1 April 2015 2:34 PM
+  To: concurrency-interest at cs.oswego.edu
+  Subject: [concurrency-interest] Faking time
+
+
+  A number of times, I've found myself battling unit tests for code that uses multiple threads, schedules tasks, observes the system clock, etc. These tests can be difficult to make deterministic, so they end up being flaky... or very slow... or both.
+
+
+  I've built some fairly complicated machinery that handles many cases in a way that "just works". We have a FakeClockScheduledExecutorService that can be injected into code that needs to schedule things. The FakeClock on which it is based has a fairly complicated internal implementation, due to the explicit intent that it be thread-safe.
+
+
+  But there are still a lot of cases where it doesn't really work. And cases where it is excessively difficult to make it work: very intrusive changes required to the code-under-test, the tests themselves end up too "white box" where it must know many trivial intermediate steps (points in time) and assert them along the way, etc.
+
+
+  I've toyed with the idea of using a class loader and/or agent that could transform classes so that accesses to Thread.sleep, LockSupport.park, etc could be re-written to use "fake time" mechanisms. But the more I think about it, the more really nasty sharp corners I see on an approach like this (and all other approaches I've considered, really).
+
+
+
+
+
+  So... does anyone here know of any prior art for mocking the notion of time in tests? Is there anything that does it really well? Is it even feasible that something that does it well could exist? :)
+
+
+
+
+  ----
+  Josh Humphries
+  Manager, Shared Systems  |  Platform Engineering
+
+  Atlanta, GA  |  678-400-4867
+  Square (www.squareup.com)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150401/1d1e303f/attachment-0001.html>
+
+From joe.bowbeer at gmail.com  Wed Apr  1 02:11:47 2015
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Tue, 31 Mar 2015 23:11:47 -0700
+Subject: [concurrency-interest] Faking time
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCCEMMKOAA.davidcholmes@aapt.net.au>
+References: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCCEMMKOAA.davidcholmes@aapt.net.au>
+Message-ID: <CAHzJPEpyb6WUe_NqBqK5LjBkKWa0izNAS9mcEbpzP0enNGJ7aA@mail.gmail.com>
+
+I haven't taken this as far as I'd like to, but after some effort trying to
+test asynchronous components of real-world (Android) applications, I
+decided that Solution 3 worked the best: Test in One Thread.
+
+https://msdn.microsoft.com/en-us/magazine/dn818494.aspx
+
+This technique relies on a Timer interface, which is implemented by a
+deterministic timer in the unit tests:
+
+deterministicTimer.elapseSeconds(3);
+
+I suspect that the ability to elapse-seconds, as above, is what you mean by
+"faking time" -- except that you're trying to fake some of the System time
+methods so that everything else "just works", without a lot of refactoring.
+
+On Tue, Mar 31, 2015 at 9:49 PM, David Holmes <davidcholmes at aapt.net.au>
+wrote:
+
+>  Hi Josh,
+>
+> I don't understand what you mean by "faking time" here.
+>
+> David
+>
+> -----Original Message-----
+> *From:* concurrency-interest-bounces at cs.oswego.edu [mailto:
+> concurrency-interest-bounces at cs.oswego.edu]*On Behalf Of *Josh Humphries
+> *Sent:* Wednesday, 1 April 2015 2:34 PM
+> *To:* concurrency-interest at cs.oswego.edu
+> *Subject:* [concurrency-interest] Faking time
+>
+> A number of times, I've found myself battling unit tests for code that
+> uses multiple threads, schedules tasks, observes the system clock, etc.
+> These tests can be difficult to make deterministic, so they end up being
+> flaky... or very slow... or both.
+>
+> I've built some fairly complicated machinery that handles many cases in a
+> way that "just works". We have a FakeClockScheduledExecutorService that can
+> be injected into code that needs to schedule things. The FakeClock on which
+> it is based has a fairly complicated internal implementation, due to the
+> explicit intent that it be thread-safe.
+>
+> But there are still a lot of cases where it doesn't really work. And cases
+> where it is excessively difficult to make it work: very intrusive changes
+> required to the code-under-test, the tests themselves end up too "white
+> box" where it must know many trivial intermediate steps (points in time)
+> and assert them along the way, etc.
+>
+> I've toyed with the idea of using a class loader and/or agent that could
+> transform classes so that accesses to Thread.sleep, LockSupport.park, etc
+> could be re-written to use "fake time" mechanisms. But the more I think
+> about it, the more really nasty sharp corners I see on an approach like
+> this (and all other approaches I've considered, really).
+>
+>
+> So... does anyone here know of any prior art for mocking the notion of
+> time in tests? Is there anything that does it really well? Is it even
+> feasible that something that does it well *could* exist? :)
+>
+>
+>  ----
+> *Josh Humphries*
+>  Manager, Shared Systems  |  Platform Engineering
+> Atlanta, GA  |  678-400-4867
+> *Square* (www.squareup.com)
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150331/b8148f6c/attachment.html>
+
+From jh at squareup.com  Wed Apr  1 10:52:38 2015
+From: jh at squareup.com (Josh Humphries)
+Date: Wed, 1 Apr 2015 10:52:38 -0400
+Subject: [concurrency-interest] Faking time
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCCEMMKOAA.davidcholmes@aapt.net.au>
+References: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCCEMMKOAA.davidcholmes@aapt.net.au>
+Message-ID: <CAHJZN-s0V76u6q+=CpkV646a19D=zbpbxq6uWS1im9kLr3VpNA@mail.gmail.com>
+
+Sorry if I didn't explain it well.
+
+For code that cares about time, I want to be able to use mocks or some
+other mechanism to make it deterministic.
+
+What we have so far is a Clock interface implemented on top of System
+methods. Instead of reading System for current time (whether it be
+currentTimeMillis() or nanoTime()), we try to inject a clock and use that.
+It also provides factory methods for other means by which code can examine
+the current time, like for Joda DateTimes and Instants and even j.u.Date.
+To make tests faster, we also provide a Clock.sleep. The system version
+delegates to Thread.sleep.
+
+We also have a FakeClock implementation. It provides a monotonic nano-time
+counter and conversions for querying millisecond-resolution (potentially
+non-monotonic) counter. FakeClock.sleep actually just advances the clock
+without blocking.
+
+FakeClock also has some complicated mechanism for scheduling. This
+basically tracks a queue of scheduled events. When you advance the
+FakeClock, it runs tasks that were scheduled for a given point in time as
+that point in time is passed. The interface for scheduling is a
+FakeClockScheduledExecutorService, so basically the
+ScheduledExecutorService API.
+
+But there are several patterns of async / multi-threaded execution where
+this is not sufficient (at least not without very intrusive changes, and
+the resulting tests still end up brittle and often require knowledge of
+non-obvious implementation details, which makes for poor tests).
+
+
+
+----
+*Josh Humphries*
+Manager, Shared Systems  |  Platform Engineering
+Atlanta, GA  |  678-400-4867
+*Square* (www.squareup.com)
+
+On Wed, Apr 1, 2015 at 12:49 AM, David Holmes <davidcholmes at aapt.net.au>
+wrote:
+
+>  Hi Josh,
+>
+> I don't understand what you mean by "faking time" here.
+>
+> David
+>
+> -----Original Message-----
+> *From:* concurrency-interest-bounces at cs.oswego.edu [mailto:
+> concurrency-interest-bounces at cs.oswego.edu]*On Behalf Of *Josh Humphries
+> *Sent:* Wednesday, 1 April 2015 2:34 PM
+> *To:* concurrency-interest at cs.oswego.edu
+> *Subject:* [concurrency-interest] Faking time
+>
+> A number of times, I've found myself battling unit tests for code that
+> uses multiple threads, schedules tasks, observes the system clock, etc.
+> These tests can be difficult to make deterministic, so they end up being
+> flaky... or very slow... or both.
+>
+> I've built some fairly complicated machinery that handles many cases in a
+> way that "just works". We have a FakeClockScheduledExecutorService that can
+> be injected into code that needs to schedule things. The FakeClock on which
+> it is based has a fairly complicated internal implementation, due to the
+> explicit intent that it be thread-safe.
+>
+> But there are still a lot of cases where it doesn't really work. And cases
+> where it is excessively difficult to make it work: very intrusive changes
+> required to the code-under-test, the tests themselves end up too "white
+> box" where it must know many trivial intermediate steps (points in time)
+> and assert them along the way, etc.
+>
+> I've toyed with the idea of using a class loader and/or agent that could
+> transform classes so that accesses to Thread.sleep, LockSupport.park, etc
+> could be re-written to use "fake time" mechanisms. But the more I think
+> about it, the more really nasty sharp corners I see on an approach like
+> this (and all other approaches I've considered, really).
+>
+>
+> So... does anyone here know of any prior art for mocking the notion of
+> time in tests? Is there anything that does it really well? Is it even
+> feasible that something that does it well *could* exist? :)
+>
+>
+>  ----
+> *Josh Humphries*
+>  Manager, Shared Systems  |  Platform Engineering
+> Atlanta, GA  |  678-400-4867
+> *Square* (www.squareup.com)
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150401/9043ae4d/attachment.html>
+
+From jh at squareup.com  Wed Apr  1 11:02:12 2015
+From: jh at squareup.com (Josh Humphries)
+Date: Wed, 1 Apr 2015 11:02:12 -0400
+Subject: [concurrency-interest] API request for JSR166,
+	AtomicMarkableReference
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCIEMLKOAA.davidcholmes@aapt.net.au>
+References: <CAHJZN-s=Az_hAqvKmr_6HAfbo8+PGZESOOrgEiAhR5v0NX3wvA@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCIEMLKOAA.davidcholmes@aapt.net.au>
+Message-ID: <CAHJZN-vvmhJBr7SW9ya0D-QGvsC7XmZNjoQgCCj8uy3yCpTNKA@mail.gmail.com>
+
+Thanks for the reply, David!
+
+To me, that doesn't sound like strong reasons to not have some of the
+suggested API, like get-and-set operations at the least (they seem like a
+natural additions to complement set and compareAndSet operations).
+
+As far as the tuple type, do any JVMs actually provide intrinsics in the
+way you suggest? For example, does HotSpot special case this class? If so,
+I guess it must also have special-casing in garbage collection so it knows
+to mask off the mark bits when computing the live set.
+
+The tuple type still would be better API. Having the caller construct an
+array is ugly and less natural/intuitive when reading the code. The class
+already has to unpack the ref and the mark. It's just a matter of
+re-packaging into an object instead of splitting it into a return value and
+an array-write.
+
+Maybe instead of deprecating the existing get(boolean[]), it could just
+have another method that returns a tuple type. (If not now, surely this
+will be strongly considered once Project Valhalla is mainstream... Java 10
+maybe?).
+
+As far as the unreliable attemptMark, I'm sure it's because a reliable
+version cannot be done without a loop. But, as I mentioned before, I end up
+writing that loop in my own code. So it would be nice to have something in
+the API to reduce boiler-plate at call-sites.
+
+
+
+
+----
+*Josh Humphries*
+Manager, Shared Systems  |  Platform Engineering
+Atlanta, GA  |  678-400-4867
+*Square* (www.squareup.com)
+
+On Wed, Apr 1, 2015 at 12:37 AM, David Holmes <davidcholmes at aapt.net.au>
+wrote:
+
+>  Hi Josh,
+>
+> I think you are trying to make this class something it is not. It is not a
+> general purpose API for managing two distinct entities as an atomic pair.
+> What it was abstractly representing was the situation where you can steal a
+> "mark" bit from a reference and so treat it as a "reference plus a mark
+> bit". This is useful in algorithms that would ideally like a CAS2 (atomic
+> CAS of 2 independent variables) but can be degenerately written using CAS
+> if the bits for the second variable can be colocated within the bits of the
+> first - specifically if a reference/pointer is suitably aligned then you
+> can utilise the low order bit(s).
+>
+> The Pair type that is used is purely an internal representation detail for
+> a cross-platform implementation - a "real" implementation would use native
+> code or Unsafe to directly manipulate the mark bit within the object
+> reference. Given the "mark" bit is intended to tell you something about the
+> reference itself it really doesn't make sense to set the reference
+> indepedent of the mark bit ala your attemptSet method.
+>
+> I do agree though that attemptMark failing spuriously seems odd - I don't
+> recall why we did that.
+>
+> Cheers,
+> David
+>
+> -----Original Message-----
+> *From:* concurrency-interest-bounces at cs.oswego.edu [mailto:
+> concurrency-interest-bounces at cs.oswego.edu]*On Behalf Of *Josh Humphries
+> *Sent:* Wednesday, 1 April 2015 2:10 PM
+> *To:* concurrency-interest at cs.oswego.edu
+> *Subject:* [concurrency-interest] API request for
+> JSR166,AtomicMarkableReference
+>
+> I've used AtomicMarkableReference in a couple of places, and I feel its
+> API really falls short for what I've been doing.
+>
+> The methods it exposes seem to imply some intended semantics on how the
+> mark relates to the reference. However, in the cases I've used it, I'm
+> really trying to store a reference and a flag together -- so the flag isn't
+> a "mark" that relates to the reference, rather they are two (independent?)
+> elements that I need to update atomically and whose "shape" fits that of
+> the markable reference.
+>
+> So I'm inclined to make these requests to simplify my own usage. I'm
+> curious what others think:
+>
+>    - Exposing the internal [ref, boolean] tuple type and deprecating the
+>    APIs that require callers to construct and pass in a boolean array would
+>    make much joy. E.g.:
+>
+>  MarkedReference<T> get();
+>
+>  @Deprecated T get(boolean[] markHolder);
+>
+>
+>    - This class is missing atomic get-and-set mechanisms:
+>
+>  T getAndSetReference(T newValue);
+>
+>  boolean getAndSetMark(boolean newMark);
+> MarkedReference<T> getAndSet(T newValue, boolean newMark);
+>
+>
+>    - This class is also missing the complement of attemptMark:
+>
+>  boolean attemptSet(boolean expectedMark, T newValue);
+>
+>
+>    - Finally, a reliable attemptMark (that returns false only when the
+>    value does not match expected; never spuriously) would certainly be a nice
+>    to have. I find myself having to wrap the existing method in a CAS-style
+>    loop every single time to get the behavior I actually need. (Same goes for
+>    the attemptSet operation requested above.)
+>
+> I'm curious about others that might use this class and what they think
+> about the above API amendments. Are my use cases far from the norm or were
+> these operations just overlooked when the class was originally created?
+>
+> I'm tempted to just write my own thing on top of AtomicReference to do
+> what I need. But it feels a little like "reinventing the wheel" when
+> there's a standard API class that is so close just not quite..
+>
+>  ----
+> *Josh Humphries*
+>  Manager, Shared Systems  |  Platform Engineering
+> Atlanta, GA  |  678-400-4867
+> *Square* (www.squareup.com)
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150401/a4325bcc/attachment-0001.html>
+
+From jwhiting at redhat.com  Wed Apr  1 12:53:00 2015
+From: jwhiting at redhat.com (Jeremy Whiting)
+Date: Wed, 01 Apr 2015 17:53:00 +0100
+Subject: [concurrency-interest] Faking time
+In-Reply-To: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+References: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+Message-ID: <551C226C.2030208@redhat.com>
+
+http://tempusfugitlibrary.org
+
+  Take a look at the docs section "Time Sensitive Code" for test 
+examples using the library. It might be what you are looking for.
+
+Regards,
+Jeremy
+
+-- 
+Jeremy Whiting
+Senior Software Engineer, JBoss Performance Team
+Red Hat
+
+On 01/04/15 05:33, Josh Humphries wrote:
+> A number of times, I've found myself battling unit tests for code that 
+> uses multiple threads, schedules tasks, observes the system clock, 
+> etc. These tests can be difficult to make deterministic, so they end 
+> up being flaky... or very slow... or both.
+>
+> I've built some fairly complicated machinery that handles many cases 
+> in a way that "just works". We have a 
+> FakeClockScheduledExecutorService that can be injected into code that 
+> needs to schedule things. The FakeClock on which it is based has a 
+> fairly complicated internal implementation, due to the explicit intent 
+> that it be thread-safe.
+>
+> But there are still a lot of cases where it doesn't really work. And 
+> cases where it is excessively difficult to make it work: very 
+> intrusive changes required to the code-under-test, the tests 
+> themselves end up too "white box" where it must know many trivial 
+> intermediate steps (points in time) and assert them along the way, etc.
+>
+> I've toyed with the idea of using a class loader and/or agent that 
+> could transform classes so that accesses to Thread.sleep, 
+> LockSupport.park, etc could be re-written to use "fake time" 
+> mechanisms. But the more I think about it, the more really nasty sharp 
+> corners I see on an approach like this (and all other approaches I've 
+> considered, really).
+>
+>
+> So... does anyone here know of any prior art for mocking the notion of 
+> time in tests? Is there anything that does it really well? Is it even 
+> feasible that something that does it well /could/ exist? :)
+>
+>
+> ----
+> *Josh Humphries*
+> Manager, Shared Systems  |  Platform Engineering
+> Atlanta, GA  |  678-400-4867
+> *Square* (www.squareup.com <http://www.squareup.com>)
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150401/5b29c4a3/attachment.html>
+
+From jh at squareup.com  Wed Apr  1 13:00:48 2015
+From: jh at squareup.com (Josh Humphries)
+Date: Wed, 1 Apr 2015 13:00:48 -0400
+Subject: [concurrency-interest] Faking time
+In-Reply-To: <551C226C.2030208@redhat.com>
+References: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+	<551C226C.2030208@redhat.com>
+Message-ID: <CAHJZN-ugZ91eSJ+JV=osPZzEu=T42tcPGXySaGwvDyL7Nj2QCg@mail.gmail.com>
+
+Hey, Jeremy,
+Thanks for the link. But that looks like a strict subset of what we already
+have. Maybe the stuff we've built is already "state of the art" for this
+sort of purpose. But I occasionally get stymied when trying to fix flaky
+time-sensitive tests: tools of this sort just aren't always enough.
+
+
+----
+*Josh Humphries*
+Manager, Shared Systems  |  Platform Engineering
+Atlanta, GA  |  678-400-4867
+*Square* (www.squareup.com)
+
+On Wed, Apr 1, 2015 at 12:53 PM, Jeremy Whiting <jwhiting at redhat.com> wrote:
+
+>  http://tempusfugitlibrary.org
+>
+>  Take a look at the docs section "Time Sensitive Code" for test examples
+> using the library. It might be what you are looking for.
+>
+> Regards,
+> Jeremy
+>
+> --
+> Jeremy Whiting
+> Senior Software Engineer, JBoss Performance Team
+> Red Hat
+>
+> On 01/04/15 05:33, Josh Humphries wrote:
+>
+> A number of times, I've found myself battling unit tests for code that
+> uses multiple threads, schedules tasks, observes the system clock, etc.
+> These tests can be difficult to make deterministic, so they end up being
+> flaky... or very slow... or both.
+>
+>  I've built some fairly complicated machinery that handles many cases in
+> a way that "just works". We have a FakeClockScheduledExecutorService that
+> can be injected into code that needs to schedule things. The FakeClock on
+> which it is based has a fairly complicated internal implementation, due to
+> the explicit intent that it be thread-safe.
+>
+>  But there are still a lot of cases where it doesn't really work. And
+> cases where it is excessively difficult to make it work: very intrusive
+> changes required to the code-under-test, the tests themselves end up too
+> "white box" where it must know many trivial intermediate steps (points in
+> time) and assert them along the way, etc.
+>
+>  I've toyed with the idea of using a class loader and/or agent that could
+> transform classes so that accesses to Thread.sleep, LockSupport.park, etc
+> could be re-written to use "fake time" mechanisms. But the more I think
+> about it, the more really nasty sharp corners I see on an approach like
+> this (and all other approaches I've considered, really).
+>
+>
+>  So... does anyone here know of any prior art for mocking the notion of
+> time in tests? Is there anything that does it really well? Is it even
+> feasible that something that does it well *could* exist? :)
+>
+>
+>   ----
+> *Josh Humphries*
+>  Manager, Shared Systems  |  Platform Engineering
+>  Atlanta, GA  |  678-400-4867
+>  *Square* (www.squareup.com)
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing listConcurrency-interest at cs.oswego.eduhttp://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150401/885c1db4/attachment.html>
+
+From heinz at javaspecialists.eu  Fri Apr  3 08:13:53 2015
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Fri, 03 Apr 2015 15:13:53 +0300
+Subject: [concurrency-interest] Fork/Join and Parallel Calamity? Or storm in
+	a teacup?
+Message-ID: <551E8401.7020200@javaspecialists.eu>
+
+Hi fellow concurrency interest members!
+
+A friend forwarded me this article:
+
+http://coopsoft.com/ar/Calamity2Article.html
+
+I'm always wary of those who have a product to flog and who bash the 
+JDK.  I'd be interested to hear your opinion on this writing though.
+
+Regards
+
+Heinz
+-- 
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java(tm) Specialists' Newsletter"
+Sun/Oracle Java Champion since 2005
+JavaOne Rock Star Speaker 2012
+http://www.javaspecialists.eu
+Tel: +30 69 75 595 262
+Skype: kabutz
+
+
+From dl at cs.oswego.edu  Fri Apr  3 09:07:21 2015
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 03 Apr 2015 09:07:21 -0400
+Subject: [concurrency-interest] Fork/Join and Parallel Calamity? Or
+ storm in a teacup?
+In-Reply-To: <551E8401.7020200@javaspecialists.eu>
+References: <551E8401.7020200@javaspecialists.eu>
+Message-ID: <551E9089.8030700@cs.oswego.edu>
+
+On 04/03/2015 08:13 AM, Dr Heinz M. Kabutz wrote:
+> Hi fellow concurrency interest members!
+>
+> A friend forwarded me this article:
+>
+> http://coopsoft.com/ar/Calamity2Article.html
+>
+> I'm always wary of those who have a product to flog and who bash the JDK.  I'd
+> be interested to hear your opinion on this writing though.
+>
+
+[A brief escape from near-quarantine for the past two and
+next month dealing with our five-year dept program review
+and other local stuff.]
+
+My overall take reading this and Ed Harned's other posts is that
+they don't reflect historical causality: Work-stealing frameworks
+(FJ and those in other languages/platforms) were initially
+targeted to classic divide-and-conquer computational workloads. But users
+soon discovered that if they ignore scope disclaimers, FJ can work
+well in other use cases (because of low contention, high utilization,
+etc). Rather than telling people to stop doing this, we've
+continually evolved internals from "can work well" to
+"typically work well", across an increasing range of use cases
+(which keep expanding). I think that Ed's argument is that
+we should not have done this,  but instead provided some other
+different Executor framework, or left it for third-party providers.
+
+-Doug
+
+
+
+
+From aleksey.shipilev at oracle.com  Fri Apr  3 10:24:27 2015
+From: aleksey.shipilev at oracle.com (Aleksey Shipilev)
+Date: Fri, 03 Apr 2015 17:24:27 +0300
+Subject: [concurrency-interest] Fork/Join and Parallel Calamity? Or
+ storm in a teacup?
+In-Reply-To: <551E9089.8030700@cs.oswego.edu>
+References: <551E8401.7020200@javaspecialists.eu>
+	<551E9089.8030700@cs.oswego.edu>
+Message-ID: <551EA29B.40109@oracle.com>
+
+I'd just short-cut the entire thread by referencing the Java Posse
+thread from four years ago:
+  https://groups.google.com/forum/#!topic/javaposse/Rfp7t23lQTo
+
+On 04/03/2015 04:07 PM, Doug Lea wrote:
+> [A brief escape from near-quarantine for the past two and
+> next month dealing with our five-year dept program review
+> and other local stuff.]
+> 
+> My overall take reading this and Ed Harned's other posts is that
+> they don't reflect historical causality: Work-stealing frameworks
+> (FJ and those in other languages/platforms) were initially
+> targeted to classic divide-and-conquer computational workloads. But users
+> soon discovered that if they ignore scope disclaimers, FJ can work
+> well in other use cases (because of low contention, high utilization,
+> etc). Rather than telling people to stop doing this, we've
+> continually evolved internals from "can work well" to
+> "typically work well", across an increasing range of use cases
+> (which keep expanding). I think that Ed's argument is that
+> we should not have done this,  but instead provided some other
+> different Executor framework, or left it for third-party providers.
+
+I think that sums it up nicely.
+
+>  I'd be interested to hear your opinion on this writing though.
+
+Way too often I find people having a pipe dream of "having something
+better", before they actually start to build, support and maintain the
+better thing. Only to realize, in way too many cases, the status quo is
+actually (close to) Pareto efficient, and improving something is much
+less obvious than you imagined. (God, I sound old!).
+
+Now, it's completely understandable not everyone has cycles to get their
+hands dirty with development. Suggestions and constructive critique are
+always welcome. However, when you are suggesting something, you'd better
+make sure your suggestion is doable, viable, practical -- or at least,
+have a fair amount of skepticism in it, asking others to poke holes.
+
+In other words, in addition to describing how a particular
+implementation "fails" your arbitrary set of expectations, explain, in
+great detail, how the alternative should improve what you care about and
+why it should not regress what you personally don't care about.
+Ultimately, have a working code that clearly demonstrates the benefits
+of the alternative.
+
+Now go back and read "What is the answer for success?" section in the
+article. This is why I believe the article is just bashing, and does not
+deserve an attention it gets. Speculation: the article is inflammatory
+to draw attention for the sake of attention. Don't take that bait.
+
+-Aleksey.
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 819 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150403/bf2ec080/attachment.bin>
+
+From edharned at gmail.com  Fri Apr  3 10:32:29 2015
+From: edharned at gmail.com (Edward Harned)
+Date: Fri, 3 Apr 2015 10:32:29 -0400
+Subject: [concurrency-interest] Fork/Join and Parallel Calamity? Or
+ storm in a teacup?
+In-Reply-To: <551E8401.7020200@javaspecialists.eu>
+References: <551E8401.7020200@javaspecialists.eu>
+Message-ID: <CALNbAKxCsk=triPEjOgOTp8yN_2vRpBCM0-9ZxXgOFMfsKJnpw@mail.gmail.com>
+
+I do not have a product to flog. In 2010 I submitted a proof-of-concept to
+the good professor showing that scatter-gather works just as well as what
+he was proposing for Java7. Since he ignored the proof, I took the parallel
+engine out of a Task Parallel product (open-source) I maintain and put in
+the Data Parallel engine. This product is also open-source. It is not
+suitable for an API since it is a full feature Data Parallel product.
+
+I have never bashed the JDK. Certain features do not belong in the core
+product. A multi/threading/tasking framework belongs outside the core
+product. That is all I have said.
+
+The points I made in all three articles are accurate.
+
+ed
+
+On Fri, Apr 3, 2015 at 8:13 AM, Dr Heinz M. Kabutz <heinz at javaspecialists.eu
+> wrote:
+
+> Hi fellow concurrency interest members!
+>
+> A friend forwarded me this article:
+>
+> http://coopsoft.com/ar/Calamity2Article.html
+>
+> I'm always wary of those who have a product to flog and who bash the JDK.
+> I'd be interested to hear your opinion on this writing though.
+>
+> Regards
+>
+> Heinz
+> --
+> Dr Heinz M. Kabutz (PhD CompSci)
+> Author of "The Java(tm) Specialists' Newsletter"
+> Sun/Oracle Java Champion since 2005
+> JavaOne Rock Star Speaker 2012
+> http://www.javaspecialists.eu
+> Tel: +30 69 75 595 262
+> Skype: kabutz
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150403/653eb932/attachment.html>
+
+From heinz at javaspecialists.eu  Fri Apr  3 11:35:27 2015
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Fri, 03 Apr 2015 18:35:27 +0300
+Subject: [concurrency-interest] Fork/Join and Parallel Calamity? Or
+ storm in a teacup?
+In-Reply-To: <551EA29B.40109@oracle.com>
+References: <551E8401.7020200@javaspecialists.eu>	<551E9089.8030700@cs.oswego.edu>
+	<551EA29B.40109@oracle.com>
+Message-ID: <551EB33F.8020605@javaspecialists.eu>
+
+Thanks for the pointer, Aleksey - I forgot about that discussion on 
+JavaPosse.  Even though I did not contribute to the discussion, I'm 
+pretty sure that at some point in my life I read it.
+
+I think the point that Ed was missing at the time was the look forward 
+to parallel streams, which to me was the main reason for having F/J in 
+the first place.  That said, in all my experiments, F/J has performed 
+admirably as long as I coded it correctly.  Some simple rules like 
+making sure that the tasks have a threshold below which they get 
+executed sequentially.  Usual parallel guidelines that apply in other 
+situations as well.  With the advent of parallel stream and 
+Spliterators, I don't see much reason to use Fork/Join directly anymore.
+
+The one thing that is difficult is to monitor what is happening inside 
+the ForkJoinPool.  Kirk tried and found it rather challenging.
+
+Regards
+
+Heinz
+-- 
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java(tm) Specialists' Newsletter"
+Sun/Oracle Java Champion since 2005
+JavaOne Rock Star Speaker 2012
+http://www.javaspecialists.eu
+Tel: +30 69 75 595 262
+Skype: kabutz
+
+
+
+Aleksey Shipilev wrote:
+> I'd just short-cut the entire thread by referencing the Java Posse
+> thread from four years ago:
+>   https://groups.google.com/forum/#!topic/javaposse/Rfp7t23lQTo
+>
+> On 04/03/2015 04:07 PM, Doug Lea wrote:
+>   
+>> [A brief escape from near-quarantine for the past two and
+>> next month dealing with our five-year dept program review
+>> and other local stuff.]
+>>
+>> My overall take reading this and Ed Harned's other posts is that
+>> they don't reflect historical causality: Work-stealing frameworks
+>> (FJ and those in other languages/platforms) were initially
+>> targeted to classic divide-and-conquer computational workloads. But users
+>> soon discovered that if they ignore scope disclaimers, FJ can work
+>> well in other use cases (because of low contention, high utilization,
+>> etc). Rather than telling people to stop doing this, we've
+>> continually evolved internals from "can work well" to
+>> "typically work well", across an increasing range of use cases
+>> (which keep expanding). I think that Ed's argument is that
+>> we should not have done this,  but instead provided some other
+>> different Executor framework, or left it for third-party providers.
+>>     
+>
+> I think that sums it up nicely.
+>
+>   
+>>  I'd be interested to hear your opinion on this writing though.
+>>     
+>
+> Way too often I find people having a pipe dream of "having something
+> better", before they actually start to build, support and maintain the
+> better thing. Only to realize, in way too many cases, the status quo is
+> actually (close to) Pareto efficient, and improving something is much
+> less obvious than you imagined. (God, I sound old!).
+>
+> Now, it's completely understandable not everyone has cycles to get their
+> hands dirty with development. Suggestions and constructive critique are
+> always welcome. However, when you are suggesting something, you'd better
+> make sure your suggestion is doable, viable, practical -- or at least,
+> have a fair amount of skepticism in it, asking others to poke holes.
+>
+> In other words, in addition to describing how a particular
+> implementation "fails" your arbitrary set of expectations, explain, in
+> great detail, how the alternative should improve what you care about and
+> why it should not regress what you personally don't care about.
+> Ultimately, have a working code that clearly demonstrates the benefits
+> of the alternative.
+>
+> Now go back and read "What is the answer for success?" section in the
+> article. This is why I believe the article is just bashing, and does not
+> deserve an attention it gets. Speculation: the article is inflammatory
+> to draw attention for the sake of attention. Don't take that bait.
+>
+> -Aleksey.
+>
+>   
+> ------------------------------------------------------------------------
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>   
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150403/5c29e895/attachment-0001.html>
+
+From shevek at anarres.org  Fri Apr  3 12:10:37 2015
+From: shevek at anarres.org (Shevek)
+Date: Fri, 03 Apr 2015 09:10:37 -0700
+Subject: [concurrency-interest] Faking time
+In-Reply-To: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+References: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+Message-ID: <551EBB7D.6040000@anarres.org>
+
+Guava contains a Ticker class which is Google's approach for faking 
+time. I haven't traced how far down into the various schedulers and so 
+forth they have pushed it, though. However, it sounds the same as your 
+FakeClock, so may be worth using.
+
+S.
+
+On 03/31/2015 09:33 PM, Josh Humphries wrote:
+> A number of times, I've found myself battling unit tests for code that
+> uses multiple threads, schedules tasks, observes the system clock, etc.
+> These tests can be difficult to make deterministic, so they end up being
+> flaky... or very slow... or both.
+>
+> I've built some fairly complicated machinery that handles many cases in
+> a way that "just works". We have a FakeClockScheduledExecutorService
+> that can be injected into code that needs to schedule things. The
+> FakeClock on which it is based has a fairly complicated internal
+> implementation, due to the explicit intent that it be thread-safe.
+>
+> But there are still a lot of cases where it doesn't really work. And
+> cases where it is excessively difficult to make it work: very intrusive
+> changes required to the code-under-test, the tests themselves end up too
+> "white box" where it must know many trivial intermediate steps (points
+> in time) and assert them along the way, etc.
+>
+> I've toyed with the idea of using a class loader and/or agent that could
+> transform classes so that accesses to Thread.sleep, LockSupport.park,
+> etc could be re-written to use "fake time" mechanisms. But the more I
+> think about it, the more really nasty sharp corners I see on an approach
+> like this (and all other approaches I've considered, really).
+>
+>
+> So... does anyone here know of any prior art for mocking the notion of
+> time in tests? Is there anything that does it really well? Is it even
+> feasible that something that does it well /could/ exist? :)
+>
+>
+> ----
+> *Josh Humphries*
+> Manager, Shared Systems  |  Platform Engineering
+> Atlanta, GA  |  678-400-4867
+> *Square* (www.squareup.com <http://www.squareup.com>)
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From jh at squareup.com  Fri Apr  3 12:20:08 2015
+From: jh at squareup.com (Josh Humphries)
+Date: Fri, 3 Apr 2015 12:20:08 -0400
+Subject: [concurrency-interest] Faking time
+In-Reply-To: <551EBB7D.6040000@anarres.org>
+References: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+	<551EBB7D.6040000@anarres.org>
+Message-ID: <CAHJZN-sBiT-vqVw+HWbY7fib5kx2mqCCtw-TPCfjpwfQDWmxFg@mail.gmail.com>
+
+Indeed they do. But it's not used widely, just in Stopwatch and internally
+(package-private, for their own unit tests) in RateLimiter, IIRC.
+
+As a matter of fact, we use Stopwatch in our code for measuring time, and
+our Clock interface has a factory method for a Ticker so that Stopwatches
+also respect our notion of fake time.
+
+Given the kind of answers I've gotten so far, I'm inclined to believe that
+we may already be on the "bleeding edge" for this sort of work. I've been
+wanting to open-source it for a while, so this gives me greater reason to
+do so since I now have reason to believe it's novel.
+
+I was mainly asking in this forum in case there was something more
+ambitious that could move us in this direction even more. This seemed like
+a good audience for this kind of subject.
+
+
+----
+*Josh Humphries*
+Manager, Shared Systems  |  Platform Engineering
+Atlanta, GA  |  678-400-4867
+*Square* (www.squareup.com)
+
+On Fri, Apr 3, 2015 at 12:10 PM, Shevek <shevek at anarres.org> wrote:
+
+> Guava contains a Ticker class which is Google's approach for faking time.
+> I haven't traced how far down into the various schedulers and so forth they
+> have pushed it, though. However, it sounds the same as your FakeClock, so
+> may be worth using.
+>
+> S.
+>
+>
+> On 03/31/2015 09:33 PM, Josh Humphries wrote:
+>
+>> A number of times, I've found myself battling unit tests for code that
+>> uses multiple threads, schedules tasks, observes the system clock, etc.
+>> These tests can be difficult to make deterministic, so they end up being
+>> flaky... or very slow... or both.
+>>
+>> I've built some fairly complicated machinery that handles many cases in
+>> a way that "just works". We have a FakeClockScheduledExecutorService
+>> that can be injected into code that needs to schedule things. The
+>> FakeClock on which it is based has a fairly complicated internal
+>> implementation, due to the explicit intent that it be thread-safe.
+>>
+>> But there are still a lot of cases where it doesn't really work. And
+>> cases where it is excessively difficult to make it work: very intrusive
+>> changes required to the code-under-test, the tests themselves end up too
+>> "white box" where it must know many trivial intermediate steps (points
+>> in time) and assert them along the way, etc.
+>>
+>> I've toyed with the idea of using a class loader and/or agent that could
+>> transform classes so that accesses to Thread.sleep, LockSupport.park,
+>> etc could be re-written to use "fake time" mechanisms. But the more I
+>> think about it, the more really nasty sharp corners I see on an approach
+>> like this (and all other approaches I've considered, really).
+>>
+>>
+>> So... does anyone here know of any prior art for mocking the notion of
+>> time in tests? Is there anything that does it really well? Is it even
+>> feasible that something that does it well /could/ exist? :)
+>>
+>>
+>> ----
+>> *Josh Humphries*
+>> Manager, Shared Systems  |  Platform Engineering
+>> Atlanta, GA  |  678-400-4867
+>> *Square* (www.squareup.com <http://www.squareup.com>)
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150403/5b823b1e/attachment.html>
+
+From akarnokd at gmail.com  Fri Apr  3 12:33:57 2015
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Fri, 3 Apr 2015 18:33:57 +0200
+Subject: [concurrency-interest] Faking time
+In-Reply-To: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+References: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+Message-ID: <CAAWwtm9JS+pjKEAGN_mPESnd94chT=5zCyb5e2yKO9PvDXoz2A@mail.gmail.com>
+
+Hi Josh,
+
+We faced a similar problem in RxJava and we implemented a TestScheduler
+whose Scheduler API is similar to a ScheduledExecutorService plus offers
+methods to advance a virtual time. Operators that require a Scheduler then
+can be simply use this TestScheduler instead of a "real" one.
+However, since RxJava is non-blocking and the scheduling dimension is
+orthogonal, we don't deal with sleeps, parks or waits.
+
+Josh Humphries <jh at squareup.com> ezt ?rta (2015. ?prilis 1., szerda):
+
+> A number of times, I've found myself battling unit tests for code that
+> uses multiple threads, schedules tasks, observes the system clock, etc.
+> These tests can be difficult to make deterministic, so they end up being
+> flaky... or very slow... or both.
+>
+> I've built some fairly complicated machinery that handles many cases in a
+> way that "just works". We have a FakeClockScheduledExecutorService that can
+> be injected into code that needs to schedule things. The FakeClock on which
+> it is based has a fairly complicated internal implementation, due to the
+> explicit intent that it be thread-safe.
+>
+> But there are still a lot of cases where it doesn't really work. And cases
+> where it is excessively difficult to make it work: very intrusive changes
+> required to the code-under-test, the tests themselves end up too "white
+> box" where it must know many trivial intermediate steps (points in time)
+> and assert them along the way, etc.
+>
+> I've toyed with the idea of using a class loader and/or agent that could
+> transform classes so that accesses to Thread.sleep, LockSupport.park, etc
+> could be re-written to use "fake time" mechanisms. But the more I think
+> about it, the more really nasty sharp corners I see on an approach like
+> this (and all other approaches I've considered, really).
+>
+>
+> So... does anyone here know of any prior art for mocking the notion of
+> time in tests? Is there anything that does it really well? Is it even
+> feasible that something that does it well *could* exist? :)
+>
+>
+> ----
+> *Josh Humphries*
+> Manager, Shared Systems  |  Platform Engineering
+> Atlanta, GA  |  678-400-4867
+> *Square* (www.squareup.com)
+>
+
+
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150403/037a6c1c/attachment.html>
+
+From joe.bowbeer at gmail.com  Fri Apr  3 13:07:19 2015
+From: joe.bowbeer at gmail.com (joe.bowbeer at gmail.com)
+Date: Fri, 03 Apr 2015 10:07:19 -0700 (PDT)
+Subject: [concurrency-interest] Fork/Join and Parallel Calamity? Or
+ storm in a teacup?
+In-Reply-To: <551EB33F.8020605@javaspecialists.eu>
+References: <551EB33F.8020605@javaspecialists.eu>
+Message-ID: <1428080839129.323a480b@Nodemailer>
+
+Adding some pre-history: a FJ framework had been part of Doug's original concurrent package (1998?) that was ported/rewritten for Java 5.
+
+
+
+
+FJ is discussed in chapter 4.4 of Doug Lea's CPJ book.
+
+
+
+
+But it didn't make the cut for Java 5, and was not integrated into j.u.c. until Java 7, several years later, when its utility outweighed its drawbacks, and it was included so that others could use it and wouldn't have to ship their own.
+
+
+
+?
+Sent from Mailbox
+
+On Fri, Apr 3, 2015 at 8:58 AM, Dr Heinz M. Kabutz
+<heinz at javaspecialists.eu> wrote:
+
+> Thanks for the pointer, Aleksey - I forgot about that discussion on 
+> JavaPosse.  Even though I did not contribute to the discussion, I'm 
+> pretty sure that at some point in my life I read it.
+> I think the point that Ed was missing at the time was the look forward 
+> to parallel streams, which to me was the main reason for having F/J in 
+> the first place.  That said, in all my experiments, F/J has performed 
+> admirably as long as I coded it correctly.  Some simple rules like 
+> making sure that the tasks have a threshold below which they get 
+> executed sequentially.  Usual parallel guidelines that apply in other 
+> situations as well.  With the advent of parallel stream and 
+> Spliterators, I don't see much reason to use Fork/Join directly anymore.
+> The one thing that is difficult is to monitor what is happening inside 
+> the ForkJoinPool.  Kirk tried and found it rather challenging.
+> Regards
+> Heinz
+> -- 
+> Dr Heinz M. Kabutz (PhD CompSci)
+> Author of "The Java(tm) Specialists' Newsletter"
+> Sun/Oracle Java Champion since 2005
+> JavaOne Rock Star Speaker 2012
+> http://www.javaspecialists.eu
+> Tel: +30 69 75 595 262
+> Skype: kabutz
+> Aleksey Shipilev wrote:
+>> I'd just short-cut the entire thread by referencing the Java Posse
+>> thread from four years ago:
+>>   https://groups.google.com/forum/#!topic/javaposse/Rfp7t23lQTo
+>>
+>> On 04/03/2015 04:07 PM, Doug Lea wrote:
+>>   
+>>> [A brief escape from near-quarantine for the past two and
+>>> next month dealing with our five-year dept program review
+>>> and other local stuff.]
+>>>
+>>> My overall take reading this and Ed Harned's other posts is that
+>>> they don't reflect historical causality: Work-stealing frameworks
+>>> (FJ and those in other languages/platforms) were initially
+>>> targeted to classic divide-and-conquer computational workloads. But users
+>>> soon discovered that if they ignore scope disclaimers, FJ can work
+>>> well in other use cases (because of low contention, high utilization,
+>>> etc). Rather than telling people to stop doing this, we've
+>>> continually evolved internals from "can work well" to
+>>> "typically work well", across an increasing range of use cases
+>>> (which keep expanding). I think that Ed's argument is that
+>>> we should not have done this,  but instead provided some other
+>>> different Executor framework, or left it for third-party providers.
+>>>     
+>>
+>> I think that sums it up nicely.
+>>
+>>   
+>>>  I'd be interested to hear your opinion on this writing though.
+>>>     
+>>
+>> Way too often I find people having a pipe dream of "having something
+>> better", before they actually start to build, support and maintain the
+>> better thing. Only to realize, in way too many cases, the status quo is
+>> actually (close to) Pareto efficient, and improving something is much
+>> less obvious than you imagined. (God, I sound old!).
+>>
+>> Now, it's completely understandable not everyone has cycles to get their
+>> hands dirty with development. Suggestions and constructive critique are
+>> always welcome. However, when you are suggesting something, you'd better
+>> make sure your suggestion is doable, viable, practical -- or at least,
+>> have a fair amount of skepticism in it, asking others to poke holes.
+>>
+>> In other words, in addition to describing how a particular
+>> implementation "fails" your arbitrary set of expectations, explain, in
+>> great detail, how the alternative should improve what you care about and
+>> why it should not regress what you personally don't care about.
+>> Ultimately, have a working code that clearly demonstrates the benefits
+>> of the alternative.
+>>
+>> Now go back and read "What is the answer for success?" section in the
+>> article. This is why I believe the article is just bashing, and does not
+>> deserve an attention it gets. Speculation: the article is inflammatory
+>> to draw attention for the sake of attention. Don't take that bait.
+>>
+>> -Aleksey.
+>>
+>>   
+>> ------------------------------------------------------------------------
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>   
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150403/89a340a6/attachment-0001.html>
+
+From sanne.grinovero at gmail.com  Fri Apr  3 18:32:15 2015
+From: sanne.grinovero at gmail.com (Sanne Grinovero)
+Date: Fri, 3 Apr 2015 23:32:15 +0100
+Subject: [concurrency-interest] Faking time
+In-Reply-To: <CAAWwtm9JS+pjKEAGN_mPESnd94chT=5zCyb5e2yKO9PvDXoz2A@mail.gmail.com>
+References: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+	<CAAWwtm9JS+pjKEAGN_mPESnd94chT=5zCyb5e2yKO9PvDXoz2A@mail.gmail.com>
+Message-ID: <CAFm4XO3f6yQzuVJGxYXd=Db2456z1eK7Gkyk5-2ohfSLM0krDg@mail.gmail.com>
+
+Hi Josh,
+we had similar needs in Infinispan. Sometimes I would use Byteman [1],
+but generally Infinispan's code was refactored to never invoke the
+time methods from the JDK directly (nor helpers such as Thread#sleep)
+but rather rely on its own TimeService interface.
+At runtime there will be only one implementation loaded, and mostly
+perform straight forward delegation to the JDK methods.
+Several tests will use the capability to replace implementation so
+you'll get to mock the clock, be it wall clock or other notions; this
+practice proved indeed very useful for us, not only to make it easier
+to simulate specific race conditions but also to generally speedup the
+testsuite as you can get rid of most cases in which some thread needs
+to wait for "some time".
+
+1 - http://byteman.jboss.org/
+
+Regards,
+Sanne
+
+
+On 3 April 2015 at 17:33, D?vid Karnok <akarnokd at gmail.com> wrote:
+> Hi Josh,
+>
+> We faced a similar problem in RxJava and we implemented a TestScheduler
+> whose Scheduler API is similar to a ScheduledExecutorService plus offers
+> methods to advance a virtual time. Operators that require a Scheduler then
+> can be simply use this TestScheduler instead of a "real" one. However, since
+> RxJava is non-blocking and the scheduling dimension is orthogonal, we don't
+> deal with sleeps, parks or waits.
+>
+>
+> Josh Humphries <jh at squareup.com> ezt ?rta (2015. ?prilis 1., szerda):
+>>
+>> A number of times, I've found myself battling unit tests for code that
+>> uses multiple threads, schedules tasks, observes the system clock, etc.
+>> These tests can be difficult to make deterministic, so they end up being
+>> flaky... or very slow... or both.
+>>
+>> I've built some fairly complicated machinery that handles many cases in a
+>> way that "just works". We have a FakeClockScheduledExecutorService that can
+>> be injected into code that needs to schedule things. The FakeClock on which
+>> it is based has a fairly complicated internal implementation, due to the
+>> explicit intent that it be thread-safe.
+>>
+>> But there are still a lot of cases where it doesn't really work. And cases
+>> where it is excessively difficult to make it work: very intrusive changes
+>> required to the code-under-test, the tests themselves end up too "white box"
+>> where it must know many trivial intermediate steps (points in time) and
+>> assert them along the way, etc.
+>>
+>> I've toyed with the idea of using a class loader and/or agent that could
+>> transform classes so that accesses to Thread.sleep, LockSupport.park, etc
+>> could be re-written to use "fake time" mechanisms. But the more I think
+>> about it, the more really nasty sharp corners I see on an approach like this
+>> (and all other approaches I've considered, really).
+>>
+>>
+>> So... does anyone here know of any prior art for mocking the notion of
+>> time in tests? Is there anything that does it really well? Is it even
+>> feasible that something that does it well could exist? :)
+>>
+>>
+>> ----
+>> Josh Humphries
+>> Manager, Shared Systems  |  Platform Engineering
+>> Atlanta, GA  |  678-400-4867
+>> Square (www.squareup.com)
+>
+>
+>
+> --
+> Best regards,
+> David Karnok
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From jh at squareup.com  Fri Apr  3 18:54:19 2015
+From: jh at squareup.com (Josh Humphries)
+Date: Fri, 3 Apr 2015 18:54:19 -0400
+Subject: [concurrency-interest] Faking time
+In-Reply-To: <CAFm4XO3f6yQzuVJGxYXd=Db2456z1eK7Gkyk5-2ohfSLM0krDg@mail.gmail.com>
+References: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+	<CAAWwtm9JS+pjKEAGN_mPESnd94chT=5zCyb5e2yKO9PvDXoz2A@mail.gmail.com>
+	<CAFm4XO3f6yQzuVJGxYXd=Db2456z1eK7Gkyk5-2ohfSLM0krDg@mail.gmail.com>
+Message-ID: <CAHJZN-u9iM0kivNrNMi=87bWn8n_uUWNY_+3aME-Nf6YEOsv6w@mail.gmail.com>
+
+Hi, Sanne,
+Thanks for the reply! That's basically the strategy we've employed as well.
+
+Problems arise when testing multi-threaded stuff with complex scheduling
+going on. The main issue is if you schedule task for time X, that task then
+starts up work on some *other* thread, and then that other thread schedules
+another task for time Y.
+
+We have some cases of this in (fairly sophisticated) code that deals with
+failures and retries. So here's a particularly gnarly case that has come
+up. It is in thread-safe, concurrent code (see statement above, where task
+at time X skips a thread before scheduling a task at time Y).
+
+I hope I can explain it. Bear with me:
+
+Our "fake clock" scheduler allows you to advance from time X to Y, no
+problem. And, if there are multiple tasks scheduled along the way, they are
+executed sequentially in FIFO order (based on order in which they were
+scheduled, which isn't always but often is deterministic).
+
+But let's say we want to move from time W to Y. Ideally, our task would run
+at time X (as described above) and then we could assert that the subsequent
+scheduled task ran at time Y. The issue is the non-deterministic nature of
+the task running at time X. Since it wants to schedule a task for time Y *on
+another thread*, our scheduler doesn't know about it. When the main task
+completes, the scheduler keeps moving the clock forward, racing with the
+thread is trying to schedule something for time Y.
+
+So there's the rub. The test is now flaky. We *do* have a solution. We have
+synchronization mechanisms that can be used where we advance the clock to
+time X and then must wait until we see the task scheduled at time Y before
+actually proceeding to time Y. But that requires very "whitebox" tests,
+where each step is advancing the clock a little at a time, based on
+intimate knowledge of underlying implementation of how various bits are
+getting scheduled. Ick.
+
+Anyhow, the code in question is not easy to re-write to make it more
+non-deterministic (in terms of the hand off to another thread prior to
+scheduling the next task). So I think the answer for me is "deal with the
+whitebox test, or do something at a higher level that is resilient to
+time-sensitive flakiness".
+
+
+
+----
+*Josh Humphries*
+Manager, Shared Systems  |  Platform Engineering
+Atlanta, GA  |  678-400-4867
+*Square* (www.squareup.com)
+
+On Fri, Apr 3, 2015 at 6:32 PM, Sanne Grinovero <sanne.grinovero at gmail.com>
+wrote:
+
+> Hi Josh,
+> we had similar needs in Infinispan. Sometimes I would use Byteman [1],
+> but generally Infinispan's code was refactored to never invoke the
+> time methods from the JDK directly (nor helpers such as Thread#sleep)
+> but rather rely on its own TimeService interface.
+> At runtime there will be only one implementation loaded, and mostly
+> perform straight forward delegation to the JDK methods.
+> Several tests will use the capability to replace implementation so
+> you'll get to mock the clock, be it wall clock or other notions; this
+> practice proved indeed very useful for us, not only to make it easier
+> to simulate specific race conditions but also to generally speedup the
+> testsuite as you can get rid of most cases in which some thread needs
+> to wait for "some time".
+>
+> 1 - http://byteman.jboss.org/
+>
+> Regards,
+> Sanne
+>
+>
+> On 3 April 2015 at 17:33, D?vid Karnok <akarnokd at gmail.com> wrote:
+> > Hi Josh,
+> >
+> > We faced a similar problem in RxJava and we implemented a TestScheduler
+> > whose Scheduler API is similar to a ScheduledExecutorService plus offers
+> > methods to advance a virtual time. Operators that require a Scheduler
+> then
+> > can be simply use this TestScheduler instead of a "real" one. However,
+> since
+> > RxJava is non-blocking and the scheduling dimension is orthogonal, we
+> don't
+> > deal with sleeps, parks or waits.
+> >
+> >
+> > Josh Humphries <jh at squareup.com> ezt ?rta (2015. ?prilis 1., szerda):
+> >>
+> >> A number of times, I've found myself battling unit tests for code that
+> >> uses multiple threads, schedules tasks, observes the system clock, etc.
+> >> These tests can be difficult to make deterministic, so they end up being
+> >> flaky... or very slow... or both.
+> >>
+> >> I've built some fairly complicated machinery that handles many cases in
+> a
+> >> way that "just works". We have a FakeClockScheduledExecutorService that
+> can
+> >> be injected into code that needs to schedule things. The FakeClock on
+> which
+> >> it is based has a fairly complicated internal implementation, due to the
+> >> explicit intent that it be thread-safe.
+> >>
+> >> But there are still a lot of cases where it doesn't really work. And
+> cases
+> >> where it is excessively difficult to make it work: very intrusive
+> changes
+> >> required to the code-under-test, the tests themselves end up too "white
+> box"
+> >> where it must know many trivial intermediate steps (points in time) and
+> >> assert them along the way, etc.
+> >>
+> >> I've toyed with the idea of using a class loader and/or agent that could
+> >> transform classes so that accesses to Thread.sleep, LockSupport.park,
+> etc
+> >> could be re-written to use "fake time" mechanisms. But the more I think
+> >> about it, the more really nasty sharp corners I see on an approach like
+> this
+> >> (and all other approaches I've considered, really).
+> >>
+> >>
+> >> So... does anyone here know of any prior art for mocking the notion of
+> >> time in tests? Is there anything that does it really well? Is it even
+> >> feasible that something that does it well could exist? :)
+> >>
+> >>
+> >> ----
+> >> Josh Humphries
+> >> Manager, Shared Systems  |  Platform Engineering
+> >> Atlanta, GA  |  678-400-4867
+> >> Square (www.squareup.com)
+> >
+> >
+> >
+> > --
+> > Best regards,
+> > David Karnok
+> >
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150403/a3505fd8/attachment.html>
+
+From jh at squareup.com  Fri Apr  3 19:01:27 2015
+From: jh at squareup.com (Josh Humphries)
+Date: Fri, 3 Apr 2015 19:01:27 -0400
+Subject: [concurrency-interest] Faking time
+In-Reply-To: <CAHJZN-u9iM0kivNrNMi=87bWn8n_uUWNY_+3aME-Nf6YEOsv6w@mail.gmail.com>
+References: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>
+	<CAAWwtm9JS+pjKEAGN_mPESnd94chT=5zCyb5e2yKO9PvDXoz2A@mail.gmail.com>
+	<CAFm4XO3f6yQzuVJGxYXd=Db2456z1eK7Gkyk5-2ohfSLM0krDg@mail.gmail.com>
+	<CAHJZN-u9iM0kivNrNMi=87bWn8n_uUWNY_+3aME-Nf6YEOsv6w@mail.gmail.com>
+Message-ID: <CAHJZN-sCMQn=Fz6Aic-sKFjvW6EGAPshKfSxHELJXt_Po5wdYQ@mail.gmail.com>
+
+On Fri, Apr 3, 2015 at 6:54 PM, Josh Humphries <jh at squareup.com> wrote:
+
+> Hi, Sanne,
+> Thanks for the reply! That's basically the strategy we've employed as well.
+>
+> Problems arise when testing multi-threaded stuff with complex scheduling
+> going on. The main issue is if you schedule task for time X, that task then
+> starts up work on some *other* thread, and then that other thread
+> schedules another task for time Y.
+>
+> We have some cases of this in (fairly sophisticated) code that deals with
+> failures and retries. So here's a particularly gnarly case that has come
+> up. It is in thread-safe, concurrent code (see statement above, where task
+> at time X skips a thread before scheduling a task at time Y).
+>
+> I hope I can explain it. Bear with me:
+>
+> Our "fake clock" scheduler allows you to advance from time X to Y, no
+> problem. And, if there are multiple tasks scheduled along the way, they are
+> executed sequentially in FIFO order (based on order in which they were
+> scheduled, which isn't always but often is deterministic).
+>
+> But let's say we want to move from time W to Y. Ideally, our task would
+> run at time X (as described above) and then we could assert that the
+> subsequent scheduled task ran at time Y. The issue is the non-deterministic
+> nature of the task running at time X. Since it wants to schedule a task for
+> time Y *on another thread*, our scheduler doesn't know about it. When the
+> main task completes, the scheduler keeps moving the clock forward, racing
+> with the thread is trying to schedule something for time Y.
+>
+> So there's the rub. The test is now flaky. We *do* have a solution. We
+> have synchronization mechanisms that can be used where we advance the clock
+> to time X and then must wait until we see the task scheduled at time Y
+> before actually proceeding to time Y. But that requires very "whitebox"
+> tests, where each step is advancing the clock a little at a time, based on
+> intimate knowledge of underlying implementation of how various bits are
+> getting scheduled. Ick.
+>
+> Anyhow, the code in question is not easy to re-write to make it more
+> non-deterministic
+>
+
+uh... more deterministic I meant :)
+
+
+> (in terms of the hand off to another thread prior to scheduling the next
+> task). So I think the answer for me is "deal with the whitebox test, or do
+> something at a higher level that is resilient to time-sensitive flakiness".
+>
+>
+>
+> ----
+> *Josh Humphries*
+> Manager, Shared Systems  |  Platform Engineering
+> Atlanta, GA  |  678-400-4867
+> *Square* (www.squareup.com)
+>
+> On Fri, Apr 3, 2015 at 6:32 PM, Sanne Grinovero <sanne.grinovero at gmail.com
+> > wrote:
+>
+>> Hi Josh,
+>> we had similar needs in Infinispan. Sometimes I would use Byteman [1],
+>> but generally Infinispan's code was refactored to never invoke the
+>> time methods from the JDK directly (nor helpers such as Thread#sleep)
+>> but rather rely on its own TimeService interface.
+>> At runtime there will be only one implementation loaded, and mostly
+>> perform straight forward delegation to the JDK methods.
+>> Several tests will use the capability to replace implementation so
+>> you'll get to mock the clock, be it wall clock or other notions; this
+>> practice proved indeed very useful for us, not only to make it easier
+>> to simulate specific race conditions but also to generally speedup the
+>> testsuite as you can get rid of most cases in which some thread needs
+>> to wait for "some time".
+>>
+>> 1 - http://byteman.jboss.org/
+>>
+>> Regards,
+>> Sanne
+>>
+>>
+>> On 3 April 2015 at 17:33, D?vid Karnok <akarnokd at gmail.com> wrote:
+>> > Hi Josh,
+>> >
+>> > We faced a similar problem in RxJava and we implemented a TestScheduler
+>> > whose Scheduler API is similar to a ScheduledExecutorService plus offers
+>> > methods to advance a virtual time. Operators that require a Scheduler
+>> then
+>> > can be simply use this TestScheduler instead of a "real" one. However,
+>> since
+>> > RxJava is non-blocking and the scheduling dimension is orthogonal, we
+>> don't
+>> > deal with sleeps, parks or waits.
+>> >
+>> >
+>> > Josh Humphries <jh at squareup.com> ezt ?rta (2015. ?prilis 1., szerda):
+>> >>
+>> >> A number of times, I've found myself battling unit tests for code that
+>> >> uses multiple threads, schedules tasks, observes the system clock, etc.
+>> >> These tests can be difficult to make deterministic, so they end up
+>> being
+>> >> flaky... or very slow... or both.
+>> >>
+>> >> I've built some fairly complicated machinery that handles many cases
+>> in a
+>> >> way that "just works". We have a FakeClockScheduledExecutorService
+>> that can
+>> >> be injected into code that needs to schedule things. The FakeClock on
+>> which
+>> >> it is based has a fairly complicated internal implementation, due to
+>> the
+>> >> explicit intent that it be thread-safe.
+>> >>
+>> >> But there are still a lot of cases where it doesn't really work. And
+>> cases
+>> >> where it is excessively difficult to make it work: very intrusive
+>> changes
+>> >> required to the code-under-test, the tests themselves end up too
+>> "white box"
+>> >> where it must know many trivial intermediate steps (points in time) and
+>> >> assert them along the way, etc.
+>> >>
+>> >> I've toyed with the idea of using a class loader and/or agent that
+>> could
+>> >> transform classes so that accesses to Thread.sleep, LockSupport.park,
+>> etc
+>> >> could be re-written to use "fake time" mechanisms. But the more I think
+>> >> about it, the more really nasty sharp corners I see on an approach
+>> like this
+>> >> (and all other approaches I've considered, really).
+>> >>
+>> >>
+>> >> So... does anyone here know of any prior art for mocking the notion of
+>> >> time in tests? Is there anything that does it really well? Is it even
+>> >> feasible that something that does it well could exist? :)
+>> >>
+>> >>
+>> >> ----
+>> >> Josh Humphries
+>> >> Manager, Shared Systems  |  Platform Engineering
+>> >> Atlanta, GA  |  678-400-4867
+>> >> Square (www.squareup.com)
+>> >
+>> >
+>> >
+>> > --
+>> > Best regards,
+>> > David Karnok
+>> >
+>> >
+>> > _______________________________________________
+>> > Concurrency-interest mailing list
+>> > Concurrency-interest at cs.oswego.edu
+>> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>> >
+>>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150403/2d14a07d/attachment-0001.html>
+
+From william.louth at jinspired.com  Sat Apr  4 03:23:16 2015
+From: william.louth at jinspired.com (William Louth (JINSPIRED.COM))
+Date: Sat, 04 Apr 2015 09:23:16 +0200
+Subject: [concurrency-interest] Faking time
+In-Reply-To: <CAHJZN-sCMQn=Fz6Aic-sKFjvW6EGAPshKfSxHELJXt_Po5wdYQ@mail.gmail.com>
+References: <CAHJZN-sd2FEMjagEhPbG2aMQd8wuH5ms0_XsgG24eXfwdmtrWQ@mail.gmail.com>	<CAAWwtm9JS+pjKEAGN_mPESnd94chT=5zCyb5e2yKO9PvDXoz2A@mail.gmail.com>	<CAFm4XO3f6yQzuVJGxYXd=Db2456z1eK7Gkyk5-2ohfSLM0krDg@mail.gmail.com>	<CAHJZN-u9iM0kivNrNMi=87bWn8n_uUWNY_+3aME-Nf6YEOsv6w@mail.gmail.com>
+	<CAHJZN-sCMQn=Fz6Aic-sKFjvW6EGAPshKfSxHELJXt_Po5wdYQ@mail.gmail.com>
+Message-ID: <551F9164.6000605@jinspired.com>
+
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150404/36ac0c65/attachment.html>
+
+From jeffhain at rocketmail.com  Sun Apr  5 11:20:16 2015
+From: jeffhain at rocketmail.com (Jeff Hain)
+Date: Sun, 5 Apr 2015 15:20:16 +0000 (UTC)
+Subject: [concurrency-interest] Faking time
+In-Reply-To: <CAHJZN-sBiT-vqVw+HWbY7fib5kx2mqCCtw-TPCfjpwfQDWmxFg@mail.gmail.com>
+References: <CAHJZN-sBiT-vqVw+HWbY7fib5kx2mqCCtw-TPCfjpwfQDWmxFg@mail.gmail.com>
+Message-ID: <2142725268.120242.1428247216577.JavaMail.yahoo@mail.yahoo.com>
+
+
+
+Hi.
+>For code that cares about time, I want to be able to use mocks
+>or some other mechanism to make it deterministic.
+For determinism you need also to take care of :
+- effect of hashCode() (which default implementation is non-deterministic)
+? on logs (it it appears in) and iteration order for hash-based collections
+? (typical workarounds : override hashCode(), or sort before iterating).
+- optimized Math or floating-point operations which can give different
+? results (typical workarounds : use StrictMath, and strictfp or -Xint).
+
+
+>A number of times, I've found myself battling unit tests for code that uses multiple threads,
+>schedules tasks, observes the system clock, etc. These tests can be difficult to make deterministic,
+>so they end up being flaky... or very slow... or both.
+Indeed, that kind of code is a pain to test and work with.
+
+
+>I've built some fairly complicated machinery that handles many cases in a way that "just works".
+>We have a FakeClockScheduledExecutorService that can be injected into code that needs to schedule
+>things. The FakeClock on which it is based has a fairly complicated internal implementation, due
+>to the explicit intent that it be thread-safe.
+>But there are still a lot of cases where it doesn't really work.
+>[...]
+>So... does anyone here know of any prior art for mocking the notion of time in tests? Is there
+>anything that does it really well? Is it even feasible that something that does it well could
+>exist? :)
+What you can do is not abstract time away only in your tests,
+but both time and threading, and in your whole application,
+as part of its architecture
+(as I now do all the time - "determinism is like crack"
+(I think Martin Thompson coined that)).
+It has a lot of strong benefits, on the top of my head :
+- Fast unit tests.
+- Reproduce problems, quickly.
+- Run long time sturdiness tests, quickly,
+? or short time ones "instantly".
+- Discriminate between domain code bugs
+? and threading issues.
+- Run with full logs, without trouble
+? (other that the log file growing fast).
+For example, how I do it is only scheduling treatments through
+an interface with these 3 methods:
+- void execute(Runnable) // i.e. can extend Executor (but not
+???????????????????????? // ScheduledExecutorService, too complicated
+???????????????????????? // to implement).
+- void executeAt(Runnable,long) // Time is in nanoseconds.
+- void executeAfter(Runnable,long) // Delay is in nanoseconds.
+and having a clock interface with these 3 methods:
+- double getTimeS() // Time in seconds, handy for physical-coordinates
+??????????????????? // computations, no risk of integer wrapping.
+- long getTimeNS() // No floating-point approximation, typically
+?????????????????? // used for (low-level) scheduling.
+- double getTimeSpeed() // Relative to wall clock time,
+??????????????????????? // or master clock time if any.
+??????????????????????? // Schedulers will use it to figure out how
+??????????????????????? // long they actually need to wait, if you want
+??????????????????????? // to allow for accelerated time.
+The 3 execute(...) methods are simple but on top of themyou can still build periodic (or even aperiodic, why being so rigid?)treatments, cancellable tasks, etc.
+For "real" usage, you use a clock delegating to System.currentTimeMillis(),
+and a scheduler delegating to some JDK's ScheduledExecutorService.
+You can also use a clock which time is "timeSpeed * systemTime + offset",
+with (timeSpeed,offset) dynamically modifiables, and make a scheduler that
+can handle that, but it's not a trivial task (but possible, and if done
+right can even be faster than STPE, which has additional constraints).
+===> I call that "hard" scheduling, because time changes due to hardware
+???? reasons (chip ticks).
+For determinist unit-testing you can use a clock which time does not
+advance with wall clock time, but only due to calls to setTimeNS(...)
+or such, and a unique scheduler which runs everything in one thread
+and modifies the time accordingly (runs all schedules for t1, then
+sets time to t2, then runs all schedules for t2, etc.).
+===> I call that "soft" scheduling, because time changes due to
+???? software reasons (setter calls).
+===> In that mode, when you call execute(Runnable), I think it's better
+???? for the execution to be postponed after all executions already
+???? planned for current time, but there might be reasons not to,
+???? depending on what you're doing.
+Then, you can use a mixed mode, which is soft scheduling but with
+a soft scheduler that tries to follow some hard clock, i.e. before
+setting a new time and executing corresponding runnables it will wait
+accordingly.
+===> You end up with three main ways of scheduling your application :
+- HARD (possibly multi-threaded,
+??????? time = timeSpeed * systemTime + offset)
+? ===> The "as usual" mode.
+?????? Can be used in production, or to try reproduce a bug
+?????? not encountered in soft scheduling, i.e. most likely
+?????? a threading issue.
+- SOFT_HARD_BASED (single-threaded (other than eventual local parallelism),
+?????????????????? time = whatever time current runnable has been scheduled for,
+?????????????????? timeSpeed = (I think master clock's time speed, but no access
+?????????????????? to my code today))
+? ===> Can be used in production if single-threaded is OK
+?????? and you want determinism (be able to reproduce an eventual bug),
+?????? or when debugging with slowed or accelerated time, etc.
+- SOFT_AFAP (single-threaded (other than eventual local parallelism),
+???????????? time = whatever time current runnable has been scheduled for,
+???????????? timeSpeed = +Infinity)
+? ===> Can be used to run unit tests deterministically and very fast,
+?????? or to do "hours or days-long" sturdiness tests in a short time,
+?????? or to do Monte-Carlo, or to do benchmarks (see what actual time
+?????? speed you can reach), etc.
+All that is only a subset of what you can do with norms like HLA
+(http://www.cc.gatech.edu/computing/pads/PAPERS/Time_mgmt_High_Level_Arch.pdf)
+but it already allows for a lot of flexibility.
+
+
+>To make tests faster, we also provide a Clock.sleep. The system version delegates to Thread.sleep.
+>FakeClock.sleep actually just advances the clock without blocking.
+In the scheduling style I've been talking about, there much be no
+such thing as a "sleep" in the code, or at least its only possible
+implementation in soft scheduling would be a no-op.
+Indeed it makes no sense to "wait" for something, when everything
+is ran in a single thread, i.e. when nothing else can occur
+concurrently.
+Also, the "master" of the time must be the scheduler, not whatever
+code playing with the clock. A Clock.sleep() that would advance
+time would conflict with scheduler's work.
+What you can do though is something like :
+awaitWhileFalse(booleanSupplier,timeout)
+===> In hard scheduling, it would wait while false or until timeout,
+???? and in soft scheduling, it would just throw if the boolean
+???? is not immediately true.
+
+
+Side notes :
+- In soft scheduling, you can't interfere from other threads
+? with what is (deterministically) happening, but your scheduler
+? can still allow for executing something in the "soft thread",
+? as long as it only reads things (for example for display
+? purpose).
+- To compute the absolute time speed of an enslaved clock, you need
+? to multiply its time speed with the one of backing master clock(s),
+? but for example if you have "0 * +Infinity" you need to consider
+? that it is 0, not NaN.
+- You can use Locks in your code, but in soft mode you can use
+? an implementation which does mostly nothing, since there is no
+? need to lock.
+? It can also have methods like checkHeldByCurrentThread(),
+? checkNotHeldByCurrentThread(), etc., all returning true (does
+? not matter if held since single-threaded), which works as long
+? as you don't check them "negatively".
+? ===> I call that a "passive lock".
+
+
+-Jeff
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150405/8808ca07/attachment-0001.html>
+
+From viktor.klang at gmail.com  Tue Apr  7 04:45:45 2015
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Tue, 7 Apr 2015 10:45:45 +0200
+Subject: [concurrency-interest] Fork/Join and Parallel Calamity? Or
+ storm in a teacup?
+In-Reply-To: <CALNbAKxCsk=triPEjOgOTp8yN_2vRpBCM0-9ZxXgOFMfsKJnpw@mail.gmail.com>
+References: <551E8401.7020200@javaspecialists.eu>
+	<CALNbAKxCsk=triPEjOgOTp8yN_2vRpBCM0-9ZxXgOFMfsKJnpw@mail.gmail.com>
+Message-ID: <CANPzfU9LZO-OqrjkXPinYG9sgCwi4=-J3bnJNB_4CMBv_e34UA@mail.gmail.com>
+
+On Fri, Apr 3, 2015 at 4:32 PM, Edward Harned <edharned at gmail.com> wrote:
+
+> I do not have a product to flog. In 2010 I submitted a proof-of-concept to
+> the good professor showing that scatter-gather works just as well as what
+> he was proposing for Java7. Since he ignored the proof, I took the parallel
+> engine out of a Task Parallel product (open-source) I maintain and put in
+> the Data Parallel engine. This product is also open-source. It is not
+> suitable for an API since it is a full feature Data Parallel product.
+>
+> I have never bashed the JDK. Certain features do not belong in the core
+> product. A multi/threading/tasking framework belongs outside the core
+> product. That is all I have said.
+>
+
+What's the argument(s) for that claim?
+Should there be a HttpClient? CORBA? ScriptEngine? Who decides what's core
+and what's not?
+
+
+>
+> The points I made in all three articles are accurate.
+>
+> ed
+>
+> On Fri, Apr 3, 2015 at 8:13 AM, Dr Heinz M. Kabutz <
+> heinz at javaspecialists.eu> wrote:
+>
+>> Hi fellow concurrency interest members!
+>>
+>> A friend forwarded me this article:
+>>
+>> http://coopsoft.com/ar/Calamity2Article.html
+>>
+>> I'm always wary of those who have a product to flog and who bash the
+>> JDK.  I'd be interested to hear your opinion on this writing though.
+>>
+>> Regards
+>>
+>> Heinz
+>> --
+>> Dr Heinz M. Kabutz (PhD CompSci)
+>> Author of "The Java(tm) Specialists' Newsletter"
+>> Sun/Oracle Java Champion since 2005
+>> JavaOne Rock Star Speaker 2012
+>> http://www.javaspecialists.eu
+>> Tel: +30 69 75 595 262
+>> Skype: kabutz
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+
+-- 
+Cheers,
+?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150407/1a606ecc/attachment.html>
+
+From aph at redhat.com  Tue Apr  7 05:29:35 2015
+From: aph at redhat.com (Andrew Haley)
+Date: Tue, 07 Apr 2015 10:29:35 +0100
+Subject: [concurrency-interest] Fork/Join and Parallel Calamity? Or
+ storm in a teacup?
+In-Reply-To: <CANPzfU9LZO-OqrjkXPinYG9sgCwi4=-J3bnJNB_4CMBv_e34UA@mail.gmail.com>
+References: <551E8401.7020200@javaspecialists.eu>	<CALNbAKxCsk=triPEjOgOTp8yN_2vRpBCM0-9ZxXgOFMfsKJnpw@mail.gmail.com>
+	<CANPzfU9LZO-OqrjkXPinYG9sgCwi4=-J3bnJNB_4CMBv_e34UA@mail.gmail.com>
+Message-ID: <5523A37F.2060301@redhat.com>
+
+On 07/04/15 09:45, Viktor Klang wrote:
+> On Fri, Apr 3, 2015 at 4:32 PM, Edward Harned <edharned at gmail.com> wrote:
+> 
+>> I have never bashed the JDK. Certain features do not belong in the
+>> core product. A multi/threading/tasking framework belongs outside
+>> the core product. That is all I have said.
+> 
+> What's the argument(s) for that claim?
+> Should there be a HttpClient? CORBA? ScriptEngine? Who decides what's core
+> and what's not?
+
+I was rather hoping that we wouldn't have to worry about that sort of
+thing any more because we now have a modular JDK.  Having said that,
+j.u.c seems to be in java.base.
+
+The JDK has always been a rather maximal everything-including-the-
+kitchen-sink lump, and IME people seem rather to like it like that.
+If some JDK packages are going to use fork/join, then fork/join is
+gong to be in the core JDK.
+
+I suppose the problem -- if there is one -- is that any frameworks
+which are part of the JDK get an automatic legitimacy which may lead
+to them being used even if something else would be more appropriate.
+I would tend to do that because of a fear that software outside the
+JDK might be abandoned or not well maintained.
+
+Andrew.
+
+From edharned at gmail.com  Tue Apr  7 10:33:45 2015
+From: edharned at gmail.com (Edward Harned)
+Date: Tue, 7 Apr 2015 10:33:45 -0400
+Subject: [concurrency-interest] Fork/Join and Parallel Calamity? Or
+ storm in a teacup?
+In-Reply-To: <5523A37F.2060301@redhat.com>
+References: <551E8401.7020200@javaspecialists.eu>
+	<CALNbAKxCsk=triPEjOgOTp8yN_2vRpBCM0-9ZxXgOFMfsKJnpw@mail.gmail.com>
+	<CANPzfU9LZO-OqrjkXPinYG9sgCwi4=-J3bnJNB_4CMBv_e34UA@mail.gmail.com>
+	<5523A37F.2060301@redhat.com>
+Message-ID: <CALNbAKw+KLCMMarv1=TV9SG1C0Gh0C5zKABJLsVf-zO6nCo+Zg@mail.gmail.com>
+
+Just to clear the air:
+
+The article written in 2010 was about why the F/J framework should not be
+in core Java.
+
+The part two article cited here was written in 2013 and is about how the
+framework, when used as a parallel engine for Java8, is fatally flawed.
+
+The third part of the series, written in 2015, is about how Java8u40 did
+not resolve the severe performance problems.
+
+ed
+
+On Tue, Apr 7, 2015 at 5:29 AM, Andrew Haley <aph at redhat.com> wrote:
+
+> On 07/04/15 09:45, Viktor Klang wrote:
+> > On Fri, Apr 3, 2015 at 4:32 PM, Edward Harned <edharned at gmail.com>
+> wrote:
+> >
+> >> I have never bashed the JDK. Certain features do not belong in the
+> >> core product. A multi/threading/tasking framework belongs outside
+> >> the core product. That is all I have said.
+> >
+> > What's the argument(s) for that claim?
+> > Should there be a HttpClient? CORBA? ScriptEngine? Who decides what's
+> core
+> > and what's not?
+>
+> I was rather hoping that we wouldn't have to worry about that sort of
+> thing any more because we now have a modular JDK.  Having said that,
+> j.u.c seems to be in java.base.
+>
+> The JDK has always been a rather maximal everything-including-the-
+> kitchen-sink lump, and IME people seem rather to like it like that.
+> If some JDK packages are going to use fork/join, then fork/join is
+> gong to be in the core JDK.
+>
+> I suppose the problem -- if there is one -- is that any frameworks
+> which are part of the JDK get an automatic legitimacy which may lead
+> to them being used even if something else would be more appropriate.
+> I would tend to do that because of a fear that software outside the
+> JDK might be abandoned or not well maintained.
+>
+> Andrew.
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150407/03ec51dc/attachment.html>
+
+From aph at redhat.com  Wed Apr  8 05:46:42 2015
+From: aph at redhat.com (Andrew Haley)
+Date: Wed, 08 Apr 2015 10:46:42 +0100
+Subject: [concurrency-interest] Fork/Join and Parallel Calamity? Or
+ storm in a teacup?
+In-Reply-To: <551EA29B.40109@oracle.com>
+References: <551E8401.7020200@javaspecialists.eu>	<551E9089.8030700@cs.oswego.edu>
+	<551EA29B.40109@oracle.com>
+Message-ID: <5524F902.3050900@redhat.com>
+
+On 03/04/15 15:24, Aleksey Shipilev wrote:
+
+> Way too often I find people having a pipe dream of "having something better", before they actually start to build, support and maintain the better thing. Only to realize, in way too many cases, the status quo is actually (close to) Pareto efficient, and improving something is much less obvious than you imagined. (God, I sound old!).
+> 
+> Now, it's completely understandable not everyone has cycles to get their hands dirty with development. Suggestions and constructive critique are always welcome. However, when you are suggesting something, you'd better make sure your suggestion is doable, viable, practical -- or at least, have a fair amount of skepticism in it, asking others to poke holes.
+
+Right.  I guess there's nothing to prevent anyone from creating a more
+performant parallel stream and demonstrating it.  After all, writing
+long technical articles takes ages, and there's no point without
+working code.
+
+Andrew.
+
+
+From edharned at gmail.com  Wed Apr  8 12:42:27 2015
+From: edharned at gmail.com (Edward Harned)
+Date: Wed, 8 Apr 2015 12:42:27 -0400
+Subject: [concurrency-interest] Fork/Join and Parallel Calamity? Or
+ storm in a teacup?
+In-Reply-To: <551EA29B.40109@oracle.com>
+References: <551E8401.7020200@javaspecialists.eu>
+	<551E9089.8030700@cs.oswego.edu> <551EA29B.40109@oracle.com>
+Message-ID: <CALNbAKxVyfj5ca-vkoN=+NR16k_B=Z5OJ5Dxaa4zkyuJqd4R2w@mail.gmail.com>
+
+I don?t do systems programming or API development so I don?t have a
+comparable F/J framework. I do full feature application services. If you
+would like to see a full-feature scatter-gather Data Parallel framework
+that is ?working code that clearly demonstrates the benefits of the
+alternative? then have a look here:
+http://sourceforge.net/projects/tymeacdse
+
+Using those principles/structures is what I meant by ?What is the answer
+for success?
+
+ed
+
+On Fri, Apr 3, 2015 at 10:24 AM, Aleksey Shipilev <
+aleksey.shipilev at oracle.com> wrote:
+
+> I'd just short-cut the entire thread by referencing the Java Posse
+> thread from four years ago:
+>   https://groups.google.com/forum/#!topic/javaposse/Rfp7t23lQTo
+>
+> On 04/03/2015 04:07 PM, Doug Lea wrote:
+> > [A brief escape from near-quarantine for the past two and
+> > next month dealing with our five-year dept program review
+> > and other local stuff.]
+> >
+> > My overall take reading this and Ed Harned's other posts is that
+> > they don't reflect historical causality: Work-stealing frameworks
+> > (FJ and those in other languages/platforms) were initially
+> > targeted to classic divide-and-conquer computational workloads. But users
+> > soon discovered that if they ignore scope disclaimers, FJ can work
+> > well in other use cases (because of low contention, high utilization,
+> > etc). Rather than telling people to stop doing this, we've
+> > continually evolved internals from "can work well" to
+> > "typically work well", across an increasing range of use cases
+> > (which keep expanding). I think that Ed's argument is that
+> > we should not have done this,  but instead provided some other
+> > different Executor framework, or left it for third-party providers.
+>
+> I think that sums it up nicely.
+>
+> >  I'd be interested to hear your opinion on this writing though.
+>
+> Way too often I find people having a pipe dream of "having something
+> better", before they actually start to build, support and maintain the
+> better thing. Only to realize, in way too many cases, the status quo is
+> actually (close to) Pareto efficient, and improving something is much
+> less obvious than you imagined. (God, I sound old!).
+>
+> Now, it's completely understandable not everyone has cycles to get their
+> hands dirty with development. Suggestions and constructive critique are
+> always welcome. However, when you are suggesting something, you'd better
+> make sure your suggestion is doable, viable, practical -- or at least,
+> have a fair amount of skepticism in it, asking others to poke holes.
+>
+> In other words, in addition to describing how a particular
+> implementation "fails" your arbitrary set of expectations, explain, in
+> great detail, how the alternative should improve what you care about and
+> why it should not regress what you personally don't care about.
+> Ultimately, have a working code that clearly demonstrates the benefits
+> of the alternative.
+>
+> Now go back and read "What is the answer for success?" section in the
+> article. This is why I believe the article is just bashing, and does not
+> deserve an attention it gets. Speculation: the article is inflammatory
+> to draw attention for the sake of attention. Don't take that bait.
+>
+> -Aleksey.
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150408/06069ee5/attachment.html>
+
+From martinrb at google.com  Wed Apr  8 16:31:34 2015
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 8 Apr 2015 13:31:34 -0700
+Subject: [concurrency-interest] PriorityQueue
+In-Reply-To: <CA+NAUoEjZe3JvXpj7cf=Ep3sBMyXViwYKKKH1FjLps2UmprxZw@mail.gmail.com>
+References: <CA+NAUoEjZe3JvXpj7cf=Ep3sBMyXViwYKKKH1FjLps2UmprxZw@mail.gmail.com>
+Message-ID: <CA+kOe0_0nd3DEq-wxq8QnyFb87Embm9ecKC06Uwh7R6SY+pZjQ@mail.gmail.com>
+
+[+ concurrency-interest]
+Ask on the concurrency-interest mailing list.
+jdk9-dev moved to cc:
+
+
+On Wed, Apr 8, 2015 at 1:28 PM, Brett Bernstein <brett.bernstein at gmail.com>
+wrote:
+
+> To whom this may concern,
+> I apologize in advance if this isn't the correct place to ask something
+> like this, but I am interested in suggesting an addition to the
+> PriorityQueue class (namely adding a constructor that takes a Collection
+> and a Comparator), and want to know the correct channel to go through.
+>
+> -Brett Bernstein
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150408/7865a2b6/attachment.html>
+
+From martinrb at google.com  Wed Apr  8 16:32:08 2015
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 8 Apr 2015 13:32:08 -0700
+Subject: [concurrency-interest] PriorityQueue
+In-Reply-To: <CA+kOe0_0nd3DEq-wxq8QnyFb87Embm9ecKC06Uwh7R6SY+pZjQ@mail.gmail.com>
+References: <CA+NAUoEjZe3JvXpj7cf=Ep3sBMyXViwYKKKH1FjLps2UmprxZw@mail.gmail.com>
+	<CA+kOe0_0nd3DEq-wxq8QnyFb87Embm9ecKC06Uwh7R6SY+pZjQ@mail.gmail.com>
+Message-ID: <CA+kOe0-9Qb3_7nDTRb0=pBT_dSCMAutX9DW74a_Gs1hbJ6J_Dg@mail.gmail.com>
+
+On Wed, Apr 8, 2015 at 1:31 PM, Martin Buchholz <martinrb at google.com> wrote:
+
+>
+> jdk9-dev moved to cc:
+>
+
+Err ... bcc
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150408/a7f56ce8/attachment.html>
+
+From brett.bernstein at gmail.com  Wed Apr  8 20:56:28 2015
+From: brett.bernstein at gmail.com (Brett Bernstein)
+Date: Wed, 8 Apr 2015 20:56:28 -0400
+Subject: [concurrency-interest] Fwd: PriorityQueue
+In-Reply-To: <CA+NAUoE=c-UbZNVEEwMnbG50Bk6AVgJoyM+RO2sqOmTZpOxmMA@mail.gmail.com>
+References: <CA+NAUoEjZe3JvXpj7cf=Ep3sBMyXViwYKKKH1FjLps2UmprxZw@mail.gmail.com>
+	<CA+kOe0_0nd3DEq-wxq8QnyFb87Embm9ecKC06Uwh7R6SY+pZjQ@mail.gmail.com>
+	<CA+kOe0-9Qb3_7nDTRb0=pBT_dSCMAutX9DW74a_Gs1hbJ6J_Dg@mail.gmail.com>
+	<CA+NAUoE=c-UbZNVEEwMnbG50Bk6AVgJoyM+RO2sqOmTZpOxmMA@mail.gmail.com>
+Message-ID: <CA+NAUoFqoEFBtJ48gatFO7+9mYFg5DREGx_0YZ20PQqcszNcTA@mail.gmail.com>
+
+---------- Forwarded message ----------
+From: Brett Bernstein <brett.bernstein at gmail.com>
+Date: Wed, Apr 8, 2015 at 4:41 PM
+Subject: Re: PriorityQueue
+To: Martin Buchholz <martinrb at google.com>
+Cc: concurrency-interest <concurrency-interest at cs.oswego.edu>
+
+
+To whom it may concern:
+I am hoping this is the correct venue for such a comment.  My suggestion is
+to add a constructor to the PriorityQueue class that takes a Collection and
+a Comparator as arguments.  If there is a good reason this isn't already in
+the API I would love to know it.  The benefit of such an addition is to
+allow access for Comparator users to the quick heapify algorithm.
+
+Thanks,
+Brett Bernstein
+
+On Wed, Apr 8, 2015 at 4:32 PM, Martin Buchholz <martinrb at google.com> wrote:
+
+>
+>
+> On Wed, Apr 8, 2015 at 1:31 PM, Martin Buchholz <martinrb at google.com>
+> wrote:
+>
+>>
+>> jdk9-dev moved to cc:
+>>
+>
+> Err ... bcc
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150408/ca18c794/attachment.html>
+
+From ben_manes at yahoo.com  Thu Apr  9 09:10:23 2015
+From: ben_manes at yahoo.com (Ben Manes)
+Date: Thu, 9 Apr 2015 13:10:23 +0000 (UTC)
+Subject: [concurrency-interest] Backoff arena for queues
+Message-ID: <1738389248.2697602.1428585023954.JavaMail.yahoo@mail.yahoo.com>
+
+During the development of the concurrent queues, and more narrowly the unbounded variants, was there a consideration of adding a backoff strategy? In particular an arena-based approach modeled after the elimination stack [1].
+For a long time I've been meaning to explore the idea of a combining arena as a backoff strategy for producers. I implemented this on top of a mpsc linked queue [2] and observe a 70% gain when contended. The combined addition is a sublist that is appended atomically as one operation instead of many individual ones, which is an optimizations that is usually only available to #addAll(c).
+The benchmark [3] was taken on a?MacBook Pro i7-4870HQ CPU @ 2.50GHz (4 core). Note that the 8 producer benchmark is unfair for CLQ by using #clear() so that the consumer thread kept up with the producers.
+ConcurrentLinkedQueue? * 1 producer: 26.8 ops/s
+? * 2 producers: 17 ops/s? * 8 producers: 7.9 ops/sSingleConsumerQueue? * 1 producer: 37.5 ops/s? * 2 producers: 19.9 ops/s? * 8 producers: 14.5 ops/sSingleConsumerQueue + backoff? * 1 producer: 39.4 ops/s? * 2 producers: 34.2 ops/s? * 8 producers: 24.5 ops/s
+[1] A Scalable Lock-free Stack Algorithm[2]?SingleConsumerQueue code
+[3]?Benchmark chart
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150409/ca91d6ad/attachment-0001.html>
+
+From vikas.vksingh at gmail.com  Fri Apr 10 05:31:24 2015
+From: vikas.vksingh at gmail.com (vikas)
+Date: Fri, 10 Apr 2015 02:31:24 -0700 (MST)
+Subject: [concurrency-interest] JLS and Fence Intrinsics
+Message-ID: <1428658284596-12559.post@n7.nabble.com>
+
+I am trying to write a very basic blog entry on JEP 171: Fence Intrinsics. 
+http://ipenneddown.blogspot.com/2015/04/case-of-fence-intrinsics.html
+<http://ipenneddown.blogspot.com/2015/04/case-of-fence-intrinsics.html>  .
+So i am trying to verify if my understanding of the subject is ok.
+
+>From  JLS Example below
+<http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4.8-table-1>  
+
+
+*T1 *
+
+r1 = X;
+if(r1 != 0) {
+  Y = 1;
+}
+-----------------------
+
+*T2*
+r2 = Y;
+if(r2 != 0) {
+   X = 1;
+}
+
+ *x == 1 and y == 1 *is possible because values may appear *out of thin air*
+It gives an example of how happens before consistency is not sufficient. 
+If we try to fix the above using Intrinsic Fences api then will below code
+work?
+
+
+*T1 *
+
+r1 = X;
+if(r1 != 0) {
+  *U.storeFence();*
+  Y = 1;
+}
+-----------------------
+
+*T2*
+r2 = Y;
+if(r2 != 0) {
+  * U.storeFence();*
+   X = 1;
+}
+
+So now *X == 1 and Y == 1 is not allowed*, is this right?. 
+
+
+Similarly another example from JLS   Behavior allowed by happens-before
+consistency, but not sequential consistency.
+<http://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4.5-table-1>   
+
+*T1 *
+
+B = 1;
+r2 = A;
+-----------------------
+
+*T2*
+A = 2;
+r1 = B;
+
+So  *r1 == 0 and r2 == 0 is possible* (Not Sequential Consistent).
+Using Fences API can we try something like this 
+
+*T1 *
+
+B = 1;
+U.fullFence();
+r2 = A;
+-----------------------
+
+*T2*
+A = 2;
+U.fullFence();
+r1 = B;
+
+U.fullFence() will provide the necessary StoreLoad barrier and hence *r1 ==
+0 and r2 == 0 is not possible*.
+And hence the above code will work. 
+
+*Do my both assumptions are fine? *
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/JLS-and-Fence-Intrinsics-tp12559.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From vikas.vksingh at gmail.com  Fri Apr 10 05:54:29 2015
+From: vikas.vksingh at gmail.com (vikas)
+Date: Fri, 10 Apr 2015 02:54:29 -0700 (MST)
+Subject: [concurrency-interest] DCL using Fence Intrinsics
+In-Reply-To: <CAJR39Ey+0M-=zbaehMODvefTmpnanESHGj3cXbNy+cbm4g6baQ@mail.gmail.com>
+References: <CAHjP37FN3pigOEPRkcKfqdrd09u8MFioWVPTD+fQOZ+bk+hUiQ@mail.gmail.com>
+	<55031021.6000904@oracle.com>
+	<CAHjP37GFqpt4TH=00Kg5cRb5sBCnXFQyyt66v-8fVkbsgk_EvQ@mail.gmail.com>
+	<1426267663897-12435.post@n7.nabble.com>
+	<55032EA6.8030907@oracle.com>
+	<CAHjP37H+bcHC3DFKpmLksKJENhvQYYKCwmoO663P6FDvdYNMMA@mail.gmail.com>
+	<550346FB.3080401@oracle.com>
+	<0FD072A166C6DC4C851F6115F37DDD279AEEF269@sm-ex-01-vm.guidewire.com>
+	<CAHjP37FxN_ShR0BZ3dgP-LmTpLdzb+TLV2g-mFyhOjCnvVj8HQ@mail.gmail.com>
+	<CAJR39Ey+0M-=zbaehMODvefTmpnanESHGj3cXbNy+cbm4g6baQ@mail.gmail.com>
+Message-ID: <1428659669185-12560.post@n7.nabble.com>
+
+     I have added the below code in wiki as another way to achieve  Singleton
+using DCL.
+     
+https://en.wikipedia.org/w/index.php?title=Double-checked_locking#Usage_in_Java
+<https://en.wikipedia.org/w/index.php?title=Double-checked_locking#Usage_in_Java>  
+     Please let me know if any body see any problem with the above code.
+  
+     sun.misc.Unsafe U; 
+     Singleton instance = null 
+
+     Singleton getInstance() { 
+          Singleton tmp = instance; 
+          U.loadFence();
+          if(tmp == null) { 
+              synchronized(Singleton.class) { 
+                   tmp = instance; 
+                   if(tmp == null) { 
+                       tmp = new Singleton(); 
+                       U.storeFence();
+                       instance = tmp; 
+                  } 
+              } 
+           } 
+       return tmp; 
+     } 
+    
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/DCL-using-Fence-Intrinsics-tp12420p12560.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From martinrb at google.com  Fri Apr 10 13:16:34 2015
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 10 Apr 2015 10:16:34 -0700
+Subject: [concurrency-interest] DCL using Fence Intrinsics
+In-Reply-To: <1428659669185-12560.post@n7.nabble.com>
+References: <CAHjP37FN3pigOEPRkcKfqdrd09u8MFioWVPTD+fQOZ+bk+hUiQ@mail.gmail.com>
+	<55031021.6000904@oracle.com>
+	<CAHjP37GFqpt4TH=00Kg5cRb5sBCnXFQyyt66v-8fVkbsgk_EvQ@mail.gmail.com>
+	<1426267663897-12435.post@n7.nabble.com>
+	<55032EA6.8030907@oracle.com>
+	<CAHjP37H+bcHC3DFKpmLksKJENhvQYYKCwmoO663P6FDvdYNMMA@mail.gmail.com>
+	<550346FB.3080401@oracle.com>
+	<0FD072A166C6DC4C851F6115F37DDD279AEEF269@sm-ex-01-vm.guidewire.com>
+	<CAHjP37FxN_ShR0BZ3dgP-LmTpLdzb+TLV2g-mFyhOjCnvVj8HQ@mail.gmail.com>
+	<CAJR39Ey+0M-=zbaehMODvefTmpnanESHGj3cXbNy+cbm4g6baQ@mail.gmail.com>
+	<1428659669185-12560.post@n7.nabble.com>
+Message-ID: <CA+kOe0-gsJH+vnGU=dzwwziV92YrEYid2jENcBVNaCQLoRUM9Q@mail.gmail.com>
+
+Even if correct, the use of Unsafe should not be recommended for ordinary
+users.  And that is especially true for loadFence and storeFence, which are
+extremely hard to get right.  For this reason, I would delete this way to
+achieve DCL.
+
+That said, your code appears to be correct.  Style should be made more
+standards and caveats should be added.
+
+On Fri, Apr 10, 2015 at 2:54 AM, vikas <vikas.vksingh at gmail.com> wrote:
+
+>      I have added the below code in wiki as another way to achieve
+> Singleton
+> using DCL.
+>
+>
+> https://en.wikipedia.org/w/index.php?title=Double-checked_locking#Usage_in_Java
+> <
+> https://en.wikipedia.org/w/index.php?title=Double-checked_locking#Usage_in_Java
+> >
+>      Please let me know if any body see any problem with the above code.
+>
+>      sun.misc.Unsafe U;
+>      Singleton instance = null
+>
+>      Singleton getInstance() {
+>           Singleton tmp = instance;
+>           U.loadFence();
+>           if(tmp == null) {
+>               synchronized(Singleton.class) {
+>                    tmp = instance;
+>                    if(tmp == null) {
+>                        tmp = new Singleton();
+>                        U.storeFence();
+>                        instance = tmp;
+>                   }
+>               }
+>            }
+>        return tmp;
+>      }
+>
+>
+>
+>
+> --
+> View this message in context:
+> http://jsr166-concurrency.10961.n7.nabble.com/DCL-using-Fence-Intrinsics-tp12420p12560.html
+> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150410/bad2aaa6/attachment.html>
+
+From vikas.vksingh at gmail.com  Fri Apr 10 13:29:12 2015
+From: vikas.vksingh at gmail.com (vikas)
+Date: Fri, 10 Apr 2015 10:29:12 -0700 (MST)
+Subject: [concurrency-interest] DCL using Fence Intrinsics
+In-Reply-To: <CA+kOe0-gsJH+vnGU=dzwwziV92YrEYid2jENcBVNaCQLoRUM9Q@mail.gmail.com>
+References: <CAHjP37GFqpt4TH=00Kg5cRb5sBCnXFQyyt66v-8fVkbsgk_EvQ@mail.gmail.com>
+	<1426267663897-12435.post@n7.nabble.com>
+	<55032EA6.8030907@oracle.com>
+	<CAHjP37H+bcHC3DFKpmLksKJENhvQYYKCwmoO663P6FDvdYNMMA@mail.gmail.com>
+	<550346FB.3080401@oracle.com>
+	<0FD072A166C6DC4C851F6115F37DDD279AEEF269@sm-ex-01-vm.guidewire.com>
+	<CAHjP37FxN_ShR0BZ3dgP-LmTpLdzb+TLV2g-mFyhOjCnvVj8HQ@mail.gmail.com>
+	<CAJR39Ey+0M-=zbaehMODvefTmpnanESHGj3cXbNy+cbm4g6baQ@mail.gmail.com>
+	<1428659669185-12560.post@n7.nabble.com>
+	<CA+kOe0-gsJH+vnGU=dzwwziV92YrEYid2jENcBVNaCQLoRUM9Q@mail.gmail.com>
+Message-ID: <1428686952681-12562.post@n7.nabble.com>
+
+I completely agree on this Martin.
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/DCL-using-Fence-Intrinsics-tp12420p12562.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From oleksandr.otenko at oracle.com  Mon Apr 13 04:36:38 2015
+From: oleksandr.otenko at oracle.com (Oleksandr Otenko)
+Date: Mon, 13 Apr 2015 09:36:38 +0100
+Subject: [concurrency-interest] DCL using Fence Intrinsics
+In-Reply-To: <1428659669185-12560.post@n7.nabble.com>
+References: <CAHjP37FN3pigOEPRkcKfqdrd09u8MFioWVPTD+fQOZ+bk+hUiQ@mail.gmail.com>	<55031021.6000904@oracle.com>	<CAHjP37GFqpt4TH=00Kg5cRb5sBCnXFQyyt66v-8fVkbsgk_EvQ@mail.gmail.com>	<1426267663897-12435.post@n7.nabble.com>	<55032EA6.8030907@oracle.com>	<CAHjP37H+bcHC3DFKpmLksKJENhvQYYKCwmoO663P6FDvdYNMMA@mail.gmail.com>	<550346FB.3080401@oracle.com>	<0FD072A166C6DC4C851F6115F37DDD279AEEF269@sm-ex-01-vm.guidewire.com>	<CAHjP37FxN_ShR0BZ3dgP-LmTpLdzb+TLV2g-mFyhOjCnvVj8HQ@mail.gmail.com>	<CAJR39Ey+0M-=zbaehMODvefTmpnanESHGj3cXbNy+cbm4g6baQ@mail.gmail.com>
+	<1428659669185-12560.post@n7.nabble.com>
+Message-ID: <552B8016.2000602@oracle.com>
+
+Is this an exercise on the use of fences? If instance is a singleton, I 
+don't see what you win by using fences in this way and non-volatile.
+
+Perhaps, a more useful example would be to move the load fence inside 
+the if-then statement just before the synchronized, but that way you may 
+lose some of the ordering guarantees someone might require. It really 
+depends on what is expected of the singleton.
+
+Alex
+
+On 10/04/2015 10:54, vikas wrote:
+>       I have added the below code in wiki as another way to achieve  Singleton
+> using DCL.
+>       
+> https://en.wikipedia.org/w/index.php?title=Double-checked_locking#Usage_in_Java
+> <https://en.wikipedia.org/w/index.php?title=Double-checked_locking#Usage_in_Java>
+>       Please let me know if any body see any problem with the above code.
+>    
+>       sun.misc.Unsafe U;
+>       Singleton instance = null
+>
+>       Singleton getInstance() {
+>            Singleton tmp = instance;
+>            U.loadFence();
+>            if(tmp == null) {
+>                synchronized(Singleton.class) {
+>                     tmp = instance;
+>                     if(tmp == null) {
+>                         tmp = new Singleton();
+>                         U.storeFence();
+>                         instance = tmp;
+>                    }
+>                }
+>             }
+>         return tmp;
+>       }
+>      
+>
+>
+>
+> --
+> View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/DCL-using-Fence-Intrinsics-tp12420p12560.html
+> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From oleksandr.otenko at oracle.com  Mon Apr 13 05:16:25 2015
+From: oleksandr.otenko at oracle.com (Oleksandr Otenko)
+Date: Mon, 13 Apr 2015 10:16:25 +0100
+Subject: [concurrency-interest] DCL using Fence Intrinsics
+In-Reply-To: <552B8016.2000602@oracle.com>
+References: <CAHjP37FN3pigOEPRkcKfqdrd09u8MFioWVPTD+fQOZ+bk+hUiQ@mail.gmail.com>	<55031021.6000904@oracle.com>	<CAHjP37GFqpt4TH=00Kg5cRb5sBCnXFQyyt66v-8fVkbsgk_EvQ@mail.gmail.com>	<1426267663897-12435.post@n7.nabble.com>	<55032EA6.8030907@oracle.com>	<CAHjP37H+bcHC3DFKpmLksKJENhvQYYKCwmoO663P6FDvdYNMMA@mail.gmail.com>	<550346FB.3080401@oracle.com>	<0FD072A166C6DC4C851F6115F37DDD279AEEF269@sm-ex-01-vm.guidewire.com>	<CAHjP37FxN_ShR0BZ3dgP-LmTpLdzb+TLV2g-mFyhOjCnvVj8HQ@mail.gmail.com>	<CAJR39Ey+0M-=zbaehMODvefTmpnanESHGj3cXbNy+cbm4g6baQ@mail.gmail.com>	<1428659669185-12560.post@n7.nabble.com>
+	<552B8016.2000602@oracle.com>
+Message-ID: <552B8969.1070409@oracle.com>
+
+On 13/04/2015 09:36, Oleksandr Otenko wrote:
+> Is this an exercise on the use of fences? If instance is a singleton, 
+> I don't see what you win by using fences in this way and non-volatile.
+>
+> Perhaps, a more useful example would be to move the load fence inside 
+> the if-then statement just before the synchronized, but that way you 
+> may lose some of the ordering guarantees someone might require. It 
+> really depends on what is expected of the singleton.
+
+Re: ordering. For example, if load fence is moved inside the if-then 
+branch, it won't be thread safe to access the member variables of the 
+singleton. So it will only be safe to handle the reference, but not 
+whatever is reachable from it.
+
+But keeping the fence outside, to make the dereferencing safe, like in 
+your code, makes it no different from just declaring the variable volatile.
+
+
+Alex
+
+>
+> Alex
+>
+> On 10/04/2015 10:54, vikas wrote:
+>>       I have added the below code in wiki as another way to achieve  
+>> Singleton
+>> using DCL.
+>> https://en.wikipedia.org/w/index.php?title=Double-checked_locking#Usage_in_Java
+>> <https://en.wikipedia.org/w/index.php?title=Double-checked_locking#Usage_in_Java> 
+>>
+>>       Please let me know if any body see any problem with the above 
+>> code.
+>>          sun.misc.Unsafe U;
+>>       Singleton instance = null
+>>
+>>       Singleton getInstance() {
+>>            Singleton tmp = instance;
+>>            U.loadFence();
+>>            if(tmp == null) {
+>>                synchronized(Singleton.class) {
+>>                     tmp = instance;
+>>                     if(tmp == null) {
+>>                         tmp = new Singleton();
+>>                         U.storeFence();
+>>                         instance = tmp;
+>>                    }
+>>                }
+>>             }
+>>         return tmp;
+>>       }
+>>
+>>
+>>
+>> -- 
+>> View this message in context: 
+>> http://jsr166-concurrency.10961.n7.nabble.com/DCL-using-Fence-Intrinsics-tp12420p12560.html
+>> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From vikas.vksingh at gmail.com  Mon Apr 13 10:34:47 2015
+From: vikas.vksingh at gmail.com (vikas)
+Date: Mon, 13 Apr 2015 07:34:47 -0700 (MST)
+Subject: [concurrency-interest] DCL using Fence Intrinsics
+In-Reply-To: <552B8969.1070409@oracle.com>
+References: <1426267663897-12435.post@n7.nabble.com>
+	<55032EA6.8030907@oracle.com>
+	<CAHjP37H+bcHC3DFKpmLksKJENhvQYYKCwmoO663P6FDvdYNMMA@mail.gmail.com>
+	<550346FB.3080401@oracle.com>
+	<0FD072A166C6DC4C851F6115F37DDD279AEEF269@sm-ex-01-vm.guidewire.com>
+	<CAHjP37FxN_ShR0BZ3dgP-LmTpLdzb+TLV2g-mFyhOjCnvVj8HQ@mail.gmail.com>
+	<CAJR39Ey+0M-=zbaehMODvefTmpnanESHGj3cXbNy+cbm4g6baQ@mail.gmail.com>
+	<1428659669185-12560.post@n7.nabble.com>
+	<552B8016.2000602@oracle.com> <552B8969.1070409@oracle.com>
+Message-ID: <1428935687089-12565.post@n7.nabble.com>
+
+I was just trying to know if Singleton/DCL can be achieved using fences. 
+I am not trying to achieve a better way to do it. 
+
+/>>Is this an exercise on the use of fences? /
+
+Not exactly, i am just trying to see what are the use cases where fences are 
+best suited. i.e cases where volatile/putOrdered may prove costly or are
+infeasible 
+whereas use of fences make the code more efficient.
+
+And of course DCL fails in this as the code is no more efficient than its 
+volatile counterpart on the contrary the code is unreadable and may be 
+inefficient due to stricter loadFence as volatile load allows 
+previous normal loads to  move past it.
+
+Where as one good use case of fences can be found 
+in the implementation of  StampedLock validate method
+<http://grepcode.com/file/repository.grepcode.com/java/root/jdk/openjdk/8-b132/java/util/concurrent/locks/StampedLock.java#StampedLock.validate%28long%29>  
+for optimistic reads.
+I am just looking for more such use cases.
+
+
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/DCL-using-Fence-Intrinsics-tp12420p12565.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From plokhotnyuk at gmail.com  Sun Apr 19 11:45:41 2015
+From: plokhotnyuk at gmail.com (Andriy Plokhotnyuk)
+Date: Sun, 19 Apr 2015 18:45:41 +0300
+Subject: [concurrency-interest] Missed submissions in latest versions of
+	Java ForkJoinPool
+Message-ID: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>
+
+Code to reproduce:
+
+        ForkJoinPool e = new ForkJoinPool(1);
+        AtomicBoolean b = new AtomicBoolean();
+        for (int i = 0; i < 100000; i++) {
+            b.set(true);
+            e.execute(new Runnable() {
+                @Override
+                public void run() {
+                    b.set(false);
+                }
+            });
+            while (b.get());
+        }
+
+It completes successfully on 8u31 or older versions, but hangs up on 8u40
+or above.
+
+I have found that first version of FJ pool which fails this test was
+committed to jsr166 repository at 07.07.2017 with following comment:
+"Overhaul throttling; other internal refactorings".
+
+Best regards,
+Andriy
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150419/76caa9e1/attachment.html>
+
+From martinrb at google.com  Sun Apr 19 15:13:53 2015
+From: martinrb at google.com (Martin Buchholz)
+Date: Sun, 19 Apr 2015 12:13:53 -0700
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>
+Message-ID: <CA+kOe09VTeh9P9GAXmWtCNE5r7=j2tS1eXkq7OuPGQ2fHBGSAg@mail.gmail.com>
+
+I can reproduce this with latest jsr166 CVS.  SSCCE:
+
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+
+public class ForkJoinPoolThrottling {
+    public static void main(String[] args) throws Throwable {
+        final ForkJoinPool e = new ForkJoinPool(1);
+        final AtomicBoolean b = new AtomicBoolean();
+        final Runnable setFalse = new Runnable() { public void run() {
+            b.set(false);
+        }};
+        for (int i = 0; i < 100000; i++) {
+            b.set(true);
+            e.execute(setFalse);
+            do {} while (b.get()); // spins forever here
+        }
+    }
+}
+
+It spins with no sign of any pool thread.  I agree this looks like a
+serious bug.
+
+I can confirm it was introduced by the (scary) change
+
+date: 2014/07/07 18:29:07;  author: dl;  state: Exp;  lines: +1328 -1333
+Overhaul throttling; other internal refactorings
+
+Diffs can be obtained using:
+
+TZ=GMT cvs diff -D '2014-07-07 18:25:00' -D '2014-07-07 18:35:00'
+
+
+On Sun, Apr 19, 2015 at 8:45 AM, Andriy Plokhotnyuk <plokhotnyuk at gmail.com>
+wrote:
+
+> Code to reproduce:
+>
+>         ForkJoinPool e = new ForkJoinPool(1);
+>         AtomicBoolean b = new AtomicBoolean();
+>         for (int i = 0; i < 100000; i++) {
+>             b.set(true);
+>             e.execute(new Runnable() {
+>                 @Override
+>                 public void run() {
+>                     b.set(false);
+>                 }
+>             });
+>             while (b.get());
+>         }
+>
+> It completes successfully on 8u31 or older versions, but hangs up on 8u40
+> or above.
+>
+> I have found that first version of FJ pool which fails this test was
+> committed to jsr166 repository at 07.07.2017 with following comment:
+> "Overhaul throttling; other internal refactorings".
+>
+> Best regards,
+> Andriy
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150419/4e01dfb8/attachment.html>
+
+From dl at cs.oswego.edu  Mon Apr 20 06:54:12 2015
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 20 Apr 2015 06:54:12 -0400
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>
+Message-ID: <5534DAD4.3000407@cs.oswego.edu>
+
+
+Thanks. We are trying to figure out why hotspot is generating some
+surprising code for the putOrderedInt intrinsic. In the mean time,
+a version with the volatile orderings used previously is committed
+and can be run with jsr166.jar at
+http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166.jar
+
+-Doug
+
+
+On 04/19/2015 11:45 AM, Andriy Plokhotnyuk wrote:
+> Code to reproduce:
+>
+>          ForkJoinPool e = new ForkJoinPool(1);
+>          AtomicBoolean b = new AtomicBoolean();
+>          for (int i = 0; i < 100000; i++) {
+>              b.set(true);
+>              e.execute(new Runnable() {
+>                  @Override
+>                  public void run() {
+>                      b.set(false);
+>                  }
+>              });
+>              while (b.get());
+>          }
+>
+> It completes successfully on 8u31 or older versions, but hangs up on 8u40 or above.
+>
+> I have found that first version of FJ pool which fails this test was committed
+> to jsr166 repository at 07.07.2017 with following comment: "Overhaul throttling;
+> other internal refactorings".
+>
+> Best regards,
+> Andriy
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From aaron.grunthal at infinite-source.de  Tue Apr 21 21:24:55 2015
+From: aaron.grunthal at infinite-source.de (Aaron Grunthal)
+Date: Wed, 22 Apr 2015 03:24:55 +0200
+Subject: [concurrency-interest] ScheduledThreadPoolExecutor has some
+	optimization potential
+Message-ID: <5536F867.4060901@infinite-source.de>
+
+In a project of mine I have been using the ScheduledThreadPoolExecutor 
+as the executor doing the bulk of the work. Lots of millisecond-range 
+timeouts for UDP packets involved, which leads to a lot of threads 
+getting blocked on the STPE's queue lock.
+
+I first tried to solve this by separating tasks that need immediate 
+execution into a separate pool using a LinkedTransferQueue, but that 
+didn't help as much as I hoped because the separate pool still had to 
+compete for the lock when spamming timeout-tasks to the STPE.
+
+So I tried rolling my own scheduler service instead[1]. The 
+implementation is fairly bare-bones though, merely fulfilling my needs.
+
+Benchmarks (jmh code[2]) below.
+Some of the performance gains in the single-threaded case probably stem 
+from features that I didn't replicate, but if I didn't do anything 
+terribly wrong it shows that the STPE throughput *decreases*  under 
+contention while the custom executor does scale up to the number of 
+physical cores (4).
+
+- Aaron
+
+____
+
+# Run complete. Total time: 00:01:12
+
+Benchmark             (threads)  (type)   Mode  Cnt      Score 
+Error  Units
+MyBenchmark.testPool          1     JDK  thrpt    7  21320,785 ? 
+397,305  ops/s
+MyBenchmark.testPool          1  CUSTOM  thrpt    7  34043,298 ? 
+905,298  ops/s
+MyBenchmark.testPool          3     JDK  thrpt    7  15976,543 ? 
+258,186  ops/s
+MyBenchmark.testPool          3  CUSTOM  thrpt    7  51237,240 ? 
+1585,819  ops/s
+MyBenchmark.testPool          4     JDK  thrpt    7  16234,861 ? 
+208,244  ops/s
+MyBenchmark.testPool          4  CUSTOM  thrpt    7  58543,197 ? 
+418,016  ops/s
+MyBenchmark.testPool          5     JDK  thrpt    7  16113,486 ? 
+369,020  ops/s
+MyBenchmark.testPool          5  CUSTOM  thrpt    7  54916,969 ? 
+1390,544  ops/s
+MyBenchmark.testPool          8     JDK  thrpt    7  16551,364 ? 
+282,129  ops/s
+MyBenchmark.testPool          8  CUSTOM  thrpt    7  37954,441 ? 
+2195,839  ops/s
+
+
+
+[1] 
+https://github.com/the8472/mldht/blob/b2f716be3c69d5b682df58942f0b493711eea4d2/src/the8472/utils/concurrent/NonblockingScheduledExecutor.java
+[2] https://gist.github.com/the8472/ae462c8f8d598a7be671
+
+From aph at redhat.com  Wed Apr 22 06:06:34 2015
+From: aph at redhat.com (Andrew Haley)
+Date: Wed, 22 Apr 2015 11:06:34 +0100
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <5534DAD4.3000407@cs.oswego.edu>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>
+	<5534DAD4.3000407@cs.oswego.edu>
+Message-ID: <553772AA.1060500@redhat.com>
+
+On 04/20/2015 11:54 AM, Doug Lea wrote:
+> 
+> Thanks. We are trying to figure out why hotspot is generating some
+> surprising code for the putOrderedInt intrinsic.
+
+Have you got an OpenJDK bugzilla # for this?
+
+Thanks,
+Andrew.
+
+
+
+From dl at cs.oswego.edu  Wed Apr 22 06:36:27 2015
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 22 Apr 2015 06:36:27 -0400
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <553772AA.1060500@redhat.com>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>
+	<5534DAD4.3000407@cs.oswego.edu> <553772AA.1060500@redhat.com>
+Message-ID: <553779AB.8030902@cs.oswego.edu>
+
+On 04/22/2015 06:06 AM, Andrew Haley wrote:
+> On 04/20/2015 11:54 AM, Doug Lea wrote:
+>>
+>> Thanks. We are trying to figure out why hotspot is generating some
+>> surprising code for the putOrderedInt intrinsic.
+>
+> Have you got an OpenJDK bugzilla # for this?
+>
+
+Not yet, pending diagnosis of whether "surprising" indicates
+any further problems beyond the need for the re-strengthened
+write in current patch.
+
+-Doug
+
+
+
+From aleksey.shipilev at oracle.com  Wed Apr 22 06:38:30 2015
+From: aleksey.shipilev at oracle.com (Aleksey Shipilev)
+Date: Wed, 22 Apr 2015 13:38:30 +0300
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <553772AA.1060500@redhat.com>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>	<5534DAD4.3000407@cs.oswego.edu>
+	<553772AA.1060500@redhat.com>
+Message-ID: <55377A26.3010403@oracle.com>
+
+On 04/22/2015 01:06 PM, Andrew Haley wrote:
+> On 04/20/2015 11:54 AM, Doug Lea wrote:
+>>
+>> Thanks. We are trying to figure out why hotspot is generating some
+>> surprising code for the putOrderedInt intrinsic.
+> 
+> Have you got an OpenJDK bugzilla # for this?
+
+Not yet, trying to isolate. Not yet sure if that's a HotSpot bug. I'll
+post once something is clear.
+
+Thanks,
+-Aleksey.
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 819 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150422/89d6911e/attachment.bin>
+
+From dl at cs.oswego.edu  Thu Apr 23 19:07:18 2015
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Thu, 23 Apr 2015 19:07:18 -0400
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>
+Message-ID: <55397B26.4070801@cs.oswego.edu>
+
+
+Thanks again for reporting this. Now fixed by re-strengthening a write.
+See https://bugs.openjdk.java.net/browse/JDK-8078490
+http://cr.openjdk.java.net/~psandoz/jdk9/JDK-8078490-fj-missed-submissions/webrev/
+
+Thanks to Paul Sandoz, Aleksey Shipilev, and Martin Buchholz.
+
+For the curious, the problem was a volatile write that was
+incorrectly weakened to a releasing write (putOrderedInt),
+emphasizing the delicacy of such optimizations. The weakening
+was correct considered in isolation, but left a path in the
+case of unjoined tasks with a size-1 FJP such that the single
+worker need not see an available task and becomes idle. (As in
+this test case.)
+
+-Doug
+
+
+On 04/19/2015 11:45 AM, Andriy Plokhotnyuk wrote:
+> Code to reproduce:
+>
+>          ForkJoinPool e = new ForkJoinPool(1);
+>          AtomicBoolean b = new AtomicBoolean();
+>          for (int i = 0; i < 100000; i++) {
+>              b.set(true);
+>              e.execute(new Runnable() {
+>                  @Override
+>                  public void run() {
+>                      b.set(false);
+>                  }
+>              });
+>              while (b.get());
+>          }
+>
+> It completes successfully on 8u31 or older versions, but hangs up on 8u40 or above.
+>
+> I have found that first version of FJ pool which fails this test was committed
+> to jsr166 repository at 07.07.2017 with following comment: "Overhaul throttling;
+> other internal refactorings".
+>
+> Best regards,
+> Andriy
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From akarnokd at gmail.com  Fri Apr 24 03:30:49 2015
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Fri, 24 Apr 2015 09:30:49 +0200
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <55397B26.4070801@cs.oswego.edu>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>
+	<55397B26.4070801@cs.oswego.edu>
+Message-ID: <CAAWwtm9v_BaY-CG0Gds-=X5ExjSe9Dqk3gU32jfCA9Gtb604Eg@mail.gmail.com>
+
+Hi. I'm using such putOrdered constructs quite often and I'd like to
+understand why is it wrong particularly there? U.putOrderedInt(w, QLOCK,
+0); appears many times elsewhere. My guess is that the ordered release puts
+that 0 into a write buffer and the subsequent worker unpark still sees 1 in
+memory somehow. Alternatively, I find top being non-volatile odd as it is
+written with putOrdered and either read before or after base (depending on
+whether it is an owner-called method) yet in externalPush the expression in
+the condition (n = (s = q.top) - q.base) reads it in different order but I
+think externalPush called from execute() is not an owner call.
+
+2015-04-24 1:07 GMT+02:00 Doug Lea <dl at cs.oswego.edu>:
+
+>
+> Thanks again for reporting this. Now fixed by re-strengthening a write.
+> See https://bugs.openjdk.java.net/browse/JDK-8078490
+>
+> http://cr.openjdk.java.net/~psandoz/jdk9/JDK-8078490-fj-missed-submissions/webrev/
+>
+> Thanks to Paul Sandoz, Aleksey Shipilev, and Martin Buchholz.
+>
+> For the curious, the problem was a volatile write that was
+> incorrectly weakened to a releasing write (putOrderedInt),
+> emphasizing the delicacy of such optimizations. The weakening
+> was correct considered in isolation, but left a path in the
+> case of unjoined tasks with a size-1 FJP such that the single
+> worker need not see an available task and becomes idle. (As in
+> this test case.)
+>
+> -Doug
+>
+>
+> On 04/19/2015 11:45 AM, Andriy Plokhotnyuk wrote:
+>
+>> Code to reproduce:
+>>
+>>          ForkJoinPool e = new ForkJoinPool(1);
+>>          AtomicBoolean b = new AtomicBoolean();
+>>          for (int i = 0; i < 100000; i++) {
+>>              b.set(true);
+>>              e.execute(new Runnable() {
+>>                  @Override
+>>                  public void run() {
+>>                      b.set(false);
+>>                  }
+>>              });
+>>              while (b.get());
+>>          }
+>>
+>> It completes successfully on 8u31 or older versions, but hangs up on 8u40
+>> or above.
+>>
+>> I have found that first version of FJ pool which fails this test was
+>> committed
+>> to jsr166 repository at 07.07.2017 with following comment: "Overhaul
+>> throttling;
+>> other internal refactorings".
+>>
+>> Best regards,
+>> Andriy
+>>
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150424/22ddd88f/attachment.html>
+
+From aph at redhat.com  Fri Apr 24 05:22:08 2015
+From: aph at redhat.com (Andrew Haley)
+Date: Fri, 24 Apr 2015 10:22:08 +0100
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <CAAWwtm9v_BaY-CG0Gds-=X5ExjSe9Dqk3gU32jfCA9Gtb604Eg@mail.gmail.com>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>	<55397B26.4070801@cs.oswego.edu>
+	<CAAWwtm9v_BaY-CG0Gds-=X5ExjSe9Dqk3gU32jfCA9Gtb604Eg@mail.gmail.com>
+Message-ID: <553A0B40.9030905@redhat.com>
+
+On 24/04/15 08:30, D?vid Karnok wrote:
+> Hi. I'm using such putOrdered constructs quite often and I'd like to
+> understand why is it wrong particularly there? U.putOrderedInt(w, QLOCK,
+> 0); appears many times elsewhere.
+
+Indeed, there's a very similar construct here:
+
+        final CountedCompleter<?> popCC(CountedCompleter<?> task, int mode) {
+...
+                            if (mode < 0) { // must lock
+                                if (U.compareAndSwapInt(this, QLOCK, 0, 1)) {
+                                    if (top == s && array == a &&
+                                        U.compareAndSwapObject(a, j, t, null)) {
+                                        U.putOrderedInt(this, QTOP, s - 1);
+                                        U.putOrderedInt(this, QLOCK, 0);
+                                        return t;
+                                    }
+                                    U.compareAndSwapInt(this, QLOCK, 1, 0);
+                                }
+
+It certainly looks to me like this method returns without making
+the release of this.qlock visible to all observers.
+
+Andrew.
+
+
+From akarnokd at gmail.com  Fri Apr 24 06:13:18 2015
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Fri, 24 Apr 2015 12:13:18 +0200
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <553A0B40.9030905@redhat.com>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>
+	<55397B26.4070801@cs.oswego.edu>
+	<CAAWwtm9v_BaY-CG0Gds-=X5ExjSe9Dqk3gU32jfCA9Gtb604Eg@mail.gmail.com>
+	<553A0B40.9030905@redhat.com>
+Message-ID: <CAAWwtm98iMZS6LDpn1=u2+oLXCcYOPm_4BZT91jEG=m6yjE+aw@mail.gmail.com>
+
+Another thing I don't understand is why not use U.putOrderedInt(this,
+QLOCK, 0); instead of U.compareAndSwapInt(this, QLOCK, 1, 0); because only
+the single thread who successfully set QLOCK to 1 can set it back to 0? Is
+it that by using a full barrier operation, other observers can pick up the
+unlocked state more quickly?
+
+2015-04-24 11:22 GMT+02:00 Andrew Haley <aph at redhat.com>:
+
+> On 24/04/15 08:30, D?vid Karnok wrote:
+> > Hi. I'm using such putOrdered constructs quite often and I'd like to
+> > understand why is it wrong particularly there? U.putOrderedInt(w, QLOCK,
+> > 0); appears many times elsewhere.
+>
+> Indeed, there's a very similar construct here:
+>
+>         final CountedCompleter<?> popCC(CountedCompleter<?> task, int
+> mode) {
+> ...
+>                             if (mode < 0) { // must lock
+>                                 if (U.compareAndSwapInt(this, QLOCK, 0,
+> 1)) {
+>                                     if (top == s && array == a &&
+>                                         U.compareAndSwapObject(a, j, t,
+> null)) {
+>                                         U.putOrderedInt(this, QTOP, s - 1);
+>                                         U.putOrderedInt(this, QLOCK, 0);
+>                                         return t;
+>                                     }
+>                                     U.compareAndSwapInt(this, QLOCK, 1, 0);
+>                                 }
+>
+> It certainly looks to me like this method returns without making
+> the release of this.qlock visible to all observers.
+>
+> Andrew.
+>
+>
+
+
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150424/361010a3/attachment.html>
+
+From dl at cs.oswego.edu  Fri Apr 24 06:46:35 2015
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 24 Apr 2015 06:46:35 -0400
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <CAAWwtm9v_BaY-CG0Gds-=X5ExjSe9Dqk3gU32jfCA9Gtb604Eg@mail.gmail.com>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>	<55397B26.4070801@cs.oswego.edu>
+	<CAAWwtm9v_BaY-CG0Gds-=X5ExjSe9Dqk3gU32jfCA9Gtb604Eg@mail.gmail.com>
+Message-ID: <553A1F0B.8070109@cs.oswego.edu>
+
+On 04/24/2015 03:30 AM, D?vid Karnok wrote:
+> Hi. I'm using such putOrdered constructs quite often and I'd like to understand
+> why is it wrong particularly there? U.putOrderedInt(w, QLOCK, 0); appears many
+> times elsewhere.
+
+The use of putorderedInt is correct considered only with respect
+to its role as a spinlock. However, the use in externalPush
+before a call to signalWork also serves a Dekker-like role in
+ensuring that some scanning worker sees the submitted task
+before giving up and idling. (In every case other than a
+single worker and an unjoined task, there is some other path
+ensuring this.) So the full-volatile write is logically
+associated with the update to top, but is implemented for
+the qlock write that is guaranteed to follow it.
+
+-Doug
+
+
+
+
+From dl at cs.oswego.edu  Fri Apr 24 06:50:10 2015
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 24 Apr 2015 06:50:10 -0400
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <CAAWwtm98iMZS6LDpn1=u2+oLXCcYOPm_4BZT91jEG=m6yjE+aw@mail.gmail.com>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>	<55397B26.4070801@cs.oswego.edu>	<CAAWwtm9v_BaY-CG0Gds-=X5ExjSe9Dqk3gU32jfCA9Gtb604Eg@mail.gmail.com>	<553A0B40.9030905@redhat.com>
+	<CAAWwtm98iMZS6LDpn1=u2+oLXCcYOPm_4BZT91jEG=m6yjE+aw@mail.gmail.com>
+Message-ID: <553A1FE2.3070406@cs.oswego.edu>
+
+On 04/24/2015 06:13 AM, D?vid Karnok wrote:
+> Another thing I don't understand is why not use U.putOrderedInt(this, QLOCK, 0);
+> instead of U.compareAndSwapInt(this, QLOCK, 1, 0); because only the single
+> thread who successfully set QLOCK to 1 can set it back to 0?
+
+Except that during shutdown, the thread initiating termination can
+poison some locks (with -1), but not others. So a few need to use
+CAS to ensure that termination is noticed.
+
+-Doug
+
+
+
+
+
+From aph at redhat.com  Fri Apr 24 07:15:30 2015
+From: aph at redhat.com (Andrew Haley)
+Date: Fri, 24 Apr 2015 12:15:30 +0100
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <553A1F0B.8070109@cs.oswego.edu>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>	<55397B26.4070801@cs.oswego.edu>	<CAAWwtm9v_BaY-CG0Gds-=X5ExjSe9Dqk3gU32jfCA9Gtb604Eg@mail.gmail.com>
+	<553A1F0B.8070109@cs.oswego.edu>
+Message-ID: <553A25D2.8020608@redhat.com>
+
+On 04/24/2015 11:46 AM, Doug Lea wrote:
+> On 04/24/2015 03:30 AM, D?vid Karnok wrote:
+>> Hi. I'm using such putOrdered constructs quite often and I'd like to understand
+>> why is it wrong particularly there? U.putOrderedInt(w, QLOCK, 0); appears many
+>> times elsewhere.
+> 
+> The use of putorderedInt is correct considered only with respect
+> to its role as a spinlock. However, the use in externalPush
+> before a call to signalWork also serves a Dekker-like role in
+> ensuring that some scanning worker sees the submitted task
+> before giving up and idling. (In every case other than a
+> single worker and an unjoined task, there is some other path
+> ensuring this.) So the full-volatile write is logically
+> associated with the update to top, but is implemented for
+> the qlock write that is guaranteed to follow it.
+
+Got it.  But Doug, don't you think that this rather frightening
+concurrent-programming idiom can be blamed for this bug?  That is
+to say, we've created code that's so clever we can't understand it?
+Is it worth it?
+
+(For some values of "we", of course.  :-)
+
+Andrew.
+
+
+From dl at cs.oswego.edu  Fri Apr 24 07:29:48 2015
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 24 Apr 2015 07:29:48 -0400
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <553A25D2.8020608@redhat.com>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>	<55397B26.4070801@cs.oswego.edu>	<CAAWwtm9v_BaY-CG0Gds-=X5ExjSe9Dqk3gU32jfCA9Gtb604Eg@mail.gmail.com>
+	<553A1F0B.8070109@cs.oswego.edu> <553A25D2.8020608@redhat.com>
+Message-ID: <553A292C.2020609@cs.oswego.edu>
+
+On 04/24/2015 07:15 AM, Andrew Haley wrote:
+
+> Got it.  But Doug, don't you think that this rather frightening
+> concurrent-programming idiom can be blamed for this bug?
+
+Modulo the usual issue that some concurrent constructions are
+not very intuitive, the main problem has been expressivity.
+In particular, without enhanced-volatiles (or C++/C11 modes),
+there's a gap between intent and code that makes things
+harder to understand and easier to get wrong. We're hoping
+that adding these via VarHandles to jdk9 will improve the
+current situation in which only a few people are brave enough
+to use the best known algorithms in error-prone ways. (I have
+some parts of some tentative jdk9 j.u.c  updates rewritten using
+these, and they seem clearer.)
+
+-Doug
+
+
+
+From martinrb at google.com  Mon Apr 27 15:51:43 2015
+From: martinrb at google.com (Martin Buchholz)
+Date: Mon, 27 Apr 2015 12:51:43 -0700
+Subject: [concurrency-interest] strange behavior of future.cancel() with
+	Executors.newWorkStealingPool()
+In-Reply-To: <CADHqCakMSFvA3hU=h+p4dRmb-inUEdKu29O2VprRrKCAypAbww@mail.gmail.com>
+References: <CADHqCakMSFvA3hU=h+p4dRmb-inUEdKu29O2VprRrKCAypAbww@mail.gmail.com>
+Message-ID: <CA+kOe086EXpxFXXcGYxLUqoDfcGouon_psnEOxvPKk6mFmnMaw@mail.gmail.com>
+
+https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/ForkJoinTask.html#cancel-boolean-
+
+Parameters:
+mayInterruptIfRunning - this value has no effect in the default
+implementation because interrupts are not used to control cancellation.
+
+Admittedly,
+https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/Executors.html#newWorkStealingPool-int-
+doesn't promise that it's using ForkJoinPool/ForkJoinTask.
+
+
+On Mon, Apr 27, 2015 at 12:34 PM, Micha? S?onina <michal.slonina at gmail.com>
+wrote:
+
+> Hello folks,
+>
+> I've noticed a strange behavior of future.cancel() when using work stealing
+> thread pool.
+>
+> The JDK docs state that calling future.cancel(true) should result in task
+> being interrupted.
+> "Parameters: mayInterruptIfRunning - true if the thread executing this task
+> should be interrupted..." [1]
+>
+> This works correctly with any executor other then work stealing pool. The
+> behavior is consistent on JDK8 and JDK9.
+> Can someone please enlighten me, did I miss something in the docs or is
+> this a bug ?
+>
+> --- CUT HERE ---
+>
+> public class Test {
+>     public static void main(String[] args) throws InterruptedException {
+>         ExecutorService executor = args[0].equalsIgnoreCase("UGLY")
+>                 ? Executors.newWorkStealingPool() :
+> Executors.newFixedThreadPool(666);
+>         Future<?> future = executor.submit(new Runnable() {
+>             @Override
+>             public void run() {
+>                 try {
+>                     System.out.println("STARTED");
+>                     Thread.sleep(500);
+>                     System.out.println("FINISHED. Is interrupted: " +
+> Thread.interrupted());
+>                 } catch (InterruptedException e) {
+>                     e.printStackTrace();
+>                 }
+>             }
+>         });
+>         Thread.sleep(100);
+>         boolean cancelResult = future.cancel(true);
+>         System.out.println("Cancel result:" + cancelResult);
+>         Thread.sleep(1000);
+>         System.exit(0);
+>     }
+> }
+>
+> --- CUT HERE ---
+>
+> af1n executortest/src ? java -cp . Test NICE
+> STARTED
+> Cancel result:true
+> java.lang.InterruptedException: sleep interrupted
+>         at java.lang.Thread.sleep(Native Method)
+>         at Test$1.run(Test.java:21)
+>         at
+> java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+>         at java.util.concurrent.FutureTask.run(FutureTask.java:265)
+>         at
+>
+> java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)
+>         at
+>
+> java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)
+>         at java.lang.Thread.run(Thread.java:745)
+>
+> af1n executortest/src ? java -cp . Test UGLY
+> STARTED
+> Cancel result:true
+> FINISHED. Is interrupted: false
+>
+> af1n executortest/src ? java -version
+> openjdk version "1.9.0_00"
+> OpenJDK Runtime Environment (build 1.9.0_00-b60)
+> OpenJDK 64-Bit Server VM (build 1.9.0_00-b60, mixed mode)
+>
+> af1n executortest/src ? uname -a
+> Linux af1n.2r-media.de 3.16.7-7-desktop #1 SMP PREEMPT Wed Dec 17 18:00:44
+> UTC 2014 (762f27a) x86_64 x86_64 x86_64 GNU/Linux
+>
+> --
+> [1]
+>
+> https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/Future.html#cancel-boolean-
+>
+> Kind Regards,
+> Michal Slonina
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150427/e9bad80e/attachment.html>
+
+From aph at redhat.com  Tue Apr 28 03:43:47 2015
+From: aph at redhat.com (Andrew Haley)
+Date: Tue, 28 Apr 2015 08:43:47 +0100
+Subject: [concurrency-interest] Missed submissions in latest versions of
+ Java ForkJoinPool
+In-Reply-To: <553A292C.2020609@cs.oswego.edu>
+References: <CAApFj5NFbRnp1r1mR+QeP4kkb34ci3KDr_faZe8JTo4GmCphwQ@mail.gmail.com>	<55397B26.4070801@cs.oswego.edu>	<CAAWwtm9v_BaY-CG0Gds-=X5ExjSe9Dqk3gU32jfCA9Gtb604Eg@mail.gmail.com>
+	<553A1F0B.8070109@cs.oswego.edu> <553A25D2.8020608@redhat.com>
+	<553A292C.2020609@cs.oswego.edu>
+Message-ID: <553F3A33.9000806@redhat.com>
+
+On 24/04/15 12:29, Doug Lea wrote:
+> On 04/24/2015 07:15 AM, Andrew Haley wrote:
+> 
+>> Got it.  But Doug, don't you think that this rather frightening
+>> concurrent-programming idiom can be blamed for this bug?
+> 
+> Modulo the usual issue that some concurrent constructions are
+> not very intuitive, the main problem has been expressivity.
+> In particular, without enhanced-volatiles (or C++/C11 modes),
+> there's a gap between intent and code that makes things
+> harder to understand and easier to get wrong.
+
+Sure, I get that, but isn't this a good opportunity to insert a
+comment or two?  This:
+
+  //  The use of putorderedInt is correct considered only with respect
+  //  to its role as a spinlock. However, the use in externalPush
+  //  before a call to signalWork also serves a Dekker-like role in
+  //  ensuring that some scanning worker sees the submitted task
+  //  before giving up and idling. (In every case other than a
+  //  single worker and an unjoined task, there is some other path
+  //  ensuring this.) So the full-volatile write is logically
+  //  associated with the update to top, but is implemented for
+  //  the qlock write that is guaranteed to follow it.
+
+would do nicely.
+
+Andrew.
+

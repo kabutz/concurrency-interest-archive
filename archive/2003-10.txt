@@ -1,0 +1,3047 @@
+From dl@cs.oswego.edu  Fri Oct  3 14:51:46 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 3 Oct 2003 09:51:46 -0400
+Subject: [concurrency-interest] BlockingQueue.drainTo
+In-Reply-To: <16248.51788.181665.873376@altair.cs.oswego.edu>
+Message-ID: <16253.32498.594430.880907@altair.cs.oswego.edu>
+
+Thanks to people who sent me other use cases for (partially) draining queues.
+There do seem to be enough of them to merit general support.
+So, we are adding to BlockingQUeue (and the five implementations):
+
+
+public int drainTo(Collection<? super E> c)
+    Polls all available elements, removing them from this queue and
+    adding them into the given collection. The operation has the
+    effect of:
+      E e;
+      while ( (e = poll()) != null) c.add(e);
+    Except that it reports number of elements transferred and may be
+    performed more efficiently than repeated polling. A failure
+    encountered while attempting to add elements to the collection may
+    result in only some elements being transferred before throwing the
+    associated runtime exception.
+    Parameters:
+        c - the collection to transfer elements into 
+    Returns:
+        the number of elements transferred. 
+    Throws:
+        java.lang.NullPointerException - if c is null
+
+
+public int drainTo(Collection<? super E> c, int maxElements)
+    Polls at most the given number of available elements, removing
+    them from this queue and adding them into the given
+    collection. Note that you can drain to an array using
+    drainTo(Arrays.asList(array), array.length). A failure encountered
+    while attempting to add elements to the collection may result in
+    only some elements being transferred before throwing the
+    associated runtime exception.
+    Parameters:
+        c - the collection to transfer elements into
+        maxElements - the maximum number of elements to transfer 
+    Returns:
+        the number of elements transferred. 
+    Throws:
+        java.lang.NullPointerException - if c is null
+
+-Doug
+
+From adam@bea.com  Fri Oct  3 22:11:38 2003
+From: adam@bea.com (Adam Messinger)
+Date: Fri, 3 Oct 2003 14:11:38 -0700
+Subject: [concurrency-interest] Completion notification
+Message-ID: <2D865B09-F5E6-11D7-9F72-000A9568414C@bea.com>
+
+Please forgive me if I'm bringing up a topic which has already been 
+discussed.  I looked back through my archives, but haven't found 
+anything on point.
+
+I think that the Executor/FutureTask features are great.  However I 
+think that it would be nice to support more than just busy polling (via 
+Cancellable.isDone()) and blocking polling on a single task (via 
+Future.get()) which are both inefficient mechanisms for keeping track 
+of a large number of Futures.  In my experience there are three more 
+mechanisms which might be considered: completion callbacks, blocking 
+waits on multiple objects, and completion queues.  I'll describe each 
+of these in turn below.
+
+Completion callbacks are a mechanism where a small bit of callback code 
+is associated with a Future when it is enqueued with an Executor.  When 
+the Future is complete the callback will be invoked and some further 
+action may take place.  While this is a nice low level mechanism, it 
+has some drawbacks, most importantly it means that the executor is 
+lending a thread to some unknown bit of work.  This might be OK for 
+ThreadPoolExecutors, but can be problematic for other Executor 
+implementations.
+
+Blocking waits on multiple objects is a mechanism where thread can do a 
+blocking poll the the outcome of multiple Futures at once.  This is a 
+standard mechanism in Win32 and is conceptually unlike being able to 
+use a java.nio.Selector on a set of Futures rather than 
+SelectableChannels.  It would be nice to drive integration so that a 
+single thread could then wait on a single Selector containing both JSR 
+166 Futures and nio channels.  This integration would be even more 
+useful if nio were to add completion based IO like C# has, then 
+hopefully the IO completion tokens would be Futures.  However, nio is 
+definitely designed around IO and thus it making it work with JSR 166 
+Futures may be awkward and require more work from JVM authors.
+
+Completion queues are a mechanism where a BlockingQueue is associated 
+with a Future when it is enqueued with an Executor.  When the Future is 
+complete the Executor will place the finished Future on the specified 
+BlockingQueue.  At this point another thread may come along and 
+poll()/take() completed Futures from the BlockingQueue for further 
+handling.  This is quite similar to Win32 queued IO completion ports or 
+to BSD's kqueue.  In my experience this is a good model because it is 
+simple, but still quite powerful.
+
+It is possible for people to write subclasses of FutureTask to 
+implement either callbacks or completion queues.  This is a good 
+indication that JSR 166 has got the right fundamental abstractions.  
+However it is my opinion that the features I've described here are 
+useful enough to be considered for addition into the base API.  
+Certainly within the WebLogic server we use such mechanisms widely.  
+What do you all think?
+
+Cheers!
+
+Adam
+
+
+From dl@cs.oswego.edu  Sat Oct  4 00:51:31 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 3 Oct 2003 19:51:31 -0400
+Subject: [concurrency-interest] BlockingQueue.drainTo
+In-Reply-To: <16253.32498.594430.880907@altair.cs.oswego.edu>
+References: <16248.51788.181665.873376@altair.cs.oswego.edu>
+ <16253.32498.594430.880907@altair.cs.oswego.edu>
+Message-ID: <16254.2947.515431.428364@altair.cs.oswego.edu>
+
+Writing TCK tests for drainTo...
+
+Should we specify what happens if people try to drain a queue into itself?
+  q.drainTo(q)
+
+Left unchecked, nothing good will happen, but the non-goodness varies
+across implementations (infinite loop, lockup, inconsistent state).
+Would it be better to trap this as illegal argument? The reason
+against trapping this (and most similar alias checks) is that we
+cannot trap all such cases. For example, what if you drainTo some kind
+of wrapper-based queue that delegates to yourself.  But maybe just
+doing the simple check is worth it anyway?
+
+-Doug
+
+From reden@nexvu.com  Sat Oct  4 02:47:48 2003
+From: reden@nexvu.com (Rob Eden)
+Date: Fri, 03 Oct 2003 20:47:48 -0500
+Subject: [concurrency-interest] BlockingQueue.drainTo
+In-Reply-To: <16254.2947.515431.428364@altair.cs.oswego.edu>
+Message-ID: <BBA390F4.6A13%reden@nexvu.com>
+
+I know Container in the AWT/Swing libraries checks this and I have many
+times appreciated the check. It's saved me a good bit of debugging time. I
+know there's a little bit of a performance hit, but my vote would be that
+it's worth it.
+
+Rob
+
+On 10/3/03 6:51 PM, "Doug Lea" <dl@cs.oswego.edu> wrote:
+
+> 
+> Writing TCK tests for drainTo...
+> 
+> Should we specify what happens if people try to drain a queue into itself?
+> q.drainTo(q)
+> 
+> Left unchecked, nothing good will happen, but the non-goodness varies
+> across implementations (infinite loop, lockup, inconsistent state).
+> Would it be better to trap this as illegal argument? The reason
+> against trapping this (and most similar alias checks) is that we
+> cannot trap all such cases. For example, what if you drainTo some kind
+> of wrapper-based queue that delegates to yourself.  But maybe just
+> doing the simple check is worth it anyway?
+> 
+> -Doug
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+
+From Costin.Cozianu@tabs.toshiba.com  Sat Oct  4 03:10:52 2003
+From: Costin.Cozianu@tabs.toshiba.com (Costin.Cozianu@tabs.toshiba.com)
+Date: Fri, 3 Oct 2003 19:10:52 -0700
+Subject: [concurrency-interest] BlockingQueue.drainTo
+Message-ID: <OF91A35AFA.C771B0E4-ON88256DB5.00047881@TABSMFP.NET>
+
+I think that
+
+      <E>[] drain()
+or
+      List<E> drain()
+
+is what the common use case will be.
+
+And the way I have it right now, strictly for my own needs is
+
+      Iterator popAll()
+
+where the ownership of the linked list gets transferred to the inner class
+object implementing the iterator, and the queue gets a fresh new list.
+Quite fast and efficient.
+
+This will also allow the queue implementation to play the trick of locking
+the queue, returning the underlying implementing collection and creating a
+new one. If people need to collect the elements in another collection,
+writing
+      myCollection.add( queue.drain() ) should be very easy,
+
+While in counterpart, writing : queue.drain(new ArrayList( /*what number
+should go in here*/)) may be seen as inefficient.
+
+In other words if the typical case is that the processing is an iteration
+over the elements coming in the queue, why do I need to move the pointers
+from here to there in a new collection on the client side ?
+
+This also bypasses the q.drainTo(q) problem entirely, at least for the
+queue implementors. The user is free to shoot himself in the foot as always
+:)
+
+
+
+Costin Cozianu
+costin.cozianu@tabs.toshiba.com
+Senior Software Engineer                 (949) 462-6779
+Toshiba American Business Solution
+Mobile                                              (310) 463-5940
+Alternate Email                                 c_cozianu@hotmail.com
+
+
+
+                                                                                                                                           
+                      Doug Lea <dl@cs.oswego.edu>                                                                                          
+                      Sent by:                              To:      <concurrency-interest@altair.cs.oswego.edu>                           
+                      concurrency-interest-admin@cs         cc:                                                                            
+                      .oswego.edu                           Subject: Re: [concurrency-interest] BlockingQueue.drainTo                      
+                                                                                                                                           
+                                                                                                                                           
+                      10/03/2003 04:51 PM                                                                                                  
+                                                                                                                                           
+                                                                                                                                           
+
+
+
+
+
+Writing TCK tests for drainTo...
+
+Should we specify what happens if people try to drain a queue into itself?
+  q.drainTo(q)
+
+Left unchecked, nothing good will happen, but the non-goodness varies
+across implementations (infinite loop, lockup, inconsistent state).
+Would it be better to trap this as illegal argument? The reason
+against trapping this (and most similar alias checks) is that we
+cannot trap all such cases. For example, what if you drainTo some kind
+of wrapper-based queue that delegates to yourself.  But maybe just
+doing the simple check is worth it anyway?
+
+-Doug
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+
+
+From dl@cs.oswego.edu  Sat Oct  4 12:06:28 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sat, 4 Oct 2003 07:06:28 -0400
+Subject: [concurrency-interest] BlockingQueue.drainTo
+In-Reply-To: <OF91A35AFA.C771B0E4-ON88256DB5.00047881@TABSMFP.NET>
+References: <OF91A35AFA.C771B0E4-ON88256DB5.00047881@TABSMFP.NET>
+Message-ID: <16254.43444.553332.801611@altair.cs.oswego.edu>
+
+> And the way I have it right now, strictly for my own needs is
+> 
+>       Iterator popAll()
+
+The main reason we don't and shouldn't do this is that we would then
+need to define and support concurrency properties for that
+iterator. Mainly: Can this iterator be used by multiple threads? (In
+general, Java Collections do NOT produce sharable iterators, and we
+don't want to do anything that would encourage otherwise.)  By
+requiring callers to supply a particular kind of collection, we let
+them determine such properties.
+
+> writing : queue.drain(new ArrayList( /*what number
+> should go in here*/)) 
+
+Considering that ArrayLists grow as needed, just using queue.size()
+will always be a good enough value. Dynamic expansion will only
+rarely occur.
+
+> may be seen as inefficient.
+
+Maybe a little, but the main thing that drainTo avoids is repeated
+synchronization/coordination. The transfer costs should be
+comparatively small.  One benefit is that in our version you can use a
+single collection to drain off any number of queues, plus similar
+applications, thus covering enough use cases to make this method
+worthwhile.
+
+-Doug
+
+From dl@cs.oswego.edu  Sat Oct  4 14:38:45 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sat, 4 Oct 2003 09:38:45 -0400
+Subject: [concurrency-interest] Completion notification
+In-Reply-To: <2D865B09-F5E6-11D7-9F72-000A9568414C@bea.com>
+References: <2D865B09-F5E6-11D7-9F72-000A9568414C@bea.com>
+Message-ID: <16254.52581.903747.490657@altair.cs.oswego.edu>
+
+> Please forgive me if I'm bringing up a topic which has already been 
+> discussed.  I looked back through my archives, but haven't found 
+> anything on point.
+
+Considering that most of your post surrounds IO-related functionality,
+the main thing missing from this mailing list is a mention that
+JSR-203 was (and I guess still is) intended to, among other things,
+build upon both nio and java.util.concurrent to supply additional
+asynch-IO and related facilities. But JSR-203 got triaged out from
+Tiger, so will not appear in 1.5.0, and to the best of my knowledge
+none of this has been designed yet.
+
+But there's nothing stopping people (including especially people on
+this list!) from defining pre-standardized frameworks that use nio and
+j.u.c. The only limitation is that they cannot rely on new native JVM
+support, but I don't think that such support would buy much anyway.
+If consensus emerges, I could release some of this in post-1.5 dl.u.c,
+or something similar. And it is worth scoping out general capabilities
+soon in case we find some basic enabling functionality that really
+ought to be in j.u.c and can be squeezed in now. On some quick
+sketches of possibilities, I don't see any major obstacles though:
+
+1. Completion callbacks and/vs Futures
+
+Note that ThreadPoolExecutor.afterExecute acts as a generalized
+callback and can be used to in turn dispatch external callbacks using
+whatever client interfaces are used in an application.  And of course
+you can also define special kinds of tasks that do the callbacks
+themselves rather than relying on Executor hooks.  So, the basic
+mechanics already exist and the main design issue is to pick some
+common APIs. For nio, this might look something like:
+
+  class IOCommandExecutor {
+    private ThreadPoolExecutor tpe; // to do the underlying thread mgt etc
+    // ...
+    public IOCommand read(Channel channel, Buffer buffer, IOCommandClient caller);
+    // similarly for write
+  }
+
+  interface IOCommand extends Cancellable {
+     Channel getChannel();
+     Buffer  getBuffer();
+     void awaitCompletion() throws ....;
+  }
+
+  interface IOCommandClient {
+    void ioCompleted(IOCommand command);
+  }
+
+Or any of a number of variations on this.  One benefit of the version
+sketched here is that it could be used in either future-style or
+callback-style mode (depending on whether you choose to use
+IOCommand.awaitCompletion or IOClient.ioCompleted).  While most uses of
+completion callbacks seem to be very special to their contexts, 
+I suspect that the majority of them could somehow be fit into
+a framework along these lines.
+
+Further variants include those that automate asynchronous execute() of
+callback actions.
+
+There are a bunch of issues surrounding how to best internally
+structure classes like IOCommandExecutor (mainly: normally you want to
+keep the parts that interact with nio single-threaded), but I don't
+think these affect API much if at all.
+
+2. Completion Queues
+
+I agree that completion queues are often the best way to coordinate
+IO-based tasks. They would be easy to define using something like the
+above interfaces: Just put the IOCommand on some designated
+BlockingQueue as the callback action. The effect is pretty close to
+BSD kqueue and Solaris /dev/poll. As a first pass, such a class could
+be build on top of above IOCommandExecutor:
+
+  class IOCompletionBasedExecutor { // needs a good name
+    private final IOCommandExecutor ioce;
+    private final BlockingQueue completions;
+    private final IOCommandClient xfer = new IOCommandClient() {
+      public void ioCompleted(IOCommand command) {
+        try { completions.put(command) }
+        catch(InterruptedException ie) { handleXferFailure(); }
+      };
+
+    public void read(Channel channel, Buffer buffer) {
+      ioce.read(channel, buffer, xfer);
+    }
+    // similarly for write
+
+    public IOCommand getNextCompletedCommand() throws InterruptedException {
+       return completions.take();
+    }
+  }
+
+
+3. Select-style APIs
+
+The (intentional!) multithreading-hostility of java.nio Selectors is a
+tricky enough issue to deal with internally when implementing IO-based
+Executors. I don't like the idea of exposing it upward: Either you
+impose similar restrictions (like those making it painful to change
+interest sets), or you impose a lot of overhead to overcome
+them. Encouraging use of any of the above three styles (futures,
+callbacks, completions) instead seems like a better option.
+
+Reactions welcome!
+
+-Doug
+
+
+
+
+
+From blanshlu@netscape.net  Sat Oct  4 15:42:20 2003
+From: blanshlu@netscape.net (Luke Blanshard)
+Date: Sat, 04 Oct 2003 09:42:20 -0500
+Subject: [concurrency-interest] BlockingQueue.drainTo
+Message-ID: <3F7EDC4C.9070006@netscape.net>
+
+(I sent this yesterday, but haven't seen it appear -- perhaps it was 
+blocked?  Apologies if anyone has already seen it.)
+
+Doug Lea <dl@cs.oswego.edu> wrote:
+
+>...
+>    ... Note that you can drain to an array using
+>    drainTo(Arrays.asList(array), array.length)...
+
+Really?  Have you guys changed the collections returned by Arrays.asList 
+to support the add method?  Or will drainTo do some kind of type testing?
+
+Luke
+
+
+From dl@cs.oswego.edu  Sat Oct  4 16:12:36 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sat, 4 Oct 2003 11:12:36 -0400
+Subject: [concurrency-interest] BlockingQueue.drainTo
+In-Reply-To: <3F7EDC4C.9070006@netscape.net>
+References: <3F7EDC4C.9070006@netscape.net>
+Message-ID: <16254.58212.482748.757511@altair.cs.oswego.edu>
+
+> Have you guys changed the collections returned by Arrays.asList 
+> to support the add method?
+
+Oops! Thanks for catching this. I had forgotten that the "internal"
+ArrayList produced by asList is not the same as java.util.ArrayList
+and doesn't support add. Which means that people will need to use
+actual ArrayLists (or whatever other collection they choose) here.
+Also note that because you cannot declare arrays of generics, people
+will probably start using ArrayLists in more places they would have
+used arrays anyway.
+
+-Doug
+
+From adam@bea.com  Sat Oct  4 17:02:56 2003
+From: adam@bea.com (Adam Messinger)
+Date: Sat, 4 Oct 2003 09:02:56 -0700
+Subject: [concurrency-interest] Completion notification
+In-Reply-To: <16254.52581.903747.490657@altair.cs.oswego.edu>
+Message-ID: <37A177F2-F684-11D7-9F72-000A9568414C@bea.com>
+
+On Saturday, October 4, 2003, at 06:38 AM, Doug Lea wrote:
+
+>> Please forgive me if I'm bringing up a topic which has already been
+>> discussed.  I looked back through my archives, but haven't found
+>> anything on point.
+>
+> Considering that most of your post surrounds IO-related functionality,
+> the main thing missing from this mailing list is a mention that
+> JSR-203 was (and I guess still is) intended to, among other things,
+> build upon both nio and java.util.concurrent to supply additional
+> asynch-IO and related facilities. But JSR-203 got triaged out from
+> Tiger, so will not appear in 1.5.0, and to the best of my knowledge
+> none of this has been designed yet.
+
+OK, I was wondering what became of JSR 203.  At any rate, I think that 
+the need for non-polling future mechanism isn't confined only to IO 
+related work.  Inside our JMS message switch we treat requests which 
+may block to acquire a lock in the same way we treat requests which 
+block on IO.  Both are avoided by enqueueing a tagged request and 
+getting some sort of notification of completion.
+
+> But there's nothing stopping people (including especially people on
+> this list!) from defining pre-standardized frameworks that use nio and
+> j.u.c. The only limitation is that they cannot rely on new native JVM
+> support, but I don't think that such support would buy much anyway.
+
+Yes, I'm quite interested in this.
+
+> 1. Completion callbacks and/vs Futures
+>
+> Note that ThreadPoolExecutor.afterExecute acts as a generalized
+> callback and can be used to in turn dispatch external callbacks using
+> whatever client interfaces are used in an application.
+
+Right, I looked at these but my main objection was that afterExecute() 
+seems to be Executor wide.  I think that it would be nice to be able to 
+have a mix of tasks inside an Executor, but perhaps this brings us back 
+to the specialization of Futures discussion of a few months ago.  At 
+any rathe, this lead me down the path of a specialized FutureTask 
+instead.  Something like:
+
+public abstract class CompletionTask extends FutureTask {
+   CompletionTask(Callable c);
+   CompletionTask(Runnable r, Object result);
+
+   // called after set() or setException() is called
+   public abstract void completed();
+}
+
+Which would be specialized into:
+
+public class QueuedCompletionTask extends CompletionTask {
+   QueuedCompletionTask(Callable c, BlockingQueue q);
+   QueuedCompletionTask(Runnable r, Object result, BlockingQueue q);
+
+   public void completed() {
+     q.put(this);
+   }
+}
+
+This is basically the extension I had in mind when I wrote my first 
+email.  It is a fairly small amount of code, clearly anyone can write 
+it.  I suggest it for inclusion mostly to enshrine the callback and 
+queued models into JSR 166 along with the current polling future style 
+model.  I think that it is useful to give people patterns they may 
+extend, lest they try to make do inside the existing model, but end up 
+contorting it in some strange way.
+
+> 3. Select-style APIs
+>
+> The (intentional!) multithreading-hostility of java.nio Selectors is a 
+> tricky enough issue to deal with internally when implementing IO-based 
+> Executors.
+[snip]
+> Encouraging use of any of the above three styles (futures, callbacks, 
+> completions) instead seems like a better option.
+
+Yes.  I agree, I included it in my first email only for completeness.
+
+Cheers!
+
+Adam
+
+
+From riho@cisco.com  Sat Oct  4 17:33:14 2003
+From: riho@cisco.com (Ricky Ho)
+Date: Sat, 04 Oct 2003 09:33:14 -0700
+Subject: [concurrency-interest] Does class loader method need to worry about multi-thread ?
+In-Reply-To: <16254.43444.553332.801611@altair.cs.oswego.edu>
+References: <OF91A35AFA.C771B0E4-ON88256DB5.00047881@TABSMFP.NET>
+ <OF91A35AFA.C771B0E4-ON88256DB5.00047881@TABSMFP.NET>
+Message-ID: <4.3.2.7.2.20031004092847.05a07e10@franklin.cisco.com>
+
+Doug, like to hear your opinion on this ...
+
+Do I need to worry about multiple threads may execute the "Test.init()" 
+method when there is multiple independent threads that call 
+"Test.otherStuff()" ?
+
+class Test {
+	static {
+		init();
+	}
+
+	private static void init() {
+	}
+
+	public static void otherStuff() {
+	}
+}
+
+1) Will the init() method be called more than once ? In other words, will 
+the class loader run more than once ?
+2) Is the classloader run on a separate thread ? or one of these threads 
+calling Test.otherStuff() ?
+3) Does all threads wait for the completion of class loader (ie: the init() 
+method) ?
+4) Does classloader provide guarantee for "at-most-once" execution and no 
+need to worry about multi-thread situation ?
+
+Best regards,
+Ricky
+
+
+From dl@cs.oswego.edu  Sat Oct  4 18:35:16 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sat, 4 Oct 2003 13:35:16 -0400
+Subject: [concurrency-interest] Does class loader method need to worry about multi-thread ?
+In-Reply-To: <4.3.2.7.2.20031004092847.05a07e10@franklin.cisco.com>
+References: <OF91A35AFA.C771B0E4-ON88256DB5.00047881@TABSMFP.NET>
+ <4.3.2.7.2.20031004092847.05a07e10@franklin.cisco.com>
+Message-ID: <16255.1236.287129.111115@altair.cs.oswego.edu>
+
+The definitive answers to these questions are in:
+  http://java.sun.com/docs/books/jls/second_edition/html/execution.doc.html#44630
+(JLS section "Detailed Initialization Procedure").
+
+Basically, static initialization is guaranteed to occur at most once,
+exclusively in one thread, and before execution of any other code in
+class. But you do sometimes need to be careful (for example, when you
+have mutually recursively initializaers across classes). The archives
+of the the JMM list (http://www.cs.umd.edu/~pugh/java/memoryModel/)
+also include some discussions of corner cases. I think the main moral
+is never to do anything tricky or subtle within static initializers,
+regardless of multithreading issues.
+
+-Doug
+
+
+From dl@cs.oswego.edu  Sat Oct  4 21:22:53 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sat, 4 Oct 2003 16:22:53 -0400
+Subject: [concurrency-interest] Completion notification
+In-Reply-To: <37A177F2-F684-11D7-9F72-000A9568414C@bea.com>
+References: <16254.52581.903747.490657@altair.cs.oswego.edu>
+ <37A177F2-F684-11D7-9F72-000A9568414C@bea.com>
+Message-ID: <16255.11293.161962.525094@altair.cs.oswego.edu>
+
+This is a nice suggestion:
+
+> public abstract class CompletionTask extends FutureTask {
+>    CompletionTask(Callable c);
+>    CompletionTask(Runnable r, Object result);
+> 
+>    // called after set() or setException() is called
+>    public abstract void completed();
+> }
+
+But for economy, why not put the completed() method in FutureTask
+itself, with a default no-op implementation? This way, my remarks
+about people using either callback-style or future-style modes would
+apply not only to IO-related tasks, but anything for which FutureTask
+could be used. Plus it is a trivial thing to add to JSR-166 API. Worth
+contemplating.
+
+(And I/we would still like to hear from people on this list any
+thoughts, API ideas, etc for using Executors with IO.)
+
+-Doug
+
+
+From riho@cisco.com  Sun Oct  5 00:07:16 2003
+From: riho@cisco.com (Ricky Ho)
+Date: Sat, 04 Oct 2003 16:07:16 -0700
+Subject: [concurrency-interest] Does class loader method need to
+ worry about multi-thread ?
+In-Reply-To: <16255.1236.287129.111115@altair.cs.oswego.edu>
+References: <4.3.2.7.2.20031004092847.05a07e10@franklin.cisco.com>
+ <OF91A35AFA.C771B0E4-ON88256DB5.00047881@TABSMFP.NET>
+ <4.3.2.7.2.20031004092847.05a07e10@franklin.cisco.com>
+Message-ID: <4.3.2.7.2.20031004160703.01c77bd8@franklin.cisco.com>
+
+Many thanks !
+
+At 01:35 PM 10/4/2003 -0400, Doug Lea wrote:
+
+>The definitive answers to these questions are in:
+> 
+>http://java.sun.com/docs/books/jls/second_edition/html/execution.doc.html#44630
+>(JLS section "Detailed Initialization Procedure").
+>
+>Basically, static initialization is guaranteed to occur at most once,
+>exclusively in one thread, and before execution of any other code in
+>class. But you do sometimes need to be careful (for example, when you
+>have mutually recursively initializaers across classes). The archives
+>of the the JMM list (http://www.cs.umd.edu/~pugh/java/memoryModel/)
+>also include some discussions of corner cases. I think the main moral
+>is never to do anything tricky or subtle within static initializers,
+>regardless of multithreading issues.
+>
+>-Doug
+
+
+From dl@cs.oswego.edu  Mon Oct  6 13:04:55 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Mon, 6 Oct 2003 08:04:55 -0400
+Subject: [concurrency-interest] source and test review
+Message-ID: <16257.23143.75415.794476@altair.cs.oswego.edu>
+
+JSR166 invites review not only of specs but also of reference
+implementation and conformance tests. So it's worth posting some URLs
+that make it more convenient to find these.
+
+Main Java source code is accessible via viewcvs at:
+  http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util
+  (click down to concurrent for most code)
+
+Main source code for conformance tests (destined to become part of TCK) is at:
+  http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/test/tck/
+
+Javadocs for JUnit-based conformance tests are at:
+  http://gee.cs.oswego.edu/dl/concurrent/testdocs/index.html
+  Read first the docs for JSR166TestCase, at:
+    http://gee.cs.oswego.edu/dl/concurrent/testdocs/JSR166TestCase.html
+
+Sources for some other (non-conformance-based) tests that include 
+performance measures etc are viewable traversing down from:
+  http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/test/jtreg/util/concurrent/
+  These are written in a form amenable for use by Sun internal testing,
+  but each has a "main" which by default runs in default settings.
+
+All sorts of comments and suggestions are as always very much appreciated.
+
+-Doug
+
+
+From johnm-concurrent@non.net  Tue Oct  7 03:31:21 2003
+From: johnm-concurrent@non.net (John D. Mitchell)
+Date: Mon, 6 Oct 2003 19:31:21 -0700
+Subject: [concurrency-interest] BlockingQueue.drainTo
+In-Reply-To: <16254.2947.515431.428364@altair.cs.oswego.edu>
+References: <16248.51788.181665.873376@altair.cs.oswego.edu>
+ <16253.32498.594430.880907@altair.cs.oswego.edu>
+ <16254.2947.515431.428364@altair.cs.oswego.edu>
+Message-ID: <16258.9593.481457.228612@despot.non.net>
+
+>>>>> "Doug" == Doug Lea <dl@cs.oswego.edu> writes:
+[...]
+
+> Left unchecked, nothing good will happen, but the non-goodness varies
+> across implementations (infinite loop, lockup, inconsistent state).
+> Would it be better to trap this as illegal argument? The reason against
+> trapping this (and most similar alias checks) is that we cannot trap all
+> such cases. For example, what if you drainTo some kind of wrapper-based
+> queue that delegates to yourself.  But maybe just doing the simple check
+> is worth it anyway?
+
+IMHO, the simple check is definitely worth it.
+
+Take care,
+	John
+
+From johnm-concurrent@non.net  Tue Oct  7 03:37:36 2003
+From: johnm-concurrent@non.net (John D. Mitchell)
+Date: Mon, 6 Oct 2003 19:37:36 -0700
+Subject: [concurrency-interest] Completion notification
+In-Reply-To: <16255.11293.161962.525094@altair.cs.oswego.edu>
+References: <16254.52581.903747.490657@altair.cs.oswego.edu>
+ <37A177F2-F684-11D7-9F72-000A9568414C@bea.com>
+ <16255.11293.161962.525094@altair.cs.oswego.edu>
+Message-ID: <16258.9968.491538.467974@despot.non.net>
+
+>>>>> "Doug" == Doug Lea <dl@cs.oswego.edu> writes:
+[... CompletionTask extends FutureTask ...]
+
+> But for economy, why not put the completed() method in FutureTask itself,
+> with a default no-op implementation? This way, my remarks about people
+> using either callback-style or future-style modes would apply not only to
+> IO-related tasks, but anything for which FutureTask could be used. Plus
+> it is a trivial thing to add to JSR-166 API. Worth contemplating.
+
+Ah, I like that.
+
+FWIW, I'd call the method something more like "taskCompleted()" rather than
+just "completed()".
+
+Hope this helps,
+		John
+
+From David.Biesack@sas.com  Tue Oct  7 18:34:53 2003
+From: David.Biesack@sas.com (David J. Biesack)
+Date: Tue, 7 Oct 2003 13:34:53 -0400 (EDT)
+Subject: [concurrency-interest] Re: Concurrency-interest digest, Vol 1 #146 - 2 msgs
+In-Reply-To: <20031007160000.23762.20393.Mailman@altair.cs.oswego.edu>
+ (concurrency-interest-request@cs.oswego.edu)
+References: <20031007160000.23762.20393.Mailman@altair.cs.oswego.edu>
+Message-ID: <200310071734.NAA18515@mozart.unx.sas.com>
+
+> Date: Mon, 6 Oct 2003 19:37:36 -0700
+> From: "John D. Mitchell" <johnm-concurrent@non.net>
+> To: concurrency-interest@altair.cs.oswego.edu
+> Subject: Re: [concurrency-interest] Completion notification
+> 
+> > But for economy, why not put the completed() method in FutureTask itself...
+> 
+> Ah, I like that.
+> 
+> FWIW, I'd call the method something more like "taskCompleted()" rather than
+> just "completed()".
+
+I prefer "completed" - method names need not repeat the class name. 
+
+Precedent: ThreadPoolExecutor.terminated().
+
+(Of course, terminated() is another option instead of completed().
+There is nothing that says "terminated" means abnormal termination,
+although that might be the interpretation.)
+
+Future already has boolean isDone(), so done() may be a good choice
+as well (as opposed to renaming isDone() to isCompleted())
+
+Onward consistency!
+
+> Hope this helps,
+>               John
+
+-- 
+David J. Biesack     SAS Institute Inc.
+R&D Java Strategist  SAS Campus Drive Cary, NC 27513
+(919) 531-7771       http://www.sas.com
+
+
+From jozart@csi.com  Tue Oct  7 20:00:45 2003
+From: jozart@csi.com (Joseph Bowbeer)
+Date: Tue, 7 Oct 2003 12:00:45 -0700
+Subject: [concurrency-interest] Re: Concurrency-interest digest, Vol 1 #146 - 2 msgs
+References: <20031007160000.23762.20393.Mailman@altair.cs.oswego.edu> <200310071734.NAA18515@mozart.unx.sas.com>
+Message-ID: <11c601c38d05$52471950$c39a7cce@REPLICANT2>
+
+Note that "done" indicates one of: completed successfully, failed, or was
+cancelled.
+
+Is this transition the right place to provide a hook?
+
+
+----- Original Message ----- 
+From: "David J. Biesack" <David.Biesack@sas.com>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Tuesday, October 07, 2003 10:34 AM
+Subject: [concurrency-interest] Re: Concurrency-interest digest, Vol 1
+#146 - 2 msgs
+
+
+> Date: Mon, 6 Oct 2003 19:37:36 -0700
+> From: "John D. Mitchell" <johnm-concurrent@non.net>
+> To: concurrency-interest@altair.cs.oswego.edu
+> Subject: Re: [concurrency-interest] Completion notification
+>
+> > But for economy, why not put the completed() method in FutureTask
+itself...
+>
+> Ah, I like that.
+>
+> FWIW, I'd call the method something more like "taskCompleted()" rather
+than
+> just "completed()".
+
+I prefer "completed" - method names need not repeat the class name.
+
+Precedent: ThreadPoolExecutor.terminated().
+
+(Of course, terminated() is another option instead of completed().
+There is nothing that says "terminated" means abnormal termination,
+although that might be the interpretation.)
+
+Future already has boolean isDone(), so done() may be a good choice
+as well (as opposed to renaming isDone() to isCompleted())
+
+Onward consistency!
+
+-- 
+David J. Biesack     SAS Institute Inc.
+R&D Java Strategist  SAS Campus Drive Cary, NC 27513
+(919) 531-7771       http://www.sas.com
+
+
+From adam@bea.com  Thu Oct  9 20:38:27 2003
+From: adam@bea.com (Adam Messinger)
+Date: Thu, 9 Oct 2003 12:38:27 -0700
+Subject: [concurrency-interest] DiscardPolicy/DiscardOldestPolicy
+Message-ID: <277458DE-FA90-11D7-9B14-000A9568414C@bea.com>
+
+What do folks think about making these two policies call cancel() on 
+Cancellables they are about to discard?  This would give the 
+Cancellable an opportunity to do something as it died (like free up 
+resources, log an error, etc.).  Certainly this could be done during 
+finalization instead, but undo reliance finalizers is problematic.
+
+Cheers!
+
+Adam
+
+
+From jozart@csi.com  Thu Oct  9 21:08:11 2003
+From: jozart@csi.com (Joseph Bowbeer)
+Date: Thu, 9 Oct 2003 13:08:11 -0700
+Subject: [concurrency-interest] DiscardPolicy/DiscardOldestPolicy
+References: <277458DE-FA90-11D7-9B14-000A9568414C@bea.com>
+Message-ID: <000901c38ea1$1ac12410$959a7cce@REPLICANT2>
+
+I think this would work in some contexts, but it also muddies the meaning of
+cancel.
+
+For apps that want to more closely tie the tasks with the cannot-execute
+handler, I suggest writing a custom handler.
+
+
+----- Original Message ----- 
+From: "Adam Messinger" <adam@bea.com>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Thursday, October 09, 2003 12:38 PM
+Subject: [concurrency-interest] DiscardPolicy/DiscardOldestPolicy
+
+
+
+What do folks think about making these two policies call cancel() on
+Cancellables they are about to discard?  This would give the
+Cancellable an opportunity to do something as it died (like free up
+resources, log an error, etc.).  Certainly this could be done during
+finalization instead, but undo reliance finalizers is problematic.
+
+Cheers!
+
+Adam
+
+
+
+From dawidk@mathcs.emory.edu  Fri Oct 10 14:40:13 2003
+From: dawidk@mathcs.emory.edu (Dawid Kurzyniec)
+Date: Fri, 10 Oct 2003 09:40:13 -0400
+Subject: [concurrency-interest] Completion notification
+In-Reply-To: <16258.9968.491538.467974@despot.non.net>
+References: <16254.52581.903747.490657@altair.cs.oswego.edu> <16255.11293.161962.525094@altair.cs.oswego.edu> <16258.9968.491538.467974@despot.non.net>
+Message-ID: <200310100940.13540.dawidk@mathcs.emory.edu>
+
+On Monday 06 October 2003 10:37 pm, John D. Mitchell wrote:
+> >>>>> "Doug" == Doug Lea <dl@cs.oswego.edu> writes:
+>
+> [... CompletionTask extends FutureTask ...]
+>
+> > But for economy, why not put the completed() method in FutureTask itself,
+> > with a default no-op implementation? This way, my remarks about people
+> > using either callback-style or future-style modes would apply not only to
+> > IO-related tasks, but anything for which FutureTask could be used. Plus
+> > it is a trivial thing to add to JSR-166 API. Worth contemplating.
+>
+> Ah, I like that.
+
+I like the idea of embracing callbacks, too - but I would prefer if callback 
+was an *interface*; then, one could wrap runnables into "CallbackRunnables" 
+which invoke callbacks after completion. I think that EG is reluctant to add 
+that to the API because of the simplicity of how it can be done in te 
+application:
+
+interface Callback {
+  void completed(Object result);
+  void failed(Throwable cause);
+}
+
+Runnable newCallbackRunnable(final Runnable target) {
+  return new Runnable() { public void run() {
+    try {
+      target.run();
+    }
+    catch (Throwable problem) {
+      target.failed(problem);
+    }
+  }};
+}
+
+But actually, there is one issue that - I think - cannot be solved without 
+addressing this at the API level: cancellation. It seems to me that making 
+"FutureTask implements Callback" is the only way to have callbacks consistent 
+with futures in respect to cancellation (e.g. having Callback.failed()) 
+invoked on cancellation with CancellationException as a cause).
+
+Dawid Kurzyniec
+
+
+From dawidk@mathcs.emory.edu  Fri Oct 10 15:00:04 2003
+From: dawidk@mathcs.emory.edu (Dawid Kurzyniec)
+Date: Fri, 10 Oct 2003 10:00:04 -0400
+Subject: [concurrency-interest] Completion notification
+In-Reply-To: <200310100940.13540.dawidk@mathcs.emory.edu>
+References: <16254.52581.903747.490657@altair.cs.oswego.edu> <16258.9968.491538.467974@despot.non.net> <200310100940.13540.dawidk@mathcs.emory.edu>
+Message-ID: <200310101000.04433.dawidk@mathcs.emory.edu>
+
+On Friday 10 October 2003 09:40 am, Dawid Kurzyniec wrote:
+> "FutureTask implements Callback" is the only way to have callbacks
+
+Actually, this does not seem like a good idea to me; probably, supporting 
+callbacks via delegation would be better suited here.
+
+Dawid Kurzyniec
+
+
+From dawidk@mathcs.emory.edu  Fri Oct 10 16:14:42 2003
+From: dawidk@mathcs.emory.edu (Dawid Kurzyniec)
+Date: Fri, 10 Oct 2003 11:14:42 -0400
+Subject: [concurrency-interest] security problem in ThreadPoolExecutor.defaultThreadFactory
+Message-ID: <200310101114.42914.dawidk@mathcs.emory.edu>
+
+Default thread factory in ThreadPoolExecutor has a security problem which 
+causes very weird exceptions to occur if the executor is used by threads with 
+limited access privileges. The problem is that worker thread creation time is 
+highly undeterministic - worker threads are created whichever thread invokes 
+execute() at the time the pool is empty or contended. The new thread inherits 
+its creator access control context. Therefore, future tasks launched in the 
+same worker run in that - quite random from the invoker point of view - 
+access control context.
+
+This problem can easily be remedied by a similar solution to the one used in 
+URLClassLoader: the thread factory should remember its construction-time 
+access control context, and use it inside new worker threads. In fact, I 
+think it also makes sense to propagate thread group and context class loader 
+in a similar fashion (otherwise, worker threads emerge in random thread 
+groups and have random context class loaders; this may be a problem e.g. if 
+RMI calls are made).
+
+One could argue that this can be achieved with user-specified thread 
+factories. However, I strongly believe that the solution is worth putting to 
+the API to save users from pain of debugging undeterministic access control 
+exceptions; it requires a certain degree of Java security expertise to 
+understand the issue and pinpoint the cause. The performance impact is 
+minimal - the only penalty is at the thread creation time, and will almost 
+certainly be outweighted by that thread creation time anyway.
+
+The separate issue arises in situations when application needs to enforce 
+stricter access control context propagation, e.g. use context of the invoker, 
+rather than pool creator, in the worker threads. In that case, execute() 
+method should first check if the invoker has "modify thread group" 
+permission, and if so, it should store the current access control context and 
+use it in the worker thread. This, however, may have larger performance 
+impact, as the context is switched on each executed task. However, I think 
+that it may be useful to provide such feature as on option (e.g. via a 
+subclass of ThreadPoolExecutor).
+
+I include my implementation of PlainThreadFactory below (only tentatively 
+tested):
+
+public class PlainThreadFactory implements ThreadFactory {
+    final AccessControlContext acc;
+    final ThreadGroup group;
+    final ClassLoader ccl;
+    final String name;
+    int idx = 0;
+
+    public PlainThreadFactory() {
+        this(null, null);
+    }
+
+    public PlainThreadFactory(String name) {
+        this(null, name);
+    }
+
+    public PlainThreadFactory(ThreadGroup group) {
+        this(group, null);
+    }
+
+    public PlainThreadFactory(ThreadGroup group, String name) {
+        if (group == null) {
+            // try to determine tg as in java.lang.Thread
+            SecurityManager security = System.getSecurityManager();
+
+            if (security != null) {
+                group = security.getThreadGroup();
+            }
+        }
+
+        if (group == null) {
+            group = Thread.currentThread().getThreadGroup();
+        }
+
+        this.acc = AccessController.getContext();
+        this.ccl = (ClassLoader)AccessController.doPrivileged(
+            new PrivilegedAction() {
+                public Object run() {
+                    return Thread.currentThread().getContextClassLoader();
+                }
+        });
+        this.group = group;
+        this.name = name;
+    }
+
+    public Thread newThread(final Runnable command) {
+        Runnable commandWrapper = new CommandWrapper(command);
+
+        if (name == null) {
+            return new Thread(group, commandWrapper);
+        }
+        else {
+            String tname = (name != null ? name + " " + getNextIdx() : null);
+            return new Thread(group, commandWrapper, tname);
+        }
+    }
+
+    private synchronized int getNextIdx() {
+        return idx++;
+    }
+
+    private class CommandWrapper implements Runnable {
+        final Runnable command;
+        CommandWrapper(Runnable command) {
+            this.command = command;
+        }
+        public void run() {
+            final Thread current = Thread.currentThread();
+            // make sure that we get/set ccl even if we're
+            // called from un-privileged code
+            AccessController.doPrivileged(new PrivilegedAction() {
+              public Object run() {
+                ClassLoader savedCcl = current.getContextClassLoader();
+                try {
+                    if (ccl != savedCcl) current.setContextClassLoader(ccl);
+
+                    // now, invoke the real thing in the stored context
+                    AccessController.doPrivileged(new PrivilegedAction() {
+                        public Object run() {
+                            command.run();
+                            return null;
+                        }
+                    }, acc);
+                }
+                finally {
+                    if (ccl != savedCcl)
+                        current.setContextClassLoader(savedCcl);
+                }
+                return null;
+            }});
+        }
+    }
+}
+
+
+From dawidk@mathcs.emory.edu  Sat Oct 11 05:22:35 2003
+From: dawidk@mathcs.emory.edu (Dawid Kurzyniec)
+Date: Sat, 11 Oct 2003 00:22:35 -0400
+Subject: [concurrency-interest] security problem in ThreadPoolExecutor.defaultThreadFactory
+In-Reply-To: <200310101114.42914.dawidk@mathcs.emory.edu>
+Message-ID: <000701c38faf$4ea23d50$4dfd8caa@maja>
+
+Again, replying to myself :)
+
+My previous code example is not completely correct - obviously, not only
+the "run" but also thread creation itself should be performed within the
+"acc". It only shows how tricky the issue is, and that maybe it should
+not be left to poor end-users :)
+
+D
+
+
+From dl@cs.oswego.edu  Sun Oct 12 22:08:15 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sun, 12 Oct 2003 17:08:15 -0400
+Subject: [concurrency-interest] Completion notification
+In-Reply-To: <200310101000.04433.dawidk@mathcs.emory.edu>
+References: <16254.52581.903747.490657@altair.cs.oswego.edu>
+ <16258.9968.491538.467974@despot.non.net>
+ <200310100940.13540.dawidk@mathcs.emory.edu>
+ <200310101000.04433.dawidk@mathcs.emory.edu>
+Message-ID: <16265.49855.930428.395065@altair.cs.oswego.edu>
+
+David Biesack's renaming of my variant of Adam Messinger's suggestion
+about a completion callback hook is now in CancellableTask/FutureTask:
+
+    /**
+     * Protected method invoked when this task transitions to state
+     * <tt>isDone</tt> (whether normally or via cancellation). The
+     * default implementation does nothing.  Subclasses may override
+     * this method to invoke completion callbacks or perform
+     * bookkeeping. Note that you can query status inside the
+     * implementation of this method to determine whether this task has
+     * been cancelled.
+     */
+    protected void done() { }
+
+Dawid Kurzyniec is right to complain that this is only part of the
+story. There is an obvious canonical form for any client-side callback
+interface based on Futures:
+
+interface CompletionCallback {
+  void completed(Object result);
+  void failed(Throwable cause);
+}
+
+But even though we all know that this is usually the best form to use,
+I don't think this is a good enough reason for including it in
+java.util.concurrent: We will not use it or refer to it inside the
+package, so it would serve only as a hint about a good way to design
+things.  We've had several discussion inside the JSR166 expert group
+about other APIs of this kind, for example LockFactory, and in each
+case decided that if the sole reason for an API is to serve as a
+design hint, we might as well just write about the suggested designs
+elsewhere rather than adding inessential classes and interfaces.
+
+-Doug
+
+From dl@cs.oswego.edu  Sat Oct 18 14:47:11 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sat, 18 Oct 2003 09:47:11 -0400
+Subject: [concurrency-interest] security problem in ThreadPoolExecutor.defaultThreadFactory
+In-Reply-To: <200310101114.42914.dawidk@mathcs.emory.edu>
+References: <200310101114.42914.dawidk@mathcs.emory.edu>
+Message-ID: <16273.17503.114027.361443@altair.cs.oswego.edu>
+
+Dawid,
+
+Thanks very much for raising some of the issues people may encounter
+trying to mesh ThreadFactories with security policies.  We agree that
+infrastructure developers especially may have troubles with this and
+that solutions require a fair amount of expertise and complexity, so
+it would be good to include solutions. But the issue ultimately rests
+(like too many others) on the fact that we don't think we can supply
+classes or frameworks that are useful across enough contexts to
+standardize on.
+
+Probably the best we could do would be to define a
+ThreadFactoryFactory(!)  that people could use to define
+ThreadFactories with different security-related features.  But, as in
+other recent postings, all this would do is provide a design hint. And
+here, typically an incomplete one since in at least some cases these
+would need to be tied with particular before/after methods inside
+thread pools, or perhaps using special Executors that wrap submitted
+actions within doPrivileged.
+
+Minimally though, we will include a better discussion of these issues
+in javadocs in j.u.c.
+
+-Doug
+
+
+
+From dawidk@mathcs.emory.edu  Sun Oct 19 00:38:09 2003
+From: dawidk@mathcs.emory.edu (Dawid Kurzyniec)
+Date: Sat, 18 Oct 2003 19:38:09 -0400
+Subject: [concurrency-interest] security problem in ThreadPoolExecutor.defaultThreadFactory
+Message-ID: <000001c395d0$e8aacdf0$0afd8caa@maja>
+
+> -----Original Message-----
+> From: concurrency-interest-admin@cs.oswego.edu
+> [mailto:concurrency-interest-admin@cs.oswego.edu] On Behalf Of Doug
+> Lea
+> Sent: Saturday, October 18, 2003 9:47 AM
+> To: Dawid Kurzyniec
+> Cc: concurrency-interest@altair.cs.oswego.edu
+> Subject: Re: [concurrency-interest] security problem in
+> ThreadPoolExecutor.defaultThreadFactory
+> 
+> 
+> 
+> Dawid,
+> 
+> Thanks very much for raising some of the issues people may encounter 
+> trying to mesh ThreadFactories with security policies.  We agree that 
+> infrastructure developers especially may have troubles with this and 
+> that solutions require a fair amount of expertise and complexity, so 
+> it would be good to include solutions. But the issue ultimately rests 
+> (like too many others) on the fact that we don't think we can supply 
+> classes or frameworks that are useful across enough contexts to 
+> standardize on.
+> 
+> Probably the best we could do would be to define a
+> ThreadFactoryFactory(!)  that people could use to define 
+> ThreadFactories with different security-related features. But, as in 
+> other recent postings, all this would do is provide a design hint. And
+
+> here, typically an incomplete one since in at least some cases these 
+> would need to be tied with particular before/after methods inside 
+> thread pools, or perhaps using special Executors that wrap submitted 
+> actions within doPrivileged.
+> Minimally though, we will include a better discussion of 
+> these issues in javadocs in j.u.c.
+
+Doug,
+
+You convinced me that supporting multiple security policies in the
+j.u.c. is not such a good idea - after all, it is a concurrency API, not
+a security API. Also, as you say, infrastructure developers (like
+myself) would not find the ThreadFactoryFactory sufficient and they
+would have to tweak the executor implementations anyway.
+
+That said, I am far from being convinced that the current default thread
+factory should be left in its current form. Even if not providing
+*multiple* policies for dealing with access control contexts, it is
+impossible to escape from defining *some* policy. The current, implicit
+thread pool policy is to use access control context of some previous
+invoker. The policy I propose is to use the access control context of a
+pool creator. The former is obviously undeterministic; you would
+probably also agree that it is counterintuitive, and even dangerous - it
+may introduce security vulnerabilities (when tasks are executed with
+stronger privileges that they should) or problematic for legitimate
+users (when their tasks are executed within too restrictive contexts).
+The proposed policy may not always be what people need, but at least it
+is deterministic, and I think intuitive, too.
+
+In other words, while I apprieciate the "if you can't do it right (or if
+somebody else should be doing it), don't do it at all" design principle,
+I believe that in this case there is no option of not doing it at all,
+so the better principle is "don't surprise the user". 
+
+I don't think that the issue is strictly limited to infrastructure. I
+think that for instance applets are vulnerable as well.
+
+Even if we forget about security, I don't like the fact that pooled
+threads belong to random thread groups. I know that groups are
+considered a thing of the past, but still, they are there, and they are
+utilized e.g. in debuggers to visualize thread associations.
+
+In more abstract terms, the current solution causes the threads in a
+pool to be non-uniform. Depending on undeterministic patterns, the tasks
+get assigned to threads which may e.g. have different maximum
+priorities, even if the access control context is not considered. I am
+strongly opting for a policy which makes thread pools uniform and
+predictable, especially that it comes at almost no cost. (Any opinions
+from other concurrency-interest readers?...)
+
+The current solution is a trap. I have spent two days actually trying to
+figure out what is the root of weird, undeterministic access control
+exceptions in my application. Even worse, if they did not occur, I could
+have security vulnerabilities in my application now.
+
+Also, I am rather doubtful about the ability of javadocs to address
+this. If the API is intuitive enough, the documentation is almost
+unneccessary. If the API is intuitive but has traps like this one,
+people will read the docs only after (actually, even worse, if!) they
+notice the problem.
+
+Respectfully,
+Dawid Kurzyniec
+
+PS Doug, sorry if you got this e-mail multiple times; I had some
+problems sending it.
+
+
+From dawidk@mathcs.emory.edu  Sun Oct 19 17:05:21 2003
+From: dawidk@mathcs.emory.edu (Dawid Kurzyniec)
+Date: Sun, 19 Oct 2003 12:05:21 -0400
+Subject: [concurrency-interest] security problem in ThreadPoolExecutor.defaultThreadFactory
+In-Reply-To: <16274.33911.603048.946864@altair.cs.oswego.edu>
+Message-ID: <000001c3965a$d05db110$13fd8caa@maja>
+
+
+> -----Original Message-----
+> From: Doug Lea [mailto:dl@cs.oswego.edu] 
+> Sent: Sunday, October 19, 2003 8:33 AM
+> To: Dawid Kurzyniec
+> Cc: concurrency-interest-admin@altair.cs.oswego.edu
+> Subject: RE: [concurrency-interest] security problem in 
+> ThreadPoolExecutor.defaultThreadFactory
+> 
+> 
+> 
+> Dawid,
+> 
+> Your point about the current default ThreadFactory having 
+> potentially surprising effects is a very good one. It would 
+> be nice to change it. But how?
+> 
+> There are four main "inherited" properties of threads, that 
+> vary according to which thread constructs another:
+>   * ThreadGroup
+>   * ClassLoader (the "contextClassLoader")
+>   * AccessControlContext (implicitly)
+>   * InheritableThreadLocals
+
+... And two more:
+
+* priority
+* daemon flag
+
+Doug,
+
+The code example I presented two e-mails back preserves all of the above
+mentioned by you except inheritable thread locals. It is easy to modify
+that solution to preserve priority and daemon flag, too. I will send the
+augmented version shortly (the current one has one problem - thread
+construction does not happen in doPrivileged - but it can easily be
+fixed).
+
+> Modifications to each of these work differently:
+>   * Threadgroup can be changed using explicit constructor argument,
+>     although the SecurityManager can disallow this.
+
+The security check is performed regardless whether you explicitly pass
+in a thread group or not. The solution is to perform thread creation
+within the saved, construction-time access control context; then, thread
+creation will succeed as long as it would succeeded when performed in a
+thread factory constructor.
+
+>   * ClassLoader can be changed using Thread.setContextClassLoader,
+>     although this requires a RuntimePermission that is not 
+> usually granted.
+
+The solution is to override the current thread's permissions by
+performing setContextClassLoader (and getContextClassLoader, for that
+matter) within doPrivileged. See my code example.
+
+>   * AccessControlContexts can only be manipulated by wrapping 
+> particular 
+>     actions within AccessController.doPrivileged.
+
+Therefore, the actual runnable must be executed within a nested
+doPrivileged taking the saved access control context. Again, see my code
+example.
+
+Regarding priority and daemon flag, the solution is pretty similar to
+preservation of context class loader.
+
+>   * InheritableThreadLocals cannot be changed as a group; you have
+>     to set each one individually (which means that you need to somehow
+>     know what they all are).
+
+The inheritable thread locals pose a problem, indeed; however,
+considering the fact that this is the least and the only problem to
+address, maybe it is worthwhile to make some changes in the
+java.lang.Thread to support this explicitly?... Maybe an (appropriately
+security manager-guarded) constructor explicitly taking a "parent"
+thread?... Maybe some methods allowing to manipulate own thread's
+locals?... E.g. get them as a modifiable map?... I know this has been
+dismissed before as a potential way to bypass encapsulation mechanisms;
+but how about if the method required a special RuntimePermission, or
+maybe just "modifyThread"?... I mean, if the caller is empowered to
+interrupt, stop, or suspend the thread, or e.g. to change its context
+class loader (which has a potential to blow everything up big time) it
+does not seem to me as such a terrible thing to allow him also to
+manipulate thread locals.
+
+> When considered in conjunction with the fact that a 
+> SecurityManager can even disallow construction of a Thread, 
+> there's no sure way to support arbitrary settings. This is 
+> not specific to thread pools though.  The same issues arise 
+> when constructing any new Thread.
+
+Again, by executing within doPrivileged with saved access control
+context, it is possible to achieve identical security effects as if the
+thread was created in the pool constructor. I.e. the thread creation
+would succeed iff the constructing thread had permissions to create new
+threads. This is exactly what I would be happy to have.
+
+This is pretty similar to the URLClassLoader approach. This class loader
+must, for instance, be able to access the network in order to download
+classes. That requires appropriate socket permissions. The actual action
+is performed by whichever thread initiate class loading; however, to
+avoid problems like those in the thread pool here, the "load" operation
+is performed within a doPrivileged with access control context saved
+from the construction time. In other words, only the constructing thread
+must have the neccessary permissions.
+
+> The current default ThreadFactory gives the least control 
+> (thus the most potential surprise), but also the lowest 
+> chances of failing due to security policy. (Which is neither 
+> necessarily good nor bad.)
+
+By the above discussion, I don't think it is true - quite the otherwise.
+
+> There's probably sufficient reason to go one step beyond this 
+> and to capture the ThreadGroup of thread constructing the 
+> ThreadPoolExecutor. As in using as a default:
+>         threadFactory = new ThreadFactory() {
+>             final ThreadGroup group = 
+> Thread.currentThread().getThreadGroup();
+>             public Thread newThread(Runnable r) {
+>                 return new Thread(group, r);
+>             }
+>         }
+> 
+> Or, a bit more predictably but more expensively, to create a 
+> new subgroup for each new ThreadPoolExecutor:
+> 
+>         threadFactory = new ThreadFactory() {
+>             final ThreadGroup group = new ThreadGroup(...);
+>             public Thread newThread(Runnable r) {
+>                 return new Thread(group, r);
+>             }
+>         }
+> 
+> Dawid and others: Do you think either of these are helpful 
+> enough to use as defaults?  If so, which one?
+
+The one I proposed ;)
+
+For instance, in the RMI code I am using, preserving context class
+loaders and access control contexts is crucial. If you don't preserve
+acc, you invite security holes. If you don't preserve ccl, you invite
+surprising "ClassNotFound" exceptions. 
+
+I can imagine that people (especially enterprise developers) will be
+trying to substitute their own thread creation mechanisms (or ad hoc
+thread pools) with j.u.c.ThreadPoolExecutor. If the issues discussed
+here are not addressed, it is likely that their applications will blow
+up with undeterministic security and/or class loading exceptions (that
+actually happened with my code). Those people will consider this to be a
+bug in j.u.c.
+
+> I don't see any plausible further steps short of the extreme 
+> solution of supplying a threadFactory that uses a 
+> (...)
+
+I don't like that "additional thread" solution, either; however, I do
+believe it _is_ possible to solve the problem by propagating constructor
+thread properties. The only remaining issue really is how to deal with
+inheritable thread locals. 
+
+Respectfully,
+Dawid Kurzyniec
+
+
+From olivier.dupuy@hrdc-drhc.gc.ca  Mon Oct 20 15:51:17 2003
+From: olivier.dupuy@hrdc-drhc.gc.ca (olivier.dupuy@hrdc-drhc.gc.ca)
+Date: Mon, 20 Oct 2003 10:51:17 -0400
+Subject: [concurrency-interest] RE: security problem in ThreadPoolExecutor.defaultThreadFactory
+Message-ID: <0691D2A40A12164D88BC675BC8C4815C2E5640@NCEV02.hrdc-drhc.net>
+
+	Hi David,
+
+	I personally agree with your point (19/10). Having worked over the last 2 year with aplication servers, my colleagues and I have spent a lot of time figuring why some of our applications were not working as expected. We are (were) used to have classpath issues with the many libraries that we use. We integrate a lot of 3rd party libraries or other libraries made in house by other teams. With time, you finish by knowing all your server configuration and become knowledgeable in packaging but it is still painfull experience. 
+
+	We do not experiment security problems per se because my team is the only one to use JAAS and to have priviledged operations so we know 'our' security context. However, we have no garanty that the libraries that we use will not have priviledge operations one day. We also use thread pools in some circumstances to manage some batch process.
+
+	Whatever the problem, security or classpath, we need the system to be deterministic in dev/QA/prod. There is no way 2 different threads of the same group/pool (I like thread groups too) could have a different execution context. If this is your wish, just create 2 pools.
+
+	I would think that a ThreadFactoryFactory is a excellent idea but a default solid implementation providing a deterministic behavior for both classpath and security like the one you suggest in archives 10/10 is required IMO. Most of the time when we (developers) use a library, we are searching for existing/verified solutions which can be used immediately.
+	It's why a starting point must be provided, it is the best for this library to be widely used. Classpath/security issues are too painful to be left to the poor 'end-users'. I totally encourage the javadoc to give enough hints about the problem so you can craft your own solution if required.
+
+	Merci ... Thanks
+
+	Olivier DUPUY
+
+
+
+From tim@peierls.net  Wed Oct 22 18:35:17 2003
+From: tim@peierls.net (Tim Peierls)
+Date: Wed, 22 Oct 2003 13:35:17 -0400
+Subject: [concurrency-interest] propagating thread properties to worker threads
+References: <NFBBKALFDCPFIDBNKAPCMEKPDIAA.dholmes@dltech.com.au>
+Message-ID: <3F96BFD5.C878F832@peierls.net>
+
+Dawid Kurzyniec requested a while back that ThreadPoolExecutor's
+default thread factory propagate certain properties of its constructing 
+thread to the threads that it creates, properties like thread group, 
+context class loader, and access control context. The current JSR-166
+offering makes no attempt to deal with any of this, which everyone 
+agrees is Not a Good Thing.
+
+In a discussion on the Concurrency-JSR list, David Holmes said that, 
+"For ThreadGroup we have no choice but to have the ThreadFactory 
+[rather than the task creation thread] do something, because that 
+has to be done at thread creation time. Dawid [Kurzyniec]'s suggestion 
+of checking with the SecurityManager, or else using the pool creation 
+thread's ThreadGroup seems the right way to go."
+
+But he also pointed out that it makes a lot more sense to propagate 
+the context class loader and the access control context from the 
+application thread (the thread in which the task is created) rather 
+than from the pool creation thread (the thread in which the thread 
+factory is created). The creator of the task is in a better position, 
+in general, to know the task-appropriate class loader and access 
+control context than the pool creation thread is. 
+
+Furthermore, were we to rely on a thread pool for these properties 
+it would restrict users who care about such things to 
+ThreadPoolFactory-based implementations, i.e., to ThreadPoolExecutor.
+
+Setting the context class loader and/or access control context on a
+per-task basis can be achieved by wrapping the task Runnable with
+the appropriate logic. This logic can be shoehorned nicely into the
+existing JSR-166 task adapters, potentially avoiding an extra layer 
+of wrapping.
+
+So instead of trying to do it all in the default thread factory,
+we are proposing four things:
+
+1. Change the default thread factory to latch (at construction), 
+   the SecurityManager's thread group, if a SecurityManager is
+   present, otherwise the thread group of the current thread,
+   and use this thread group when creating new threads. [This 
+   much is part of what Dawid originally requested.]
+
+   Also change the default thread factory to setPriority(NORMAL-1) and
+   setDaemon(false). These are predictable and reasonable values; users
+   with special needs can roll their own. See item 4.
+
+2. Add a PrivilegedFutureTask<T> class that extends FutureTask<T> and
+   adds constructors that take a context class loader and/or an access
+   control context and applies them when running the wrapped task.
+
+3. Add new static execute() methods to Executors that take a PrivilegedAction
+   or a PrivilegedExceptionAction and (optionally) an access control context,
+   executing the given task on the given executor in the given context (or
+   the current context, if one is not supplied).
+
+4. Add documentation of these issues in PrivilegedFutureTask<T> and (for
+   ThreadGroup) in ThreadPoolExecutor, with links from Executors and other
+   places. In particular, display the default thread factory code in the
+   TPE javadocs so users can roll their own variations easily.
+
+Do these proposals together address the concerns that Dawid and others have 
+raised? 
+
+There is one thing that we can't address: It is tempting to imagine that 
+a running task could "inherit" the InheritableThreadLocals of either the 
+application thread that created it or of the pool creation thread, in the 
+same way that a child thread inherits the InheritableThreadLocals of the 
+parent thread that creates it. But this cannot be done.
+
+Here's a sketch of some of the additional code. The embedded question
+about invoke is whether to add invoke() methods parallel to the new
+execute() methods taking Privileged(Exception)Action. The invoke()
+methods block until task completion/cancellation/interruption.
+
+    class PrivilegedFutureTask<T> extends FutureTask<T> {
+
+        public PrivilegedFutureTask(Callable<T> task) {
+            this(task, 
+                 Thread.currentThread().getContextClassLoader(), 
+                 AccessController.getContext());
+        }
+        public PrivilegedFutureTask(Callable<T> task, ClassLoader ccl) {
+            this(task, ccl, AccessController.getContext());
+        }
+        public PrivilegedFutureTask(Callable<T> task, AccessControlContext acc) {
+            this(task, Thread.currentThread().getContextClassLoader(), acc);
+        }
+        /**
+         * @throws AccessControlException if both <tt>ccl</tt> and <tt>acc</tt>
+         *         arguments are non-null and <tt>acc</tt> does not have permission
+         *         to both set and get context class loader.
+         */
+        public PrivilegedFutureTask(Callable<T> task, ClassLoader ccl, AccessControlContext acc) {
+            super(task);
+            if (ccl != null && acc != null) {
+                acc.checkPermission(new RuntimePermission("getContextClassLoader"));
+                acc.checkPermission(new RuntimePermission("setContextClassLoader"));
+            }
+            this.ccl = ccl;
+            this.acc = acc;
+        }
+        // similar @throws tags on other constructors
+        // similarly for Runnable, analogous to FutureTask constructors
+
+        public void run() {
+            if (acc != null)
+                AccessController.doPrivileged(new PrivilegedAction() {
+                    public Object run() { runPrivileged(); }
+                }, acc);
+            else
+                runUnprivileged(); 
+        }
+
+        private void runPrivileged() { 
+            ClassLoader saved = null;
+            if (ccl != null) {
+                ClassLoader current = Thread.currentThread().getContextClassLoader();
+                if (ccl != current) {
+	            Thread.currentThread().setContextClassLoader(ccl);
+                    saved = current;
+                }
+            }
+
+            try {
+                super.run(); 
+            }
+            finally {
+                if (saved != null)
+                    Thread.currentThread().setContextClassLoader(saved);
+            }
+        }
+
+        private void runUnprivileged() { 
+	    ClassLoader saved = null;
+	    if (ccl != null) {
+		ClassLoader current = null;
+		try { 
+		    current = Thread.currentThread().getContextClassLoader(); 
+		}
+		catch (AccessControlException e) {}
+
+		if (current != null && ccl != current) {
+		    try { 
+			Thread.currentThread().setContextClassLoader(ccl); 
+			// we only get here if we successfully set a CCL
+			// different from the current CCL
+			saved = current;
+		    }
+		    catch (AccessControlException e) {}
+		}
+	    }
+	    try {
+		super.run();
+	    }
+	    finally {
+		if (saved != null)
+		    Thread.currentThread().setContextClassLoader(saved);
+	    }
+        }
+
+        private final ClassLoader ccl = null;
+        private final AccessControlContext acc = null;
+    }
+
+    class Executors {
+
+        // ... existing stuff ...
+
+        public static Future<Object> execute(Executor executor, PrivilegedAction action) {
+            return execute(executor, action, AccessController.getContext());
+        }
+        public static Future<Object> execute(Executor executor, PrivilegedAction action,
+                                             AccessControlContext acc) {
+            Callable<Object> task = new PrivilegedActionAdapter(action);
+            FutureTask<Object> future = new PrivilegedFutureTask<Object>(task, acc);
+            executor.execute(future);
+            return future;
+        }
+        // similarly for PrivilegedExceptionAction
+        // similarly for invoke???
+
+        private static class PrivilegedActionAdapter implements Callable<Object> {
+            PrivilegedActionAdapter(PrivilegedAction action) {
+                this.action = action;
+            }
+            public Object call () {
+                return action.run();
+            }
+            private final PrivilegedAction action;
+        }
+    }
+
+--tim
+
+
+From dl@cs.oswego.edu  Fri Oct 24 12:32:47 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 24 Oct 2003 07:32:47 -0400
+Subject: [concurrency-interest] propagating thread properties to worker threads
+In-Reply-To: <3F96BFD5.C878F832@peierls.net>
+References: <NFBBKALFDCPFIDBNKAPCMEKPDIAA.dholmes@dltech.com.au>
+ <3F96BFD5.C878F832@peierls.net>
+Message-ID: <16281.3551.921961.94564@altair.cs.oswego.edu>
+
+Having convinced ourselves that PrivilegedFutureTask is the best
+support we can provide for running tasks with special security needs,
+and not hearing anything to the contrary on this list, we now plan to
+include this class, along with the other accommodations Tim described,
+below.  Further comments and suggestions are of course still welcome.
+
+
+> 1. Change the default thread factory to latch (at construction), 
+>    the SecurityManager's thread group, if a SecurityManager is
+>    present, otherwise the thread group of the current thread,
+>    and use this thread group when creating new threads. [This 
+>    much is part of what Dawid originally requested.]
+> 
+>    Also change the default thread factory to setPriority(NORMAL-1) and
+>    setDaemon(false). These are predictable and reasonable values; users
+>    with special needs can roll their own. See item 4.
+> 
+> 2. Add a PrivilegedFutureTask<T> class that extends FutureTask<T> and
+>    adds constructors that take a context class loader and/or an access
+>    control context and applies them when running the wrapped task.
+> 
+> 3. Add new static execute() methods to Executors that take a PrivilegedAction
+>    or a PrivilegedExceptionAction and (optionally) an access control context,
+>    executing the given task on the given executor in the given context (or
+>    the current context, if one is not supplied).
+> 
+> 4. Add documentation of these issues in PrivilegedFutureTask<T> and (for
+>    ThreadGroup) in ThreadPoolExecutor, with links from Executors and other
+>    places. In particular, display the default thread factory code in the
+>    TPE javadocs so users can roll their own variations easily.
+
+-Doug
+
+From dawidk@mathcs.emory.edu  Mon Oct 27 03:17:49 2003
+From: dawidk@mathcs.emory.edu (Dawid Kurzyniec)
+Date: Sun, 26 Oct 2003 22:17:49 -0500
+Subject: [concurrency-interest] propagating thread properties to worker threads
+In-Reply-To: <16281.3551.921961.94564@altair.cs.oswego.edu>
+Message-ID: <001b01c39c38$e7f34f90$0100a8c0@maja>
+
+This is a multi-part message in MIME format.
+
+------=_NextPart_000_001C_01C39C0E.FF1D4790
+Content-Type: text/plain;
+	charset="us-ascii"
+Content-Transfer-Encoding: 7bit
+
+
+
+> -----Original Message-----
+> From: concurrency-interest-admin@cs.oswego.edu 
+> [mailto:concurrency-interest-admin@cs.oswego.edu] On Behalf 
+> Of Doug Lea
+> Sent: Friday, October 24, 2003 7:33 AM
+> To: concurrency-interest@altair.cs.oswego.edu
+> Subject: Re: [concurrency-interest] propagating thread 
+> properties to worker threads
+> 
+> 
+> 
+> Having convinced ourselves that PrivilegedFutureTask is the 
+> best support we can provide for running tasks with special 
+> security needs, and not hearing anything to the contrary on 
+> this list, we now plan to include this class, along with the 
+> other accommodations Tim described, below.  Further comments 
+> and suggestions are of course still welcome.
+
+There are problems with the approach described previously by Tim
+Peierls. The most important one is that the solution, in its current
+form, is incorrect from the Java Security point of view (it introduces
+security vulnerabilities). Namely, the problem occurs in
+
+PrivilegedFutureTask(<any>, AccessControlContext acc) 
+
+constructors and
+
+Executors.execute(Executor executor, PrivilegedAction action,
+AccessControlContext acc)
+
+method.
+
+Quote from
+"http://java.sun.com/j2se/1.4.2/docs/guide/security/spec/security-spec.d
+oc4.html#20389":
+
+A new, static method in the AccessController class allows code in a
+class instance to inform the AccessController that a body of its code is
+"privileged" in that it is *solely responsible for requesting access to
+its available resources, no matter what code caused it to do so*. 
+
+Quote from
+"http://java.sun.com/j2se/1.4.2/docs/guide/security/doprivileged.html":
+
+"(...) note that the call to doPrivileged should be made in the code
+that wants to enable its privileges. Do not be tempted to write a
+utility class that itself calls doPrivileged as that could lead to
+security holes."
+
+In other words, it is incorrect to call "doPrivileged" from the j.u.c.
+library which itself is a system-level code (in system protection
+domain). It allows malicious users to execute sensitive code with
+system-level privileges by wrapping that code into PrivilegedFutureTask
+with "null" as the access control context, and simply invoking
+pft.run(). In the correct approach, the library simply takes the current
+access control context, which in this case would always contain the
+caller protection domain even if the caller itself called
+"doPrivileged".
+
+A bit similar discussion applies to context class loaders as well; here,
+the problem is that the possibility to pass the ccl as a parameter may
+be of little value since the application is often not permitted to
+retrieve the context class loader (which is handled behind the scenes).
+
+Conclusion: PFT should only contain a one-arg constructor which uses
+current ccl and acc; associated methods should be removed from
+Executors.
+
+
+
+The second problem is that the proposed solution does not address the
+non-determinism issue in the default thread factory. That is, the
+deterministic behavior can only be obtained using PFT. Non-expert users
+who simply use FutureTask will still be exposed to potential security
+holes / access control exceptions / class loading exceptions / class
+cast exceptions, occurring according to non-deterministic patterns (for
+example, only in the production setup where the average load is high
+enough etc.) 
+
+I have heard opinions that the use of context class loaders and access
+control contexts is so narrow that it will only be relevant to users
+with enough expertise to knowingly address the issue with PFT. I don't
+agree with that - for instance, Java RMI is where the problem will
+exhibit itself commonly. It is actually a perfect example of a library
+which has a simple interface but which makes excessive use of class
+loaders and access control contexts - completely behind the scenes. RMI
+applications do not explicitly deal with class loaders or access control
+contexts, although there may be tens of class loaders and protection
+domains behind the scenes which are controlled by system administrators
+via appropriate security policies and system properties. 
+
+I prepared the actual examples demonstrating the issue, but their
+discussion is quite lengthy, so I included it in the attachment. The
+bottom line is, when propagation of the acc and ccl is important, it is
+*extremely* important as lack of it causes very subtle errors which
+require a lot of expertise to address; the expertise which the vast
+majority of RMI developers do not have.
+
+Finally, the third issue related to the current implementation is that
+it does not propagate inheritable thread locals, simply saying that "it
+can't be done". Two commonly quoted problems related to attempts to
+attack the issue are: 1) breach of encapsulation, 2) inherent race
+conditions. Also, it is a common opinion that propagation of thread
+locals is very rarely needed. I would like to present a proposal which
+avoids that two issues, while also showing an example of when the
+inheritance is important.
+
+Example, more or less from my work is: application invokes a library
+function (e.g. login) which sets a library-private inheritable thread
+local (e.g. a session context containing security-sensitive
+information). Application then creates a new thread which makes some
+calls to that library. Within the calls, the library inspects that
+session context, and since it is there (it has been inherited), the
+calls are allowed. Now, if explicit thread construction is replaced with
+a thread pool, things will no longer work (library will deny calls from
+worker threads) unless the pool propagates inherited locals.
+
+This example shows how things can break if one tries to replace explicit
+thread construction with thread pools, which will be pretty common
+strategy once java.util.concurrent is there, I believe.
+
+
+The cornerstone of my proposal to tackle the issue is the
+"ThreadContext" class. That class is designed to contain a *snapshot* of
+a thread state, consisting of the context class loader, priority, and
+thread locals. Conceptually this is similar (and orthogonal) to the
+"AccessControlContext" class; in fact, the reasoning behind
+AccessControlContext (from
+"http://java.sun.com/j2se/1.4.2/docs/guide/security/spec/security-spec.d
+oc4.html#20389") applies to "ThreadContext" almost directly by replacing
+"security checks" with "operations", and "access control" by "class
+loading and operations relying on thread locals":
+
+"Recall that the AccessController checkPermission method performs
+security checks within the context of the current execution thread
+(including the inherited context). A difficulty arises when such a
+security check can only be done in a different context. That is,
+sometimes a security check that should be made within a given context
+will actually need to be done from within a different context. For
+example, when one thread posts an event to another thread, the second
+thread serving the requesting event would not have the proper context to
+complete access control, if the service requests access to controller
+resources.
+
+To address this issue, we provide the AccessController getContext method
+and AccessControlContext class. The getContext method takes a "snapshot"
+of the current calling context, and places it in an AccessControlContext
+object, which it returns."
+
+
+The proposed ThreadContext class looks like:
+
+/**
+ * Represents the snapshot of the thread state. The state consists of
+ * thread local values, context class loader, and priority.
+ */
+public class ThreadContext {
+
+    /**
+     * Returns the snapshot of the current thread's state. Note that
+this
+     * method does not have race condition problems as it accesses
+     * only the *current* thread.
+     *
+     * @param child if true, only the inherited thread locals are
+propagated,
+     *        otherwise, all thread locals are propagated
+     */
+    public static ThreadContext getContext(boolean child) { ... }
+
+    /**
+     * Performs a given task within this context. If the "child"
+parameter
+     * was set to true, the task is performed as if by a new thread
+created
+     * by the original thread. Otherwise, the task is performed as if by
+the
+     * original thread. The "as if" means "with context class loader,
+priority,
+     * and thread locals of".
+     */
+    public void perform(final Runnable task) { ... }
+}
+
+In that approach, thread locals are not exposed outside of the context -
+they can only be accessed if the requestor has the actual ThreadLocal
+object reference. Hence, no breach of encapsulation. Also, since the
+snapshot can only be taken for the current thread, there is no race
+condition related to accessing thread locals.
+
+Having ThreadContext, the default socket factory can simply do the
+following to achieve determinism:
+
+public PlainThreadFactory(ThreadGroup group, String name) {
+  ...
+  this.acc = AccessController.getContext();
+  this.tc = ThreadContext.getContext(true);
+}
+
+public Thread newThread(final Runnable command) {
+  
+  return (Thread)AccessController.doPrivileged(new PrivilegedAction() {
+    public Object run() {
+      Runnable commandWrapper = new Runnable() {
+        public void run() { tc.perform(command); }
+      };
+      return new Thread(group, commandWrapper);
+    }
+  }, acc);
+}
+
+Since such implementation would be quite useful outside of
+ThreadPoolExecutor, I would suggest to make it a separate (outer) class.
+
+Note that access control context is handled explicitly; putting it into
+thread context would cause the same security problems as the PFT has.
+
+Please note that since PlainThreadFactory belongs to the system
+protection domain, the context propagated to the thread creation time is
+identical to the context of construction time (the system protection
+domain of PlainThreadFactory does not impose any additional
+restrictions). Also, note that the form of PlainThreadFactory as
+proposed above does not conflict with using invoker context later on by
+executors (e.g. via PFT-like class); the second "doPrivileged" and
+"perform()" will completely substitute the factory construction context
+with the invoker context.
+
+Finally, I propose to replace PFT with the following (lightweight)
+counterpart:
+
+public class DelegatedRunnable implements Runnable {
+  final Runnable runnable;
+  final AccessControlContext acc;
+  final ThreadContext tc;
+
+  public DelegatedRunnable(Runnable runnable) {
+    this(runnable, false);
+  }
+
+  public DelegatedRunnable(Runnable runnable, boolean child) {
+    this.runnable = runnable;
+    this.acc = AccessController.getContext();
+    this.tc = ThreadContext.getContext(child);
+  }
+
+  public void run() {
+    AccessController.doPrivileged(new PrivilegedAction() {
+      public Object run() {
+        tc.perform(runnable);
+        return null;
+      }
+    }, acc);
+  }
+}
+
+
+Then, it would be possible to execute existing (instantiated) future
+tasks as "privileged" in the following manner:
+
+FutureTask task = someTask();
+executor.execute(new DelegatedRunnable(task));
+
+The complete implementation of the proposed classes (including a sketch
+of a ThreadContext) is attached to this e-mail. I kindly request that EG
+evaluates this proposal carefully.
+
+To sum up:
+The solution of thread context propagation presented by Tim Peierls has
+security problems, does not address a potential non-determinism trap,
+requires users to explicitly deal with acc and ccl rather than keeping
+with Java design principles to handle them behind the scenes, and does
+not propagate thread locals. I suggest a lightweight modification which
+addresses all of the above issues without exposing sensitive
+functionality outside system classes.
+
+Kind regards,
+Dawid Kurzyniec
+
+------=_NextPart_000_001C_01C39C0E.FF1D4790
+Content-Type: text/plain;
+	name="RMI-example.txt"
+Content-Transfer-Encoding: 7bit
+Content-Disposition: attachment;
+	filename="RMI-example.txt"
+
+The cause of complications is that RMI allows to pass *behavior*. 
+In other words, client may send to the server an object of a class 
+that was not previously known to the server, and server must locate 
+that class and load it in order to instantiate the object. (It can 
+also be the other way around). It is addressed via class 
+annotations: the invocation stream contains the URL class path of 
+the behavior classes, usually pointing to client-side (server-side, 
+in the reverse scenario) HTTP server. Since that external code may 
+be potentially harmful to the RMI server, RMI always requires the 
+security manager to be set in order for this to work; default 
+security policy grants no permissions to dynamically loaded code. 
+If such behavioral object accesses (even implicitly, via other 
+server classes) a shared thread pool, and if it adds a thread to 
+the pool, that thread will inherit the restricted access control 
+context. The "non-determinism" issue will hit next time somebody 
+else uses the pool and encounters that worker thread. The 
+application developer will have a little understanding why things go 
+wrong, since the application code itself does not deal with access 
+control contexts, and the problem may occur in a completely 
+different place than the root is.
+
+To see how lack of context CL propagation may be harmful, consider 
+a slightly more complicated example (originating from my work, where 
+the problem did actually occur). The idea is: the system allows 
+"deployers" to pass objects (service instances) by value, and those 
+services get exported with RMI. This is achieved with the following:
+
+interface Service {
+  void init();
+}
+
+interface Deployer extends Remote {
+  Remote deployService(Service service);
+}
+
+class DeployerImpl implements Deployer {
+  Remote deployService(Service service) {
+    service.init();
+    return UnicastRemoteObject.exportObject(service);
+  }
+}
+
+Now, let's have a "deployer" creating and deploying some actual 
+service:
+
+interface Solver extends Remote {
+  String solve(Problem) throws RemoteException;
+}
+
+interface Problem {
+  String doRealWork();
+}
+
+class SolverImpl implements Service, Solver {
+  String solve(Problem) {
+    return problem.doRealWork();
+  }
+}
+
+Let's suppose that the "deployer" passes an instance of SolverImpl 
+by value to the RMI server via the "deploy()" method, which 
+then gets exported via RMI. Server-side RMI will need to create 
+a dynamic class loader "CL1" in order to load "SolverImpl", 
+"Solver" and "Problem" classes, and it will associate "CL1" with 
+the SolverImpl instance as it exports it. Later, that "CL1" will 
+be used as a context class loader for all subsequent remote calls 
+on that "SolverImpl" instance. 
+
+Let's suppose another client (labelled as "client") does:
+
+Solver remoteSolver;
+Problem p = new HelloProblem();
+remoteSolver.solve(p);
+
+class HelloProblem implements Problem {
+  String doRealWork() { return "hello"; }
+}
+
+Then, "p" is passed by value and its class "HelloProblem"
+is loaded from the client's repository using a newly created 
+dynamic class loader "CL2", as specified by the "HelloProblem" 
+class annotation. Now, the tricky part begins. The "HelloProblem" 
+implements "Problem"; hence "CL2" will be asked to resolve it too. 
+Importantly, RMI dynamic class loaders are created with their 
+parent being current context class loader. In this case, "CL1" 
+will be a parent of "CL2", hence the request to resolve "Problem" 
+will be delegated from "CL2" to "CL1". Otherwise, if "CL2" 
+resolved "Problem" itself, the "p" would be deemed incompatible 
+with the method signature (as "Problem" loaded by "CL2" would be 
+different than "Problem" previously loaded by "CL1"), which would 
+result in ClassCastExceptions.
+
+Fortunately, RMI application developers do not need to understand 
+all that, as everything happens behind the scenes when context 
+class loaders are properly propagated.
+
+Now, if the implementation of "deployService(Service)" is changed to
+
+void deployService(Service service) {
+  new Thread(new Runnable() {
+    public void run() {
+      service.init();
+      UnicastRemoteObject.exportObject(service);    
+    }
+  }).start();
+}
+
+This will continue to work, since the new thread will properly 
+inherit context class loader. On the other hand, if the 
+application developer would like to use a thread pool, things 
+will stop working (ClassCastExceptions unleash) unless the 
+context class loader is properly propagated. That is, by 
+switching from explicit thread creation to a private thread 
+pool, application developers are forced to investigate class 
+loading issues (previously handled behind the scenes) and use 
+PFT, whereas simple ccl propagation from the constructor thread 
+would save them from hassle in this case.
+
+Note that to spot the origin of a ClassCastException is really 
+tricky in this case, as the preceding discussion suggest.
+
+And the hell breaks loose if the serviceImpl wished to use some 
+shared thread pool; most of the time (especially in testing 
+environments) it would work, but sometimes it wouldn't, due to 
+the non-determinism. If the context CL is propagated from the 
+constructor, the above would at least consistently throw 
+ClassCastExceptions so it could be earlier diagnosed to require 
+PFT.
+
+------=_NextPart_000_001C_01C39C0E.FF1D4790
+Content-Type: application/octet-stream;
+	name="ThreadContext.java"
+Content-Transfer-Encoding: quoted-printable
+Content-Disposition: attachment;
+	filename="ThreadContext.java"
+
+package java.lang;=0A=
+=0A=
+/**=0A=
+ * Represents the snapshot of the thread state. The state consists of=0A=
+ * thread local values, context class loader, and priority.=0A=
+ *=0A=
+ * The implementation requires that "contextClassLoader" and "priority"=0A=
+ * fields are made package-private in java.lang.Thread; alternatively, =
+this=0A=
+ * class could be made inner class of java.lang.Thread=0A=
+ */=0A=
+public class ThreadContext {=0A=
+    private final ClassLoader ccl;=0A=
+    private final int priority;=0A=
+    private final ThreadLocal.ThreadLocalMap threadLocals;=0A=
+    private final ThreadLocal.ThreadLocalMap inheritableThreadLocals;=0A=
+=0A=
+    private ThreadContext(ClassLoader ccl, int priority,=0A=
+                          ThreadLocal.ThreadLocalMap threadLocals,=0A=
+                          ThreadLocal.ThreadLocalMap =
+inheritableThreadLocals) {=0A=
+        this.ccl =3D ccl;=0A=
+        this.priority =3D priority;=0A=
+        this.threadLocals =3D threadLocals;=0A=
+        this.inheritableThreadLocals =3D inheritableThreadLocals;=0A=
+    }=0A=
+=0A=
+    public static ThreadContext getContext() {=0A=
+        return getContext(false);=0A=
+    }=0A=
+=0A=
+    /**=0A=
+     * Returns the snapshot of the current thread's state. Note that this=0A=
+     * method does not have race condition problems as it accesses=0A=
+     * only the current thread.=0A=
+     *=0A=
+     * @param child if true, only the inherited thread locals are =
+propagated,=0A=
+     *        otherwise, all thread locals are propagated=0A=
+     */=0A=
+    public static ThreadContext getContext(boolean child) {=0A=
+        final Thread current =3D Thread.currentThread();=0A=
+        ClassLoader ccl =3D current.contextClassLoader;=0A=
+        int priority =3D current.priority;=0A=
+        ThreadLocal.ThreadLocalMap threadLocals =3D child ? null :=0A=
+            inheritMap(current.threadLocals);=0A=
+        ThreadLocal.ThreadLocalMap inheritableThreadLocals =3D=0A=
+            inheritMap(current.inheritableThreadLocals);=0A=
+        return new ThreadContext(ccl, priority, threadLocals,=0A=
+                                 inheritableThreadLocals);=0A=
+    }=0A=
+=0A=
+    /**=0A=
+     * Performs a given task within this context. If the "child" =
+parameter=0A=
+     * was set to true, the task is performed as if by the new thread =
+created=0A=
+     * by the original thread. Otherwise, the task is performed as if by =
+the=0A=
+     * original thread. The "as if" means "with context class loader, =
+priority,=0A=
+     * and thread locals of".=0A=
+     */=0A=
+    public void perform(final Runnable task) {=0A=
+        final Thread current =3D Thread.currentThread();=0A=
+        ClassLoader savedCcl =3D current.contextClassLoader;=0A=
+        int savedPriority =3D current.priority;=0A=
+        ThreadLocal.ThreadLocalMap savedTL =3D current.threadLocals;=0A=
+        ThreadLocal.ThreadLocalMap savedITL =3D =
+current.inheritableThreadLocals;=0A=
+        current.setContextClassLoader(ccl);=0A=
+        current.setPriority(priority);=0A=
+        // must be copied to make sure that thread context is not =
+affected=0A=
+        // by changes made by the task.run()=0A=
+        current.threadLocals =3D inheritMap(threadLocals);=0A=
+        current.inheritableThreadLocals =3D =
+inheritMap(inheritableThreadLocals);=0A=
+        try {=0A=
+            task.run();=0A=
+        }=0A=
+        finally {=0A=
+            current.contextClassLoader =3D savedCcl;=0A=
+            current.priority =3D savedPriority;=0A=
+            current.threadLocals =3D savedTL;=0A=
+            current.inheritableThreadLocals =3D savedITL;=0A=
+        }=0A=
+    }=0A=
+=0A=
+    private static ThreadLocal.ThreadLocalMap inheritMap(=0A=
+        ThreadLocal.ThreadLocalMap map)=0A=
+    {=0A=
+        if (map =3D=3D null) return null;=0A=
+        return ThreadLocal.createInheritedMap(map);=0A=
+    }=0A=
+}
+------=_NextPart_000_001C_01C39C0E.FF1D4790
+Content-Type: application/octet-stream;
+	name="PlainThreadFactory.java"
+Content-Transfer-Encoding: quoted-printable
+Content-Disposition: attachment;
+	filename="PlainThreadFactory.java"
+
+/* ***** BEGIN LICENSE BLOCK *****=0A=
+ * Version: MPL 1.1/GPL 2.0/LGPL 2.1=0A=
+ *=0A=
+ * The contents of this file are subject to the Mozilla Public License =
+Version=0A=
+ * 1.1 (the "License"); you may not use this file except in compliance =
+with=0A=
+ * the License. You may obtain a copy of the License at=0A=
+ * http://www.mozilla.org/MPL/=0A=
+ *=0A=
+ * Software distributed under the License is distributed on an "AS IS" =
+basis,=0A=
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the =
+License=0A=
+ * for the specific language governing rights and limitations under the=0A=
+ * License.=0A=
+ *=0A=
+ * The Original Code is the Emory Utilities.=0A=
+ *=0A=
+ * The Initial Developer of the Original Code is=0A=
+ * The Distributed Computing Laboratory, Emory University.=0A=
+ * Portions created by the Initial Developer are Copyright (C) 2002=0A=
+ * the Initial Developer. All Rights Reserved.=0A=
+ *=0A=
+ * Alternatively, the contents of this file may be used under the terms =
+of=0A=
+ * either the GNU General Public License Version 2 or later (the "GPL"), =
+or=0A=
+ * the GNU Lesser General Public License Version 2.1 or later (the =
+"LGPL"),=0A=
+ * in which case the provisions of the GPL or the LGPL are applicable =
+instead=0A=
+ * of those above. If you wish to allow use of your version of this file =
+only=0A=
+ * under the terms of either the GPL or the LGPL, and not to allow =
+others to=0A=
+ * use your version of this file under the terms of the MPL, indicate =
+your=0A=
+ * decision by deleting the provisions above and replace them with the =
+notice=0A=
+ * and other provisions required by the GPL or the LGPL. If you do not =
+delete=0A=
+ * the provisions above, a recipient may use your version of this file =
+under=0A=
+ * the terms of any one of the MPL, the GPL or the LGPL.=0A=
+ *=0A=
+ * ***** END LICENSE BLOCK ***** */=0A=
+=0A=
+package edu.emory.mathcs.util.concurrent;=0A=
+=0A=
+import java.security.*;=0A=
+=0A=
+/**=0A=
+ * <p>Title: RMI</p>=0A=
+ * <p>Description: Pluggable RMI Framework</p>=0A=
+ * <p>Copyright: Copyright (c) 2002</p>=0A=
+ * <p>Company: Emory University</p>=0A=
+ * @author Dawid Kurzyniec=0A=
+ * @version 1.0=0A=
+ */=0A=
+=0A=
+public class PlainThreadFactory implements ThreadFactory {=0A=
+    final AccessControlContext acc;=0A=
+    final ThreadGroup group;=0A=
+    final ThreadContext tc;=0A=
+    final String name;=0A=
+    int idx =3D 0;=0A=
+=0A=
+    public PlainThreadFactory() {=0A=
+        this(null, null);=0A=
+    }=0A=
+=0A=
+    public PlainThreadFactory(String name) {=0A=
+        this(null, name);=0A=
+    }=0A=
+=0A=
+    public PlainThreadFactory(ThreadGroup group) {=0A=
+        this(group, null);=0A=
+    }=0A=
+=0A=
+    public PlainThreadFactory(ThreadGroup group, String name) {=0A=
+        if (group =3D=3D null) {=0A=
+            // try to determine tg as in java.lang.Thread=0A=
+            SecurityManager security =3D System.getSecurityManager();=0A=
+=0A=
+            if (security !=3D null) {=0A=
+                group =3D security.getThreadGroup();=0A=
+            }=0A=
+        }=0A=
+=0A=
+        if (group =3D=3D null) {=0A=
+            group =3D Thread.currentThread().getThreadGroup();=0A=
+        }=0A=
+=0A=
+        this.group =3D group;=0A=
+        this.name =3D name;=0A=
+        this.acc =3D AccessController.getContext();=0A=
+        this.tc =3D ThreadContext.getChildContext();=0A=
+    }=0A=
+=0A=
+    public Thread newThread(final Runnable command) {=0A=
+        return (Thread)AccessController.doPrivileged(new =
+PrivilegedAction() {=0A=
+            public Object run() {=0A=
+                Runnable commandWrapper =3D new Runnable() {=0A=
+                    public void run() { tc.perform(command); }=0A=
+                };=0A=
+                if (name =3D=3D null) {=0A=
+                    return new Thread(group, commandWrapper);=0A=
+                }=0A=
+                else {=0A=
+                    String tname =3D (name !=3D null ? name + " " + =
+getNextIdx() : null);=0A=
+                    return new Thread(group, commandWrapper, tname);=0A=
+                }=0A=
+            }=0A=
+        }, acc);=0A=
+    }=0A=
+=0A=
+    private synchronized int getNextIdx() {=0A=
+        return idx++;=0A=
+    }=0A=
+}
+------=_NextPart_000_001C_01C39C0E.FF1D4790
+Content-Type: application/octet-stream;
+	name="DelegatedRunnable.java"
+Content-Transfer-Encoding: quoted-printable
+Content-Disposition: attachment;
+	filename="DelegatedRunnable.java"
+
+/* ***** BEGIN LICENSE BLOCK *****=0A=
+ * Version: MPL 1.1/GPL 2.0/LGPL 2.1=0A=
+ *=0A=
+ * The contents of this file are subject to the Mozilla Public License =
+Version=0A=
+ * 1.1 (the "License"); you may not use this file except in compliance =
+with=0A=
+ * the License. You may obtain a copy of the License at=0A=
+ * http://www.mozilla.org/MPL/=0A=
+ *=0A=
+ * Software distributed under the License is distributed on an "AS IS" =
+basis,=0A=
+ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the =
+License=0A=
+ * for the specific language governing rights and limitations under the=0A=
+ * License.=0A=
+ *=0A=
+ * The Original Code is the Emory Utilities.=0A=
+ *=0A=
+ * The Initial Developer of the Original Code is=0A=
+ * The Distributed Computing Laboratory, Emory University.=0A=
+ * Portions created by the Initial Developer are Copyright (C) 2002=0A=
+ * the Initial Developer. All Rights Reserved.=0A=
+ *=0A=
+ * Alternatively, the contents of this file may be used under the terms =
+of=0A=
+ * either the GNU General Public License Version 2 or later (the "GPL"), =
+or=0A=
+ * the GNU Lesser General Public License Version 2.1 or later (the =
+"LGPL"),=0A=
+ * in which case the provisions of the GPL or the LGPL are applicable =
+instead=0A=
+ * of those above. If you wish to allow use of your version of this file =
+only=0A=
+ * under the terms of either the GPL or the LGPL, and not to allow =
+others to=0A=
+ * use your version of this file under the terms of the MPL, indicate =
+your=0A=
+ * decision by deleting the provisions above and replace them with the =
+notice=0A=
+ * and other provisions required by the GPL or the LGPL. If you do not =
+delete=0A=
+ * the provisions above, a recipient may use your version of this file =
+under=0A=
+ * the terms of any one of the MPL, the GPL or the LGPL.=0A=
+ *=0A=
+ * ***** END LICENSE BLOCK ***** */=0A=
+=0A=
+package edu.emory.mathcs.util.concurrent;=0A=
+=0A=
+import java.security.*;=0A=
+=0A=
+public class DelegatedRunnable implements Runnable {=0A=
+    final Runnable runnable;=0A=
+    final AccessControlContext acc;=0A=
+    final ThreadContext tc;=0A=
+=0A=
+    public DelegatedRunnable(Runnable runnable) {=0A=
+        this(runnable, false);=0A=
+    }=0A=
+=0A=
+    public DelegatedRunnable(Runnable runnable, boolean child) {=0A=
+        this.runnable =3D runnable;=0A=
+        this.acc =3D AccessController.getContext();=0A=
+        this.tc =3D ThreadContext.getContext(child);=0A=
+    }=0A=
+=0A=
+    public void run() {=0A=
+        AccessController.doPrivileged(new PrivilegedAction() {=0A=
+            public Object run() {=0A=
+                tc.perform(runnable);=0A=
+                return null;=0A=
+            }=0A=
+        }, acc);=0A=
+    }=0A=
+}=0A=
+
+------=_NextPart_000_001C_01C39C0E.FF1D4790--
+
+
+From matthias.ernst@coremedia.com  Mon Oct 27 11:21:06 2003
+From: matthias.ernst@coremedia.com (matthias.ernst@coremedia.com)
+Date: Mon, 27 Oct 2003 12:21:06 +0100 (CET)
+Subject: [concurrency-interest] Dynamic threadpool sizing
+In-Reply-To: <16281.3551.921961.94564@altair.cs.oswego.edu>
+Message-ID: <Pine.LNX.4.33.0310271213050.19491-100000@bebop.coremedia.com>
+
+Hi,
+
+I don't know if this has been discussed, but one thing I've been pondering
+about is the dynamic growth/shrinking of a thread pool. As we all know,
+the best policy is to run as many threads as there are CPUs. A good
+scheduler will notice a blocking thread and choose to make another one
+runnable.
+
+How can we achieve something similar in a j.u.c thread pool? As the pool
+doesn't know about blocking, we need some help from the jobs. If a job
+knows that it's going to block for some time (remote call, db query), it
+might be a good idea to raise the pool's max threads by one (is it?). Is
+that simply covered by #setMaximumPoolSize, i.e. will it immediately
+schedule waiting jobs ?
+
+Best,
+Matthias
+-- 
+Matthias Ernst
+Software Engineer
+
+CoreMedia - Smart Content Technology
+
+
+From dl@cs.oswego.edu  Mon Oct 27 15:41:50 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: 27 Oct 2003 10:41:50 -0500
+Subject: [concurrency-interest] Dynamic threadpool sizing
+In-Reply-To: <Pine.LNX.4.33.0310271213050.19491-100000@bebop.coremedia.com>
+References: <Pine.LNX.4.33.0310271213050.19491-100000@bebop.coremedia.com>
+Message-ID: <1067269310.3547.58.camel@localhost.localdomain>
+
+>  it
+> might be a good idea to raise the pool's max threads by one (is it?). 
+
+I think the best answer I can give is "maybe" :-) It is very
+application dependent. Also, it might work better to raise number of
+core threads, not max threads.
+
+> 
+> Is
+> that simply covered by #setMaximumPoolSize, i.e. will it immediately
+> schedule waiting jobs ?
+
+Good point; thanks! Currently it doesn't promise to, but should and
+will. (Similarly for setCorePoolSize).
+
+More generally though, there are intrinsic limits to scheduling control
+in ThreadPoolExecutor. If you want to micro-schedule, you could (with
+a lot of work) create a new Executor class that supports all sorts
+of scheduling hints and constraints specific for your application.
+
+
+-Doug
+
+
+
+From ggagne@westminstercollege.edu  Mon Oct 27 17:59:21 2003
+From: ggagne@westminstercollege.edu (Greg Gagne)
+Date: Mon, 27 Oct 2003 10:59:21 -0700
+Subject: [concurrency-interest] Dynamic threadpool sizing
+In-Reply-To: <1067269310.3547.58.camel@localhost.localdomain>
+Message-ID: <4A8ECB8E-08A7-11D8-B9CC-000393908660@westminstercollege.edu>
+
+Ernst -
+
+It seems to me that thread pools are more of a server-side issue rather 
+than a concurrent CPU-bound application. True, if your app. is 
+CPU-bound, maintaining a correspondence between the number of threads 
+and number of processors makes sense. Alternatively, if your app. may 
+run concurrently - yet may have potential blocking system calls - the 
+rule of thumb "correspond the number of threads to number of blocking 
+system calls + 1" seems to make sense as well. In other words, for 
+these types of applications, I believe it's preferable to handle 
+threading directly without the use of a pool (or as Doug suggests, 
+create a new Executor class with specific properties.)
+
+I see the thread pool as being more of a tool for designing scalable 
+servers. In general, the benefit of thread pools is not to address 
+latency issues involved in creating a thread to service a message 
+(latency is not much of an issue.) A primary appeal of thread pools is 
+to   bound the number of threads on the server as well as tune the 
+number of threads at any point in time. Some preliminary research I did 
+on design issues of threads pools for a paper I had considered 
+submitting to SIGOPS showed that the actual tuning policy had little 
+effect on throughput. Rather, throughput is more affected by an excess 
+number of threads (and in the case of Java, garbage collection issues.)
+
+Hope this contributes.
+
+Greg Gagne
+
+On Monday, October 27, 2003, at 08:41  AM, Doug Lea wrote:
+
+>>  it
+>> might be a good idea to raise the pool's max threads by one (is it?).
+>
+> I think the best answer I can give is "maybe" :-) It is very
+> application dependent. Also, it might work better to raise number of
+> core threads, not max threads.
+>
+>>
+>> Is
+>> that simply covered by #setMaximumPoolSize, i.e. will it immediately
+>> schedule waiting jobs ?
+>
+> Good point; thanks! Currently it doesn't promise to, but should and
+> will. (Similarly for setCorePoolSize).
+>
+> More generally though, there are intrinsic limits to scheduling control
+> in ThreadPoolExecutor. If you want to micro-schedule, you could (with
+> a lot of work) create a new Executor class that supports all sorts
+> of scheduling hints and constraints specific for your application.
+>
+>
+> -Doug
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From matthias.ernst@coremedia.com  Mon Oct 27 18:16:33 2003
+From: matthias.ernst@coremedia.com (matthias.ernst@coremedia.com)
+Date: Mon, 27 Oct 2003 19:16:33 +0100 (CET)
+Subject: [concurrency-interest] Dynamic threadpool sizing
+In-Reply-To: <4A8ECB8E-08A7-11D8-B9CC-000393908660@westminstercollege.edu>
+Message-ID: <Pine.LNX.4.33.0310271905310.19491-100000@bebop.coremedia.com>
+
+On Mon, 27 Oct 2003, Greg Gagne wrote:
+
+> A primary appeal of thread pools is
+> to   bound the number of threads on the server as well as tune the
+> number of threads at any point in time. Some preliminary research I did
+> on design issues of threads pools for a paper I had considered
+> submitting to SIGOPS showed that the actual tuning policy had little
+> effect on throughput. Rather, throughput is more affected by an excess
+> number of threads (and in the case of Java, garbage collection issues.)
+
+Interesting. I've always felt that >50 threads is death to the VM.
+
+What I'm dealing with is a servlet application that either delivers a CPU
+bound or an I/O bound page, unknown in advance. How do I size my thread
+pool ? Too small -> Threads get caught in I/O and the thing stalls. Too
+big -> CPU thrashing. In a non-servlet environment, I could dispatch jobs
+to different pools a la SEDA, but that is cumbersome, too. I'd have to
+reify local thread state into job objects.
+
+Matthias
+-- 
+Matthias Ernst
+Software Engineer
+
+CoreMedia - Smart Content Technology
+
+
+From brian@quiotix.com  Mon Oct 27 20:08:41 2003
+From: brian@quiotix.com (Brian Goetz)
+Date: Mon, 27 Oct 2003 12:08:41 -0800
+Subject: [concurrency-interest] Dynamic threadpool sizing
+In-Reply-To: <Pine.LNX.4.33.0310271213050.19491-100000@bebop.coremedia.com>; from matthias.ernst@coremedia.com on Mon, Oct 27, 2003 at 12:21:06PM +0100
+References: <16281.3551.921961.94564@altair.cs.oswego.edu> <Pine.LNX.4.33.0310271213050.19491-100000@bebop.coremedia.com>
+Message-ID: <20031027120841.A27234@lx.quiotix.com>
+
+> I don't know if this has been discussed, but one thing I've been
+> pondering about is the dynamic growth/shrinking of a thread pool. As
+> we all know, the best policy is to run as many threads as there are
+> CPUs. 
+
+Determining the optimal thread pool size is tricky, as it depends on
+the relative amount of computation and waiting that a thread does,
+which may vary from task to task and over time.  Also, some
+applications may have more than one thread pool, and applications may
+not desire that all of the CPU cycles be consumed by pool threads.  In
+any case, I suspect that the sort of dynamic pool management approach
+that you suggest is likely to be unstable, although it might be useful
+for producing diagnostics of the form "your pool is way too
+small/big."
+
+If threads may block waiting for IO, then to determine the optimal
+number of threads, you need to estimate the ratio of runtime to wait
+time (call this R), and the optimal number of threads is going to be
+Ncpus * (1 * 1/R).  (If R = Tr/Tw, then utilization U = Tr/(Tr+Tw) = 1
+/ (1 + 1/R).  You want to make sure there are at least Ncpus * 1/U
+threads.)  Measuring R or U isn't so easy.  
+
+
+From brian@quiotix.com  Mon Oct 27 20:21:25 2003
+From: brian@quiotix.com (Brian Goetz)
+Date: Mon, 27 Oct 2003 12:21:25 -0800
+Subject: [concurrency-interest] Dynamic threadpool sizing
+In-Reply-To: <Pine.LNX.4.33.0310271905310.19491-100000@bebop.coremedia.com>; from matthias.ernst@coremedia.com on Mon, Oct 27, 2003 at 07:16:33PM +0100
+References: <4A8ECB8E-08A7-11D8-B9CC-000393908660@westminstercollege.edu> <Pine.LNX.4.33.0310271905310.19491-100000@bebop.coremedia.com>
+Message-ID: <20031027122125.F27234@lx.quiotix.com>
+
+> Interesting. I've always felt that >50 threads is death to the VM.
+
+In sizing thread pools, you basically have to avoid the extremes of
+"too many threads" (in which case waiting threads simply consume more
+resources that could be more effectively used) and "too few threads"
+(resulting in idle processors.)  However, the sweet spot in between,
+where there are enough threads to keep the processors fed and excess
+threads wait more or less patiently for an available processor without
+impacting throughput, is fairly large.
+
+For the situation you describe, where tasks might either be totally IO
+bound or CPU bound, you're trying to apply a one-size-fits-all pool
+sizing policy to a bimodal distribution.  No approach is going to
+yield maximal throughput without contention, and a dynamic sizing
+approach in that case will probably be unstable anyway.
+
+From tim@peierls.net  Mon Oct 27 20:36:42 2003
+From: tim@peierls.net (Tim Peierls)
+Date: Mon, 27 Oct 2003 15:36:42 -0500
+Subject: [concurrency-interest] ThreadContext proposal
+References: <001b01c39c38$e7f34f90$0100a8c0@maja>
+Message-ID: <3F9D81DA.40BC9A7F@peierls.net>
+
+Dawid Kurzyniec wrote:
+> Conclusion: PFT should only contain a one-arg constructor which uses
+> current ccl and acc; associated methods should be removed from
+> Executors.
+
+Easy enough to do. No one spoke up for them, so consider them gone.
+
+
+> The cornerstone of my proposal to tackle the issue is the "ThreadContext" 
+> class. That class is designed to contain a *snapshot* of a thread state, 
+> consisting of the context class loader, priority, and thread locals. 
+>
+>   public class ThreadContext {
+>       public static ThreadContext getContext(boolean child) { ... }
+>       public void perform(final Runnable task) { ... }
+>   }
+
+The implementation of perform(Runnable) copies ThreadLocalMaps, whose 
+size is unpredictable, so this is not necessarily a lightweight call. 
+Apart from the handling of thread locals, this approach is similar to 
+using "new PFT(callable)".
+
+
+> The solution of thread context propagation presented by Tim Peierls has
+> security problems, 
+
+Maybe, but not from passing null acc to the constructor. It is private
+final and is checked in PFT.run(). 
+
+At any rate, those constructors and methods are gone. 
+
+
+> does not address a potential non-determinism trap,
+
+Any attempt to set ACC automatically and deterministically via the 
+default thread factory is going to result in overhead that many users 
+could find unacceptable. People might object to having their worker 
+threads always running inside privileged blocks.
+
+We can't prevent users from writing code that fails because of ACC or CCL 
+issues, any more than we can prevent them from writing code that deadlocks, 
+but we can document those issues and give them tools to address them in the 
+Executor framework.
+
+
+> requires users to explicitly deal with acc and ccl rather than keeping
+> with Java design principles to handle them behind the scenes, 
+
+"Requires" is a little strong. "Allows" is more like it. But, again,
+the offending constructors and methods are history.
+
+
+> and does not propagate thread locals. 
+
+True. I don't understand the details, but apparently the temporary
+adoption of another thread's ThreadLocals raises thorny issues.
+Josh Bloch's brief summary was that "it causes more problems than it
+solves."
+
+
+> I suggest a lightweight modification which addresses all of the above 
+> issues without exposing sensitive functionality outside system classes.
+
+While it does address the non-determinism of ACC without asking users to know 
+about PFT, it doesn't solve the problem that the ACC of the thread that 
+constructs the TPE (and the default thread factory) is not necessarily the
+right one for the task. In that case, the user still has to know something 
+new, one of the following: 1) that the TPE should be constructed by the 
+application thread, 2) that the thread factory should be constructed by the 
+application thread and set on the TPE, or 3) to use a PFT-like class.
+
+--tim
+
+
+From dl@cs.oswego.edu  Tue Oct 28 15:22:54 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: 28 Oct 2003 10:22:54 -0500
+Subject: [concurrency-interest] ThreadContext proposal
+In-Reply-To: <3F9D81DA.40BC9A7F@peierls.net>
+References: <001b01c39c38$e7f34f90$0100a8c0@maja>
+ <3F9D81DA.40BC9A7F@peierls.net>
+Message-ID: <1067354573.4213.140.camel@localhost.localdomain>
+
+A couple of followups to Tim's post...
+
+As Dawid indirectly noticed, it is impossible to make some uses of
+PrivilegedFutureTask (PFT) convenient in some contexts without running
+against some standard security advice. We removed the convenience
+construtors for PFT, which makes them now conform, but also makes PFT
+harder to use to set up customized contexts. We'll need to further
+ducument how to get such effects yourself. (For those not following
+along, the main issue here is that PFT will be a "system" class, so may
+have more privileges than the code that calls it, so should not itself
+manipulate permissions on behalf of caller.)
+
+We admit defeat (for, I think, the fourth time) in finding an
+acceptable way to allow manipulation of InheritableThreadLocals (ITLs).
+As Tim almost said, PFT can be used to same effect as Dawid's
+ThreadContext, except for not making any promises about ITLs. Although
+PFT could be extended to do so if anyone ever comes up with a way to
+meet all demands, constraints, and implementation hurdles. (For
+example, a one-time ITL "capture" doesn't address requests to
+save/restore across tasks, which can otherwise only be done one-by-one
+inside ThreadPoolExecutor before/after methods.) And there still is a
+way to do ITL capture in custom ThreadFactories when you really need
+to. As mentioned before, you can set up a prototypical Thread in a
+ThreadFactory that is used, upon request, to create a new thread (thus
+using its ITLs), returning it using inter-thread communication. This is
+heavier than you'd like, but not so much so to rule it out. We'll have
+to add documentation and sample code somewhere about this. The main
+point though is that if you have system that relies extensively on
+ITLs, you will, at best, need to add extra support in order to use
+worker-thread designs or thread pools.
+
+-Doug
+
+
+
+From adam@bea.com  Wed Oct 29 23:15:45 2003
+From: adam@bea.com (Adam Messinger)
+Date: Wed, 29 Oct 2003 15:15:45 -0800
+Subject: [concurrency-interest] Resizing semaphores
+Message-ID: <02b501c39e72$94df7a40$2d1811ac@avila>
+
+This is a multi-part message in MIME format.
+
+------=_NextPart_000_02B2_01C39E2F.869FB190
+Content-Type: text/plain;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+We use semaphores at various places inside WebLogic server to limit the =
+number of resources being used.  One example of this is that we might =
+limit the number of database connections being used.  Our current =
+semaphores support the adjusting of limits, which I think is an example =
+of something relatively common, but which is not handled well by the =
+current Semaphore implementation in j.u.c.
+
+At runtime, our administrators would like to change this limit.  =
+Increasing the limit is easy, we just do a few extra releases on the =
+semaphore, but shrinking the limit is more difficult if all of the =
+resources are being used.  The behavior we currently provide, and which =
+our administrators seem happy with, is to allow currently acquired =
+resources to continue to be used, but to not give out any new resources =
+until the total is below the new limit.  Our semaphores allow the permit =
+count to go negative to support this case.
+
+This could easily be implemented in the existing j.u.c.Semaphore via the =
+addition of a new method, which looked something like this:
+
+public void reducePermits(long reduction) {
+  lock.lock();
+  try {
+    count -=3D reduction;
+  } finally {
+    lock.unlock();
+  }
+}
+
+As I mentioned this means that count can now go negative, something =
+which was not previously allowed.  However it appears to me that =
+everything will continue to work even so.
+
+What do folks think?  Too dangerous in the general case?  Certainly it =
+looks like we'll be able to subclass the j.u.c.Semaphore to do this so =
+it isn't critical, however I think that this is a pretty common case and =
+so perhaps it should be supported out of the box.
+
+Cheers!
+
+Adam
+
+
+------=_NextPart_000_02B2_01C39E2F.869FB190
+Content-Type: text/html;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<HTML><HEAD>
+<META http-equiv=3DContent-Type content=3D"text/html; =
+charset=3Diso-8859-1">
+<META content=3D"MSHTML 6.00.2800.1141" name=3DGENERATOR>
+<STYLE></STYLE>
+</HEAD>
+<BODY bgColor=3D#ffffff>
+<DIV><FONT face=3DArial size=3D2>We use semaphores at various places =
+inside WebLogic=20
+server to limit the number of resources being used.&nbsp; One example of =
+this is=20
+that we might limit the number of database connections being used.&nbsp; =
+Our=20
+current semaphores support the adjusting of limits, </FONT><FONT =
+face=3DArial=20
+size=3D2>which I think is an example of something relatively common, but =
+which is=20
+not handled well by the current Semaphore implementation in =
+j.u.c.</FONT></DIV>
+<DIV>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>At runtime, our administrators would =
+like to change=20
+this limit.&nbsp; Increasing the limit is easy, we just do a few extra =
+releases=20
+on the semaphore, but shrinking the limit is more difficult if all of =
+the=20
+resources are being used.&nbsp; The behavior we currently provide, and =
+which our=20
+administrators seem happy with, is to allow currently acquired resources =
+to=20
+continue to be used, but to not give out any new resources until the =
+total is=20
+below the new limit.&nbsp; Our semaphores allow the permit count to go =
+negative=20
+to support this case.</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>This could easily be implemented in the =
+existing=20
+j.u.c.Semaphore via the addition of a new method, which looked something =
+like=20
+this:</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>public void reducePermits(long =
+reduction)=20
+{</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp; lock.lock();</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp; try {</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp;&nbsp;&nbsp; count -=3D =
+reduction;</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp; } finally {</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp;&nbsp;&nbsp; =
+lock.unlock();</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>&nbsp; }</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2>}</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>As I mentioned&nbsp;this means that =
+count can now=20
+go negative, something which was not previously allowed.&nbsp; However =
+it=20
+appears to me that everything will continue to work even =
+so.</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>What do folks think?&nbsp; Too =
+dangerous in the=20
+general case?&nbsp; Certainly it looks like we'll be able to subclass =
+the=20
+j.u.c.Semaphore to do this so it isn't critical, however I think that =
+this is a=20
+pretty common case and so perhaps it should be supported out of the=20
+box.</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2>Cheers!<BR><BR>Adam</FONT></DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT face=3DArial size=3D2></FONT>&nbsp;</DIV></BODY></HTML>
+
+------=_NextPart_000_02B2_01C39E2F.869FB190--
+
+
+From dl@cs.oswego.edu  Thu Oct 30 02:34:58 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: 29 Oct 2003 21:34:58 -0500
+Subject: [concurrency-interest] Resizing semaphores
+In-Reply-To: <02b501c39e72$94df7a40$2d1811ac@avila>
+References: <02b501c39e72$94df7a40$2d1811ac@avila>
+Message-ID: <1067481298.2637.11.camel@localhost.localdomain>
+
+>  
+> This could easily be implemented in the existing j.u.c.Semaphore via
+> the addition of a new method, which looked something like this:
+>  
+> public void reducePermits(long reduction) 
+>  
+> As I mentioned this means that count can now go negative, something
+> which was not previously allowed.  However it appears to me that
+> everything will continue to work even so.
+
+Yes, everything works OK when permits are negative (you can set negative
+number in constructor, which is occasionally useful).
+
+>  
+> What do folks think?  Too dangerous in the general case?  
+
+
+Yes, but there is a good compromise available. We could make this (or
+something with equivalent effect) a protected method that you would
+need to subclass in order to expose. Good enough?
+
+-Doug
+
+
+
+From adam@bea.com  Fri Oct 31 19:03:36 2003
+From: adam@bea.com (Adam Messinger)
+Date: Fri, 31 Oct 2003 11:03:36 -0800
+Subject: [concurrency-interest] Resizing semaphores
+References: <02b501c39e72$94df7a40$2d1811ac@avila> <1067481298.2637.11.camel@localhost.localdomain>
+Message-ID: <088b01c39fe1$b078f180$2d1811ac@avila>
+
+> Yes, but there is a good compromise available. We could make this (or
+> something with equivalent effect) a protected method that you would
+> need to subclass in order to expose. Good enough?
+
+That would work well for me.
+
+Thanks,
+
+Adam
+

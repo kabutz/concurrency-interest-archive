@@ -1,0 +1,2026 @@
+From jdmarshall at gmail.com  Fri Feb  1 19:46:39 2008
+From: jdmarshall at gmail.com (jason marshall)
+Date: Fri, 1 Feb 2008 16:46:39 -0800
+Subject: [concurrency-interest] jsr166y.forkjoin API comments
+In-Reply-To: <479B1021.2070300@optrak.co.uk>
+References: <200801242223.m0OMN5oP012652@cs.oswego.edu>
+	<47992C6F.6010606@cs.oswego.edu> <4799BBD7.5080709@kav.dk>
+	<4799FA9C.1040906@visionnaire.com.br>
+	<3cf41bb90801250917ga7b3e01wfe609f93771e3262@mail.gmail.com>
+	<479A224D.1050805@cs.oswego.edu>
+	<3cf41bb90801251704o5a9ba50bi870af651229f6463@mail.gmail.com>
+	<479A8B1C.5070900@cs.oswego.edu>
+	<3cf41bb90801251753h31e37199xf8452b9d83dd5525@mail.gmail.com>
+	<479B1021.2070300@optrak.co.uk>
+Message-ID: <3cf41bb90802011646j38c1b088je3bedae00c5b2787@mail.gmail.com>
+
+I thought there was a relaxation in one of the more recent JDKs that allowed
+you to say, "just use the hardware FP for this operation".
+
+Extremetech's podcast this week talks with someone from the NVidia Cuda
+group.  I think this stuff is probably closer than I anticipated.  They can
+do single precision now, and double precision is a priority for them.  If
+you're going to bend the ParallelArray API enough to compete with other
+languages on numerical processing, it has to be 'bent' far enough to support
+this sort of hardware acceleration, otherwise JNI is the correct choice, not
+ParallelArray.  If you can't support hardware accelleration, then the
+implementation should merely be clear and concise, because getting a 4-fold
+or 10-fold improvement in throughput will mean nothing if JNI offers a
+100-fold improvement.
+
+
+In an my JVM utopia, the JVM would be able to detect that far too much
+auto-boxing or auto-unboxing is going on in a particular call graph, and it
+would generate specializations of all of the methods that are reversed from
+whatever the person implemented (switch to Integer from int, or vice
+versa).  The tricky bit would be that the new methods would have to be added
+without colliding with the namespace that already exists.  I suspect that
+could be quite a pain for debuggers, profilers, and stack traces.
+
+Besides computational overhead, the only thing that separates Integer from
+int or Float from float is:
+
+1) Nullability (this one is tough, since Java can't easily determine that a
+reference can never be null)
+2) Identity
+3) convenience methods
+
+If you could tell that all 3 don't happen (and on numerical code, none of
+those had better be happening), and that the computation would benefit from
+being transformed into using primitives, then ParallelArray wouldn't need
+specialization at the API level, because the VM could make the same
+optimizations.
+
+-Jason
+
+On Jan 26, 2008 2:49 AM, Mark Thornton <mthornton at optrak.co.uk> wrote:
+
+> jason marshall wrote:
+> >
+> > For floats, the prevailing winds suggest you're going to use GPGPU for
+> > SIMD.  IEEE incompatibilities notwithstanding.
+> The IEEE incompatibilities may make that a non starter for Java.
+> Currently Java can't even use instructions like the fused Multiply
+> Accumulate present on some processors. JSR-84 was withdrawn.
+>
+> Mark Thornton
+>
+>
+
+
+-- 
+- Jason
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20080201/aadd3e0d/attachment.html 
+
+From hanson.char at gmail.com  Sun Feb  3 01:26:46 2008
+From: hanson.char at gmail.com (Hanson Char)
+Date: Sat, 2 Feb 2008 22:26:46 -0800
+Subject: [concurrency-interest] ParallelArray.binarySearch
+Message-ID: <ca53c8f80802022226t632f9061rd74665e3277f9f04@mail.gmail.com>
+
+Curious,
+
+1) Why the implementation of the 2
+AbstractParallelAnyArray.binarySearch methods don't just simply invoke
+the corresponding static methods in Arrays.binarySearch, which
+essentially executes the same code, except with a seemingly
+inconsistent behavior of returning different value when the target
+element is not found ?
+
+AbstractParallelAnyArray.binarySearch returns -1 if the target element
+is not present, whereas Arrays.binarySearch returns (-(insertion
+point) - 1).
+
+In other words, why not:
+
+          // Inside AbstractParallelAnyArray
+          public int binarySearch(T target) {
+            return Arrays.binarySearch(array, origin, fence-1, target);
+          }
+
+        public int binarySearch(T target, Comparator<? super T> comparator) {
+            return Arrays.binarySearch(array, origin, fence-1, comparator);
+        }
+
+2) Why the 2 binarySearch methods need to be redefined in
+ParallelArray, when they are already defined in the base class
+AbstractParallelAnyArray, and all ParrallelArray does is simply invoke
+the super.binarySearch ?
+
+Regards,
+Hanson
+
+From dl at cs.oswego.edu  Sun Feb  3 09:03:50 2008
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 03 Feb 2008 09:03:50 -0500
+Subject: [concurrency-interest] jsr166y.forkjoin API comments
+In-Reply-To: <3cf41bb90802011646j38c1b088je3bedae00c5b2787@mail.gmail.com>
+References: <200801242223.m0OMN5oP012652@cs.oswego.edu>	<47992C6F.6010606@cs.oswego.edu>
+	<4799BBD7.5080709@kav.dk>	<4799FA9C.1040906@visionnaire.com.br>	<3cf41bb90801250917ga7b3e01wfe609f93771e3262@mail.gmail.com>	<479A224D.1050805@cs.oswego.edu>	<3cf41bb90801251704o5a9ba50bi870af651229f6463@mail.gmail.com>	<479A8B1C.5070900@cs.oswego.edu>	<3cf41bb90801251753h31e37199xf8452b9d83dd5525@mail.gmail.com>	<479B1021.2070300@optrak.co.uk>
+	<3cf41bb90802011646j38c1b088je3bedae00c5b2787@mail.gmail.com>
+Message-ID: <47A5C9C6.9050704@cs.oswego.edu>
+
+jason marshall wrote:
+> 
+> Extremetech's podcast this week talks with someone from the NVidia Cuda 
+> group.  I think this stuff is probably closer than I anticipated.  They 
+> can do single precision now, and double precision is a priority for 
+> them.  If you're going to bend the ParallelArray API enough to compete 
+> with other languages on numerical processing, it has to be 'bent' far 
+> enough to support this sort of hardware acceleration, otherwise JNI is 
+> the correct choice, not ParallelArray. 
+
+Consider what the API would look like for any such JNI facility.
+It would almost surely provide a set of structured traversals,
+but a more restricted set than Parallel*Array. This still implies
+to me that it is preferable to capture this via Parallel*Array,
+with the idea of internally using SIMD/GPUs as support becomes
+available.
+
+> 
+> In an my JVM utopia, the JVM would be able to detect that far too much 
+> auto-boxing or auto-unboxing is going on in a particular call graph
+
+
+You only need such utopian visions to handle cases where
+programmers express computations using scalar primitives,
+which compilers (like javac) then translate into boxed
+mechanics, and then dare the JVM to rediscover the underlying
+scalar primitive computation, which even at best it cannot
+always do.
+
+Without explicit specializations (like ParallelLongArray),
+the current situation in java is not quite that extreme but
+can get pretty close to it. In a language with better integration
+of objects and value types, you wouldn't get yourself into this
+situation to begin with. It is not easy though. Very few languages
+get this right. As mentioned in a previous posting, the only
+reasonable way to cope is to both help instigate others to
+pursue language improvements, while at the same time making
+the best API you can for the language you have.
+
+For Parallel*Array, the most important performance issues
+surround arrays of boxed vs unboxed primitives, not just
+single scalar variables.  Auto-morphing a Long[] to a long[]
+is not something I expect to happen anytime soon. Although
+I do still encourage you to try working on solutions for
+this or related problems that would enable you to program
+in a way you like better.
+
+-Doug
+
+
+From dl at cs.oswego.edu  Sun Feb  3 09:13:04 2008
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 03 Feb 2008 09:13:04 -0500
+Subject: [concurrency-interest] ParallelArray.binarySearch
+In-Reply-To: <ca53c8f80802022226t632f9061rd74665e3277f9f04@mail.gmail.com>
+References: <ca53c8f80802022226t632f9061rd74665e3277f9f04@mail.gmail.com>
+Message-ID: <47A5CBF0.5060708@cs.oswego.edu>
+
+Hanson Char wrote:
+> Curious,
+> 
+> 1) Why the implementation of the 2
+> AbstractParallelAnyArray.binarySearch methods don't just simply invoke
+> the corresponding static methods in Arrays.binarySearch, 
+
+This is a transient fact. In some incarnations, the internal
+representation hasn't been amenable to this, so it is easier
+for now to keep local version until internals start freezing
+(which probably won't be for a while).
+
+> 2) Why the 2 binarySearch methods need to be redefined in
+> ParallelArray, when they are already defined in the base class
+> AbstractParallelAnyArray, and all ParrallelArray does is simply invoke
+> the super.binarySearch ?
+> 
+
+This meshes better with common java.util JDK conventions,
+which is in turn a minor usability issue. For the top-level
+ParallelArray class, you'd like the javadoc to include full
+descriptions of all available methods without people needing
+to know/care that some of them are inherited from some of the
+boring With* classes (which are very likely to change anyway).
+
+To add such javadoc, you need to attach it to a method, so
+here, it is just attached to a call-super method.
+
+-Doug
+
+
+
+From hanson.char at gmail.com  Sun Feb  3 13:17:28 2008
+From: hanson.char at gmail.com (Hanson Char)
+Date: Sun, 3 Feb 2008 10:17:28 -0800
+Subject: [concurrency-interest] ParallelArray.binarySearch
+In-Reply-To: <47A5CBF0.5060708@cs.oswego.edu>
+References: <ca53c8f80802022226t632f9061rd74665e3277f9f04@mail.gmail.com>
+	<47A5CBF0.5060708@cs.oswego.edu>
+Message-ID: <ca53c8f80802031017t7a11c2d9naa96098fc8a49dbf@mail.gmail.com>
+
+> This is a transient fact.
+
+How about the return value being different/inconsistent with that of
+Arrays.binarySearch ?  Is that also transient ?
+
+> For the top-level ParallelArray class, you'd like the javadoc to include full
+> descriptions of all available methods without people needing
+> to know/care that some of them are inherited from some of the
+
+I see.  AFAIK, the javadoc generated for the subclass would
+automatically/directly show the full text inherited from the base
+class, if the javadoc is physically defined at the base class and is
+left empty at the respective overriding method of the subclass.  One
+advantage is that all overriding subclasses would get the default (yet
+direct) javadoc free.
+
+Another trivia - about 2 years ago, I proposed a JAXB fluent api using
+the "with*" convention for method chaining:
+
+  https://jaxb2-commons.dev.java.net/fluent-api
+
+Now that I see such convention being extensively used in
+ParrallelArray, I can't help thinking there is a causal relationship
+:)
+
+Regards,
+Hanson
+
+
+On Feb 3, 2008 6:13 AM, Doug Lea <dl at cs.oswego.edu> wrote:
+> Hanson Char wrote:
+> > Curious,
+> >
+> > 1) Why the implementation of the 2
+> > AbstractParallelAnyArray.binarySearch methods don't just simply invoke
+> > the corresponding static methods in Arrays.binarySearch,
+>
+> This is a transient fact. In some incarnations, the internal
+> representation hasn't been amenable to this, so it is easier
+> for now to keep local version until internals start freezing
+> (which probably won't be for a while).
+>
+> > 2) Why the 2 binarySearch methods need to be redefined in
+> > ParallelArray, when they are already defined in the base class
+> > AbstractParallelAnyArray, and all ParrallelArray does is simply invoke
+> > the super.binarySearch ?
+> >
+>
+> This meshes better with common java.util JDK conventions,
+> which is in turn a minor usability issue. For the top-level
+> ParallelArray class, you'd like the javadoc to include full
+> descriptions of all available methods without people needing
+> to know/care that some of them are inherited from some of the
+> boring With* classes (which are very likely to change anyway).
+>
+> To add such javadoc, you need to attach it to a method, so
+> here, it is just attached to a call-super method.
+>
+> -Doug
+
+From hanson.char at gmail.com  Mon Feb  4 01:01:08 2008
+From: hanson.char at gmail.com (Hanson Char)
+Date: Sun, 3 Feb 2008 22:01:08 -0800
+Subject: [concurrency-interest] Matrix multiply with parallelized inner
+	product
+Message-ID: <ca53c8f80802032201v4f47155bo2790968e5a6d2643@mail.gmail.com>
+
+Hi Tim,
+
+In the wiki example "Matrix multiply with parallelized inner product"
+
+  http://artisans-serverintellect-com.si-eioswww6.com/default.asp?W42
+
+"It is much, much slower than the version that just parallelizes the
+outer loop."
+
+Did you know this as a fact prior to benchmarking ?  Does this mean
+too much parallelism via PA would result in slower performance ?  If
+so, any guideline/recipe as to what extent should one go about using
+PA without causing such slowdown (besides trial-and-error) ?
+
+Regards,
+Hanson
+
+From dl at cs.oswego.edu  Mon Feb  4 07:30:20 2008
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 04 Feb 2008 07:30:20 -0500
+Subject: [concurrency-interest] ParallelArray.binarySearch
+In-Reply-To: <ca53c8f80802031017t7a11c2d9naa96098fc8a49dbf@mail.gmail.com>
+References: <ca53c8f80802022226t632f9061rd74665e3277f9f04@mail.gmail.com>	
+	<47A5CBF0.5060708@cs.oswego.edu>
+	<ca53c8f80802031017t7a11c2d9naa96098fc8a49dbf@mail.gmail.com>
+Message-ID: <47A7055C.7020905@cs.oswego.edu>
+
+Hanson Char wrote:
+>> This is a transient fact.
+> 
+> How about the return value being different/inconsistent with that of
+> Arrays.binarySearch ?  
+> 
+
+Thanks! I'll change them to match.
+
+> 
+> Another trivia - about 2 years ago, I proposed a JAXB fluent api using
+> the "with*" convention for method chaining:
+> 
+>   https://jaxb2-commons.dev.java.net/fluent-api
+> 
+> Now that I see such convention being extensively used in
+> ParrallelArray, I can't help thinking there is a causal relationship
+> :)
+> 
+
+The idea of using fluent style here is from Tim Peierls;
+He'll have to answer about what led to the suggestion.
+
+-Doug
+
+
+From tim at peierls.net  Mon Feb  4 08:11:01 2008
+From: tim at peierls.net (Tim Peierls)
+Date: Mon, 4 Feb 2008 08:11:01 -0500
+Subject: [concurrency-interest] ParallelArray.binarySearch
+In-Reply-To: <47A7055C.7020905@cs.oswego.edu>
+References: <ca53c8f80802022226t632f9061rd74665e3277f9f04@mail.gmail.com>
+	<47A5CBF0.5060708@cs.oswego.edu>
+	<ca53c8f80802031017t7a11c2d9naa96098fc8a49dbf@mail.gmail.com>
+	<47A7055C.7020905@cs.oswego.edu>
+Message-ID: <63b4e4050802040511w5f2c4a67w757578dbd78465d9@mail.gmail.com>
+
+On Feb 4, 2008 7:30 AM, Doug Lea <dl at cs.oswego.edu> wrote:
+
+> The idea of using fluent style here is from Tim Peierls;
+> He'll have to answer about what led to the suggestion.
+>
+
+Combination of the Fowler article, the Guice API, and a few other things
+that I can't remember. I don't think JAXB was in there, since I don't use
+it, but I won't swear it wasn't. :-)
+
+--tim
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20080204/99f8a59e/attachment.html 
+
+From tim at peierls.net  Mon Feb  4 08:56:10 2008
+From: tim at peierls.net (Tim Peierls)
+Date: Mon, 4 Feb 2008 08:56:10 -0500
+Subject: [concurrency-interest] Matrix multiply with parallelized inner
+	product
+In-Reply-To: <ca53c8f80802032201v4f47155bo2790968e5a6d2643@mail.gmail.com>
+References: <ca53c8f80802032201v4f47155bo2790968e5a6d2643@mail.gmail.com>
+Message-ID: <63b4e4050802040556u27e1cdefo6af459ab437ba307@mail.gmail.com>
+
+On Feb 4, 2008 1:01 AM, Hanson Char <hanson.char at gmail.com> wrote:
+
+> In the wiki example "Matrix multiply with parallelized inner product"
+>
+>  http://artisans-serverintellect-com.si-eioswww6.com/default.asp?W42
+>
+> "It is much, much slower than the version that just parallelizes the outer
+> loop."
+>
+> Did you know this as a fact prior to benchmarking ?
+
+
+No, but I didn't expect my already fully-utilized 2 logical processors (1
+physical) to be able to take much advantage of the additional granularity.
+:-)
+
+
+
+> Does this mean too much parallelism via PA would result in slower
+> performance ?
+
+
+A nested PA call when all the processors are busy with mostly independent
+work just adds overhead.
+
+
+
+> If so, any guideline/recipe as to what extent should one go about using
+> PA without causing such slowdown (besides trial-and-error) ?
+
+
+I'd think twice about nesting PA calls unless the outer call leaves you with
+many processors idle. See my last comment on that page:
+
+"The only way I could see this approach being practical is when the number
+of processors greatly exceeds the number of columns in the result."
+
+I'd use RecursiveTask/Action instead if tempted to use nested PA calls.
+
+--tim
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20080204/38b9ec45/attachment.html 
+
+From hanson.char at gmail.com  Mon Feb  4 12:25:12 2008
+From: hanson.char at gmail.com (Hanson Char)
+Date: Mon, 4 Feb 2008 09:25:12 -0800
+Subject: [concurrency-interest] Matrix multiply with parallelized inner
+	product
+In-Reply-To: <63b4e4050802040556u27e1cdefo6af459ab437ba307@mail.gmail.com>
+References: <ca53c8f80802032201v4f47155bo2790968e5a6d2643@mail.gmail.com>
+	<63b4e4050802040556u27e1cdefo6af459ab437ba307@mail.gmail.com>
+Message-ID: <ca53c8f80802040925t626da6aev2bbecbeff12eb2f@mail.gmail.com>
+
+> "The only way I could see this approach being practical is when the number
+> of processors greatly exceeds the number of columns in the result."
+>
+> I'd use RecursiveTask/Action instead if tempted to use nested PA calls.
+
+If the number of processors greatly exceeds the number of columns,
+would using nested PA calls be significantly faster than using
+RecursiveTask/Action (in this case of matrix multiplication) ?
+
+It would be nice to have further code snippet on the wiki to
+illustrate the combination of the (non-nested) PA with
+RecursiveTask/Action for the inner product, if doing so would lead to
+a solution that can perform reasonably well regardless of the number
+of processors.  Or maybe the "forkJoinMatrixMultiply" method is
+already in general optimal ?
+
+Hanson
+
+From joe.bowbeer at gmail.com  Mon Feb  4 13:16:06 2008
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Mon, 4 Feb 2008 10:16:06 -0800
+Subject: [concurrency-interest] Matrix multiply with parallelized inner
+	product
+In-Reply-To: <ca53c8f80802040925t626da6aev2bbecbeff12eb2f@mail.gmail.com>
+References: <ca53c8f80802032201v4f47155bo2790968e5a6d2643@mail.gmail.com>
+	<63b4e4050802040556u27e1cdefo6af459ab437ba307@mail.gmail.com>
+	<ca53c8f80802040925t626da6aev2bbecbeff12eb2f@mail.gmail.com>
+Message-ID: <31f2a7bd0802041016y3d1ba129g205d8fb344aee767@mail.gmail.com>
+
+On Feb 4, 2008 9:25 AM, Hanson Char wrote:
+> > "The only way I could see this approach being practical is when the number
+> > of processors greatly exceeds the number of columns in the result."
+> >
+> > I'd use RecursiveTask/Action instead if tempted to use nested PA calls.
+>
+> If the number of processors greatly exceeds the number of columns,
+> would using nested PA calls be significantly faster than using
+> RecursiveTask/Action (in this case of matrix multiplication) ?
+>
+> It would be nice to have further code snippet on the wiki to
+> illustrate the combination of the (non-nested) PA with
+> RecursiveTask/Action for the inner product, if doing so would lead to
+> a solution that can perform reasonably well regardless of the number
+> of processors.  Or maybe the "forkJoinMatrixMultiply" method is
+> already in general optimal ?
+>
+
+I suspect that nesting PAs would defeat its heuristics for
+partitioning the computation.
+
+Don't the chunking mechanisms in PA currently assume there is no
+nesting?  To make nesting efficient, I think you'd need to design it
+in at the top-level - but of course I say that about everything...
+
+--Joe
+
+From David.Biesack at sas.com  Mon Feb  4 15:27:48 2008
+From: David.Biesack at sas.com (David J. Biesack)
+Date: Mon, 4 Feb 2008 15:27:48 -0500 (EST)
+Subject: [concurrency-interest] jsr166y.forkjoin API comments
+Message-ID: <200802042027.m14KRmLH006838@cs.oswego.edu>
+
+
+> Doug wrote:
+> > I wrote:
+> > Rename CommonOps.compoundOp as CommonOps.compositeOp as per the well-known
+> > Composite design pattern.
+
+> Thanks; Sorry not to mention that it still in the set of likely changes.
+
+On further thought, I think there is a better alternative: CommonOps.compose(a, b)
+
+Also, andPredicate/orPredicate/notPredicate => and/or/not
+
+-- 
+David J. Biesack     SAS Institute Inc.
+(919) 531-7771       SAS Campus Drive
+http://www.sas.com   Cary, NC 27513
+
+
+From David.Biesack at sas.com  Mon Feb  4 16:10:09 2008
+From: David.Biesack at sas.com (David J. Biesack)
+Date: Mon, 4 Feb 2008 16:10:09 -0500 (EST)
+Subject: [concurrency-interest] jsr166y.forkjoin API comments
+Message-ID: <200802042110.m14LA9pt008271@cs.oswego.edu>
+
+
+In writing the matrix multiply implementation example ( http://artisans-serverintellect-com.si-eioswww6.com/default.asp?W40 ), the main matmul methods validate the input parameters:
+
+void forkJoinMatrixMultiply(
+  final double[][] a,
+  final double[][] b,
+  final double[][] c) {
+  check(a,b,c);
+  ...
+
+where check is defined to do
+
+    check(a);
+    check(b);
+    check(c);
+    ...
+
+There is no reason these three inner calls cannot occur concurrently.
+
+I'd really like the equivalent of Fortress' do ... also do ... blocks:
+
+    do
+       doSomething();
+    also do
+       doSomethingElse();
+    also do
+       andNowForSomethingComplelelyDifferent();
+    end;
+
+but realize that may be beyond the scope of an API. Not much harm in asking, though: Has any thought been given to facilitating concurrent block execution more directly (and less verbosely) using FJ Procedures?
+
+It's easy to wrap the above in Ops.Procedures and use a ParallelArray (or as Runnables for ExecutorService), but there's a lot of boilerplate and the actual application code gets lost pretty easily.
+
+-- 
+David J. Biesack     SAS Institute Inc.
+(919) 531-7771       SAS Campus Drive
+http://www.sas.com   Cary, NC 27513
+
+
+From neal at gafter.com  Mon Feb  4 16:58:55 2008
+From: neal at gafter.com (Neal Gafter)
+Date: Mon, 4 Feb 2008 13:58:55 -0800
+Subject: [concurrency-interest] jsr166y.forkjoin API comments
+In-Reply-To: <200802042110.m14LA9pt008271@cs.oswego.edu>
+References: <200802042110.m14LA9pt008271@cs.oswego.edu>
+Message-ID: <15e8b9d20802041358m70ae1282uf415e2dc491dc1a7@mail.gmail.com>
+
+One of the APIs I expect to distribute with the closures prototype provides
+a way of doing this:
+
+doConcurrently(
+  {=> doSomething(); },
+  {=> doSomethingElse(); },
+  {=> andNowForSomethingComplelelyDifferent(); }
+);
+
+Regards,
+Neal
+
+On Feb 4, 2008 1:10 PM, David J. Biesack <David.Biesack at sas.com> wrote:
+
+>
+> In writing the matrix multiply implementation example (
+> http://artisans-serverintellect-com.si-eioswww6.com/default.asp?W40 ), the
+> main matmul methods validate the input parameters:
+>
+> void forkJoinMatrixMultiply(
+>  final double[][] a,
+>  final double[][] b,
+>  final double[][] c) {
+>  check(a,b,c);
+>  ...
+>
+> where check is defined to do
+>
+>    check(a);
+>    check(b);
+>    check(c);
+>    ...
+>
+> There is no reason these three inner calls cannot occur concurrently.
+>
+> I'd really like the equivalent of Fortress' do ... also do ... blocks:
+>
+>    do
+>       doSomething();
+>    also do
+>       doSomethingElse();
+>    also do
+>       andNowForSomethingComplelelyDifferent();
+>    end;
+>
+> but realize that may be beyond the scope of an API. Not much harm in
+> asking, though: Has any thought been given to facilitating concurrent block
+> execution more directly (and less verbosely) using FJ Procedures?
+>
+> It's easy to wrap the above in Ops.Procedures and use a ParallelArray (or
+> as Runnables for ExecutorService), but there's a lot of boilerplate and the
+> actual application code gets lost pretty easily.
+>
+> --
+> David J. Biesack     SAS Institute Inc.
+> (919) 531-7771       SAS Campus Drive
+> http://www.sas.com   Cary, NC 27513
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20080204/faa32fd8/attachment.html 
+
+From tim at peierls.net  Mon Feb  4 17:14:02 2008
+From: tim at peierls.net (Tim Peierls)
+Date: Mon, 4 Feb 2008 17:14:02 -0500
+Subject: [concurrency-interest] Matrix multiply with parallelized inner
+	product
+In-Reply-To: <31f2a7bd0802041016y3d1ba129g205d8fb344aee767@mail.gmail.com>
+References: <ca53c8f80802032201v4f47155bo2790968e5a6d2643@mail.gmail.com>
+	<63b4e4050802040556u27e1cdefo6af459ab437ba307@mail.gmail.com>
+	<ca53c8f80802040925t626da6aev2bbecbeff12eb2f@mail.gmail.com>
+	<31f2a7bd0802041016y3d1ba129g205d8fb344aee767@mail.gmail.com>
+Message-ID: <63b4e4050802041414w75d41e29mc9fa9c5b73d5705f@mail.gmail.com>
+
+On Feb 4, 2008 1:16 PM, Joe Bowbeer <joe.bowbeer at gmail.com> wrote:
+
+> I suspect that nesting PAs would defeat its heuristics for partitioning
+> the computation.
+
+
+PAs run on ForkJoinExecutors that might be doing other things, why not
+nested things?
+
+--tim
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20080204/39bdce4d/attachment.html 
+
+From joe.bowbeer at gmail.com  Mon Feb  4 17:43:19 2008
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Mon, 4 Feb 2008 14:43:19 -0800
+Subject: [concurrency-interest] Matrix multiply with parallelized inner
+	product
+In-Reply-To: <63b4e4050802041414w75d41e29mc9fa9c5b73d5705f@mail.gmail.com>
+References: <ca53c8f80802032201v4f47155bo2790968e5a6d2643@mail.gmail.com>
+	<63b4e4050802040556u27e1cdefo6af459ab437ba307@mail.gmail.com>
+	<ca53c8f80802040925t626da6aev2bbecbeff12eb2f@mail.gmail.com>
+	<31f2a7bd0802041016y3d1ba129g205d8fb344aee767@mail.gmail.com>
+	<63b4e4050802041414w75d41e29mc9fa9c5b73d5705f@mail.gmail.com>
+Message-ID: <31f2a7bd0802041443s62659bfat9ab77d8e7cddc2c1@mail.gmail.com>
+
+On Feb 4, 2008 2:14 PM, Tim Peierls wrote:
+> On Feb 4, 2008 1:16 PM, Joe Bowbeer wrote:
+>
+> > I suspect that nesting PAs would defeat its heuristics for partitioning
+> > the computation.
+>
+> PAs run on ForkJoinExecutors that might be doing other things, why not
+> nested things?
+>
+
+That's what I'm wondering.
+
+PAs slice the array into chunks of size
+
+  threshold = (p > 1) ? (1 + n / (p << 3)) : n;
+
+where p is roughly the number of available processors, and n is the
+size of the array.
+
+If there's only one processor available, there's only one slice,
+otherwise there are about nprocs * 8 slices (i.e., tasks).
+
+If you have a bunch of PAs using the same executor, I think the number
+of available processors is effectively reduced, and therefore the
+effectiveness of this heuristic is reduced.  It would be better to
+have each thread operate on larger chunks than to divide the work up
+into more tasks that will only have to wait for threads to become
+available.
+
+--Joe
+
+From tim at peierls.net  Mon Feb  4 19:15:14 2008
+From: tim at peierls.net (Tim Peierls)
+Date: Mon, 4 Feb 2008 19:15:14 -0500
+Subject: [concurrency-interest] Matrix multiply with parallelized inner
+	product
+In-Reply-To: <31f2a7bd0802041443s62659bfat9ab77d8e7cddc2c1@mail.gmail.com>
+References: <ca53c8f80802032201v4f47155bo2790968e5a6d2643@mail.gmail.com>
+	<63b4e4050802040556u27e1cdefo6af459ab437ba307@mail.gmail.com>
+	<ca53c8f80802040925t626da6aev2bbecbeff12eb2f@mail.gmail.com>
+	<31f2a7bd0802041016y3d1ba129g205d8fb344aee767@mail.gmail.com>
+	<63b4e4050802041414w75d41e29mc9fa9c5b73d5705f@mail.gmail.com>
+	<31f2a7bd0802041443s62659bfat9ab77d8e7cddc2c1@mail.gmail.com>
+Message-ID: <63b4e4050802041615l5b03742ey476530f827fc280@mail.gmail.com>
+
+On Feb 4, 2008 5:43 PM, Joe Bowbeer <joe.bowbeer at gmail.com> wrote:
+
+> If you have a bunch of PAs using the same executor, I think the number
+> of available processors is effectively reduced, and therefore the
+> effectiveness of this heuristic is reduced.  It would be better to
+> have each thread operate on larger chunks than to divide the work up
+> into more tasks that will only have to wait for threads to become
+> available.
+>
+
+How about, "Avoid nesting PA calls unless the number of processors available
+dominates the parallelism opportunities in the outer level" ?
+
+--tim
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20080204/f47a1f82/attachment.html 
+
+From joe.bowbeer at gmail.com  Mon Feb  4 19:27:36 2008
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Mon, 4 Feb 2008 16:27:36 -0800
+Subject: [concurrency-interest] Matrix multiply with parallelized inner
+	product
+In-Reply-To: <63b4e4050802041615l5b03742ey476530f827fc280@mail.gmail.com>
+References: <ca53c8f80802032201v4f47155bo2790968e5a6d2643@mail.gmail.com>
+	<63b4e4050802040556u27e1cdefo6af459ab437ba307@mail.gmail.com>
+	<ca53c8f80802040925t626da6aev2bbecbeff12eb2f@mail.gmail.com>
+	<31f2a7bd0802041016y3d1ba129g205d8fb344aee767@mail.gmail.com>
+	<63b4e4050802041414w75d41e29mc9fa9c5b73d5705f@mail.gmail.com>
+	<31f2a7bd0802041443s62659bfat9ab77d8e7cddc2c1@mail.gmail.com>
+	<63b4e4050802041615l5b03742ey476530f827fc280@mail.gmail.com>
+Message-ID: <31f2a7bd0802041627sc85363ex75c67b1a3c8f1cd0@mail.gmail.com>
+
+On Feb 4, 2008 4:15 PM, Tim Peierls wrote:
+> On Feb 4, 2008 5:43 PM, Joe Bowbeer wrote:
+>
+> > If you have a bunch of PAs using the same executor, I think the number
+> > of available processors is effectively reduced, and therefore the
+> > effectiveness of this heuristic is reduced.  It would be better to
+> > have each thread operate on larger chunks than to divide the work up
+> > into more tasks that will only have to wait for threads to become
+> > available.
+> >
+>
+> How about, "Avoid nesting PA calls unless the number of processors available
+> dominates the parallelism opportunities in the outer level" ?
+>
+
+I'm not really sure what that means.
+
+Won't the outer layer always try to load all the processors?  To be
+most efficient, I think the outer layer should try to save some
+processors for the inner layers.
+
+Doug??
+
+From dl at cs.oswego.edu  Mon Feb  4 20:07:04 2008
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 04 Feb 2008 20:07:04 -0500
+Subject: [concurrency-interest] Matrix multiply with parallelized inner
+ product
+In-Reply-To: <63b4e4050802041414w75d41e29mc9fa9c5b73d5705f@mail.gmail.com>
+References: <ca53c8f80802032201v4f47155bo2790968e5a6d2643@mail.gmail.com>	<63b4e4050802040556u27e1cdefo6af459ab437ba307@mail.gmail.com>	<ca53c8f80802040925t626da6aev2bbecbeff12eb2f@mail.gmail.com>	<31f2a7bd0802041016y3d1ba129g205d8fb344aee767@mail.gmail.com>
+	<63b4e4050802041414w75d41e29mc9fa9c5b73d5705f@mail.gmail.com>
+Message-ID: <47A7B6B8.4070609@cs.oswego.edu>
+
+Tim Peierls wrote:
+> On Feb 4, 2008 1:16 PM, Joe Bowbeer <joe.bowbeer at gmail.com 
+> <mailto:joe.bowbeer at gmail.com>> wrote:
+> 
+>     I suspect that nesting PAs would defeat its heuristics for
+>     partitioning the computation.
+> 
+> 
+> PAs run on ForkJoinExecutors that might be doing other things, why not 
+> nested things?
+> 
+
+This is usually the best attitude.
+
+As Joe noticed, the main FJ techniques used in PA split problems
+into many  more tasks than you have processors, and rely on
+the underlying mechanics to load-balance etc. (So in this sense,
+worker threads are always "doing other things".)
+And normally, this works about equally well regardless of
+nesting. (The "about" here is shorthand for a long story with
+little practical impact in most cases.)
+
+However, it is often the case that you can replace nested parallelism
+with more efficient non-nested algorithms. (Matrix multiply
+happens to be a fairly well known example of this; see the old FJTask
+version I mentioned.) To implement this here, you
+would need to move from PA-level to FJ-level programming. Which I
+think might be a natural progression for people trying to fine-tune
+performance. ParallelArray does most common things more efficiently
+than most people could do themselves using ForkJoinTasks, and does
+so without forcing them to learn how to do parallel recursive
+decomposition. For those things PA does not do, we provide the
+underlying FJ tools. (OK, so they are underdocumented tools
+at the moment,  but hopefully that will improve.)
+
+As someone who has written a lot of fork-join programs over the past
+decade, I think they are fun and natural to program.
+But even I prefer using PA for common apply-to-all constructions
+and the like rather than manually setting up little recursive
+tasks to do it.
+
+-Doug
+
+
+From dl at cs.oswego.edu  Mon Feb  4 20:39:58 2008
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 04 Feb 2008 20:39:58 -0500
+Subject: [concurrency-interest] jsr166y.forkjoin API comments
+In-Reply-To: <200802042027.m14KRmLH006838@cs.oswego.edu>
+References: <200802042027.m14KRmLH006838@cs.oswego.edu>
+Message-ID: <47A7BE6E.2090103@cs.oswego.edu>
+
+David J. Biesack wrote:
+>> Doug wrote:
+>>> I wrote:
+>>> Rename CommonOps.compoundOp as CommonOps.compositeOp as per the well-known
+>>> Composite design pattern.
+> 
+>> Thanks; Sorry not to mention that it still in the set of likely changes.
+> 
+> On further thought, I think there is a better alternative: CommonOps.compose(a, b)
+> 
+
+Yes, better; thanks!
+
+(This why I generally sit a while on suggested name changes.
+Usually when a name isn't very good, it takes a while to find best
+alternative. I still plan to delay committing the current set of
+suggestions a while longer. It's usually best to create one disruption
+like this than a series of small ones that cause current users to
+continually change their code.)
+
+-Doug
+
+
+From jdmarshall at gmail.com  Tue Feb  5 10:46:03 2008
+From: jdmarshall at gmail.com (jason marshall)
+Date: Tue, 5 Feb 2008 07:46:03 -0800
+Subject: [concurrency-interest] Matrix multiply with parallelized inner
+	product
+In-Reply-To: <47A7B6B8.4070609@cs.oswego.edu>
+References: <ca53c8f80802032201v4f47155bo2790968e5a6d2643@mail.gmail.com>
+	<63b4e4050802040556u27e1cdefo6af459ab437ba307@mail.gmail.com>
+	<ca53c8f80802040925t626da6aev2bbecbeff12eb2f@mail.gmail.com>
+	<31f2a7bd0802041016y3d1ba129g205d8fb344aee767@mail.gmail.com>
+	<63b4e4050802041414w75d41e29mc9fa9c5b73d5705f@mail.gmail.com>
+	<47A7B6B8.4070609@cs.oswego.edu>
+Message-ID: <3cf41bb90802050746y26a0b30doa4cae6ba6006d3a1@mail.gmail.com>
+
+I'm curious about the magic number of 8 ( or "p<<3")
+
+I understand that you're trying to accommodate asymmetries in the work load,
+to reduce the latency at the tail end (caused unequal units of work, unequal
+CPU loading), but my understanding of partitioning was that if multiple
+tasks are queued, then you need (or even tolerate) less decomposition to
+achieve throughput.
+
+So two things spring to mind.  One, if you're using an executor for one-off
+or infrequent loading cycles, then you might want a different magic number
+than if new work shows up constantly, and 2, recursive divide-and-conquer is
+probably never going to give someone what they expected, unless the magic
+number was chosen too conservatively.
+
+-Jason
+
+
+On Feb 4, 2008 5:07 PM, Doug Lea <dl at cs.oswego.edu> wrote:
+
+> Tim Peierls wrote:
+> > On Feb 4, 2008 1:16 PM, Joe Bowbeer <joe.bowbeer at gmail.com
+> > <mailto:joe.bowbeer at gmail.com>> wrote:
+> >
+> >     I suspect that nesting PAs would defeat its heuristics for
+> >     partitioning the computation.
+> >
+> >
+> > PAs run on ForkJoinExecutors that might be doing other things, why not
+> > nested things?
+> >
+>
+> This is usually the best attitude.
+>
+> As Joe noticed, the main FJ techniques used in PA split problems
+> into many  more tasks than you have processors, and rely on
+> the underlying mechanics to load-balance etc. (So in this sense,
+> worker threads are always "doing other things".)
+> And normally, this works about equally well regardless of
+> nesting. (The "about" here is shorthand for a long story with
+> little practical impact in most cases.)
+>
+> However, it is often the case that you can replace nested parallelism
+> with more efficient non-nested algorithms. (Matrix multiply
+> happens to be a fairly well known example of this; see the old FJTask
+> version I mentioned.) To implement this here, you
+> would need to move from PA-level to FJ-level programming. Which I
+> think might be a natural progression for people trying to fine-tune
+> performance. ParallelArray does most common things more efficiently
+> than most people could do themselves using ForkJoinTasks, and does
+> so without forcing them to learn how to do parallel recursive
+> decomposition. For those things PA does not do, we provide the
+> underlying FJ tools. (OK, so they are underdocumented tools
+> at the moment,  but hopefully that will improve.)
+>
+> As someone who has written a lot of fork-join programs over the past
+> decade, I think they are fun and natural to program.
+> But even I prefer using PA for common apply-to-all constructions
+> and the like rather than manually setting up little recursive
+> tasks to do it.
+>
+> -Doug
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+-- 
+- Jason
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20080205/482c08f2/attachment.html 
+
+From dl at cs.oswego.edu  Tue Feb  5 19:18:05 2008
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 05 Feb 2008 19:18:05 -0500
+Subject: [concurrency-interest] Matrix multiply with parallelized inner
+ product
+In-Reply-To: <3cf41bb90802050746y26a0b30doa4cae6ba6006d3a1@mail.gmail.com>
+References: <ca53c8f80802032201v4f47155bo2790968e5a6d2643@mail.gmail.com>	<63b4e4050802040556u27e1cdefo6af459ab437ba307@mail.gmail.com>	<ca53c8f80802040925t626da6aev2bbecbeff12eb2f@mail.gmail.com>	<31f2a7bd0802041016y3d1ba129g205d8fb344aee767@mail.gmail.com>	<63b4e4050802041414w75d41e29mc9fa9c5b73d5705f@mail.gmail.com>	<47A7B6B8.4070609@cs.oswego.edu>
+	<3cf41bb90802050746y26a0b30doa4cae6ba6006d3a1@mail.gmail.com>
+Message-ID: <47A8FCBD.506@cs.oswego.edu>
+
+jason marshall wrote:
+> I'm curious about the magic number of 8 ( or "p<<3")
+
+It is empirically derived. In combination with the dynamics
+pasted below (from PAS.java in our CVS), it is approximately
+the value that maximizes throughput on near-no-op operations on
+moderate-sized arrays run on common 8-through-32-way
+platforms. The value in part reflects internal task
+overhead. As this overhead decreases, this know-nothing
+estimate can generate finer granularities -- 16 is almost
+as good as 8, and might with some work replace it sometime.
+As discussed for example in sec 4.4 of my CPJ book, if you
+do know something about execution times of base tasks,
+or are just willing to engage in some trial and error, you can
+sometimes do better in choosing granularities. The operation
+arguments to apply, map, reduce etc are opaque to us inside
+Parallel*Array so we cannot do this. But fortunately,
+the sensitivity curves are usually pretty shallow, so
+with only a little dynamic adjustment, exact values don't
+usually matter a lot.
+
+> 
+> I understand that you're trying to accommodate asymmetries in the work 
+> load, to reduce the latency at the tail end (caused unequal units of 
+> work, unequal CPU loading)
+
+And more things like that. Including differences in
+cache miss rates, hence execution times even
+for "equal" units of work. The finer the granularity,
+the better you can cope, but with overly fine granularities
+you start losing to task creation, work-stealing, and GC
+overhead. See below on how we dynamically
+counterbalance when luck prevails and we can coarsen a bit.
+
+     /**
+      * Base for most divide-and-conquer tasks used for computing
+      * ParallelArray operations. Rather than pure recursion, it links
+      * right-hand-sides and then joins up the tree, exploiting cases
+      * where tasks aren't stolen.  This generates and joins tasks with
+      * a bit less overhead than pure recursive style -- there are only
+      * as many tasks as leaves (no strictly internal nodes).
+      *
+      * Split control relies on pap.getThreshold(), which is
+      * expected to err on the side of generating too many tasks. To
+      * counterbalance, if a task pops off its own smallest subtask, it
+      * directly runs its leaf action rather than possibly replitting.
+      *
+      * There are, with a few exceptions, three flavors of each FJBase
+      * subclass, prefixed FJO (object reference), FJD (double) and FJL
+      * (long).
+      */
+     static abstract class FJBase extends RecursiveAction {
+         final AbstractParallelAnyArray pap;
+         final int lo;
+         final int hi;
+         final FJBase next; // the next task that creator should join
+         FJBase(AbstractParallelAnyArray pap, int lo, int hi, FJBase next) {
+             this.pap = pap;
+             this.lo = lo;
+             this.hi = hi;
+             this.next = next;
+         }
+
+         public final void compute() {
+             int g = pap.getThreshold();
+             int l = lo;
+             int h = hi;
+             if (h - l > g)
+                 internalCompute(l, h, g);
+             else
+                 atLeaf(l, h);
+         }
+
+         final void internalCompute(int l, int h, int g) {
+             FJBase r = null;
+             do {
+                 int rh = h;
+                 h = (l + h) >>> 1;
+                 (r = newSubtask(h, rh, r)).fork();
+             } while (h - l > g);
+             atLeaf(l, h);
+             do {
+                 if (ForkJoinWorkerThread.removeIfNextLocalTask(r))
+                     r.atLeaf(r.lo, r.hi);
+                 else
+                     r.join();
+                 onReduce(r);
+                 r = r.next;
+             } while (r != null);
+         }
+
+         /** Leaf computation */
+         abstract void atLeaf(int l, int h);
+         /** Operation performed after joining right subtask -- default noop */
+         void onReduce(FJBase right) {}
+         /** Factory method to create new subtask, normally of current type */
+         abstract FJBase newSubtask(int l, int h, FJBase r);
+     }
+
+
+
+
+
+From kasper at kav.dk  Wed Feb  6 06:19:13 2008
+From: kasper at kav.dk (Kasper Nielsen)
+Date: Wed, 06 Feb 2008 12:19:13 +0100
+Subject: [concurrency-interest] jsr166y common ops
+Message-ID: <47A997B1.2070502@kav.dk>
+
+Hi,
+
+I've started on a small library with different Op implementations. So
+far its mostly various Predicate, Op, Comparator implementations.
+
+I'll be moving it somewhere permanently soon, but for now you can find
+it here:
+
+javadoc/jar/dist
+http://www.itu.dk/~kav/cake/apidocs/
+http://www.itu.dk/~kav/cake/cake-jsr166y.jar
+http://www.itu.dk/~kav/cake/cake-jsr166y.tar.gz
+
+the source can be build with Ant
+
+The naming is still a bit inconsistent, for example, I haven't yet
+changed the name of Mappers.java to something else after Ops.Mapper has
+been renamed to Ops.Op. (Let's see what Doug comes up with next time :)
+
+There is also the _very_ beginning of a ParallelDoubleMatrix. Internally 
+it is based on a single array of doubles
+(http://artisans-serverintellect-com.si-eioswww6.com/default.asp?W40
+uses a double[][]).
+
+I haven't implemented matrix multiplication yet (or
+anything fancy such as diagonalization, decomposition, etc.) If someone 
+wants to have a bit of fun the matrix multiply demo by Doug is a good 
+start 
+http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/taskDemo/MatrixMultiply.java
+
+http://theory.csail.mit.edu/classes/6.895/fall03/scribe/lecture-2.ps 
+describes how it works.
+
+Now, back to ParallelDoubleMatrix here is sample usage:
+ParallelDoubleMatrix A = ParallelDoubleMatrix.create(3, 4,
+ParallelDoubleMatrix.defaultExecutor());
+ParallelDoubleMatrix B = ParallelDoubleMatrix.create(3, 4,
+ParallelDoubleMatrix.defaultExecutor());
+
+// fill randomly
+A.replaceWithGeneratedValue(CommonOps.doubleRandom(1, 50));
+B.fill(12); // sets all elements to 12
+A.add(5); // scalar add
+B.multiply(3); // scalar multiplication
+ParallelDoubleMatrix C = A.copy().add(B); // copy A and  add (matrix) B
+System.out.println(C.toString(new DecimalFormat("00.000")));
+
+prints
+
+| 75,275 64,167 78,069 85,196 |
+| 59,765 87,388 72,701 77,251 |
+| 73,585 71,770 83,098 56,890 |
+
+Eventually, I hope to end up with a number of different standard 
+libraries utilizing the fork-join-framework that aren't likely JDK 
+components. I'm also working on a distributed ParallelMap (long way to 
+go though).
+
+Contributions and comments are more then welcome.
+
+cheers
+   Kasper
+
+
+
+
+From jdmarshall at gmail.com  Wed Feb  6 11:38:32 2008
+From: jdmarshall at gmail.com (jason marshall)
+Date: Wed, 6 Feb 2008 08:38:32 -0800
+Subject: [concurrency-interest] Matrix multiply with parallelized inner
+	product
+In-Reply-To: <47A8FCBD.506@cs.oswego.edu>
+References: <ca53c8f80802032201v4f47155bo2790968e5a6d2643@mail.gmail.com>
+	<63b4e4050802040556u27e1cdefo6af459ab437ba307@mail.gmail.com>
+	<ca53c8f80802040925t626da6aev2bbecbeff12eb2f@mail.gmail.com>
+	<31f2a7bd0802041016y3d1ba129g205d8fb344aee767@mail.gmail.com>
+	<63b4e4050802041414w75d41e29mc9fa9c5b73d5705f@mail.gmail.com>
+	<47A7B6B8.4070609@cs.oswego.edu>
+	<3cf41bb90802050746y26a0b30doa4cae6ba6006d3a1@mail.gmail.com>
+	<47A8FCBD.506@cs.oswego.edu>
+Message-ID: <3cf41bb90802060838i5380b505ie0be03759b493053@mail.gmail.com>
+
+But doesn't mean that still mean that the total number of tasks in the
+executor (or indeed, probably on the whole machine) should be 8-16X the
+available CPUs at the start of a new task, not that each task should be
+subdivided 8-16 ways?  If 4 tasks of moderately proportional cost come in at
+roughly around the same time, you want to split each into 2-4, not 8-16,
+right?
+
+A task that reschedules partitions of itself blindly will grow the queue
+size to 16-64 entries before the second pass begins.  If it continues to
+recursively divide, that could be quite a lot of overhead.  I would think
+this would only make sense if there is some cheap calculation you can do to
+detect asymmetries in the computation (for instance, a sparsely populated
+array might subdivide the densest segments until they are 'small enough').
+If there are no gross asymmetries of this sort, then recursively calling the
+Executor to split the tasks is going to reduce throughput, no matter what
+you do.
+
+There's nothing you can really do to the Executor to protect people from
+having to understand how parallelization works.
+
+-Jason
+
+
+
+
+
+
+On Feb 5, 2008 4:18 PM, Doug Lea <dl at cs.oswego.edu> wrote:
+
+> jason marshall wrote:
+> > I'm curious about the magic number of 8 ( or "p<<3")
+>
+> It is empirically derived. In combination with the dynamics
+> pasted below (from PAS.java in our CVS), it is approximately
+> the value that maximizes throughput on near-no-op operations on
+> moderate-sized arrays run on common 8-through-32-way
+> platforms. The value in part reflects internal task
+> overhead. As this overhead decreases, this know-nothing
+> estimate can generate finer granularities -- 16 is almost
+> as good as 8, and might with some work replace it sometime.
+> As discussed for example in sec 4.4 of my CPJ book, if you
+> do know something about execution times of base tasks,
+> or are just willing to engage in some trial and error, you can
+> sometimes do better in choosing granularities. The operation
+> arguments to apply, map, reduce etc are opaque to us inside
+> Parallel*Array so we cannot do this. But fortunately,
+> the sensitivity curves are usually pretty shallow, so
+> with only a little dynamic adjustment, exact values don't
+> usually matter a lot.
+>
+> >
+> > I understand that you're trying to accommodate asymmetries in the work
+> > load, to reduce the latency at the tail end (caused unequal units of
+> > work, unequal CPU loading)
+>
+> And more things like that. Including differences in
+> cache miss rates, hence execution times even
+> for "equal" units of work. The finer the granularity,
+> the better you can cope, but with overly fine granularities
+> you start losing to task creation, work-stealing, and GC
+> overhead. See below on how we dynamically
+> counterbalance when luck prevails and we can coarsen a bit.
+>
+>     /**
+>      * Base for most divide-and-conquer tasks used for computing
+>      * ParallelArray operations. Rather than pure recursion, it links
+>      * right-hand-sides and then joins up the tree, exploiting cases
+>      * where tasks aren't stolen.  This generates and joins tasks with
+>      * a bit less overhead than pure recursive style -- there are only
+>      * as many tasks as leaves (no strictly internal nodes).
+>      *
+>      * Split control relies on pap.getThreshold(), which is
+>      * expected to err on the side of generating too many tasks. To
+>      * counterbalance, if a task pops off its own smallest subtask, it
+>      * directly runs its leaf action rather than possibly replitting.
+>      *
+>      * There are, with a few exceptions, three flavors of each FJBase
+>      * subclass, prefixed FJO (object reference), FJD (double) and FJL
+>      * (long).
+>      */
+>     static abstract class FJBase extends RecursiveAction {
+>         final AbstractParallelAnyArray pap;
+>         final int lo;
+>         final int hi;
+>         final FJBase next; // the next task that creator should join
+>         FJBase(AbstractParallelAnyArray pap, int lo, int hi, FJBase next)
+> {
+>             this.pap = pap;
+>             this.lo = lo;
+>             this.hi = hi;
+>             this.next = next;
+>         }
+>
+>         public final void compute() {
+>             int g = pap.getThreshold();
+>             int l = lo;
+>             int h = hi;
+>             if (h - l > g)
+>                 internalCompute(l, h, g);
+>             else
+>                 atLeaf(l, h);
+>         }
+>
+>         final void internalCompute(int l, int h, int g) {
+>             FJBase r = null;
+>             do {
+>                 int rh = h;
+>                 h = (l + h) >>> 1;
+>                 (r = newSubtask(h, rh, r)).fork();
+>             } while (h - l > g);
+>             atLeaf(l, h);
+>             do {
+>                 if (ForkJoinWorkerThread.removeIfNextLocalTask(r))
+>                     r.atLeaf(r.lo, r.hi);
+>                 else
+>                     r.join();
+>                 onReduce(r);
+>                 r = r.next;
+>             } while (r != null);
+>         }
+>
+>         /** Leaf computation */
+>         abstract void atLeaf(int l, int h);
+>         /** Operation performed after joining right subtask -- default
+> noop */
+>         void onReduce(FJBase right) {}
+>         /** Factory method to create new subtask, normally of current type
+> */
+>         abstract FJBase newSubtask(int l, int h, FJBase r);
+>     }
+>
+>
+>
+>
+>
+
+
+-- 
+- Jason
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20080206/d44c25ca/attachment-0001.html 
+
+From mark at twistedbanana.demon.co.uk  Thu Feb  7 04:08:29 2008
+From: mark at twistedbanana.demon.co.uk (Mark Mahieu)
+Date: Thu, 7 Feb 2008 09:08:29 +0000
+Subject: [concurrency-interest] sr166y.forkjoin.Ops vs the world outside
+Message-ID: <035B03C6-01DB-4511-8426-FF8FD65A9B51@twistedbanana.demon.co.uk>
+
+Hi,
+
+Given the comment in the javadoc for jsr166y.forkjoin.Ops that some  
+of the interfaces therein may be better placed out in the wild world  
+that is the rest of the JDK, I've been thinking about how that might  
+look once they are removed from the context of the forkjoin API.
+
+The 'CICE closures' proposal also suggests a number of Operation/ 
+Function type interfaces, so I've added some interfaces derived from  
+Ops.* to the CICE prototype I've been building.
+
+For the curious, I've written up a brief description of what I've  
+done so far at http://markmahieu.blogspot.com/ which includes links  
+to the javadoc and the prototype itself.
+
+Any comments would be most welcome.
+
+
+Mark
+
+
+From David.Biesack at sas.com  Thu Feb  7 14:10:39 2008
+From: David.Biesack at sas.com (David J. Biesack)
+Date: Thu, 7 Feb 2008 14:10:39 -0500 (EST)
+Subject: [concurrency-interest] Concurrency-interest Digest, Vol 37,
+	Issue 7
+In-Reply-To: <mailman.3.1202403600.16411.concurrency-interest@altair.cs.oswego.edu>
+	(concurrency-interest-request@cs.oswego.edu)
+References: <mailman.3.1202403600.16411.concurrency-interest@altair.cs.oswego.edu>
+Message-ID: <200802071910.m17JAdTO026649@cs.oswego.edu>
+
+> From: Mark Mahieu <mark at twistedbanana.demon.co.uk>
+> Subject: [concurrency-interest] sr166y.forkjoin.Ops vs the world outside
+> 
+> For the curious, I've written up a brief description of what I've  
+> done so far at http://markmahieu.blogspot.com/ which includes links  
+> to the javadoc and the prototype itself.
+> 
+> Any comments would be most welcome.
+
+You're right about "ouch" - 1828 interfaces!
+
+Seems you can reduce the footprint some; all the *ToBoolean and *Predicate interfaces are duplicates
+
+ BooleanAndShortToBoolean :: boolean op(boolean a, short b)   
+ BooleanAndShortPredicate :: boolean op(boolean a, short b) 
+
+for example.
+
+However, you do not define any *WithException procedures or generators. What is the rationale for that?
+I.e. why does the necessity for *WithException ops elsewhere not apply to procedures and generators?
+
+But is seems removing the *WithException ops would be a good option to simplify things and instead push
+RuntimeException handing into the frameworks.
+
+Is it necessary to specialize on byte vs short vs int vs long parameters; seems like
+implicit widening to int or long should suffice and you can eliminate a lot of combinations.
+It seems sufficient for jsr166y.forkjoin.
+
+> Mark
+
+-- 
+David J. Biesack     SAS Institute Inc.
+(919) 531-7771       SAS Campus Drive
+http://www.sas.com   Cary, NC 27513
+
+
+From josh at bloch.us  Thu Feb  7 14:23:20 2008
+From: josh at bloch.us (Joshua Bloch)
+Date: Thu, 7 Feb 2008 11:23:20 -0800
+Subject: [concurrency-interest] Concurrency-interest Digest, Vol 37,
+	Issue 7
+In-Reply-To: <200802071910.m17JAdTO026649@cs.oswego.edu>
+References: <mailman.3.1202403600.16411.concurrency-interest@altair.cs.oswego.edu>
+	<200802071910.m17JAdTO026649@cs.oswego.edu>
+Message-ID: <b097ac510802071123ybfd65aegf55cc4574f474bbc@mail.gmail.com>
+
+David,
+
+On Feb 7, 2008 11:10 AM, David J. Biesack <David.Biesack at sas.com> wrote:
+
+> But is seems removing the *WithException ops would be a good option to
+> simplify things and instead push
+> RuntimeException handing into the frameworks.
+
+
+Yes.  And they'll go away entirely if we ever fix generics' treament of
+exceptions.  That you can currently say "throws X" is an empty promise as X
+cannot consists of more than one Exception type, even though methods can
+declare themselves to throw more than one exception type.  Gilad knew this
+to be broken at the time that generics were added to the platform, but
+didn't have the time to fix it.
+
+>
+>
+> Is it necessary to specialize on byte vs short vs int vs long parameters;
+> seems like
+> implicit widening to int or long should suffice and you can eliminate a
+> lot of combinations.
+> It seems sufficient for jsr166y.forkjoin.
+>
+Yes.  That's the sort of compromise that seems reasonable on the face of
+it.  Of course we can't know if it's right or not until we gain some
+experience with it.
+
+All of that said, I would still really like to fix this as part of a
+generics fix-up, assuming it is feasible to do so.
+
+           Josh
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20080207/f104aefd/attachment.html 
+
+From neal at gafter.com  Thu Feb  7 16:55:13 2008
+From: neal at gafter.com (Neal Gafter)
+Date: Thu, 7 Feb 2008 13:55:13 -0800
+Subject: [concurrency-interest] Concurrency-interest Digest, Vol 37,
+	Issue 7
+In-Reply-To: <b097ac510802071123ybfd65aegf55cc4574f474bbc@mail.gmail.com>
+References: <mailman.3.1202403600.16411.concurrency-interest@altair.cs.oswego.edu>
+	<200802071910.m17JAdTO026649@cs.oswego.edu>
+	<b097ac510802071123ybfd65aegf55cc4574f474bbc@mail.gmail.com>
+Message-ID: <15e8b9d20802071355l2c91e8cflcdd2bd04b8d6a17d@mail.gmail.com>
+
+On Feb 7, 2008 11:23 AM, Joshua Bloch <josh at bloch.us> wrote:
+
+> Is it necessary to specialize on byte vs short vs int vs long parameters;
+> > seems like
+> > implicit widening to int or long should suffice and you can eliminate a
+> > lot of combinations.
+> > It seems sufficient for jsr166y.forkjoin.
+> >
+> Yes.  That's the sort of compromise that seems reasonable on the face of
+> it.
+>
+
+Yes, if you don't mind forcing implementations of these interfaces to write
+an (unsafe) narrowing primitive cast to reflect the semantics of the problem
+when the natural argument type is byte or short.  It seems like this is the
+wrong context in which to make a decision about effectively deprecating some
+of the primitive types.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20080207/5924ef52/attachment.html 
+
+From hanson.char at gmail.com  Sun Feb 10 01:32:17 2008
+From: hanson.char at gmail.com (Hanson Char)
+Date: Sat, 9 Feb 2008 22:32:17 -0800
+Subject: [concurrency-interest] jsr166y common ops
+In-Reply-To: <47A997B1.2070502@kav.dk>
+References: <47A997B1.2070502@kav.dk>
+Message-ID: <ca53c8f80802092232u7c7a32b4l4343b91f6b542a63@mail.gmail.com>
+
+>
+> the matrix multiply demo by Doug is a good start
+>
+> http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/taskDemo/MatrixMultiply.java
+
+
+Does there exist a version of this MatrixMultiply.java that uses the latest
+jsr166y forkjoin API, rather than this seeminly very old fj* API ?
+
+Hanson
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20080209/62da9d45/attachment.html 
+
+From mark at twistedbanana.demon.co.uk  Sun Feb 10 12:10:48 2008
+From: mark at twistedbanana.demon.co.uk (Mark Mahieu)
+Date: Sun, 10 Feb 2008 17:10:48 +0000
+Subject: [concurrency-interest] Concurrency-interest Digest, Vol 37,
+	Issue 7
+In-Reply-To: <200802071910.m17JAdTO026649@cs.oswego.edu>
+References: <mailman.3.1202403600.16411.concurrency-interest@altair.cs.oswego.edu>
+	<200802071910.m17JAdTO026649@cs.oswego.edu>
+Message-ID: <642CE966-3DC5-4B2C-868B-75D9B1C3001F@twistedbanana.demon.co.uk>
+
+> You're right about "ouch" - 1828 interfaces!
+>
+> Seems you can reduce the footprint some; all the *ToBoolean and  
+> *Predicate interfaces are duplicates
+
+Yes, but which to remove?  The *Predicates are distinguished by  
+having a meaningful name and associated javadoc, so they strike me as  
+the more 'deserving' of their place.   Yet the *ToBoolean interfaces  
+provide a degree of consistency with the remainder of the general Op  
+interfaces.
+
+> However, you do not define any *WithException procedures or  
+> generators. What is the rationale for that?
+> I.e. why does the necessity for *WithException ops elsewhere not  
+> apply to procedures and generators?
+
+Good spot - that's an oversight on my part.  Thanks!
+
+> But is seems removing the *WithException ops would be a good option  
+> to simplify things and instead push
+> RuntimeException handing into the frameworks.
+
+Depends on the framework, and as Josh says, what improvements we get  
+at the language level.  Since I'm looking at all this from the  
+perspective of possible language changes, I'd rather not push them  
+under the carpet just yet.  But they are nasty.
+
+>
+> Is it necessary to specialize on byte vs short vs int vs long  
+> parameters; seems like
+> implicit widening to int or long should suffice and you can  
+> eliminate a lot of combinations.
+> It seems sufficient for jsr166y.forkjoin.
+
+Personally, I'd prefer it if there were no need to define any of the  
+specializations, with only about half a dozen new interfaces provided  
+in total - Generator, Predicate/BinaryPredicate, Procedure, Reducer  
+and maybe Op/BinaryOp.
+
+Yet to me approaches such as this all imply that we either accept  
+that other frameworks which need specializations will each have to  
+define their own versions of those interfaces (probably with their  
+own naming conventions and other idiosyncrasies), or we improve the  
+language somehow so that it becomes unnecessary for them to do so.
+
+It could be argued that this won't be a problem in practice - that  
+these operation/function types employed by jsr166y.forkjoin are  
+rarely required, and will remain so.  The evidence I'm seeing  
+suggests quite strongly otherwise, but we shall see.
+
+Thanks for your comments :)
+
+> -- 
+> David J. Biesack     SAS Institute Inc.
+> (919) 531-7771       SAS Campus Drive
+> http://www.sas.com   Cary, NC 27513
+
+
+Mark
+
+
+
+From David.Biesack at sas.com  Mon Feb 11 14:26:31 2008
+From: David.Biesack at sas.com (David J. Biesack)
+Date: Mon, 11 Feb 2008 14:26:31 -0500 (EST)
+Subject: [concurrency-interest] jsr166y.forkjoin.Ops vs the world outside
+In-Reply-To: <mailman.1.1202749200.2709.concurrency-interest@altair.cs.oswego.edu>
+	(concurrency-interest-request@cs.oswego.edu)
+References: <mailman.1.1202749200.2709.concurrency-interest@altair.cs.oswego.edu>
+Message-ID: <200802111926.m1BJQVfs010367@cs.oswego.edu>
+
+> Date: Sun, 10 Feb 2008 17:10:48 +0000
+> From: Mark Mahieu <mark at twistedbanana.demon.co.uk>
+> > I <David.Biesack at sas.com> wrote
+> > You're right about "ouch" - 1828 interfaces!
+> >
+> > Seems you can reduce the footprint some; all the *ToBoolean and  
+> > *Predicate interfaces are duplicates
+> 
+> Yes, but which to remove?  The *Predicates are distinguished by  
+> having a meaningful name and associated javadoc, so they strike me as  
+> the more 'deserving' of their place.   Yet the *ToBoolean interfaces  
+> provide a degree of consistency with the remainder of the general Op  
+> interfaces.
+
+Have you thought about inverting the names, i.e.
+
+public class ToBoolean {
+
+    public interface OfBoolean {
+        boolean of(boolean arg0);
+    }
+
+    public interface OfInt {
+        boolean of(int arg0);
+    }
+    // ...
+    public interface OfIntAndDouble {
+        boolean of(int arg0, double arg1);
+    }
+    // and so on for all the other argument combinations
+
+    ToBoolean() { // no sublcasses in other packages
+        throw new AssertionError("no instantiation allowed");
+    }
+}
+
+public class Predicate extends ToBoolean { 
+  Predicate() {
+     throw new AssertionError("no instantiation allowed");
+  }
+}
+
+public class ToInt {
+
+    public interface OfBoolean {
+        int of(boolean arg0);
+    }
+
+    public interface OfInt {
+        int of(int arg0);
+    }
+    // ...
+    public interface OfIntAndDouble {
+        int of(int arg0, double arg1);
+    }
+    // and so on for all the other argument combinations
+
+
+    ToInt() { // no sublcasses in other packages 
+        throw new AssertionError("no instantiation allowed");
+    }
+
+}
+
+  // and so on:
+  // java.util.ToBoolean
+  // java.util.Predicate
+  // java.util.ToByte
+  // java.util.ToShort
+  // java.util.ToChar
+  // java.util.ToInt
+  // java.util.ToLong
+  // java.util.ToFloat
+  // java.util.ToDouble
+  // concluding with:
+
+public class Procedure {
+
+    public interface OfBoolean {
+        void of(boolean arg0);
+    }
+
+    public interface OfInt {
+        void of(int arg0);
+    }
+    // ...
+    public interface OfIntAndDouble {
+        int of(int arg0, double arg1);
+    }
+    // and so on for all the other argument combinations
+
+    private Procedure() {
+        throw new AssertionError("no instantiation allowed");
+    }
+}
+
+
+The frameworks would use ToBoolean, but people could use Predicate,
+and the API (and jar size and classloader memory) footprint 
+is not greatly impacted.
+
+I concede that this sort of use of classes for namespace management
+may be ugly to some (many?), but this is not much worse that jsr166y.forkjoin.Ops.
+
+Of note: Eclipse (3.3) cannot do code completion on Predicate.To{...} but NetBeans can.
+
+client use:
+
+    final Predicate.OfInt predicate = new Predicate.OfInt() {
+
+            public boolean of(int arg0) {
+                ...
+            }
+        };
+
+    final ToInt.OfIntAndDouble intFunction = new ToInt.OfIntAndDouble() {
+
+            public int of(int arg0, double arg1) {
+                ...
+            }
+        };
+
+    final Procudure.OfDouble proc = new Procedure.OfDouble() {
+
+            public void of(double arg0) {
+                ...
+            }
+        };
+
+    boolean a = predicate.of(true)
+    int b = intFunction.of(0, 1.0)
+    proc.of(1.0)
+
+Note also that rather than naming the method "op", I named them
+"of" which seems to read better; "on" is also an option:
+
+    boolean a = predicate.on(true)
+    int b = intFunction.on(0, 1.0)
+    proc.on(1.0)
+
+Another nice side effect is that the package level javadoc does not look too awful.
+
+> Yet to me approaches such as this all imply that we either accept  
+> that other frameworks which need specializations will each have to  
+> define their own versions of those interfaces (probably with their  
+> own naming conventions and other idiosyncrasies), 
+
+I doubt any of us want that...
+
+> or we improve the  
+> language somehow so that it becomes unnecessary for them to do so.
+
+where are these language extensions being proposed?
+ 
+> It could be argued that this won't be a problem in practice - that  
+> these operation/function types employed by jsr166y.forkjoin are  
+> rarely required, and will remain so.  The evidence I'm seeing  
+> suggests quite strongly otherwise, but we shall see.
+
+I agree that it won't go away if we ignore it.
+
+> Thanks for your comments :)
+>
+> Mark
+
+-- 
+David J. Biesack     SAS Institute Inc.
+(919) 531-7771       SAS Campus Drive
+http://www.sas.com   Cary, NC 27513
+
+
+From mark at twistedbanana.demon.co.uk  Mon Feb 11 21:00:06 2008
+From: mark at twistedbanana.demon.co.uk (Mark Mahieu)
+Date: Tue, 12 Feb 2008 02:00:06 +0000
+Subject: [concurrency-interest] jsr166y.forkjoin.Ops vs the world outside
+In-Reply-To: <200802111926.m1BJQVfs010367@cs.oswego.edu>
+References: <mailman.1.1202749200.2709.concurrency-interest@altair.cs.oswego.edu>
+	<200802111926.m1BJQVfs010367@cs.oswego.edu>
+Message-ID: <C58FFC58-3AAD-48D8-96CE-B0F90DCB3AFD@twistedbanana.demon.co.uk>
+
+>
+> Have you thought about inverting the names, i.e.
+>
+> public class ToBoolean {
+>
+>     public interface OfBoolean {
+>         boolean of(boolean arg0);
+>     }
+
+I did consider something similar (your naming is better), but it  
+didn't seem to work too well for Generator or Predicate.  Worth a  
+second look perhaps.
+
+Another option I tried was having Op, BinaryOp, Predicate, Reducer  
+etc as (generic) interfaces in java.util, alongside the existing  
+Comparator interface, and declaring the specialized versions of each  
+as nested interfaces.
+
+
+>
+> client use:
+>
+>     final Predicate.OfInt predicate = new Predicate.OfInt() {
+>
+>             public boolean of(int arg0) {
+>                 ...
+>             }
+>         };
+>
+
+That's nice, though I think many people would reach for static  
+imports when possible, in which case the succinct naming could end up  
+backfiring a little.
+
+>
+> Note also that rather than naming the method "op", I named them
+> "of" which seems to read better; "on" is also an option:
+
+'of' works quite well in the sense that many people use it when  
+talking about generic types - "List 'of' Strings" for example.
+
+>
+> Another nice side effect is that the package level javadoc does not  
+> look too awful.
+
+Agreed.
+
+>
+>> or we improve the
+>> language somehow so that it becomes unnecessary for them to do so.
+>
+> where are these language extensions being proposed?
+>
+
+There's plenty of talk about 'fixing' or 'improving' generics in  
+various ways, including making them work with primitive types, which  
+could solve all this if done well enough.  I haven't seen any  
+workable proposals though - the ideas I've read either break  
+compatibility somewhere or tackle the problem with some form of  
+boxing/unboxing, which is a can of worms in itself.
+
+On the flip-side there's BGGA's function types of course, which seem  
+to be orthogonal to generics improvements, and are able to offer  
+certain benefits due to being targeted at a specific problem (n-ary  
+ops, naturally covariant/contravariant type params, etc).  I suspect  
+that they also present opportunities for VM-level optimization.
+
+But I doubt I'm telling you anything new, so I'd better stop there ;-)
+
+
+> -- 
+> David J. Biesack     SAS Institute Inc.
+> (919) 531-7771       SAS Campus Drive
+> http://www.sas.com   Cary, NC 27513
+
+Mark
+
+
+
+From alarmnummer at gmail.com  Tue Feb 12 12:51:03 2008
+From: alarmnummer at gmail.com (Peter Veentjer)
+Date: Tue, 12 Feb 2008 18:51:03 +0100
+Subject: [concurrency-interest] Happens before relation between a static
+	write and a read?
+Message-ID: <1466c1d60802120951wd9310a0v67214eb4fb3ec7c6@mail.gmail.com>
+
+I have a question regarding a happens before relation.
+
+Let me show you the example:
+
+class Foo{
+
+     private static Map somemap = new HashMap();
+
+     public void bar(){
+          somemap.put("a","b");
+     }
+}
+
+Is there a happens before relation of the write of somemap and the
+read in the bar method? My guess would be that there is no direct
+visible happens before relation, so in theory this example contains a
+data race. Is this assumption correct? I can imagine that in practice
+there is no problem because on a higher level some kind happens before
+relation is added (maybe the thread that loads the class, also starts
+the thread that executes the run methd, so  -> Thread.start happens
+before rule).
+
+From R.Spilker at topdesk.com  Tue Feb 12 15:48:17 2008
+From: R.Spilker at topdesk.com (=?us-ascii?Q?Roel_Spilker?=)
+Date: Tue, 12 Feb 2008 21:48:17 +0100
+Subject: [concurrency-interest] Happens before relation between a static
+ write and a read?
+In-Reply-To: <1466c1d60802120951wd9310a0v67214eb4fb3ec7c6@mail.gmail.com>
+Message-ID: <vmime.47b20611.1718.6dea7e243dff6d7c@vm-mona64.tis.local>
+
+Hi Peter,
+
+The initialization of a class, and with it its static members, are guaranteed to happen BEFORE any other code. The only catch is that if you create an instance during initialization, the order in which the fields are written to and read from is important. That even occurs if you create instances of another class that refers to your static members.
+
+So the following code will create a NPE:
+
+class Foo {
+	static final Bar BAR = new Bar();
+	static final Integer FOO_SIZE = Integer.valueOf(1);
+	
+	public static void main(String[] args) {
+		System.out.println(BAR.size);
+	}
+}
+
+class Bar {
+	int size = Foo.FOO_SIZE;
+}
+ 
+Roel
+
+-----Oorspronkelijk bericht-----
+Van: alarmnummer at gmail.com [mailto:concurrency-interest-bounces at cs.oswego.edu] Namens Peter Veentjer
+Verzonden: dinsdag 12 februari 2008 18:51
+Aan: concurrency-interest
+Onderwerp: [concurrency-interest] Happens before relation between a static write and a read?
+
+I have a question regarding a happens before relation.
+
+Let me show you the example:
+
+class Foo{
+
+     private static Map somemap = new HashMap();
+
+     public void bar(){
+          somemap.put("a","b");
+     }
+}
+
+Is there a happens before relation of the write of somemap and the read in the bar method? My guess would be that there is no direct visible happens before relation, so in theory this example contains a data race. Is this assumption correct? I can imagine that in practice there is no problem because on a higher level some kind happens before relation is added (maybe the thread that loads the class, also starts the thread that executes the run methd, so  -> Thread.start happens before rule).
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+From dcholmes at optusnet.com.au  Tue Feb 12 19:21:43 2008
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed, 13 Feb 2008 10:21:43 +1000
+Subject: [concurrency-interest] Happens before relation between a
+	staticwrite and a read?
+In-Reply-To: <1466c1d60802120951wd9310a0v67214eb4fb3ec7c6@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEIPHKAA.dcholmes@optusnet.com.au>
+
+Peter,
+
+Just to expand on what Roel said. Before a thread can use a class it has to
+establish that the class has been loaded and initialized. The class
+initialization protocol - JLS 12.4.2 requires that each thread first lock
+the monitor associated with the class** to check its initialization state,
+hence completion of the initialization of the class happens-before any other
+thread sees that the class is initialized. This is why use of static
+initialization is always a form of safe-publication.
+
+** JLS 3 states this is the monitor of the Class object, but this rule has
+been relaxed to be some monitor associated with the Class object by the VM.
+
+Cheers,
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Peter
+> Veentjer
+> Sent: Wednesday, 13 February 2008 3:51 AM
+> To: concurrency-interest
+> Subject: [concurrency-interest] Happens before relation between a
+> staticwrite and a read?
+>
+>
+> I have a question regarding a happens before relation.
+>
+> Let me show you the example:
+>
+> class Foo{
+>
+>      private static Map somemap = new HashMap();
+>
+>      public void bar(){
+>           somemap.put("a","b");
+>      }
+> }
+>
+> Is there a happens before relation of the write of somemap and the
+> read in the bar method? My guess would be that there is no direct
+> visible happens before relation, so in theory this example contains a
+> data race. Is this assumption correct? I can imagine that in practice
+> there is no problem because on a higher level some kind happens before
+> relation is added (maybe the thread that loads the class, also starts
+> the thread that executes the run methd, so  -> Thread.start happens
+> before rule).
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From mthornton at optrak.co.uk  Wed Feb 13 15:45:31 2008
+From: mthornton at optrak.co.uk (Mark Thornton)
+Date: Wed, 13 Feb 2008 20:45:31 +0000
+Subject: [concurrency-interest] Matrix Multiply examples
+Message-ID: <47B356EB.4070506@optrak.co.uk>
+
+I have created a simple example of matrix multiplication using the 
+current fork join frame work.
+The source is here: 
+http://homepage.ntlworld.com/m.p.thornton/MatrixMultiply.zip (less than 
+8KB).
+
+Actually a set of 7 matrix multipliers with progressively better 
+performance, starting with the obvious trivial version. It could no 
+doubt be improved further. The simplest code achieves about 90 MFLops, 
+the best serial code 1600 MFlops, and the concurrent code 6000 MFlops. 
+All for 1200x1200 matrices on a quad core Q6600. This matrix size was 
+chosen to ensure it didn't fit in the processor cache (2 x 4MB). The 
+code does not require square matrices or round sizes, but has not been 
+tested extensively.
+
+Mark Thornton
+
+
+From kasper at kav.dk  Thu Feb 28 02:27:26 2008
+From: kasper at kav.dk (Kasper Nielsen)
+Date: Thu, 28 Feb 2008 08:27:26 +0100
+Subject: [concurrency-interest] ParallelDoubleArray and BLAS level 1
+Message-ID: <47C6625E.8020106@kav.dk>
+
+Wow, this list is quite at the moment.
+
+I've been working on a ParallelDoubleMatrix and in relation to that I've
+tried implementing all the BLAS level 1 routines with
+ParallelDoubleArray. For those unaware of what BLAS is, it is the de
+facto api for performing basic linear algebra operations.
+
+The code and comments are available here http://rafb.net/p/Mx1z2f68.html
+
+I've omitted drotg and drotmg since they are pure math calculations.
+
+I try to represent a vector with a ParallelDoubleArrayWithBounds because 
+if I have a matrix using row-major order representation I can easily 
+extract rows using withBounds().
+
+Those place where I couldn't get away with using 
+ParallelDoubleArrayWithBounds I've used a ParallelDoubleArray.
+It was primarily because I had to swap transformed elements between two 
+arrays. Some better methods for this would be nice.
+
+There was only 1 operation I had to implement sequential 'idamax' which 
+returns the minimum index having the maximum absolute value.
+
+All the BLAS routines takes an increment as an argument. This increment
+argument indicates the number of spaces in the array between elements.
+This is not possible with ParallelDoubleArray. So I've omitted it.
+One way to support it would be to create a .withIncrement(int index, int 
+increment) method.
+Considering this row-level ordered matrix:
+0 1 2
+3 4 5
+6 7 8
+withIncrement(0,3), would select the first row,
+withIncrement(1,3), would select the second row,
+withIncrement(0,4), would select the diagonal.
+withBounds(0,5).withIncrement(1,4) would select the diagonal 1+5
+
+but of course if we add this, next time I would want some way to select
+a bounded box in an array. So I'll probably end up with implementing 
+this myself in my Matrix library.
+
+cheers
+   Kasper
+

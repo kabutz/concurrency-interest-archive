@@ -1,0 +1,145 @@
+Subject: [concurrency-interest] Q.: supporting arbitrary DAGs in ForkJoinPool implementation
+From: Godmar Back via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-04-29, 17:25
+To: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Godmar Back <godmar@gmail.com>
+
+
+Hi,
+
+I'm trying to wrap my head around the helping strategy used in the FJP implementation and what kinds of workloads are supported. I'm appending my test program below, which occasionally but reliably deadlocks on JDK 11 with a stack trace that I'll append further below.
+
+I'm creating 3 tasks called parent, child, and grandchild. The parent forks the child, and the child forks the grandchild. The parent joins the child whereas the grandchild joins the parent. Child does not join the grandchild. In terms of dependencies, grandchild would depend on the parent and parent would depend on the child. This is my attempt at creating an acyclic dependency graph.
+
+My question is whether this is a well-formed workload and if so, whether the FJP implementation should be able to complete it.
+
+ - Godmar
+
+// FJTest.java
+import java.util.*;
+import java.util.concurrent.*;
+
+public class FJTest
+{
+    static ForkJoinPool fjp;
+    static class Parent extends RecursiveAction {
+        @Override
+        public void compute() {
+            try {
+                System.out.println("parent forking child " + Thread.currentThread());
+                var child = fjp.submit(new Child(this));
+                System.out.println("parent joining child " + Thread.currentThread());
+                child.get();
+                System.out.println("parent got child " + Thread.currentThread());
+            } catch (Exception e) {
+                System.err.println(e);
+            }
+        }
+    }
+
+    static class Child extends RecursiveAction {
+        Future<Void> parent;
+        Child(Future<Void> parent)  {
+            this.parent = parent;
+        }
+        @Override
+        public void compute() {
+            try {
+                System.out.println("child forking grandchild " + Thread.currentThread());
+                fjp.submit(new GrandChild(parent));
+                System.out.println("child forked grandchild " + Thread.currentThread());
+            } catch (Exception e) {
+                System.err.println(e);
+            }
+        }
+    }
+
+    static class GrandChild extends RecursiveAction {
+        Future<Void> depends;
+        GrandChild(Future<Void> grandparent)  {
+            this.depends = grandparent;
+        }
+        @Override
+        public void compute() {
+            try {
+                System.out.println("grandchild joining grandparent " + Thread.currentThread());
+                depends.get();
+                System.out.println("grandchild got grandparent " + Thread.currentThread());
+            } catch (Exception e) {
+                System.err.println(e);
+            }
+        }
+    }
+
+    public static void main(String []av) throws Exception {
+        fjp = new ForkJoinPool(2);
+        fjp.submit(new Parent());
+        fjp.shutdown();
+        fjp.awaitTermination(5000L, TimeUnit.SECONDS);
+    }
+}
+// end of FJTest.java
+
+Stack trace:
+"ForkJoinPool-1-worker-3" #12 daemon prio=5 os_prio=0 cpu=26.31ms elapsed=22.44s tid=0x00007fdf9829d800 nid=0x3f7f in Object.wait()  [0x00007fdf6070e000]
+   java.lang.Thread.State: WAITING (on object monitor)
+    at java.lang.Object.wait(java.base@11.0.11/Native Method)
+    - waiting on <0x000000062c864010> (a FJTest$Parent)
+    at java.util.concurrent.ForkJoinTask.internalWait(java.base@11.0.11/ForkJoinTask.java:311)
+    - waiting to re-lock in wait() <0x000000062c864010> (a FJTest$Parent)
+    at java.util.concurrent.ForkJoinPool.awaitJoin(java.base@11.0.11/ForkJoinPool.java:1730)
+    at java.util.concurrent.ForkJoinTask.doJoin(java.base@11.0.11/ForkJoinTask.java:397)
+    at java.util.concurrent.ForkJoinTask.get(java.base@11.0.11/ForkJoinTask.java:1004)
+    at FJTest$GrandChild.compute(FJTest.java:48)
+    at java.util.concurrent.RecursiveAction.exec(java.base@11.0.11/RecursiveAction.java:189)
+    at java.util.concurrent.ForkJoinTask.doExec(java.base@11.0.11/ForkJoinTask.java:290)
+    at java.util.concurrent.ForkJoinPool.awaitJoin(java.base@11.0.11/ForkJoinPool.java:1708)
+    at java.util.concurrent.ForkJoinTask.doJoin(java.base@11.0.11/ForkJoinTask.java:397)
+    at java.util.concurrent.ForkJoinTask.get(java.base@11.0.11/ForkJoinTask.java:1004)
+    at FJTest$Parent.compute(FJTest.java:14)
+    at java.util.concurrent.RecursiveAction.exec(java.base@11.0.11/RecursiveAction.java:189)
+    at java.util.concurrent.ForkJoinTask.doExec(java.base@11.0.11/ForkJoinTask.java:290)
+    at java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(java.base@11.0.11/ForkJoinPool.java:1020)
+    at java.util.concurrent.ForkJoinPool.scan(java.base@11.0.11/ForkJoinPool.java:1656)
+    at java.util.concurrent.ForkJoinPool.runWorker(java.base@11.0.11/ForkJoinPool.java:1594)
+    at java.util.concurrent.ForkJoinWorkerThread.run(java.base@11.0.11/ForkJoinWorkerThread.java:183)
+
+"ForkJoinPool-1-worker-1" #13 daemon prio=5 os_prio=0 cpu=1.36ms elapsed=22.42s tid=0x00007fdf2c033000 nid=0x3f80 waiting on condition  [0x00007fdf6060d000]
+   java.lang.Thread.State: WAITING (parking)
+    at jdk.internal.misc.Unsafe.park(java.base@11.0.11/Native Method)
+    - parking to wait for  <0x000000062c85f120> (a java.util.concurrent.ForkJoinPool)
+    at java.util.concurrent.locks.LockSupport.park(java.base@11.0.11/LockSupport.java:194)
+    at java.util.concurrent.ForkJoinPool.runWorker(java.base@11.0.11/ForkJoinPool.java:1628)
+    at java.util.concurrent.ForkJoinWorkerThread.run(java.base@11.0.11/ForkJoinWorkerThread.java:183)
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Q.: supporting arbitrary DAGs in ForkJoinPool implementation
+From: Doug Lea via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-04-30, 18:23
+To: concurrency-interest@cs.oswego.edu
+Reply-To: Doug Lea <dl@cs.oswego.edu>
+
+On 4/29/21 10:25 AM, Godmar Back via Concurrency-interest wrote:
+>
+> I'm creating 3 tasks called parent, child, and grandchild. The parent forks the child, and the child forks the grandchild. The parent joins the child whereas the grandchild joins the parent. Child does not join the grandchild. In terms of dependencies, grandchild would depend on the parent and parent would depend on the child. This is my attempt at creating an acyclic dependency graph.
+>
+> My question is whether this is a well-formed workload and if so, whether the FJP implementation should be able to complete it.
+
+Forms of non-strictness involving joins of ancestors are not guaranteed to be supported for Recursive{Actions, Tasks}. The dependency graph is tracked as fork-graph, under the assumption that it is OK to unnecessarily help a descendant task (since the choice to do so is intrinsically racy). This is guaranteed to succeed whenever a pure recursive single-threaded execution would do so (hence the class names). Violations often work anyway unless they also have cyclic join dependencies. Your example is the smallest I've seen that sometimes does not. We should improve documentation  to better explain this more generally. One of the reasons for introducing CountedCompleters and other subclasses of ForkJoinTasks is to support less structured execution patterns.
+
+-Doug
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest

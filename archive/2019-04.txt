@@ -1,0 +1,2996 @@
+From Brian.Brooks at datapath.com  Mon Apr 22 11:01:03 2019
+From: Brian.Brooks at datapath.com (Brian Brooks (US))
+Date: Mon, 22 Apr 2019 15:01:03 +0000
+Subject: [concurrency-interest] Why might java.lang.Object.notifyAll take 15
+ seconds? Java server app performance defect
+Message-ID: <BN6PR17MB307485CA0C5CD7AF450C6221F8220@BN6PR17MB3074.namprd17.prod.outlook.com>
+
+In a large customer production deployment, we're using JProfiler 11.x to measure an application's performance.  JProfiler is reporting over a 5 minute period <10 times a thread is getting stuck for 15 seconds performing a java.lang.Object#notifyAll.
+
+Why might java.lang.Object.notifyAll take so long to complete?  The notifyAll is being performed on a java.util.collection.LinkedList.  This list contains a queue of inbound TCP messages.
+
+Environment:
+Windows Server 2012 SP2 64-bit
+Java 8u171 64-bit
+4 CPU sockets, 2 CPU cores in each socket
+
+Brian Brooks
+
+From bronee at gmail.com  Mon Apr 22 11:32:09 2019
+From: bronee at gmail.com (Brian S O'Neill)
+Date: Mon, 22 Apr 2019 08:32:09 -0700
+Subject: [concurrency-interest] Why might java.lang.Object.notifyAll
+ take 15 seconds? Java server app performance defect
+In-Reply-To: <BN6PR17MB307485CA0C5CD7AF450C6221F8220@BN6PR17MB3074.namprd17.prod.outlook.com>
+References: <BN6PR17MB307485CA0C5CD7AF450C6221F8220@BN6PR17MB3074.namprd17.prod.outlook.com>
+Message-ID: <7ebe3f31-9ce3-c1e0-67f9-c652f06d5204@gmail.com>
+
+Thundering herd? How many threads are trying to pull messages out from 
+the linked list? If one message is added to the list, then notifyAll 
+wakes up all the threads, but one at a time. Each notify might cause the 
+thread to immediately force a context switch, causing it to take longer 
+to regain control and finish iterating over the list of waiting threads.
+
+If this is a custom work queue design, then perhaps one of the built-in 
+JDK thread pool classes would work better?
+
+On 2019-04-22 08:01 AM, Brian Brooks (US) via Concurrency-interest wrote:
+> In a large customer production deployment, we're using JProfiler 11.x to measure an application's performance.  JProfiler is reporting over a 5 minute period <10 times a thread is getting stuck for 15 seconds performing a java.lang.Object#notifyAll.
+> 
+> Why might java.lang.Object.notifyAll take so long to complete?  The notifyAll is being performed on a java.util.collection.LinkedList.  This list contains a queue of inbound TCP messages.
+> 
+> Environment:
+> Windows Server 2012 SP2 64-bit
+> Java 8u171 64-bit
+> 4 CPU sockets, 2 CPU cores in each socket
+> 
+> Brian Brooks
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+From heinz at javaspecialists.eu  Mon Apr 22 11:33:56 2019
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Mon, 22 Apr 2019 18:33:56 +0300
+Subject: [concurrency-interest] Why might java.lang.Object.notifyAll
+ take 15 seconds? Java server app performance defect
+In-Reply-To: <BN6PR17MB307485CA0C5CD7AF450C6221F8220@BN6PR17MB3074.namprd17.prod.outlook.com>
+References: <BN6PR17MB307485CA0C5CD7AF450C6221F8220@BN6PR17MB3074.namprd17.prod.outlook.com>
+Message-ID: <CACLL95qz4Hjx9XtWQ+pTpaY+dFDp3iKnB6neQ+FiORSW7FPMiA@mail.gmail.com>
+
+My first guess would be that this is a false report.  The threads might be
+blocked on getting the lock and with all the JITting and TTSP going on the
+profiler might be getting the place in the code wrong.
+
+On Mon, 22 Apr 2019 at 18:07, Brian Brooks (US) via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> In a large customer production deployment, we're using JProfiler 11.x to
+> measure an application's performance.  JProfiler is reporting over a 5
+> minute period <10 times a thread is getting stuck for 15 seconds performing
+> a java.lang.Object#notifyAll.
+>
+> Why might java.lang.Object.notifyAll take so long to complete?  The
+> notifyAll is being performed on a java.util.collection.LinkedList.  This
+> list contains a queue of inbound TCP messages.
+>
+> Environment:
+> Windows Server 2012 SP2 64-bit
+> Java 8u171 64-bit
+> 4 CPU sockets, 2 CPU cores in each socket
+>
+> Brian Brooks
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-- 
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java(tm) Specialists' Newsletter"
+Sun/Oracle Java Champion
+JavaOne Rockstar Speaker
+http://www.javaspecialists.eu
+Tel: +30 69 75 595 262
+Skype: kabutz
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190422/0b8b3daa/attachment.html>
+
+From nigro.fra at gmail.com  Mon Apr 22 11:57:36 2019
+From: nigro.fra at gmail.com (Francesco Nigro)
+Date: Mon, 22 Apr 2019 17:57:36 +0200
+Subject: [concurrency-interest] Why might java.lang.Object.notifyAll
+ take 15 seconds? Java server app performance defect
+In-Reply-To: <CACLL95qz4Hjx9XtWQ+pTpaY+dFDp3iKnB6neQ+FiORSW7FPMiA@mail.gmail.com>
+References: <BN6PR17MB307485CA0C5CD7AF450C6221F8220@BN6PR17MB3074.namprd17.prod.outlook.com>
+ <CACLL95qz4Hjx9XtWQ+pTpaY+dFDp3iKnB6neQ+FiORSW7FPMiA@mail.gmail.com>
+Message-ID: <CAKxGtTV-XEUzd0YSUvTESK1sE-Yk41VgGxsdOVbEQGicS=C1_w@mail.gmail.com>
+
++100 for this guess...
+Enable debug non safepoints, GC stopped time logs + using a proper profiler
+would help (eg async-profiler with -e wall option)
+
+Il lun 22 apr 2019, 17:36 Dr Heinz M. Kabutz via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> ha scritto:
+
+> My first guess would be that this is a false report.  The threads might be
+> blocked on getting the lock and with all the JITting and TTSP going on the
+> profiler might be getting the place in the code wrong.
+>
+> On Mon, 22 Apr 2019 at 18:07, Brian Brooks (US) via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>> In a large customer production deployment, we're using JProfiler 11.x to
+>> measure an application's performance.  JProfiler is reporting over a 5
+>> minute period <10 times a thread is getting stuck for 15 seconds performing
+>> a java.lang.Object#notifyAll.
+>>
+>> Why might java.lang.Object.notifyAll take so long to complete?  The
+>> notifyAll is being performed on a java.util.collection.LinkedList.  This
+>> list contains a queue of inbound TCP messages.
+>>
+>> Environment:
+>> Windows Server 2012 SP2 64-bit
+>> Java 8u171 64-bit
+>> 4 CPU sockets, 2 CPU cores in each socket
+>>
+>> Brian Brooks
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+> --
+> Dr Heinz M. Kabutz (PhD CompSci)
+> Author of "The Java(tm) Specialists' Newsletter"
+> Sun/Oracle Java Champion
+> JavaOne Rockstar Speaker
+> http://www.javaspecialists.eu
+> Tel: +30 69 75 595 262
+> Skype: kabutz
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190422/9967bec0/attachment.html>
+
+From davidcholmes at aapt.net.au  Mon Apr 22 17:15:07 2019
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Tue, 23 Apr 2019 07:15:07 +1000
+Subject: [concurrency-interest] Why might java.lang.Object.notifyAll
+	take 15 seconds? Java server app performance defect
+In-Reply-To: <7ebe3f31-9ce3-c1e0-67f9-c652f06d5204@gmail.com>
+References: <BN6PR17MB307485CA0C5CD7AF450C6221F8220@BN6PR17MB3074.namprd17.prod.outlook.com>
+ <7ebe3f31-9ce3-c1e0-67f9-c652f06d5204@gmail.com>
+Message-ID: <005b01d4f950$76b65df0$642319d0$@aapt.net.au>
+
+There's no thundering-herd with Object.notifyAll, it is simply a transfer from the wait-set queue to the monitor-queue (which is still owned by the thread doing the notifyAll). All the notified threads remain blocked until the monitor is released, which will release them one at a time.
+
+David
+
+> -----Original Message-----
+> From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> On Behalf Of Brian S O'Neill via Concurrency-interest
+> Sent: Tuesday, April 23, 2019 1:32 AM
+> To: Brian Brooks (US) <Brian.Brooks at datapath.com>; concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] Why might java.lang.Object.notifyAll take 15 seconds? Java server app performance defect
+> 
+> Thundering herd? How many threads are trying to pull messages out from the linked list? If one message is added to the list, then
+> notifyAll wakes up all the threads, but one at a time. Each notify might cause the thread to immediately force a context switch, causing
+> it to take longer to regain control and finish iterating over the list of waiting threads.
+> 
+> If this is a custom work queue design, then perhaps one of the built-in JDK thread pool classes would work better?
+> 
+> On 2019-04-22 08:01 AM, Brian Brooks (US) via Concurrency-interest wrote:
+> > In a large customer production deployment, we're using JProfiler 11.x to measure an application's performance.  JProfiler is
+> reporting over a 5 minute period <10 times a thread is getting stuck for 15 seconds performing a java.lang.Object#notifyAll.
+> >
+> > Why might java.lang.Object.notifyAll take so long to complete?  The notifyAll is being performed on a java.util.collection.LinkedList.
+> This list contains a queue of inbound TCP messages.
+> >
+> > Environment:
+> > Windows Server 2012 SP2 64-bit
+> > Java 8u171 64-bit
+> > 4 CPU sockets, 2 CPU cores in each socket
+> >
+> > Brian Brooks
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From volkan.yazici at gmail.com  Tue Apr 23 02:37:31 2019
+From: volkan.yazici at gmail.com (=?UTF-8?B?Vm9sa2FuIFlhesSxY8Sx?=)
+Date: Tue, 23 Apr 2019 08:37:31 +0200
+Subject: [concurrency-interest] Bounded Task Queue for
+	ScheduledThreadPoolExecutor
+Message-ID: <CAP7pH7s7MsVbTvf2+qWVaZUbrjUrdFtXgPVg3Xz3MpeTv3=tJQ@mail.gmail.com>
+
+Hello,
+
+Given a ScheduledThreadPoolExecutor (STPE) with a set of slow consumers,
+the unbounded task queue constitutes the perfect disguise for
+backpressure-related problems. Producers just keep on pushing tasks to the
+point that 1) growing queue starts choking memory, 2) almost all pending
+time-sensitive tasks become obsolete when they are assigned to a thread to
+get executed, and 3) even relatively cheap tasks starve to death for no
+good reason. To the best of my knowledge, unfortunately, STPE does accept
+neither a bound, nor a custom queue in its ctor, even though the internally
+used ThreadPoolExecutor (TPE) perfectly allows that[1]. To work around the
+problem, I create my own ScheduledExecutorService where time-sensitive
+tasks are delegated to an internal STPE and the rest to a TPE. That being
+said, I would rather prefer STPE to just accept a custom implementation or
+a bound for the task queue it employs.
+
+I plan to create a ticket for such a feature in OpenJDK. Before doing that,
+I would appreciate your feedback on my reasoning in case I am missing
+something obvious.
+
+Best.
+
+[1]
+https://stackoverflow.com/questions/7403764/what-is-best-way-to-have-bounded-queue-with-scheduledthreadpoolexecutor
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190423/440eb4c5/attachment.html>
+
+From dl at cs.oswego.edu  Wed Apr 24 07:14:11 2019
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 24 Apr 2019 07:14:11 -0400
+Subject: [concurrency-interest] Bounded Task Queue for
+ ScheduledThreadPoolExecutor
+In-Reply-To: <CAP7pH7s7MsVbTvf2+qWVaZUbrjUrdFtXgPVg3Xz3MpeTv3=tJQ@mail.gmail.com>
+References: <CAP7pH7s7MsVbTvf2+qWVaZUbrjUrdFtXgPVg3Xz3MpeTv3=tJQ@mail.gmail.com>
+Message-ID: <82335b5c-0ccf-2c0b-f079-a5ffb1d73092@cs.oswego.edu>
+
+On 4/23/19 2:37 AM, Volkan Yazıcı via Concurrency-interest wrote:
+> Hello,
+> 
+> Given a ScheduledThreadPoolExecutor (STPE) with a set of slow consumers,
+> the unbounded task queue constitutes the perfect disguise for
+> backpressure-related problems. Producers just keep on pushing tasks to
+> the point that 1) growing queue starts choking memory, 2) almost all
+> pending time-sensitive tasks become obsolete when they are assigned to a
+> thread to get executed, and 3) even relatively cheap tasks starve to
+> death for no good reason. To the best of my knowledge, unfortunately,
+> STPE does accept neither a bound, nor a custom queue in its ctor, even
+> though the internally used ThreadPoolExecutor (TPE) perfectly allows
+> that[1]. To work around the problem, I create my own
+> ScheduledExecutorService where time-sensitive tasks are delegated to an
+> internal STPE and the rest to a TPE. That being said, I would rather
+> prefer STPE to just accept a custom implementation or a bound for the
+> task queue it employs.
+
+STPE started out (long ago, pre-release) allowing custom queues,
+defaulting to DelayQueue. This was changed to use an internal
+specialization of DelayQueue to allow cleanup of cancelled tasks, which
+helps significantly in networking applications in which timeout
+callbacks rarely turn out to be needed.
+
+At this point there is no reasonable path to reinstating a custom queue
+option. However, it would be possible to add yet another configuration
+method setMaximumQueueSize, which would cause a
+RejectedExecutionException if exceeded.
+
+We worry when adding such methods about unknown interactions with other
+configuration methods and constructors, leading to future bug reports.
+Which I think has happened every time we have added one.
+
+In the mean time you could get most of this effect at reasonable cost by
+wrapping STPE within another Executor that rejects when
+stpe.getQueue().size() exceeds a threshold.
+
+-Doug
+
+
+
+From volkan.yazici at gmail.com  Thu Apr 25 04:12:59 2019
+From: volkan.yazici at gmail.com (=?UTF-8?B?Vm9sa2FuIFlhesSxY8Sx?=)
+Date: Thu, 25 Apr 2019 10:12:59 +0200
+Subject: [concurrency-interest] Bounded Task Queue for
+	ScheduledThreadPoolExecutor
+In-Reply-To: <82335b5c-0ccf-2c0b-f079-a5ffb1d73092@cs.oswego.edu>
+References: <CAP7pH7s7MsVbTvf2+qWVaZUbrjUrdFtXgPVg3Xz3MpeTv3=tJQ@mail.gmail.com>
+ <82335b5c-0ccf-2c0b-f079-a5ffb1d73092@cs.oswego.edu>
+Message-ID: <CAP7pH7sktR50bnXjSzHp2R7427o3HbLveS3K6nptAEQ7k3ZH4g@mail.gmail.com>
+
+Thanks so much for taking time to reply professor.
+
+STPE.DelayWorkQueue ctor does not have any arguments and every access is
+synchronized on STPE.DelayWorkQueue#lock ReentrantLock, which I believe
+makes the enforcement of a bound "relatively easy". Would you mind sharing
+which sort of configurations you have in mind that might potentially lead
+to future bugs, please?
+
+I see that you are more inclined to recommend me having my own custom STPE
+wrapper overriding ScheduledExecutorService methods with a check on
+getQueue().size() rather than creating a feature request in OpenJDK. Is my
+interpretation right?
+
+Best.
+
+On Wed, Apr 24, 2019 at 1:15 PM Doug Lea via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> On 4/23/19 2:37 AM, Volkan Yazıcı via Concurrency-interest wrote:
+> > Hello,
+> >
+> > Given a ScheduledThreadPoolExecutor (STPE) with a set of slow consumers,
+> > the unbounded task queue constitutes the perfect disguise for
+> > backpressure-related problems. Producers just keep on pushing tasks to
+> > the point that 1) growing queue starts choking memory, 2) almost all
+> > pending time-sensitive tasks become obsolete when they are assigned to a
+> > thread to get executed, and 3) even relatively cheap tasks starve to
+> > death for no good reason. To the best of my knowledge, unfortunately,
+> > STPE does accept neither a bound, nor a custom queue in its ctor, even
+> > though the internally used ThreadPoolExecutor (TPE) perfectly allows
+> > that[1]. To work around the problem, I create my own
+> > ScheduledExecutorService where time-sensitive tasks are delegated to an
+> > internal STPE and the rest to a TPE. That being said, I would rather
+> > prefer STPE to just accept a custom implementation or a bound for the
+> > task queue it employs.
+>
+> STPE started out (long ago, pre-release) allowing custom queues,
+> defaulting to DelayQueue. This was changed to use an internal
+> specialization of DelayQueue to allow cleanup of cancelled tasks, which
+> helps significantly in networking applications in which timeout
+> callbacks rarely turn out to be needed.
+>
+> At this point there is no reasonable path to reinstating a custom queue
+> option. However, it would be possible to add yet another configuration
+> method setMaximumQueueSize, which would cause a
+> RejectedExecutionException if exceeded.
+>
+> We worry when adding such methods about unknown interactions with other
+> configuration methods and constructors, leading to future bug reports.
+> Which I think has happened every time we have added one.
+>
+> In the mean time you could get most of this effect at reasonable cost by
+> wrapping STPE within another Executor that rejects when
+> stpe.getQueue().size() exceeds a threshold.
+>
+> -Doug
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190425/cc468428/attachment.html>
+
+From kasperni at gmail.com  Thu Apr 25 04:34:10 2019
+From: kasperni at gmail.com (Kasper Nielsen)
+Date: Thu, 25 Apr 2019 09:34:10 +0100
+Subject: [concurrency-interest] Bounded Task Queue for
+	ScheduledThreadPoolExecutor
+In-Reply-To: <CAP7pH7sktR50bnXjSzHp2R7427o3HbLveS3K6nptAEQ7k3ZH4g@mail.gmail.com>
+References: <CAP7pH7s7MsVbTvf2+qWVaZUbrjUrdFtXgPVg3Xz3MpeTv3=tJQ@mail.gmail.com>
+ <82335b5c-0ccf-2c0b-f079-a5ffb1d73092@cs.oswego.edu>
+ <CAP7pH7sktR50bnXjSzHp2R7427o3HbLveS3K6nptAEQ7k3ZH4g@mail.gmail.com>
+Message-ID: <CAPs6153w1_MWP9Xq15N7R1ffQVa-MVW+cGYLzhqtdkxcj+iLAA@mail.gmail.com>
+
+On Thu, 25 Apr 2019 at 09:14, Volkan Yazıcı via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+>
+> Thanks so much for taking time to reply professor.
+>
+> STPE.DelayWorkQueue ctor does not have any arguments and every access is synchronized on STPE.DelayWorkQueue#lock ReentrantLock, which I believe makes the enforcement of a bound "relatively easy". Would you mind sharing which sort of configurations you have in mind that might potentially lead to future bugs, please?
+
+STPE.DelayWorkQueue provides O(log N) removal time because each node
+(future task) maintain its own index into the heap. This is not
+possible if you provide a custom java.util.Queue/DelayQueue, because
+it has no concept of index. It could be heap based or linked based or
+something else. So the only generic way to remove a element is to
+(potential) iterate over every item in the queue.
+
+Also, see the original bug
+https://bugs.java.com/bugdatabase/view_bug.do?bug_id=6602600
+
+/Kasper
+
+From volkan.yazici at gmail.com  Thu Apr 25 04:48:24 2019
+From: volkan.yazici at gmail.com (=?UTF-8?B?Vm9sa2FuIFlhesSxY8Sx?=)
+Date: Thu, 25 Apr 2019 10:48:24 +0200
+Subject: [concurrency-interest] Bounded Task Queue for
+	ScheduledThreadPoolExecutor
+In-Reply-To: <CAPs6153w1_MWP9Xq15N7R1ffQVa-MVW+cGYLzhqtdkxcj+iLAA@mail.gmail.com>
+References: <CAP7pH7s7MsVbTvf2+qWVaZUbrjUrdFtXgPVg3Xz3MpeTv3=tJQ@mail.gmail.com>
+ <82335b5c-0ccf-2c0b-f079-a5ffb1d73092@cs.oswego.edu>
+ <CAP7pH7sktR50bnXjSzHp2R7427o3HbLveS3K6nptAEQ7k3ZH4g@mail.gmail.com>
+ <CAPs6153w1_MWP9Xq15N7R1ffQVa-MVW+cGYLzhqtdkxcj+iLAA@mail.gmail.com>
+Message-ID: <CAP7pH7uTBUxRV-anywgv_ZVZ3Z+yBxuNBbHO-gaKp-u5QAPJ1A@mail.gmail.com>
+
+We are totally on the same page on the impact of allowing custom queues,
+that indeed does not look plausible unless there is a convincing need for
+it, which I doubt at this stage. In my previous e-mail, I was particularly
+referring to adding a setMaximumQueueSize() as Doug hinted. I do expect
+that to be relatively easy fix. What do you think?
+
+On Thu, Apr 25, 2019 at 10:34 AM Kasper Nielsen <kasperni at gmail.com> wrote:
+
+> On Thu, 25 Apr 2019 at 09:14, Volkan Yazıcı via Concurrency-interest
+> <concurrency-interest at cs.oswego.edu> wrote:
+> >
+> > Thanks so much for taking time to reply professor.
+> >
+> > STPE.DelayWorkQueue ctor does not have any arguments and every access is
+> synchronized on STPE.DelayWorkQueue#lock ReentrantLock, which I believe
+> makes the enforcement of a bound "relatively easy". Would you mind sharing
+> which sort of configurations you have in mind that might potentially lead
+> to future bugs, please?
+>
+> STPE.DelayWorkQueue provides O(log N) removal time because each node
+> (future task) maintain its own index into the heap. This is not
+> possible if you provide a custom java.util.Queue/DelayQueue, because
+> it has no concept of index. It could be heap based or linked based or
+> something else. So the only generic way to remove a element is to
+> (potential) iterate over every item in the queue.
+>
+> Also, see the original bug
+> https://bugs.java.com/bugdatabase/view_bug.do?bug_id=6602600
+>
+> /Kasper
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190425/8f9b503e/attachment.html>
+
+From notcarl at google.com  Thu Apr 25 16:27:51 2019
+From: notcarl at google.com (Carl Mastrangelo)
+Date: Thu, 25 Apr 2019 13:27:51 -0700
+Subject: [concurrency-interest] Mostly Thread Local
+Message-ID: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+
+Hi,
+
+I am looking for a synchronization pattern where there is a single writer
+and 0-1 readers.  Writes happen much more frequently than reads, and in
+fact reads may never happen.
+
+The use case is a simple logger which writes to a threadlocal ring buffer,
+which overwrites stale entries.  The reader comes in occasionally to read
+the buffer, but is in no rush. I am wondering if there is a way to make the
+writer lock free or wait free, while putting all the synchronization burden
+on the reader.
+
+My current approach is a ConcurrentHashMap, with a WeakRef for keys/values,
+each pointing to a ThreadLocal.   Writes and reads on the ThreadLocal are
+done using plain old `synchronized`, which are mostly uncontended.
+
+Questions:
+
+1.  Is there a faster way to implemented write-heavy, single producer
+code?
+
+2.  If the writes happen in quick succession, will lock coarsening reduce
+the number of synchronization points?   (i.e. is it possible to do better
+than volatile reads using `synchronized`?)
+
+3.  Is there a "lease" like synchronization pattern where a thread can
+request access to data for a limited time without syncrhonizing each
+modification?  I was thinking of maybe using System.nanoTime() with some
+safety bounds, since I have to make the nanoTime call anyways.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190425/d3e7ecdb/attachment.html>
+
+From jhump at bluegosling.com  Thu Apr 25 17:20:50 2019
+From: jhump at bluegosling.com (Josh Humphries)
+Date: Thu, 25 Apr 2019 17:20:50 -0400
+Subject: [concurrency-interest] Mostly Thread Local
+In-Reply-To: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+References: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+Message-ID: <CAO78j++bxpzJenoxN+kg1AdoWxF74DhjjF_kEcyfpTDztwMJ8Q@mail.gmail.com>
+
+Does the reader read the entire ring buffer? Or does it try track some sort
+of cursor and try to only read newly inserted items?
+
+If reading the entire ring buffer at once, I can think of a couple of ways
+that I believe would work:
+
+*Allocate entry with each write*
+If you allocate a new record every time you write an entry into the buffer,
+you can use VarHandles or AtomicReferenceArray to do volatile reads of each
+entry. The writer must of course use a volatile write for each store.
+
+*Don't allocate new entries*
+If you're wanting to *not* allocate entries but just mutate existing
+objects in the buffer that get pre-allocated, you can use a stamp field on
+each entry. Since there is only one writer, you don't need extra
+synchronization around read-modify-write sequences on the stamp. You just
+need to end the sequence with a volatile write. So the writer reads the
+stamp (call this value "initial stamp"), then negates it (or
+bitwise-invert), and volatile writes the new value. (So the stamp's sign
+bit is a dirty flag, indicating that the writer is concurrently making
+changes). The writer then updates all of the fields in the entry (no need
+for volatile writes). Finally, it volatile writes the stamp to "initial
+stamp plus one".
+
+Readers need to (volatile) read the stamp at the start, then read all of
+the relevant fields (which can be plain reads, not volatile ones), then
+(volatile) re-read the stamp at the end. If the stamp changed between the
+two reads, the field values read may be garbage/inconsistent, so the reader
+must try again. This would go into a loop until the read is successful
+(same stamp values before and after).
+
+The writer is non-blocking and non-locking. Readers are non-locking (but
+not necessarily non-blocking since they may need to perform
+nondeterministic number of re-reads). If the critical section is not short,
+readers will be busy waiting for writers to finish modifying an entry (so
+they should likely Thread.yield() periodically, perhaps even after every
+failed read attempt).
+
+If you wanted to further reduce volatile writes, you could make a sharded
+ring buffer: break the buffer up into N buffers. The writer round-robins
+across shards. Then you could put the stamp on the shard, not on individual
+entries. This would allow the writer to potentially batch up writes by
+dirtying the stamp on a shard, recording multiple entries (which do not
+need to use volatile writes), and then setting the new stamp value. This
+means longer critical sections, though, so more wasted busy-wait cycles in
+readers potentially. (Introducing a signaling mechanism seems like it would
+greatly complicate the scheme and may require introduction of other
+synchronizers, which seems to defeat the point.)
+
+
+
+For both of the above cases, after the reader scans the entire buffer, it
+would need to re-order the results based on something (like a monotonic
+counter/ID on each row, recorded by the writer) to reconstruct the correct
+order. There is the possibility, of course, that the reader misses some
+items or even has "holes" in the sequence of entries it reads.
+
+----
+*Josh Humphries*
+jhump at bluegosling.com
+
+
+On Thu, Apr 25, 2019 at 4:29 PM Carl Mastrangelo via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Hi,
+>
+> I am looking for a synchronization pattern where there is a single writer
+> and 0-1 readers.  Writes happen much more frequently than reads, and in
+> fact reads may never happen.
+>
+> The use case is a simple logger which writes to a threadlocal ring buffer,
+> which overwrites stale entries.  The reader comes in occasionally to read
+> the buffer, but is in no rush. I am wondering if there is a way to make the
+> writer lock free or wait free, while putting all the synchronization burden
+> on the reader.
+>
+> My current approach is a ConcurrentHashMap, with a WeakRef for
+> keys/values, each pointing to a ThreadLocal.   Writes and reads on the
+> ThreadLocal are done using plain old `synchronized`, which are mostly
+> uncontended.
+>
+> Questions:
+>
+> 1.  Is there a faster way to implemented write-heavy, single producer
+> code?
+>
+> 2.  If the writes happen in quick succession, will lock coarsening reduce
+> the number of synchronization points?   (i.e. is it possible to do better
+> than volatile reads using `synchronized`?)
+>
+> 3.  Is there a "lease" like synchronization pattern where a thread can
+> request access to data for a limited time without syncrhonizing each
+> modification?  I was thinking of maybe using System.nanoTime() with some
+> safety bounds, since I have to make the nanoTime call anyways.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190425/b2093b37/attachment.html>
+
+From dl at cs.oswego.edu  Thu Apr 25 19:05:09 2019
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Thu, 25 Apr 2019 19:05:09 -0400
+Subject: [concurrency-interest] Bounded Task Queue for
+ ScheduledThreadPoolExecutor
+In-Reply-To: <CAP7pH7sktR50bnXjSzHp2R7427o3HbLveS3K6nptAEQ7k3ZH4g@mail.gmail.com>
+References: <CAP7pH7s7MsVbTvf2+qWVaZUbrjUrdFtXgPVg3Xz3MpeTv3=tJQ@mail.gmail.com>
+ <82335b5c-0ccf-2c0b-f079-a5ffb1d73092@cs.oswego.edu>
+ <CAP7pH7sktR50bnXjSzHp2R7427o3HbLveS3K6nptAEQ7k3ZH4g@mail.gmail.com>
+Message-ID: <03c64a73-268b-be8e-2efc-2213de960e5e@cs.oswego.edu>
+
+On 4/25/19 4:12 AM, Volkan Yazıcı via Concurrency-interest wrote:
+> Thanks so much for taking time to reply professor.
+> 
+> STPE.DelayWorkQueue ctor does not have any arguments and every access is
+> synchronized on STPE.DelayWorkQueue#lock ReentrantLock, which I believe
+> makes the enforcement of a bound "relatively easy". Would you mind
+> sharing which sort of configurations you have in mind that might
+> potentially lead to future bugs, please?
+
+Possibilities include surprises about possible inconsistencies between
+task rejection due to capacity vs shutdown status, since these need not
+be atomically connected as users might expect them to be. If users are
+required to do it themselves (as below), they can't be surprised by this.
+
+> 
+> I see that you are more inclined to recommend me having my own custom
+> STPE wrapper overriding ScheduledExecutorService methods with a check on
+> getQueue().size() rather than creating a feature request in OpenJDK. Is
+> my interpretation right?
+
+Yes. To make this option more attractive, we might be able to relax some
+of the internal locking, that would make this slightly faster.
+
+-Doug
+
+
+From notcarl at google.com  Mon Apr 29 13:46:34 2019
+From: notcarl at google.com (Carl Mastrangelo)
+Date: Mon, 29 Apr 2019 10:46:34 -0700
+Subject: [concurrency-interest] Mostly Thread Local
+In-Reply-To: <CAO78j++bxpzJenoxN+kg1AdoWxF74DhjjF_kEcyfpTDztwMJ8Q@mail.gmail.com>
+References: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+ <CAO78j++bxpzJenoxN+kg1AdoWxF74DhjjF_kEcyfpTDztwMJ8Q@mail.gmail.com>
+Message-ID: <CAAcqB+vqiOfCC94XtkUp-dZPPKnycDE1by3+5Z7rihq5Qs+oHg@mail.gmail.com>
+
+Thanks for the ideas.   I put together a proof of concept where the writer
+writes to a ring buffer, but publishes the write index after each write.  I
+am not sure it's threadsafe:
+
+WriterThread:
+i = idxHandle.get(this)
+i %= SIZE;
+buf[i] = val;
+idxHandle.setRelease(this, i + 1);
+
+ReaderThread:
+T[] copyBuf = new T[SIZE];
+start = idxHandle.getVolatile(this);
+System.arraycopy(buf, 0, copyBuf, 0, SIZE);
+end = idxHandle.getVolatile(this);
+
+
+I know this is racy, but I *think* it may be okay.   As long as the reader
+ignores the elements between start and end (and assuming end - start >
+SIZE), it seems like the other elements copied from buf are safely
+published.
+
+
+On Thu, Apr 25, 2019 at 2:21 PM Josh Humphries <jhump at bluegosling.com>
+wrote:
+
+> Does the reader read the entire ring buffer? Or does it try track some
+> sort of cursor and try to only read newly inserted items?
+>
+> If reading the entire ring buffer at once, I can think of a couple of ways
+> that I believe would work:
+>
+> *Allocate entry with each write*
+> If you allocate a new record every time you write an entry into the
+> buffer, you can use VarHandles or AtomicReferenceArray to do volatile reads
+> of each entry. The writer must of course use a volatile write for each
+> store.
+>
+> *Don't allocate new entries*
+> If you're wanting to *not* allocate entries but just mutate existing
+> objects in the buffer that get pre-allocated, you can use a stamp field on
+> each entry. Since there is only one writer, you don't need extra
+> synchronization around read-modify-write sequences on the stamp. You just
+> need to end the sequence with a volatile write. So the writer reads the
+> stamp (call this value "initial stamp"), then negates it (or
+> bitwise-invert), and volatile writes the new value. (So the stamp's sign
+> bit is a dirty flag, indicating that the writer is concurrently making
+> changes). The writer then updates all of the fields in the entry (no need
+> for volatile writes). Finally, it volatile writes the stamp to "initial
+> stamp plus one".
+>
+> Readers need to (volatile) read the stamp at the start, then read all of
+> the relevant fields (which can be plain reads, not volatile ones), then
+> (volatile) re-read the stamp at the end. If the stamp changed between the
+> two reads, the field values read may be garbage/inconsistent, so the reader
+> must try again. This would go into a loop until the read is successful
+> (same stamp values before and after).
+>
+> The writer is non-blocking and non-locking. Readers are non-locking (but
+> not necessarily non-blocking since they may need to perform
+> nondeterministic number of re-reads). If the critical section is not short,
+> readers will be busy waiting for writers to finish modifying an entry (so
+> they should likely Thread.yield() periodically, perhaps even after every
+> failed read attempt).
+>
+> If you wanted to further reduce volatile writes, you could make a sharded
+> ring buffer: break the buffer up into N buffers. The writer round-robins
+> across shards. Then you could put the stamp on the shard, not on individual
+> entries. This would allow the writer to potentially batch up writes by
+> dirtying the stamp on a shard, recording multiple entries (which do not
+> need to use volatile writes), and then setting the new stamp value. This
+> means longer critical sections, though, so more wasted busy-wait cycles in
+> readers potentially. (Introducing a signaling mechanism seems like it would
+> greatly complicate the scheme and may require introduction of other
+> synchronizers, which seems to defeat the point.)
+>
+>
+>
+> For both of the above cases, after the reader scans the entire buffer, it
+> would need to re-order the results based on something (like a monotonic
+> counter/ID on each row, recorded by the writer) to reconstruct the correct
+> order. There is the possibility, of course, that the reader misses some
+> items or even has "holes" in the sequence of entries it reads.
+>
+> ----
+> *Josh Humphries*
+> jhump at bluegosling.com
+>
+>
+> On Thu, Apr 25, 2019 at 4:29 PM Carl Mastrangelo via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>> Hi,
+>>
+>> I am looking for a synchronization pattern where there is a single writer
+>> and 0-1 readers.  Writes happen much more frequently than reads, and in
+>> fact reads may never happen.
+>>
+>> The use case is a simple logger which writes to a threadlocal ring
+>> buffer, which overwrites stale entries.  The reader comes in
+>> occasionally to read the buffer, but is in no rush. I am wondering if there
+>> is a way to make the writer lock free or wait free, while putting all the
+>> synchronization burden on the reader.
+>>
+>> My current approach is a ConcurrentHashMap, with a WeakRef for
+>> keys/values, each pointing to a ThreadLocal.   Writes and reads on the
+>> ThreadLocal are done using plain old `synchronized`, which are mostly
+>> uncontended.
+>>
+>> Questions:
+>>
+>> 1.  Is there a faster way to implemented write-heavy, single producer
+>> code?
+>>
+>> 2.  If the writes happen in quick succession, will lock coarsening reduce
+>> the number of synchronization points?   (i.e. is it possible to do better
+>> than volatile reads using `synchronized`?)
+>>
+>> 3.  Is there a "lease" like synchronization pattern where a thread can
+>> request access to data for a limited time without syncrhonizing each
+>> modification?  I was thinking of maybe using System.nanoTime() with some
+>> safety bounds, since I have to make the nanoTime call anyways.
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190429/ced55b98/attachment.html>
+
+From ben.manes at gmail.com  Mon Apr 29 14:16:07 2019
+From: ben.manes at gmail.com (Benjamin Manes)
+Date: Mon, 29 Apr 2019 11:16:07 -0700
+Subject: [concurrency-interest] Mostly Thread Local
+In-Reply-To: <CAAcqB+vqiOfCC94XtkUp-dZPPKnycDE1by3+5Z7rihq5Qs+oHg@mail.gmail.com>
+References: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+ <CAO78j++bxpzJenoxN+kg1AdoWxF74DhjjF_kEcyfpTDztwMJ8Q@mail.gmail.com>
+ <CAAcqB+vqiOfCC94XtkUp-dZPPKnycDE1by3+5Z7rihq5Qs+oHg@mail.gmail.com>
+Message-ID: <CAGu0=MPTQDyYjqh90Ad6qu3NFWa2dCXU94t6vhBjwcrCqACufg@mail.gmail.com>
+
+I would use a JCTools' <https://github.com/JCTools/JCTools> queue, such
+as MpscGrowableArrayQueue has been excellent for my case. I use it for a
+write buffer to replay events under a lock, without blocking writers. Since
+it is bounded, when full I fallback to blocking the producers which
+improves throughput compared to busy waiting. For lossy events, I use a fixed
+ring buffer
+<https://github.com/ben-manes/caffeine/blob/master/caffeine/src/main/java/com/github/benmanes/caffeine/cache/BoundedBuffer.java>
+and a fork
+<https://github.com/ben-manes/caffeine/blob/master/caffeine/src/main/java/com/github/benmanes/caffeine/cache/StripedBuffer.java>
+of Doug Lea's Striped64 to add buffers as contention occurs. In that case
+if full then I let events be dropped, schedule the drain, and do that work
+under a lock.
+
+On Mon, Apr 29, 2019 at 10:48 AM Carl Mastrangelo via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Thanks for the ideas.   I put together a proof of concept where the writer
+> writes to a ring buffer, but publishes the write index after each write.  I
+> am not sure it's threadsafe:
+>
+> WriterThread:
+> i = idxHandle.get(this)
+> i %= SIZE;
+> buf[i] = val;
+> idxHandle.setRelease(this, i + 1);
+>
+> ReaderThread:
+> T[] copyBuf = new T[SIZE];
+> start = idxHandle.getVolatile(this);
+> System.arraycopy(buf, 0, copyBuf, 0, SIZE);
+> end = idxHandle.getVolatile(this);
+>
+>
+> I know this is racy, but I *think* it may be okay.   As long as the reader
+> ignores the elements between start and end (and assuming end - start >
+> SIZE), it seems like the other elements copied from buf are safely
+> published.
+>
+>
+> On Thu, Apr 25, 2019 at 2:21 PM Josh Humphries <jhump at bluegosling.com>
+> wrote:
+>
+>> Does the reader read the entire ring buffer? Or does it try track some
+>> sort of cursor and try to only read newly inserted items?
+>>
+>> If reading the entire ring buffer at once, I can think of a couple of
+>> ways that I believe would work:
+>>
+>> *Allocate entry with each write*
+>> If you allocate a new record every time you write an entry into the
+>> buffer, you can use VarHandles or AtomicReferenceArray to do volatile reads
+>> of each entry. The writer must of course use a volatile write for each
+>> store.
+>>
+>> *Don't allocate new entries*
+>> If you're wanting to *not* allocate entries but just mutate existing
+>> objects in the buffer that get pre-allocated, you can use a stamp field on
+>> each entry. Since there is only one writer, you don't need extra
+>> synchronization around read-modify-write sequences on the stamp. You just
+>> need to end the sequence with a volatile write. So the writer reads the
+>> stamp (call this value "initial stamp"), then negates it (or
+>> bitwise-invert), and volatile writes the new value. (So the stamp's sign
+>> bit is a dirty flag, indicating that the writer is concurrently making
+>> changes). The writer then updates all of the fields in the entry (no need
+>> for volatile writes). Finally, it volatile writes the stamp to "initial
+>> stamp plus one".
+>>
+>> Readers need to (volatile) read the stamp at the start, then read all of
+>> the relevant fields (which can be plain reads, not volatile ones), then
+>> (volatile) re-read the stamp at the end. If the stamp changed between the
+>> two reads, the field values read may be garbage/inconsistent, so the reader
+>> must try again. This would go into a loop until the read is successful
+>> (same stamp values before and after).
+>>
+>> The writer is non-blocking and non-locking. Readers are non-locking (but
+>> not necessarily non-blocking since they may need to perform
+>> nondeterministic number of re-reads). If the critical section is not short,
+>> readers will be busy waiting for writers to finish modifying an entry (so
+>> they should likely Thread.yield() periodically, perhaps even after every
+>> failed read attempt).
+>>
+>> If you wanted to further reduce volatile writes, you could make a sharded
+>> ring buffer: break the buffer up into N buffers. The writer round-robins
+>> across shards. Then you could put the stamp on the shard, not on individual
+>> entries. This would allow the writer to potentially batch up writes by
+>> dirtying the stamp on a shard, recording multiple entries (which do not
+>> need to use volatile writes), and then setting the new stamp value. This
+>> means longer critical sections, though, so more wasted busy-wait cycles in
+>> readers potentially. (Introducing a signaling mechanism seems like it would
+>> greatly complicate the scheme and may require introduction of other
+>> synchronizers, which seems to defeat the point.)
+>>
+>>
+>>
+>> For both of the above cases, after the reader scans the entire buffer, it
+>> would need to re-order the results based on something (like a monotonic
+>> counter/ID on each row, recorded by the writer) to reconstruct the correct
+>> order. There is the possibility, of course, that the reader misses some
+>> items or even has "holes" in the sequence of entries it reads.
+>>
+>> ----
+>> *Josh Humphries*
+>> jhump at bluegosling.com
+>>
+>>
+>> On Thu, Apr 25, 2019 at 4:29 PM Carl Mastrangelo via Concurrency-interest
+>> <concurrency-interest at cs.oswego.edu> wrote:
+>>
+>>> Hi,
+>>>
+>>> I am looking for a synchronization pattern where there is a single
+>>> writer and 0-1 readers.  Writes happen much more frequently than reads, and
+>>> in fact reads may never happen.
+>>>
+>>> The use case is a simple logger which writes to a threadlocal ring
+>>> buffer, which overwrites stale entries.  The reader comes in
+>>> occasionally to read the buffer, but is in no rush. I am wondering if there
+>>> is a way to make the writer lock free or wait free, while putting all the
+>>> synchronization burden on the reader.
+>>>
+>>> My current approach is a ConcurrentHashMap, with a WeakRef for
+>>> keys/values, each pointing to a ThreadLocal.   Writes and reads on the
+>>> ThreadLocal are done using plain old `synchronized`, which are mostly
+>>> uncontended.
+>>>
+>>> Questions:
+>>>
+>>> 1.  Is there a faster way to implemented write-heavy, single producer
+>>> code?
+>>>
+>>> 2.  If the writes happen in quick succession, will lock coarsening
+>>> reduce the number of synchronization points?   (i.e. is it possible to do
+>>> better than volatile reads using `synchronized`?)
+>>>
+>>> 3.  Is there a "lease" like synchronization pattern where a thread can
+>>> request access to data for a limited time without syncrhonizing each
+>>> modification?  I was thinking of maybe using System.nanoTime() with some
+>>> safety bounds, since I have to make the nanoTime call anyways.
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190429/11ee75d4/attachment-0001.html>
+
+From gil at azul.com  Mon Apr 29 14:19:16 2019
+From: gil at azul.com (Gil Tene)
+Date: Mon, 29 Apr 2019 18:19:16 +0000
+Subject: [concurrency-interest] Mostly Thread Local
+In-Reply-To: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+References: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+Message-ID: <EE7184D2-2E02-4D11-8F94-6C0EBF643C6D@azul.com>
+
+You may want to look at my WriterReaderPhaser, which was designed for the exact pattern you describe: writer(s) you care about, reader(s) that are "not in a hurry", but needing synchronization on the data to avoid lossiness/double-counting/etc.. Wait free for writers, blocking for readers (but guaranteed forward progress).
+
+It's pretty well explained in:
+http://stuff-gil-says.blogspot.com/2014/11/writerreaderphaser-story-about-new.html <http://stuff-gil-says.blogspot.com/2014/11/writerreaderphaser-story-about-new.html>
+
+Some Implementations:
+Java: https://github.com/HdrHistogram/HdrHistogram/blob/master/src/main/java/org/HdrHistogram/WriterReaderPhaser.java <https://github.com/HdrHistogram/HdrHistogram/blob/master/src/main/java/org/HdrHistogram/WriterReaderPhaser.java>
+C: https://github.com/HdrHistogram/HdrHistogram_c/blob/master/src/hdr_writer_reader_phaser.c <https://github.com/HdrHistogram/HdrHistogram_c/blob/master/src/hdr_writer_reader_phaser.c>
+C#: https://github.com/HdrHistogram/HdrHistogram.NET/blob/master/HdrHistogram/Utilities/WriterReaderPhaser.cs <https://github.com/HdrHistogram/HdrHistogram.NET/blob/master/HdrHistogram/Utilities/WriterReaderPhaser.cs>
+Rust: https://github.com/QuietMisdreavus/synchronoise <https://github.com/QuietMisdreavus/synchronoise>
+
+— Gil.
+
+> On Apr 25, 2019, at 1:27 PM, Carl Mastrangelo via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+> Hi,
+> 
+> I am looking for a synchronization pattern where there is a single writer and 0-1 readers.  Writes happen much more frequently than reads, and in fact reads may never happen.
+> 
+> The use case is a simple logger which writes to a threadlocal ring buffer, which overwrites stale entries.  The reader comes in occasionally to read the buffer, but is in no rush. I am wondering if there is a way to make the writer lock free or wait free, while putting all the synchronization burden on the reader.
+> 
+> My current approach is a ConcurrentHashMap, with a WeakRef for keys/values, each pointing to a ThreadLocal.   Writes and reads on the ThreadLocal are done using plain old `synchronized`, which are mostly uncontended.
+> 
+> Questions:
+> 
+> 1.  Is there a faster way to implemented write-heavy, single producer code?
+> 
+> 2.  If the writes happen in quick succession, will lock coarsening reduce the number of synchronization points?   (i.e. is it possible to do better than volatile reads using `synchronized`?)
+> 
+> 3.  Is there a "lease" like synchronization pattern where a thread can request access to data for a limited time without syncrhonizing each modification?  I was thinking of maybe using System.nanoTime() with some safety bounds, since I have to make the nanoTime call anyways.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190429/091f0a3b/attachment.html>
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 833 bytes
+Desc: Message signed with OpenPGP
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190429/091f0a3b/attachment.sig>
+
+From oleksandr.otenko at gmail.com  Mon Apr 29 17:16:06 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 29 Apr 2019 22:16:06 +0100
+Subject: [concurrency-interest] Mostly Thread Local
+In-Reply-To: <CAAcqB+vqiOfCC94XtkUp-dZPPKnycDE1by3+5Z7rihq5Qs+oHg@mail.gmail.com>
+References: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+ <CAO78j++bxpzJenoxN+kg1AdoWxF74DhjjF_kEcyfpTDztwMJ8Q@mail.gmail.com>
+ <CAAcqB+vqiOfCC94XtkUp-dZPPKnycDE1by3+5Z7rihq5Qs+oHg@mail.gmail.com>
+Message-ID: <CANkgWKgCG+9=ZDaa0Sm=jBPmezLViPhPeKafb4As8O_9Yo4tjw@mail.gmail.com>
+
+No, this is totally broken.
+
+You need more barriers after arraycopy and before end=....getVolatile
+
+setRelease is also suspicious, not obvious it is doing what you want.
+
+Alex
+
+
+On Mon, 29 Apr 2019, 18:48 Carl Mastrangelo via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Thanks for the ideas.   I put together a proof of concept where the writer
+> writes to a ring buffer, but publishes the write index after each write.  I
+> am not sure it's threadsafe:
+>
+> WriterThread:
+> i = idxHandle.get(this)
+> i %= SIZE;
+> buf[i] = val;
+> idxHandle.setRelease(this, i + 1);
+>
+> ReaderThread:
+> T[] copyBuf = new T[SIZE];
+> start = idxHandle.getVolatile(this);
+> System.arraycopy(buf, 0, copyBuf, 0, SIZE);
+> end = idxHandle.getVolatile(this);
+>
+>
+> I know this is racy, but I *think* it may be okay.   As long as the reader
+> ignores the elements between start and end (and assuming end - start >
+> SIZE), it seems like the other elements copied from buf are safely
+> published.
+>
+>
+> On Thu, Apr 25, 2019 at 2:21 PM Josh Humphries <jhump at bluegosling.com>
+> wrote:
+>
+>> Does the reader read the entire ring buffer? Or does it try track some
+>> sort of cursor and try to only read newly inserted items?
+>>
+>> If reading the entire ring buffer at once, I can think of a couple of
+>> ways that I believe would work:
+>>
+>> *Allocate entry with each write*
+>> If you allocate a new record every time you write an entry into the
+>> buffer, you can use VarHandles or AtomicReferenceArray to do volatile reads
+>> of each entry. The writer must of course use a volatile write for each
+>> store.
+>>
+>> *Don't allocate new entries*
+>> If you're wanting to *not* allocate entries but just mutate existing
+>> objects in the buffer that get pre-allocated, you can use a stamp field on
+>> each entry. Since there is only one writer, you don't need extra
+>> synchronization around read-modify-write sequences on the stamp. You just
+>> need to end the sequence with a volatile write. So the writer reads the
+>> stamp (call this value "initial stamp"), then negates it (or
+>> bitwise-invert), and volatile writes the new value. (So the stamp's sign
+>> bit is a dirty flag, indicating that the writer is concurrently making
+>> changes). The writer then updates all of the fields in the entry (no need
+>> for volatile writes). Finally, it volatile writes the stamp to "initial
+>> stamp plus one".
+>>
+>> Readers need to (volatile) read the stamp at the start, then read all of
+>> the relevant fields (which can be plain reads, not volatile ones), then
+>> (volatile) re-read the stamp at the end. If the stamp changed between the
+>> two reads, the field values read may be garbage/inconsistent, so the reader
+>> must try again. This would go into a loop until the read is successful
+>> (same stamp values before and after).
+>>
+>> The writer is non-blocking and non-locking. Readers are non-locking (but
+>> not necessarily non-blocking since they may need to perform
+>> nondeterministic number of re-reads). If the critical section is not short,
+>> readers will be busy waiting for writers to finish modifying an entry (so
+>> they should likely Thread.yield() periodically, perhaps even after every
+>> failed read attempt).
+>>
+>> If you wanted to further reduce volatile writes, you could make a sharded
+>> ring buffer: break the buffer up into N buffers. The writer round-robins
+>> across shards. Then you could put the stamp on the shard, not on individual
+>> entries. This would allow the writer to potentially batch up writes by
+>> dirtying the stamp on a shard, recording multiple entries (which do not
+>> need to use volatile writes), and then setting the new stamp value. This
+>> means longer critical sections, though, so more wasted busy-wait cycles in
+>> readers potentially. (Introducing a signaling mechanism seems like it would
+>> greatly complicate the scheme and may require introduction of other
+>> synchronizers, which seems to defeat the point.)
+>>
+>>
+>>
+>> For both of the above cases, after the reader scans the entire buffer, it
+>> would need to re-order the results based on something (like a monotonic
+>> counter/ID on each row, recorded by the writer) to reconstruct the correct
+>> order. There is the possibility, of course, that the reader misses some
+>> items or even has "holes" in the sequence of entries it reads.
+>>
+>> ----
+>> *Josh Humphries*
+>> jhump at bluegosling.com
+>>
+>>
+>> On Thu, Apr 25, 2019 at 4:29 PM Carl Mastrangelo via Concurrency-interest
+>> <concurrency-interest at cs.oswego.edu> wrote:
+>>
+>>> Hi,
+>>>
+>>> I am looking for a synchronization pattern where there is a single
+>>> writer and 0-1 readers.  Writes happen much more frequently than reads, and
+>>> in fact reads may never happen.
+>>>
+>>> The use case is a simple logger which writes to a threadlocal ring
+>>> buffer, which overwrites stale entries.  The reader comes in
+>>> occasionally to read the buffer, but is in no rush. I am wondering if there
+>>> is a way to make the writer lock free or wait free, while putting all the
+>>> synchronization burden on the reader.
+>>>
+>>> My current approach is a ConcurrentHashMap, with a WeakRef for
+>>> keys/values, each pointing to a ThreadLocal.   Writes and reads on the
+>>> ThreadLocal are done using plain old `synchronized`, which are mostly
+>>> uncontended.
+>>>
+>>> Questions:
+>>>
+>>> 1.  Is there a faster way to implemented write-heavy, single producer
+>>> code?
+>>>
+>>> 2.  If the writes happen in quick succession, will lock coarsening
+>>> reduce the number of synchronization points?   (i.e. is it possible to do
+>>> better than volatile reads using `synchronized`?)
+>>>
+>>> 3.  Is there a "lease" like synchronization pattern where a thread can
+>>> request access to data for a limited time without syncrhonizing each
+>>> modification?  I was thinking of maybe using System.nanoTime() with some
+>>> safety bounds, since I have to make the nanoTime call anyways.
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190429/bf544bab/attachment-0001.html>
+
+From notcarl at google.com  Mon Apr 29 17:49:53 2019
+From: notcarl at google.com (Carl Mastrangelo)
+Date: Mon, 29 Apr 2019 14:49:53 -0700
+Subject: [concurrency-interest] Mostly Thread Local
+In-Reply-To: <CANkgWKgCG+9=ZDaa0Sm=jBPmezLViPhPeKafb4As8O_9Yo4tjw@mail.gmail.com>
+References: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+ <CAO78j++bxpzJenoxN+kg1AdoWxF74DhjjF_kEcyfpTDztwMJ8Q@mail.gmail.com>
+ <CAAcqB+vqiOfCC94XtkUp-dZPPKnycDE1by3+5Z7rihq5Qs+oHg@mail.gmail.com>
+ <CANkgWKgCG+9=ZDaa0Sm=jBPmezLViPhPeKafb4As8O_9Yo4tjw@mail.gmail.com>
+Message-ID: <CAAcqB+v_VAnGPwRGvO9StXJZRbn0qTe2vRZbQ6ArzC0ofuSRjg@mail.gmail.com>
+
+@Gil: I had seen that before, though I think it is optimized for the
+multiproducer case.  The issue with it is the reader needs to keep track of
+the old snapshots after it completes reading, because the writer will have
+moved on.  I guess thats okay, but then the writer has to syncrhonize
+before each write.
+
+@Alex:  Can you explain why?  I'm trying to understand the flaw in my
+reasoning.  From my PoV, as long as System.arraycopy copies the data in
+(Release|Opaque|Volatile), it should be sufficient.  My thought process:
+
+Suppose the buffer is size 16, and the write idx is at 20.
+
+T1(writer):  Read idx
+T1: Write buf[idx&0xF]
+T1: Write release idx + 1
+
+T2(reader): Read volatile idx
+T2: Start arraycopy of buf
+
+T1:  Read idx
+T1: Write buf[idx&0xF]
+T1: Write release idx + 1
+
+T2: finish array copy
+T2: Read volatile idx
+
+
+>From T2's perspective, idx2 - idx1  would be how many entrees after idx1
+are racy garbage values.  All other values, [0-3], [5-15]  were correctly
+synchronized by the released write and volatile read of idx.
+
+
+
+
+On Mon, Apr 29, 2019 at 2:16 PM Alex Otenko <oleksandr.otenko at gmail.com>
+wrote:
+
+> No, this is totally broken.
+>
+> You need more barriers after arraycopy and before end=....getVolatile
+>
+> setRelease is also suspicious, not obvious it is doing what you want.
+>
+> Alex
+>
+>
+> On Mon, 29 Apr 2019, 18:48 Carl Mastrangelo via Concurrency-interest, <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>> Thanks for the ideas.   I put together a proof of concept where the
+>> writer writes to a ring buffer, but publishes the write index after each
+>> write.  I am not sure it's threadsafe:
+>>
+>> WriterThread:
+>> i = idxHandle.get(this)
+>> i %= SIZE;
+>> buf[i] = val;
+>> idxHandle.setRelease(this, i + 1);
+>>
+>> ReaderThread:
+>> T[] copyBuf = new T[SIZE];
+>> start = idxHandle.getVolatile(this);
+>> System.arraycopy(buf, 0, copyBuf, 0, SIZE);
+>> end = idxHandle.getVolatile(this);
+>>
+>>
+>> I know this is racy, but I *think* it may be okay.   As long as the
+>> reader ignores the elements between start and end (and assuming end - start
+>> > SIZE), it seems like the other elements copied from buf are safely
+>> published.
+>>
+>>
+>> On Thu, Apr 25, 2019 at 2:21 PM Josh Humphries <jhump at bluegosling.com>
+>> wrote:
+>>
+>>> Does the reader read the entire ring buffer? Or does it try track some
+>>> sort of cursor and try to only read newly inserted items?
+>>>
+>>> If reading the entire ring buffer at once, I can think of a couple of
+>>> ways that I believe would work:
+>>>
+>>> *Allocate entry with each write*
+>>> If you allocate a new record every time you write an entry into the
+>>> buffer, you can use VarHandles or AtomicReferenceArray to do volatile reads
+>>> of each entry. The writer must of course use a volatile write for each
+>>> store.
+>>>
+>>> *Don't allocate new entries*
+>>> If you're wanting to *not* allocate entries but just mutate existing
+>>> objects in the buffer that get pre-allocated, you can use a stamp field on
+>>> each entry. Since there is only one writer, you don't need extra
+>>> synchronization around read-modify-write sequences on the stamp. You just
+>>> need to end the sequence with a volatile write. So the writer reads the
+>>> stamp (call this value "initial stamp"), then negates it (or
+>>> bitwise-invert), and volatile writes the new value. (So the stamp's sign
+>>> bit is a dirty flag, indicating that the writer is concurrently making
+>>> changes). The writer then updates all of the fields in the entry (no need
+>>> for volatile writes). Finally, it volatile writes the stamp to "initial
+>>> stamp plus one".
+>>>
+>>> Readers need to (volatile) read the stamp at the start, then read all of
+>>> the relevant fields (which can be plain reads, not volatile ones), then
+>>> (volatile) re-read the stamp at the end. If the stamp changed between the
+>>> two reads, the field values read may be garbage/inconsistent, so the reader
+>>> must try again. This would go into a loop until the read is successful
+>>> (same stamp values before and after).
+>>>
+>>> The writer is non-blocking and non-locking. Readers are non-locking (but
+>>> not necessarily non-blocking since they may need to perform
+>>> nondeterministic number of re-reads). If the critical section is not short,
+>>> readers will be busy waiting for writers to finish modifying an entry (so
+>>> they should likely Thread.yield() periodically, perhaps even after every
+>>> failed read attempt).
+>>>
+>>> If you wanted to further reduce volatile writes, you could make a
+>>> sharded ring buffer: break the buffer up into N buffers. The writer
+>>> round-robins across shards. Then you could put the stamp on the shard, not
+>>> on individual entries. This would allow the writer to potentially batch up
+>>> writes by dirtying the stamp on a shard, recording multiple entries (which
+>>> do not need to use volatile writes), and then setting the new stamp value.
+>>> This means longer critical sections, though, so more wasted busy-wait
+>>> cycles in readers potentially. (Introducing a signaling mechanism seems
+>>> like it would greatly complicate the scheme and may require introduction of
+>>> other synchronizers, which seems to defeat the point.)
+>>>
+>>>
+>>>
+>>> For both of the above cases, after the reader scans the entire buffer,
+>>> it would need to re-order the results based on something (like a monotonic
+>>> counter/ID on each row, recorded by the writer) to reconstruct the correct
+>>> order. There is the possibility, of course, that the reader misses some
+>>> items or even has "holes" in the sequence of entries it reads.
+>>>
+>>> ----
+>>> *Josh Humphries*
+>>> jhump at bluegosling.com
+>>>
+>>>
+>>> On Thu, Apr 25, 2019 at 4:29 PM Carl Mastrangelo via
+>>> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>>>
+>>>> Hi,
+>>>>
+>>>> I am looking for a synchronization pattern where there is a single
+>>>> writer and 0-1 readers.  Writes happen much more frequently than reads, and
+>>>> in fact reads may never happen.
+>>>>
+>>>> The use case is a simple logger which writes to a threadlocal ring
+>>>> buffer, which overwrites stale entries.  The reader comes in
+>>>> occasionally to read the buffer, but is in no rush. I am wondering if there
+>>>> is a way to make the writer lock free or wait free, while putting all the
+>>>> synchronization burden on the reader.
+>>>>
+>>>> My current approach is a ConcurrentHashMap, with a WeakRef for
+>>>> keys/values, each pointing to a ThreadLocal.   Writes and reads on the
+>>>> ThreadLocal are done using plain old `synchronized`, which are mostly
+>>>> uncontended.
+>>>>
+>>>> Questions:
+>>>>
+>>>> 1.  Is there a faster way to implemented write-heavy, single producer
+>>>> code?
+>>>>
+>>>> 2.  If the writes happen in quick succession, will lock coarsening
+>>>> reduce the number of synchronization points?   (i.e. is it possible to do
+>>>> better than volatile reads using `synchronized`?)
+>>>>
+>>>> 3.  Is there a "lease" like synchronization pattern where a thread can
+>>>> request access to data for a limited time without syncrhonizing each
+>>>> modification?  I was thinking of maybe using System.nanoTime() with some
+>>>> safety bounds, since I have to make the nanoTime call anyways.
+>>>> _______________________________________________
+>>>> Concurrency-interest mailing list
+>>>> Concurrency-interest at cs.oswego.edu
+>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>
+>>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190429/07323850/attachment.html>
+
+From oleksandr.otenko at gmail.com  Mon Apr 29 17:54:56 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 29 Apr 2019 22:54:56 +0100
+Subject: [concurrency-interest] Mostly Thread Local
+In-Reply-To: <CAAcqB+v_VAnGPwRGvO9StXJZRbn0qTe2vRZbQ6ArzC0ofuSRjg@mail.gmail.com>
+References: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+ <CAO78j++bxpzJenoxN+kg1AdoWxF74DhjjF_kEcyfpTDztwMJ8Q@mail.gmail.com>
+ <CAAcqB+vqiOfCC94XtkUp-dZPPKnycDE1by3+5Z7rihq5Qs+oHg@mail.gmail.com>
+ <CANkgWKgCG+9=ZDaa0Sm=jBPmezLViPhPeKafb4As8O_9Yo4tjw@mail.gmail.com>
+ <CAAcqB+v_VAnGPwRGvO9StXJZRbn0qTe2vRZbQ6ArzC0ofuSRjg@mail.gmail.com>
+Message-ID: <CANkgWKghHR1OvY+wNXJq_T2_WvB0iLNY60wma_XOHRA9ThRgFw@mail.gmail.com>
+
+end=...getVolatile is allowed to go ahead of any or all of arraycopy. So
+it's giving you bogus boundaries, and you can't guarantee the decision
+based on it is correct.
+
+Then setRelease guarantees not reordering with the preceding loads and
+stores, but doesn't seem to guarantee not reordering with subsequent
+stores, eg buf[i+1]. So you can't guarantee anything at all.
+
+So you want store-store before and after buf[i]=val
+
+Alex
+
+On Mon, 29 Apr 2019, 22:50 Carl Mastrangelo, <notcarl at google.com> wrote:
+
+> @Gil: I had seen that before, though I think it is optimized for the
+> multiproducer case.  The issue with it is the reader needs to keep track of
+> the old snapshots after it completes reading, because the writer will have
+> moved on.  I guess thats okay, but then the writer has to syncrhonize
+> before each write.
+>
+> @Alex:  Can you explain why?  I'm trying to understand the flaw in my
+> reasoning.  From my PoV, as long as System.arraycopy copies the data in
+> (Release|Opaque|Volatile), it should be sufficient.  My thought process:
+>
+> Suppose the buffer is size 16, and the write idx is at 20.
+>
+> T1(writer):  Read idx
+> T1: Write buf[idx&0xF]
+> T1: Write release idx + 1
+>
+> T2(reader): Read volatile idx
+> T2: Start arraycopy of buf
+>
+> T1:  Read idx
+> T1: Write buf[idx&0xF]
+> T1: Write release idx + 1
+>
+> T2: finish array copy
+> T2: Read volatile idx
+>
+>
+> From T2's perspective, idx2 - idx1  would be how many entrees after idx1
+> are racy garbage values.  All other values, [0-3], [5-15]  were correctly
+> synchronized by the released write and volatile read of idx.
+>
+>
+>
+>
+> On Mon, Apr 29, 2019 at 2:16 PM Alex Otenko <oleksandr.otenko at gmail.com>
+> wrote:
+>
+>> No, this is totally broken.
+>>
+>> You need more barriers after arraycopy and before end=....getVolatile
+>>
+>> setRelease is also suspicious, not obvious it is doing what you want.
+>>
+>> Alex
+>>
+>>
+>> On Mon, 29 Apr 2019, 18:48 Carl Mastrangelo via Concurrency-interest, <
+>> concurrency-interest at cs.oswego.edu> wrote:
+>>
+>>> Thanks for the ideas.   I put together a proof of concept where the
+>>> writer writes to a ring buffer, but publishes the write index after each
+>>> write.  I am not sure it's threadsafe:
+>>>
+>>> WriterThread:
+>>> i = idxHandle.get(this)
+>>> i %= SIZE;
+>>> buf[i] = val;
+>>> idxHandle.setRelease(this, i + 1);
+>>>
+>>> ReaderThread:
+>>> T[] copyBuf = new T[SIZE];
+>>> start = idxHandle.getVolatile(this);
+>>> System.arraycopy(buf, 0, copyBuf, 0, SIZE);
+>>> end = idxHandle.getVolatile(this);
+>>>
+>>>
+>>> I know this is racy, but I *think* it may be okay.   As long as the
+>>> reader ignores the elements between start and end (and assuming end - start
+>>> > SIZE), it seems like the other elements copied from buf are safely
+>>> published.
+>>>
+>>>
+>>> On Thu, Apr 25, 2019 at 2:21 PM Josh Humphries <jhump at bluegosling.com>
+>>> wrote:
+>>>
+>>>> Does the reader read the entire ring buffer? Or does it try track some
+>>>> sort of cursor and try to only read newly inserted items?
+>>>>
+>>>> If reading the entire ring buffer at once, I can think of a couple of
+>>>> ways that I believe would work:
+>>>>
+>>>> *Allocate entry with each write*
+>>>> If you allocate a new record every time you write an entry into the
+>>>> buffer, you can use VarHandles or AtomicReferenceArray to do volatile reads
+>>>> of each entry. The writer must of course use a volatile write for each
+>>>> store.
+>>>>
+>>>> *Don't allocate new entries*
+>>>> If you're wanting to *not* allocate entries but just mutate existing
+>>>> objects in the buffer that get pre-allocated, you can use a stamp field on
+>>>> each entry. Since there is only one writer, you don't need extra
+>>>> synchronization around read-modify-write sequences on the stamp. You just
+>>>> need to end the sequence with a volatile write. So the writer reads the
+>>>> stamp (call this value "initial stamp"), then negates it (or
+>>>> bitwise-invert), and volatile writes the new value. (So the stamp's sign
+>>>> bit is a dirty flag, indicating that the writer is concurrently making
+>>>> changes). The writer then updates all of the fields in the entry (no need
+>>>> for volatile writes). Finally, it volatile writes the stamp to "initial
+>>>> stamp plus one".
+>>>>
+>>>> Readers need to (volatile) read the stamp at the start, then read all
+>>>> of the relevant fields (which can be plain reads, not volatile ones), then
+>>>> (volatile) re-read the stamp at the end. If the stamp changed between the
+>>>> two reads, the field values read may be garbage/inconsistent, so the reader
+>>>> must try again. This would go into a loop until the read is successful
+>>>> (same stamp values before and after).
+>>>>
+>>>> The writer is non-blocking and non-locking. Readers are non-locking
+>>>> (but not necessarily non-blocking since they may need to perform
+>>>> nondeterministic number of re-reads). If the critical section is not short,
+>>>> readers will be busy waiting for writers to finish modifying an entry (so
+>>>> they should likely Thread.yield() periodically, perhaps even after every
+>>>> failed read attempt).
+>>>>
+>>>> If you wanted to further reduce volatile writes, you could make a
+>>>> sharded ring buffer: break the buffer up into N buffers. The writer
+>>>> round-robins across shards. Then you could put the stamp on the shard, not
+>>>> on individual entries. This would allow the writer to potentially batch up
+>>>> writes by dirtying the stamp on a shard, recording multiple entries (which
+>>>> do not need to use volatile writes), and then setting the new stamp value.
+>>>> This means longer critical sections, though, so more wasted busy-wait
+>>>> cycles in readers potentially. (Introducing a signaling mechanism seems
+>>>> like it would greatly complicate the scheme and may require introduction of
+>>>> other synchronizers, which seems to defeat the point.)
+>>>>
+>>>>
+>>>>
+>>>> For both of the above cases, after the reader scans the entire buffer,
+>>>> it would need to re-order the results based on something (like a monotonic
+>>>> counter/ID on each row, recorded by the writer) to reconstruct the correct
+>>>> order. There is the possibility, of course, that the reader misses some
+>>>> items or even has "holes" in the sequence of entries it reads.
+>>>>
+>>>> ----
+>>>> *Josh Humphries*
+>>>> jhump at bluegosling.com
+>>>>
+>>>>
+>>>> On Thu, Apr 25, 2019 at 4:29 PM Carl Mastrangelo via
+>>>> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>>>>
+>>>>> Hi,
+>>>>>
+>>>>> I am looking for a synchronization pattern where there is a single
+>>>>> writer and 0-1 readers.  Writes happen much more frequently than reads, and
+>>>>> in fact reads may never happen.
+>>>>>
+>>>>> The use case is a simple logger which writes to a threadlocal ring
+>>>>> buffer, which overwrites stale entries.  The reader comes in
+>>>>> occasionally to read the buffer, but is in no rush. I am wondering if there
+>>>>> is a way to make the writer lock free or wait free, while putting all the
+>>>>> synchronization burden on the reader.
+>>>>>
+>>>>> My current approach is a ConcurrentHashMap, with a WeakRef for
+>>>>> keys/values, each pointing to a ThreadLocal.   Writes and reads on the
+>>>>> ThreadLocal are done using plain old `synchronized`, which are mostly
+>>>>> uncontended.
+>>>>>
+>>>>> Questions:
+>>>>>
+>>>>> 1.  Is there a faster way to implemented write-heavy, single producer
+>>>>> code?
+>>>>>
+>>>>> 2.  If the writes happen in quick succession, will lock coarsening
+>>>>> reduce the number of synchronization points?   (i.e. is it possible to do
+>>>>> better than volatile reads using `synchronized`?)
+>>>>>
+>>>>> 3.  Is there a "lease" like synchronization pattern where a thread can
+>>>>> request access to data for a limited time without syncrhonizing each
+>>>>> modification?  I was thinking of maybe using System.nanoTime() with some
+>>>>> safety bounds, since I have to make the nanoTime call anyways.
+>>>>> _______________________________________________
+>>>>> Concurrency-interest mailing list
+>>>>> Concurrency-interest at cs.oswego.edu
+>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>
+>>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190429/59da6001/attachment-0001.html>
+
+From gil at azul.com  Mon Apr 29 18:28:23 2019
+From: gil at azul.com (Gil Tene)
+Date: Mon, 29 Apr 2019 22:28:23 +0000
+Subject: [concurrency-interest] Mostly Thread Local
+In-Reply-To: <CAAcqB+v_VAnGPwRGvO9StXJZRbn0qTe2vRZbQ6ArzC0ofuSRjg@mail.gmail.com>
+References: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+ <CAO78j++bxpzJenoxN+kg1AdoWxF74DhjjF_kEcyfpTDztwMJ8Q@mail.gmail.com>
+ <CAAcqB+vqiOfCC94XtkUp-dZPPKnycDE1by3+5Z7rihq5Qs+oHg@mail.gmail.com>
+ <CANkgWKgCG+9=ZDaa0Sm=jBPmezLViPhPeKafb4As8O_9Yo4tjw@mail.gmail.com>
+ <CAAcqB+v_VAnGPwRGvO9StXJZRbn0qTe2vRZbQ6ArzC0ofuSRjg@mail.gmail.com>
+Message-ID: <9EA32DFA-21B2-4264-A467-49D252152EAE@azul.com>
+
+
+
+> On Apr 29, 2019, at 2:49 PM, Carl Mastrangelo via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+> @Gil: I had seen that before, though I think it is optimized for the multiproducer case.
+
+I guess the way I see it, the multi-producer support is just a nice side-effect. Even with a single writer, you'd need that writer to indicate critical section boundaries in so me way (or coordinate in some other way with e.g. atomically modified caret position trackers in your ring buffer) if it wants to remain wait-free while coordinating with a reader.
+
+> The issue with it is the reader needs to keep track of the old snapshots after it completes reading, because the writer will have moved on.
+
+The common pattern is a classic double-buffer. The writer(s) only ever interacts with the "active" data structures, and the reader will typically have one "inactive" data structure that it is working on, knowing that the inactive data is at rest because no writer(s) are interacting with it. Efficient implementations will "flip" the active and inactive versions and never allocate a new structure.
+
+You can use other patterns (e.g. multi-interval buffers used in moving window applications), but the double-buffer is by far the simplest and most common.
+
+In your use case, you would just have active and inactive instances of your ringbuffer, with the reader controlling which is which (and flipping between them to read), and the writer (the logger in your case) only ever writing to the active one. If you size your buffer large enough and the reader visits often enough (for the buffer size and write rate),  you can maintain lossless reading.
+
+Whether or not you need allocation for the actual elements you are logging is up to you and what you are logging. You can certainly have each of the two ring buffer instance be an array of references to e.g. String, with String entries instantiated and allocated per logging event, but zero allocation recorders or loggers with this pattern are common, where each of the two instances are pre-allocated to hold the entire data needed. E.g. if a reasonable cap for a logging entry size is known, all entries in the ring buffer can be pre-allocated.
+
+> I guess thats okay, but then the writer has to syncrhonize before each write.
+
+The synchronization cost on the writer side is a single atomic increment on each side of a critical section. This (with a simple array based ring buffer and non-atomic manipulation of the "active caret" in that buffer since you have only a single writer) is probably much cheaper than using ConcurrentHashMap, ThreadLocal lookups, and WeakRef manipulations.
+
+As for "coarsening": the critical section can have as many data operations folded together in a "coarsening effect" as you want.
+
+> 
+> @Alex:  Can you explain why?  I'm trying to understand the flaw in my reasoning.  From my PoV, as long as System.arraycopy copies the data in (Release|Opaque|Volatile), it should be sufficient.  My thought process:
+> 
+> Suppose the buffer is size 16, and the write idx is at 20.
+> 
+> T1(writer):  Read idx
+> T1: Write buf[idx&0xF]
+> T1: Write release idx + 1
+> 
+> T2(reader): Read volatile idx
+> T2: Start arraycopy of buf
+> 
+> T1:  Read idx
+> T1: Write buf[idx&0xF]
+> T1: Write release idx + 1
+> 
+> T2: finish array copy
+> T2: Read volatile idx
+> 
+> 
+> From T2's perspective, idx2 - idx1  would be how many entrees after idx1 are racy garbage values.  All other values, [0-3], [5-15]  were correctly synchronized by the released write and volatile read of idx.
+> 
+> 
+> 
+> 
+> On Mon, Apr 29, 2019 at 2:16 PM Alex Otenko <oleksandr.otenko at gmail.com <mailto:oleksandr.otenko at gmail.com>> wrote:
+> No, this is totally broken.
+> 
+> You need more barriers after arraycopy and before end=....getVolatile
+> 
+> setRelease is also suspicious, not obvious it is doing what you want.
+> 
+> Alex
+> 
+> 
+> On Mon, 29 Apr 2019, 18:48 Carl Mastrangelo via Concurrency-interest, <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+> Thanks for the ideas.   I put together a proof of concept where the writer writes to a ring buffer, but publishes the write index after each write.  I am not sure it's threadsafe:
+> 
+> WriterThread:
+> i = idxHandle.get(this)
+> i %= SIZE;
+> buf[i] = val;
+> idxHandle.setRelease(this, i + 1);
+> 
+> ReaderThread:
+> T[] copyBuf = new T[SIZE];
+> start = idxHandle.getVolatile(this);
+> System.arraycopy(buf, 0, copyBuf, 0, SIZE);
+> end = idxHandle.getVolatile(this);
+> 
+> 
+> I know this is racy, but I *think* it may be okay.   As long as the reader ignores the elements between start and end (and assuming end - start > SIZE), it seems like the other elements copied from buf are safely published.
+> 
+> 
+> On Thu, Apr 25, 2019 at 2:21 PM Josh Humphries <jhump at bluegosling.com <mailto:jhump at bluegosling.com>> wrote:
+> Does the reader read the entire ring buffer? Or does it try track some sort of cursor and try to only read newly inserted items?
+> 
+> If reading the entire ring buffer at once, I can think of a couple of ways that I believe would work:
+> 
+> Allocate entry with each write
+> If you allocate a new record every time you write an entry into the buffer, you can use VarHandles or AtomicReferenceArray to do volatile reads of each entry. The writer must of course use a volatile write for each store.
+> 
+> Don't allocate new entries
+> If you're wanting to not allocate entries but just mutate existing objects in the buffer that get pre-allocated, you can use a stamp field on each entry. Since there is only one writer, you don't need extra synchronization around read-modify-write sequences on the stamp. You just need to end the sequence with a volatile write. So the writer reads the stamp (call this value "initial stamp"), then negates it (or bitwise-invert), and volatile writes the new value. (So the stamp's sign bit is a dirty flag, indicating that the writer is concurrently making changes). The writer then updates all of the fields in the entry (no need for volatile writes). Finally, it volatile writes the stamp to "initial stamp plus one".
+> 
+> Readers need to (volatile) read the stamp at the start, then read all of the relevant fields (which can be plain reads, not volatile ones), then (volatile) re-read the stamp at the end. If the stamp changed between the two reads, the field values read may be garbage/inconsistent, so the reader must try again. This would go into a loop until the read is successful (same stamp values before and after).
+> 
+> The writer is non-blocking and non-locking. Readers are non-locking (but not necessarily non-blocking since they may need to perform nondeterministic number of re-reads). If the critical section is not short, readers will be busy waiting for writers to finish modifying an entry (so they should likely Thread.yield() periodically, perhaps even after every failed read attempt).
+> 
+> If you wanted to further reduce volatile writes, you could make a sharded ring buffer: break the buffer up into N buffers. The writer round-robins across shards. Then you could put the stamp on the shard, not on individual entries. This would allow the writer to potentially batch up writes by dirtying the stamp on a shard, recording multiple entries (which do not need to use volatile writes), and then setting the new stamp value. This means longer critical sections, though, so more wasted busy-wait cycles in readers potentially. (Introducing a signaling mechanism seems like it would greatly complicate the scheme and may require introduction of other synchronizers, which seems to defeat the point.)
+> 
+> 
+> 
+> For both of the above cases, after the reader scans the entire buffer, it would need to re-order the results based on something (like a monotonic counter/ID on each row, recorded by the writer) to reconstruct the correct order. There is the possibility, of course, that the reader misses some items or even has "holes" in the sequence of entries it reads.
+> 
+> ----
+> Josh Humphries
+> jhump at bluegosling.com <mailto:jhump at bluegosling.com>
+> 
+> 
+> On Thu, Apr 25, 2019 at 4:29 PM Carl Mastrangelo via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+> Hi,
+> 
+> I am looking for a synchronization pattern where there is a single writer and 0-1 readers.  Writes happen much more frequently than reads, and in fact reads may never happen.
+> 
+> The use case is a simple logger which writes to a threadlocal ring buffer, which overwrites stale entries.  The reader comes in occasionally to read the buffer, but is in no rush. I am wondering if there is a way to make the writer lock free or wait free, while putting all the synchronization burden on the reader.
+> 
+> My current approach is a ConcurrentHashMap, with a WeakRef for keys/values, each pointing to a ThreadLocal.   Writes and reads on the ThreadLocal are done using plain old `synchronized`, which are mostly uncontended.
+> 
+> Questions:
+> 
+> 1.  Is there a faster way to implemented write-heavy, single producer code?
+> 
+> 2.  If the writes happen in quick succession, will lock coarsening reduce the number of synchronization points?   (i.e. is it possible to do better than volatile reads using `synchronized`?)
+> 
+> 3.  Is there a "lease" like synchronization pattern where a thread can request access to data for a limited time without syncrhonizing each modification?  I was thinking of maybe using System.nanoTime() with some safety bounds, since I have to make the nanoTime call anyways.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190429/e908ea16/attachment-0001.html>
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 833 bytes
+Desc: Message signed with OpenPGP
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190429/e908ea16/attachment-0001.sig>
+
+From notcarl at google.com  Mon Apr 29 19:35:35 2019
+From: notcarl at google.com (Carl Mastrangelo)
+Date: Mon, 29 Apr 2019 16:35:35 -0700
+Subject: [concurrency-interest] Mostly Thread Local
+In-Reply-To: <CANkgWKghHR1OvY+wNXJq_T2_WvB0iLNY60wma_XOHRA9ThRgFw@mail.gmail.com>
+References: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+ <CAO78j++bxpzJenoxN+kg1AdoWxF74DhjjF_kEcyfpTDztwMJ8Q@mail.gmail.com>
+ <CAAcqB+vqiOfCC94XtkUp-dZPPKnycDE1by3+5Z7rihq5Qs+oHg@mail.gmail.com>
+ <CANkgWKgCG+9=ZDaa0Sm=jBPmezLViPhPeKafb4As8O_9Yo4tjw@mail.gmail.com>
+ <CAAcqB+v_VAnGPwRGvO9StXJZRbn0qTe2vRZbQ6ArzC0ofuSRjg@mail.gmail.com>
+ <CANkgWKghHR1OvY+wNXJq_T2_WvB0iLNY60wma_XOHRA9ThRgFw@mail.gmail.com>
+Message-ID: <CAAcqB+tKYv1-9T9GnuqhB4Z+vjsdG3wk95wTQDP9X8CXmsWcag@mail.gmail.com>
+
+This conflicts with my understanding of volatile, which is that memory
+accesses can not be moved across it.  I thought it was the same as a
+acquire+release.
+
+
+On Mon, Apr 29, 2019 at 2:55 PM Alex Otenko <oleksandr.otenko at gmail.com>
+wrote:
+
+> end=...getVolatile is allowed to go ahead of any or all of arraycopy. So
+> it's giving you bogus boundaries, and you can't guarantee the decision
+> based on it is correct.
+>
+> Then setRelease guarantees not reordering with the preceding loads and
+> stores, but doesn't seem to guarantee not reordering with subsequent
+> stores, eg buf[i+1]. So you can't guarantee anything at all.
+>
+> So you want store-store before and after buf[i]=val
+>
+> Alex
+>
+> On Mon, 29 Apr 2019, 22:50 Carl Mastrangelo, <notcarl at google.com> wrote:
+>
+>> @Gil: I had seen that before, though I think it is optimized for the
+>> multiproducer case.  The issue with it is the reader needs to keep track of
+>> the old snapshots after it completes reading, because the writer will have
+>> moved on.  I guess thats okay, but then the writer has to syncrhonize
+>> before each write.
+>>
+>> @Alex:  Can you explain why?  I'm trying to understand the flaw in my
+>> reasoning.  From my PoV, as long as System.arraycopy copies the data in
+>> (Release|Opaque|Volatile), it should be sufficient.  My thought process:
+>>
+>> Suppose the buffer is size 16, and the write idx is at 20.
+>>
+>> T1(writer):  Read idx
+>> T1: Write buf[idx&0xF]
+>> T1: Write release idx + 1
+>>
+>> T2(reader): Read volatile idx
+>> T2: Start arraycopy of buf
+>>
+>> T1:  Read idx
+>> T1: Write buf[idx&0xF]
+>> T1: Write release idx + 1
+>>
+>> T2: finish array copy
+>> T2: Read volatile idx
+>>
+>>
+>> From T2's perspective, idx2 - idx1  would be how many entrees after idx1
+>> are racy garbage values.  All other values, [0-3], [5-15]  were correctly
+>> synchronized by the released write and volatile read of idx.
+>>
+>>
+>>
+>>
+>> On Mon, Apr 29, 2019 at 2:16 PM Alex Otenko <oleksandr.otenko at gmail.com>
+>> wrote:
+>>
+>>> No, this is totally broken.
+>>>
+>>> You need more barriers after arraycopy and before end=....getVolatile
+>>>
+>>> setRelease is also suspicious, not obvious it is doing what you want.
+>>>
+>>> Alex
+>>>
+>>>
+>>> On Mon, 29 Apr 2019, 18:48 Carl Mastrangelo via Concurrency-interest, <
+>>> concurrency-interest at cs.oswego.edu> wrote:
+>>>
+>>>> Thanks for the ideas.   I put together a proof of concept where the
+>>>> writer writes to a ring buffer, but publishes the write index after each
+>>>> write.  I am not sure it's threadsafe:
+>>>>
+>>>> WriterThread:
+>>>> i = idxHandle.get(this)
+>>>> i %= SIZE;
+>>>> buf[i] = val;
+>>>> idxHandle.setRelease(this, i + 1);
+>>>>
+>>>> ReaderThread:
+>>>> T[] copyBuf = new T[SIZE];
+>>>> start = idxHandle.getVolatile(this);
+>>>> System.arraycopy(buf, 0, copyBuf, 0, SIZE);
+>>>> end = idxHandle.getVolatile(this);
+>>>>
+>>>>
+>>>> I know this is racy, but I *think* it may be okay.   As long as the
+>>>> reader ignores the elements between start and end (and assuming end - start
+>>>> > SIZE), it seems like the other elements copied from buf are safely
+>>>> published.
+>>>>
+>>>>
+>>>> On Thu, Apr 25, 2019 at 2:21 PM Josh Humphries <jhump at bluegosling.com>
+>>>> wrote:
+>>>>
+>>>>> Does the reader read the entire ring buffer? Or does it try track some
+>>>>> sort of cursor and try to only read newly inserted items?
+>>>>>
+>>>>> If reading the entire ring buffer at once, I can think of a couple of
+>>>>> ways that I believe would work:
+>>>>>
+>>>>> *Allocate entry with each write*
+>>>>> If you allocate a new record every time you write an entry into the
+>>>>> buffer, you can use VarHandles or AtomicReferenceArray to do volatile reads
+>>>>> of each entry. The writer must of course use a volatile write for each
+>>>>> store.
+>>>>>
+>>>>> *Don't allocate new entries*
+>>>>> If you're wanting to *not* allocate entries but just mutate existing
+>>>>> objects in the buffer that get pre-allocated, you can use a stamp field on
+>>>>> each entry. Since there is only one writer, you don't need extra
+>>>>> synchronization around read-modify-write sequences on the stamp. You just
+>>>>> need to end the sequence with a volatile write. So the writer reads the
+>>>>> stamp (call this value "initial stamp"), then negates it (or
+>>>>> bitwise-invert), and volatile writes the new value. (So the stamp's sign
+>>>>> bit is a dirty flag, indicating that the writer is concurrently making
+>>>>> changes). The writer then updates all of the fields in the entry (no need
+>>>>> for volatile writes). Finally, it volatile writes the stamp to "initial
+>>>>> stamp plus one".
+>>>>>
+>>>>> Readers need to (volatile) read the stamp at the start, then read all
+>>>>> of the relevant fields (which can be plain reads, not volatile ones), then
+>>>>> (volatile) re-read the stamp at the end. If the stamp changed between the
+>>>>> two reads, the field values read may be garbage/inconsistent, so the reader
+>>>>> must try again. This would go into a loop until the read is successful
+>>>>> (same stamp values before and after).
+>>>>>
+>>>>> The writer is non-blocking and non-locking. Readers are non-locking
+>>>>> (but not necessarily non-blocking since they may need to perform
+>>>>> nondeterministic number of re-reads). If the critical section is not short,
+>>>>> readers will be busy waiting for writers to finish modifying an entry (so
+>>>>> they should likely Thread.yield() periodically, perhaps even after every
+>>>>> failed read attempt).
+>>>>>
+>>>>> If you wanted to further reduce volatile writes, you could make a
+>>>>> sharded ring buffer: break the buffer up into N buffers. The writer
+>>>>> round-robins across shards. Then you could put the stamp on the shard, not
+>>>>> on individual entries. This would allow the writer to potentially batch up
+>>>>> writes by dirtying the stamp on a shard, recording multiple entries (which
+>>>>> do not need to use volatile writes), and then setting the new stamp value.
+>>>>> This means longer critical sections, though, so more wasted busy-wait
+>>>>> cycles in readers potentially. (Introducing a signaling mechanism seems
+>>>>> like it would greatly complicate the scheme and may require introduction of
+>>>>> other synchronizers, which seems to defeat the point.)
+>>>>>
+>>>>>
+>>>>>
+>>>>> For both of the above cases, after the reader scans the entire buffer,
+>>>>> it would need to re-order the results based on something (like a monotonic
+>>>>> counter/ID on each row, recorded by the writer) to reconstruct the correct
+>>>>> order. There is the possibility, of course, that the reader misses some
+>>>>> items or even has "holes" in the sequence of entries it reads.
+>>>>>
+>>>>> ----
+>>>>> *Josh Humphries*
+>>>>> jhump at bluegosling.com
+>>>>>
+>>>>>
+>>>>> On Thu, Apr 25, 2019 at 4:29 PM Carl Mastrangelo via
+>>>>> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>>>>>
+>>>>>> Hi,
+>>>>>>
+>>>>>> I am looking for a synchronization pattern where there is a single
+>>>>>> writer and 0-1 readers.  Writes happen much more frequently than reads, and
+>>>>>> in fact reads may never happen.
+>>>>>>
+>>>>>> The use case is a simple logger which writes to a threadlocal ring
+>>>>>> buffer, which overwrites stale entries.  The reader comes in
+>>>>>> occasionally to read the buffer, but is in no rush. I am wondering if there
+>>>>>> is a way to make the writer lock free or wait free, while putting all the
+>>>>>> synchronization burden on the reader.
+>>>>>>
+>>>>>> My current approach is a ConcurrentHashMap, with a WeakRef for
+>>>>>> keys/values, each pointing to a ThreadLocal.   Writes and reads on the
+>>>>>> ThreadLocal are done using plain old `synchronized`, which are mostly
+>>>>>> uncontended.
+>>>>>>
+>>>>>> Questions:
+>>>>>>
+>>>>>> 1.  Is there a faster way to implemented write-heavy, single producer
+>>>>>> code?
+>>>>>>
+>>>>>> 2.  If the writes happen in quick succession, will lock coarsening
+>>>>>> reduce the number of synchronization points?   (i.e. is it possible to do
+>>>>>> better than volatile reads using `synchronized`?)
+>>>>>>
+>>>>>> 3.  Is there a "lease" like synchronization pattern where a thread
+>>>>>> can request access to data for a limited time without syncrhonizing each
+>>>>>> modification?  I was thinking of maybe using System.nanoTime() with some
+>>>>>> safety bounds, since I have to make the nanoTime call anyways.
+>>>>>> _______________________________________________
+>>>>>> Concurrency-interest mailing list
+>>>>>> Concurrency-interest at cs.oswego.edu
+>>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>>
+>>>>> _______________________________________________
+>>>> Concurrency-interest mailing list
+>>>> Concurrency-interest at cs.oswego.edu
+>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>
+>>>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190429/bc903487/attachment.html>
+
+From notcarl at google.com  Mon Apr 29 19:46:45 2019
+From: notcarl at google.com (Carl Mastrangelo)
+Date: Mon, 29 Apr 2019 16:46:45 -0700
+Subject: [concurrency-interest] Mostly Thread Local
+In-Reply-To: <9EA32DFA-21B2-4264-A467-49D252152EAE@azul.com>
+References: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+ <CAO78j++bxpzJenoxN+kg1AdoWxF74DhjjF_kEcyfpTDztwMJ8Q@mail.gmail.com>
+ <CAAcqB+vqiOfCC94XtkUp-dZPPKnycDE1by3+5Z7rihq5Qs+oHg@mail.gmail.com>
+ <CANkgWKgCG+9=ZDaa0Sm=jBPmezLViPhPeKafb4As8O_9Yo4tjw@mail.gmail.com>
+ <CAAcqB+v_VAnGPwRGvO9StXJZRbn0qTe2vRZbQ6ArzC0ofuSRjg@mail.gmail.com>
+ <9EA32DFA-21B2-4264-A467-49D252152EAE@azul.com>
+Message-ID: <CAAcqB+uBunkoMsz7hWBD=JwYUpdTBBFph=RXSCmhGXEfmGvb7A@mail.gmail.com>
+
+On Mon, Apr 29, 2019 at 3:28 PM Gil Tene <gil at azul.com> wrote:
+
+>
+>
+> On Apr 29, 2019, at 2:49 PM, Carl Mastrangelo via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+> @Gil: I had seen that before, though I think it is optimized for the
+> multiproducer case.
+>
+>
+> I guess the way I see it, the multi-producer support is just a nice
+> side-effect. Even with a single writer, you'd need that writer to indicate
+> critical section boundaries in so me way (or coordinate in some other way
+> with e.g. atomically modified caret position trackers in your ring buffer)
+> if it wants to remain wait-free while coordinating with a reader.
+>
+> The issue with it is the reader needs to keep track of the old snapshots
+> after it completes reading, because the writer will have moved on.
+>
+>
+> The common pattern is a classic double-buffer. The writer(s) only ever
+> interacts with the "active" data structures, and the reader will typically
+> have one "inactive" data structure that it is working on, knowing that the
+> inactive data is at rest because no writer(s) are interacting with it.
+> Efficient implementations will "flip" the active and inactive versions and
+> never allocate a new structure.
+>
+
+I am worried that this would affect the fast write path, since now it would
+have to reverify the array is not null, and reverify the bounds check for
+the write.  Since this write is not done in a loop, I don't think the
+bounds check or null check can be so easily eliminated, which it may be
+able to if the array was in a final variable.
+
+
+
+>
+> You can use other patterns (e.g. multi-interval buffers used in moving
+> window applications), but the double-buffer is by far the simplest and most
+> common.
+>
+> In your use case, you would just have active and inactive instances of
+> your ringbuffer, with the reader controlling which is which (and flipping
+> between them to read), and the writer (the logger in your case) only ever
+> writing to the active one. If you size your buffer large enough and the
+> reader visits often enough (for the buffer size and write rate),  you can
+> maintain lossless reading.
+>
+> Whether or not you need allocation for the actual elements you are logging
+> is up to you and what you are logging. You can certainly have each of the
+> two ring buffer instance be an array of references to e.g. String, with
+> String entries instantiated and allocated per logging event, but zero
+> allocation recorders or loggers with this pattern are common, where each of
+> the two instances are pre-allocated to hold the entire data needed. E.g. if
+> a reasonable cap for a logging entry size is known, all entries in the ring
+> buffer can be pre-allocated.
+>
+
+I am logging strings, but they are preallocated constants.   I'm confident
+there won't be any memory allocation (and use JMH's gc profiler to check
+this).
+
+
+>
+> I guess thats okay, but then the writer has to syncrhonize before each
+> write.
+>
+>
+> The synchronization cost on the writer side is a single atomic increment
+> on each side of a critical section. This (with a simple array based ring
+> buffer and non-atomic manipulation of the "active caret" in that buffer
+> since you have only a single writer) is probably much cheaper than using
+> ConcurrentHashMap, ThreadLocal lookups, and WeakRef manipulations.
+>
+
+I may not have been clear, the ConcurrentHashMap and Weakref code is an
+index for the reader to track down each thread's data.  I think the
+threadlocal is still needed for contention free writing.
+
+
+>
+> As for "coarsening": the critical section can have as many data operations
+> folded together in a "coarsening effect" as you want.
+>
+>
+> @Alex:  Can you explain why?  I'm trying to understand the flaw in my
+> reasoning.  From my PoV, as long as System.arraycopy copies the data in
+> (Release|Opaque|Volatile), it should be sufficient.  My thought process:
+>
+> Suppose the buffer is size 16, and the write idx is at 20.
+>
+> T1(writer):  Read idx
+> T1: Write buf[idx&0xF]
+> T1: Write release idx + 1
+>
+> T2(reader): Read volatile idx
+> T2: Start arraycopy of buf
+>
+> T1:  Read idx
+> T1: Write buf[idx&0xF]
+> T1: Write release idx + 1
+>
+> T2: finish array copy
+> T2: Read volatile idx
+>
+>
+> From T2's perspective, idx2 - idx1  would be how many entrees after idx1
+> are racy garbage values.  All other values, [0-3], [5-15]  were correctly
+> synchronized by the released write and volatile read of idx.
+>
+>
+>
+>
+> On Mon, Apr 29, 2019 at 2:16 PM Alex Otenko <oleksandr.otenko at gmail.com>
+> wrote:
+>
+>> No, this is totally broken.
+>>
+>> You need more barriers after arraycopy and before end=....getVolatile
+>>
+>> setRelease is also suspicious, not obvious it is doing what you want.
+>>
+>> Alex
+>>
+>>
+>> On Mon, 29 Apr 2019, 18:48 Carl Mastrangelo via Concurrency-interest, <
+>> concurrency-interest at cs.oswego.edu> wrote:
+>>
+>>> Thanks for the ideas.   I put together a proof of concept where the
+>>> writer writes to a ring buffer, but publishes the write index after each
+>>> write.  I am not sure it's threadsafe:
+>>>
+>>> WriterThread:
+>>> i = idxHandle.get(this)
+>>> i %= SIZE;
+>>> buf[i] = val;
+>>> idxHandle.setRelease(this, i + 1);
+>>>
+>>> ReaderThread:
+>>> T[] copyBuf = new T[SIZE];
+>>> start = idxHandle.getVolatile(this);
+>>> System.arraycopy(buf, 0, copyBuf, 0, SIZE);
+>>> end = idxHandle.getVolatile(this);
+>>>
+>>>
+>>> I know this is racy, but I *think* it may be okay.   As long as the
+>>> reader ignores the elements between start and end (and assuming end - start
+>>> > SIZE), it seems like the other elements copied from buf are safely
+>>> published.
+>>>
+>>>
+>>> On Thu, Apr 25, 2019 at 2:21 PM Josh Humphries <jhump at bluegosling.com>
+>>> wrote:
+>>>
+>>>> Does the reader read the entire ring buffer? Or does it try track some
+>>>> sort of cursor and try to only read newly inserted items?
+>>>>
+>>>> If reading the entire ring buffer at once, I can think of a couple of
+>>>> ways that I believe would work:
+>>>>
+>>>> *Allocate entry with each write*
+>>>> If you allocate a new record every time you write an entry into the
+>>>> buffer, you can use VarHandles or AtomicReferenceArray to do volatile reads
+>>>> of each entry. The writer must of course use a volatile write for each
+>>>> store.
+>>>>
+>>>> *Don't allocate new entries*
+>>>> If you're wanting to *not* allocate entries but just mutate existing
+>>>> objects in the buffer that get pre-allocated, you can use a stamp field on
+>>>> each entry. Since there is only one writer, you don't need extra
+>>>> synchronization around read-modify-write sequences on the stamp. You just
+>>>> need to end the sequence with a volatile write. So the writer reads the
+>>>> stamp (call this value "initial stamp"), then negates it (or
+>>>> bitwise-invert), and volatile writes the new value. (So the stamp's sign
+>>>> bit is a dirty flag, indicating that the writer is concurrently making
+>>>> changes). The writer then updates all of the fields in the entry (no need
+>>>> for volatile writes). Finally, it volatile writes the stamp to "initial
+>>>> stamp plus one".
+>>>>
+>>>> Readers need to (volatile) read the stamp at the start, then read all
+>>>> of the relevant fields (which can be plain reads, not volatile ones), then
+>>>> (volatile) re-read the stamp at the end. If the stamp changed between the
+>>>> two reads, the field values read may be garbage/inconsistent, so the reader
+>>>> must try again. This would go into a loop until the read is successful
+>>>> (same stamp values before and after).
+>>>>
+>>>> The writer is non-blocking and non-locking. Readers are non-locking
+>>>> (but not necessarily non-blocking since they may need to perform
+>>>> nondeterministic number of re-reads). If the critical section is not short,
+>>>> readers will be busy waiting for writers to finish modifying an entry (so
+>>>> they should likely Thread.yield() periodically, perhaps even after every
+>>>> failed read attempt).
+>>>>
+>>>> If you wanted to further reduce volatile writes, you could make a
+>>>> sharded ring buffer: break the buffer up into N buffers. The writer
+>>>> round-robins across shards. Then you could put the stamp on the shard, not
+>>>> on individual entries. This would allow the writer to potentially batch up
+>>>> writes by dirtying the stamp on a shard, recording multiple entries (which
+>>>> do not need to use volatile writes), and then setting the new stamp value.
+>>>> This means longer critical sections, though, so more wasted busy-wait
+>>>> cycles in readers potentially. (Introducing a signaling mechanism seems
+>>>> like it would greatly complicate the scheme and may require introduction of
+>>>> other synchronizers, which seems to defeat the point.)
+>>>>
+>>>>
+>>>>
+>>>> For both of the above cases, after the reader scans the entire buffer,
+>>>> it would need to re-order the results based on something (like a monotonic
+>>>> counter/ID on each row, recorded by the writer) to reconstruct the correct
+>>>> order. There is the possibility, of course, that the reader misses some
+>>>> items or even has "holes" in the sequence of entries it reads.
+>>>>
+>>>> ----
+>>>> *Josh Humphries*
+>>>> jhump at bluegosling.com
+>>>>
+>>>>
+>>>> On Thu, Apr 25, 2019 at 4:29 PM Carl Mastrangelo via
+>>>> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>>>>
+>>>>> Hi,
+>>>>>
+>>>>> I am looking for a synchronization pattern where there is a single
+>>>>> writer and 0-1 readers.  Writes happen much more frequently than reads, and
+>>>>> in fact reads may never happen.
+>>>>>
+>>>>> The use case is a simple logger which writes to a threadlocal ring
+>>>>> buffer, which overwrites stale entries.  The reader comes in
+>>>>> occasionally to read the buffer, but is in no rush. I am wondering if there
+>>>>> is a way to make the writer lock free or wait free, while putting all the
+>>>>> synchronization burden on the reader.
+>>>>>
+>>>>> My current approach is a ConcurrentHashMap, with a WeakRef for
+>>>>> keys/values, each pointing to a ThreadLocal.   Writes and reads on the
+>>>>> ThreadLocal are done using plain old `synchronized`, which are mostly
+>>>>> uncontended.
+>>>>>
+>>>>> Questions:
+>>>>>
+>>>>> 1.  Is there a faster way to implemented write-heavy, single producer
+>>>>> code?
+>>>>>
+>>>>> 2.  If the writes happen in quick succession, will lock coarsening
+>>>>> reduce the number of synchronization points?   (i.e. is it possible to do
+>>>>> better than volatile reads using `synchronized`?)
+>>>>>
+>>>>> 3.  Is there a "lease" like synchronization pattern where a thread can
+>>>>> request access to data for a limited time without syncrhonizing each
+>>>>> modification?  I was thinking of maybe using System.nanoTime() with some
+>>>>> safety bounds, since I have to make the nanoTime call anyways.
+>>>>> _______________________________________________
+>>>>> Concurrency-interest mailing list
+>>>>> Concurrency-interest at cs.oswego.edu
+>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>
+>>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190429/01eb9755/attachment-0001.html>
+
+From oleksandr.otenko at gmail.com  Mon Apr 29 21:25:29 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Tue, 30 Apr 2019 02:25:29 +0100
+Subject: [concurrency-interest] Mostly Thread Local
+In-Reply-To: <CAAcqB+tKYv1-9T9GnuqhB4Z+vjsdG3wk95wTQDP9X8CXmsWcag@mail.gmail.com>
+References: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+ <CAO78j++bxpzJenoxN+kg1AdoWxF74DhjjF_kEcyfpTDztwMJ8Q@mail.gmail.com>
+ <CAAcqB+vqiOfCC94XtkUp-dZPPKnycDE1by3+5Z7rihq5Qs+oHg@mail.gmail.com>
+ <CANkgWKgCG+9=ZDaa0Sm=jBPmezLViPhPeKafb4As8O_9Yo4tjw@mail.gmail.com>
+ <CAAcqB+v_VAnGPwRGvO9StXJZRbn0qTe2vRZbQ6ArzC0ofuSRjg@mail.gmail.com>
+ <CANkgWKghHR1OvY+wNXJq_T2_WvB0iLNY60wma_XOHRA9ThRgFw@mail.gmail.com>
+ <CAAcqB+tKYv1-9T9GnuqhB4Z+vjsdG3wk95wTQDP9X8CXmsWcag@mail.gmail.com>
+Message-ID: <CANkgWKgiY=44FkGTY_hN53awx2kH9ZqPJFhqFaGKu9X7oKdB=A@mail.gmail.com>
+
+Acquire/release is a confusing way of looking at things.
+
+Volatile accesses are totally ordered only between themselves. Any other
+accesses are not totally ordered with respect to volatile accesses - the
+threads do not agree on a single order in which they appear to them. In
+colloquial terms this means some reordering of normal accesses. In
+particular, volatile reads may appear going ahead of any normal read or
+write, as seen by some thread - others do not necessarily agree to that and
+may observe some other order.
+
+Alex
+
+On Tue, 30 Apr 2019, 00:35 Carl Mastrangelo, <notcarl at google.com> wrote:
+
+> This conflicts with my understanding of volatile, which is that memory
+> accesses can not be moved across it.  I thought it was the same as a
+> acquire+release.
+>
+>
+> On Mon, Apr 29, 2019 at 2:55 PM Alex Otenko <oleksandr.otenko at gmail.com>
+> wrote:
+>
+>> end=...getVolatile is allowed to go ahead of any or all of arraycopy. So
+>> it's giving you bogus boundaries, and you can't guarantee the decision
+>> based on it is correct.
+>>
+>> Then setRelease guarantees not reordering with the preceding loads and
+>> stores, but doesn't seem to guarantee not reordering with subsequent
+>> stores, eg buf[i+1]. So you can't guarantee anything at all.
+>>
+>> So you want store-store before and after buf[i]=val
+>>
+>> Alex
+>>
+>> On Mon, 29 Apr 2019, 22:50 Carl Mastrangelo, <notcarl at google.com> wrote:
+>>
+>>> @Gil: I had seen that before, though I think it is optimized for the
+>>> multiproducer case.  The issue with it is the reader needs to keep track of
+>>> the old snapshots after it completes reading, because the writer will have
+>>> moved on.  I guess thats okay, but then the writer has to syncrhonize
+>>> before each write.
+>>>
+>>> @Alex:  Can you explain why?  I'm trying to understand the flaw in my
+>>> reasoning.  From my PoV, as long as System.arraycopy copies the data in
+>>> (Release|Opaque|Volatile), it should be sufficient.  My thought process:
+>>>
+>>> Suppose the buffer is size 16, and the write idx is at 20.
+>>>
+>>> T1(writer):  Read idx
+>>> T1: Write buf[idx&0xF]
+>>> T1: Write release idx + 1
+>>>
+>>> T2(reader): Read volatile idx
+>>> T2: Start arraycopy of buf
+>>>
+>>> T1:  Read idx
+>>> T1: Write buf[idx&0xF]
+>>> T1: Write release idx + 1
+>>>
+>>> T2: finish array copy
+>>> T2: Read volatile idx
+>>>
+>>>
+>>> From T2's perspective, idx2 - idx1  would be how many entrees after idx1
+>>> are racy garbage values.  All other values, [0-3], [5-15]  were correctly
+>>> synchronized by the released write and volatile read of idx.
+>>>
+>>>
+>>>
+>>>
+>>> On Mon, Apr 29, 2019 at 2:16 PM Alex Otenko <oleksandr.otenko at gmail.com>
+>>> wrote:
+>>>
+>>>> No, this is totally broken.
+>>>>
+>>>> You need more barriers after arraycopy and before end=....getVolatile
+>>>>
+>>>> setRelease is also suspicious, not obvious it is doing what you want.
+>>>>
+>>>> Alex
+>>>>
+>>>>
+>>>> On Mon, 29 Apr 2019, 18:48 Carl Mastrangelo via Concurrency-interest, <
+>>>> concurrency-interest at cs.oswego.edu> wrote:
+>>>>
+>>>>> Thanks for the ideas.   I put together a proof of concept where the
+>>>>> writer writes to a ring buffer, but publishes the write index after each
+>>>>> write.  I am not sure it's threadsafe:
+>>>>>
+>>>>> WriterThread:
+>>>>> i = idxHandle.get(this)
+>>>>> i %= SIZE;
+>>>>> buf[i] = val;
+>>>>> idxHandle.setRelease(this, i + 1);
+>>>>>
+>>>>> ReaderThread:
+>>>>> T[] copyBuf = new T[SIZE];
+>>>>> start = idxHandle.getVolatile(this);
+>>>>> System.arraycopy(buf, 0, copyBuf, 0, SIZE);
+>>>>> end = idxHandle.getVolatile(this);
+>>>>>
+>>>>>
+>>>>> I know this is racy, but I *think* it may be okay.   As long as the
+>>>>> reader ignores the elements between start and end (and assuming end - start
+>>>>> > SIZE), it seems like the other elements copied from buf are safely
+>>>>> published.
+>>>>>
+>>>>>
+>>>>> On Thu, Apr 25, 2019 at 2:21 PM Josh Humphries <jhump at bluegosling.com>
+>>>>> wrote:
+>>>>>
+>>>>>> Does the reader read the entire ring buffer? Or does it try track
+>>>>>> some sort of cursor and try to only read newly inserted items?
+>>>>>>
+>>>>>> If reading the entire ring buffer at once, I can think of a couple of
+>>>>>> ways that I believe would work:
+>>>>>>
+>>>>>> *Allocate entry with each write*
+>>>>>> If you allocate a new record every time you write an entry into the
+>>>>>> buffer, you can use VarHandles or AtomicReferenceArray to do volatile reads
+>>>>>> of each entry. The writer must of course use a volatile write for each
+>>>>>> store.
+>>>>>>
+>>>>>> *Don't allocate new entries*
+>>>>>> If you're wanting to *not* allocate entries but just mutate existing
+>>>>>> objects in the buffer that get pre-allocated, you can use a stamp field on
+>>>>>> each entry. Since there is only one writer, you don't need extra
+>>>>>> synchronization around read-modify-write sequences on the stamp. You just
+>>>>>> need to end the sequence with a volatile write. So the writer reads the
+>>>>>> stamp (call this value "initial stamp"), then negates it (or
+>>>>>> bitwise-invert), and volatile writes the new value. (So the stamp's sign
+>>>>>> bit is a dirty flag, indicating that the writer is concurrently making
+>>>>>> changes). The writer then updates all of the fields in the entry (no need
+>>>>>> for volatile writes). Finally, it volatile writes the stamp to "initial
+>>>>>> stamp plus one".
+>>>>>>
+>>>>>> Readers need to (volatile) read the stamp at the start, then read all
+>>>>>> of the relevant fields (which can be plain reads, not volatile ones), then
+>>>>>> (volatile) re-read the stamp at the end. If the stamp changed between the
+>>>>>> two reads, the field values read may be garbage/inconsistent, so the reader
+>>>>>> must try again. This would go into a loop until the read is successful
+>>>>>> (same stamp values before and after).
+>>>>>>
+>>>>>> The writer is non-blocking and non-locking. Readers are non-locking
+>>>>>> (but not necessarily non-blocking since they may need to perform
+>>>>>> nondeterministic number of re-reads). If the critical section is not short,
+>>>>>> readers will be busy waiting for writers to finish modifying an entry (so
+>>>>>> they should likely Thread.yield() periodically, perhaps even after every
+>>>>>> failed read attempt).
+>>>>>>
+>>>>>> If you wanted to further reduce volatile writes, you could make a
+>>>>>> sharded ring buffer: break the buffer up into N buffers. The writer
+>>>>>> round-robins across shards. Then you could put the stamp on the shard, not
+>>>>>> on individual entries. This would allow the writer to potentially batch up
+>>>>>> writes by dirtying the stamp on a shard, recording multiple entries (which
+>>>>>> do not need to use volatile writes), and then setting the new stamp value.
+>>>>>> This means longer critical sections, though, so more wasted busy-wait
+>>>>>> cycles in readers potentially. (Introducing a signaling mechanism seems
+>>>>>> like it would greatly complicate the scheme and may require introduction of
+>>>>>> other synchronizers, which seems to defeat the point.)
+>>>>>>
+>>>>>>
+>>>>>>
+>>>>>> For both of the above cases, after the reader scans the entire
+>>>>>> buffer, it would need to re-order the results based on something (like a
+>>>>>> monotonic counter/ID on each row, recorded by the writer) to reconstruct
+>>>>>> the correct order. There is the possibility, of course, that the reader
+>>>>>> misses some items or even has "holes" in the sequence of entries it reads.
+>>>>>>
+>>>>>> ----
+>>>>>> *Josh Humphries*
+>>>>>> jhump at bluegosling.com
+>>>>>>
+>>>>>>
+>>>>>> On Thu, Apr 25, 2019 at 4:29 PM Carl Mastrangelo via
+>>>>>> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>>>>>>
+>>>>>>> Hi,
+>>>>>>>
+>>>>>>> I am looking for a synchronization pattern where there is a single
+>>>>>>> writer and 0-1 readers.  Writes happen much more frequently than reads, and
+>>>>>>> in fact reads may never happen.
+>>>>>>>
+>>>>>>> The use case is a simple logger which writes to a threadlocal ring
+>>>>>>> buffer, which overwrites stale entries.  The reader comes in
+>>>>>>> occasionally to read the buffer, but is in no rush. I am wondering if there
+>>>>>>> is a way to make the writer lock free or wait free, while putting all the
+>>>>>>> synchronization burden on the reader.
+>>>>>>>
+>>>>>>> My current approach is a ConcurrentHashMap, with a WeakRef for
+>>>>>>> keys/values, each pointing to a ThreadLocal.   Writes and reads on the
+>>>>>>> ThreadLocal are done using plain old `synchronized`, which are mostly
+>>>>>>> uncontended.
+>>>>>>>
+>>>>>>> Questions:
+>>>>>>>
+>>>>>>> 1.  Is there a faster way to implemented write-heavy, single
+>>>>>>> producer code?
+>>>>>>>
+>>>>>>> 2.  If the writes happen in quick succession, will lock coarsening
+>>>>>>> reduce the number of synchronization points?   (i.e. is it possible to do
+>>>>>>> better than volatile reads using `synchronized`?)
+>>>>>>>
+>>>>>>> 3.  Is there a "lease" like synchronization pattern where a thread
+>>>>>>> can request access to data for a limited time without syncrhonizing each
+>>>>>>> modification?  I was thinking of maybe using System.nanoTime() with some
+>>>>>>> safety bounds, since I have to make the nanoTime call anyways.
+>>>>>>> _______________________________________________
+>>>>>>> Concurrency-interest mailing list
+>>>>>>> Concurrency-interest at cs.oswego.edu
+>>>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>>>
+>>>>>> _______________________________________________
+>>>>> Concurrency-interest mailing list
+>>>>> Concurrency-interest at cs.oswego.edu
+>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>
+>>>>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190430/e282efcc/attachment.html>
+
+From gil at azul.com  Mon Apr 29 23:14:57 2019
+From: gil at azul.com (Gil Tene)
+Date: Tue, 30 Apr 2019 03:14:57 +0000
+Subject: [concurrency-interest] Mostly Thread Local
+In-Reply-To: <CAAcqB+uBunkoMsz7hWBD=JwYUpdTBBFph=RXSCmhGXEfmGvb7A@mail.gmail.com>
+References: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+ <CAO78j++bxpzJenoxN+kg1AdoWxF74DhjjF_kEcyfpTDztwMJ8Q@mail.gmail.com>
+ <CAAcqB+vqiOfCC94XtkUp-dZPPKnycDE1by3+5Z7rihq5Qs+oHg@mail.gmail.com>
+ <CANkgWKgCG+9=ZDaa0Sm=jBPmezLViPhPeKafb4As8O_9Yo4tjw@mail.gmail.com>
+ <CAAcqB+v_VAnGPwRGvO9StXJZRbn0qTe2vRZbQ6ArzC0ofuSRjg@mail.gmail.com>
+ <9EA32DFA-21B2-4264-A467-49D252152EAE@azul.com>
+ <CAAcqB+uBunkoMsz7hWBD=JwYUpdTBBFph=RXSCmhGXEfmGvb7A@mail.gmail.com>
+Message-ID: <AB8E7AC3-68E0-49A4-B0A9-3CEADB491542@azul.com>
+
+
+
+> On Apr 29, 2019, at 4:46 PM, Carl Mastrangelo <notcarl at google.com> wrote:
+> 
+> 
+> 
+> On Mon, Apr 29, 2019 at 3:28 PM Gil Tene <gil at azul.com <mailto:gil at azul.com>> wrote:
+> 
+> 
+>> On Apr 29, 2019, at 2:49 PM, Carl Mastrangelo via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>> 
+>> @Gil: I had seen that before, though I think it is optimized for the multiproducer case.
+> 
+> I guess the way I see it, the multi-producer support is just a nice side-effect. Even with a single writer, you'd need that writer to indicate critical section boundaries in so me way (or coordinate in some other way with e.g. atomically modified caret position trackers in your ring buffer) if it wants to remain wait-free while coordinating with a reader.
+> 
+>> The issue with it is the reader needs to keep track of the old snapshots after it completes reading, because the writer will have moved on.
+> 
+> The common pattern is a classic double-buffer. The writer(s) only ever interacts with the "active" data structures, and the reader will typically have one "inactive" data structure that it is working on, knowing that the inactive data is at rest because no writer(s) are interacting with it. Efficient implementations will "flip" the active and inactive versions and never allocate a new structure.
+> 
+> I am worried that this would affect the fast write path, since now it would have to reverify the array is not null, and reverify the bounds check for the write.  Since this write is not done in a loop, I don't think the bounds check or null check can be so easily eliminated, which it may be able to if the array was in a final variable.
+
+Since this (seems to be) targeting Java:
+
+a) Not that it's material anyway, but the null check is actually "free". Modern JVMs don't actually check for nulls in the hot path. Instead, on attempting to access through null references, they catch SEGV's, deopt, and throw the exception as if the check was there. So as long as you don't actually try to use a null array, you won't see any null check costs.
+
+b) The bounds check would not be eliminated if the writes are not in a loop, but the bounds check cost is probably negligible compared to the rest of the work involved (e.g. compared to the two atomic increments in my scheme, or compared to atomic updates or whatever other synchronization mechanisms you would need to use in other schemes in order to prevent "funny" situations with the reader and the carets).
+
+> 
+> 
+> 
+> You can use other patterns (e.g. multi-interval buffers used in moving window applications), but the double-buffer is by far the simplest and most common.
+> 
+> In your use case, you would just have active and inactive instances of your ringbuffer, with the reader controlling which is which (and flipping between them to read), and the writer (the logger in your case) only ever writing to the active one. If you size your buffer large enough and the reader visits often enough (for the buffer size and write rate),  you can maintain lossless reading.
+> 
+> Whether or not you need allocation for the actual elements you are logging is up to you and what you are logging. You can certainly have each of the two ring buffer instance be an array of references to e.g. String, with String entries instantiated and allocated per logging event, but zero allocation recorders or loggers with this pattern are common, where each of the two instances are pre-allocated to hold the entire data needed. E.g. if a reasonable cap for a logging entry size is known, all entries in the ring buffer can be pre-allocated.
+> 
+> I am logging strings, but they are preallocated constants.   I'm confident there won't be any memory allocation (and use JMH's gc profiler to check this).
+> 
+> 
+>> I guess thats okay, but then the writer has to syncrhonize before each write.
+> 
+> The synchronization cost on the writer side is a single atomic increment on each side of a critical section. This (with a simple array based ring buffer and non-atomic manipulation of the "active caret" in that buffer since you have only a single writer) is probably much cheaper than using ConcurrentHashMap, ThreadLocal lookups, and WeakRef manipulations.
+> 
+> I may not have been clear, the ConcurrentHashMap and Weakref code is an index for the reader to track down each thread's data.  I think the threadlocal is still needed for contention free writing.
+> 
+> 
+> As for "coarsening": the critical section can have as many data operations folded together in a "coarsening effect" as you want.
+> 
+>> 
+>> @Alex:  Can you explain why?  I'm trying to understand the flaw in my reasoning.  From my PoV, as long as System.arraycopy copies the data in (Release|Opaque|Volatile), it should be sufficient.  My thought process:
+>> 
+>> Suppose the buffer is size 16, and the write idx is at 20.
+>> 
+>> T1(writer):  Read idx
+>> T1: Write buf[idx&0xF]
+>> T1: Write release idx + 1
+>> 
+>> T2(reader): Read volatile idx
+>> T2: Start arraycopy of buf
+>> 
+>> T1:  Read idx
+>> T1: Write buf[idx&0xF]
+>> T1: Write release idx + 1
+>> 
+>> T2: finish array copy
+>> T2: Read volatile idx
+>> 
+>> 
+>> From T2's perspective, idx2 - idx1  would be how many entrees after idx1 are racy garbage values.  All other values, [0-3], [5-15]  were correctly synchronized by the released write and volatile read of idx.
+>> 
+>> 
+>> 
+>> 
+>> On Mon, Apr 29, 2019 at 2:16 PM Alex Otenko <oleksandr.otenko at gmail.com <mailto:oleksandr.otenko at gmail.com>> wrote:
+>> No, this is totally broken.
+>> 
+>> You need more barriers after arraycopy and before end=....getVolatile
+>> 
+>> setRelease is also suspicious, not obvious it is doing what you want.
+>> 
+>> Alex
+>> 
+>> 
+>> On Mon, 29 Apr 2019, 18:48 Carl Mastrangelo via Concurrency-interest, <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>> Thanks for the ideas.   I put together a proof of concept where the writer writes to a ring buffer, but publishes the write index after each write.  I am not sure it's threadsafe:
+>> 
+>> WriterThread:
+>> i = idxHandle.get(this)
+>> i %= SIZE;
+>> buf[i] = val;
+>> idxHandle.setRelease(this, i + 1);
+>> 
+>> ReaderThread:
+>> T[] copyBuf = new T[SIZE];
+>> start = idxHandle.getVolatile(this);
+>> System.arraycopy(buf, 0, copyBuf, 0, SIZE);
+>> end = idxHandle.getVolatile(this);
+>> 
+>> 
+>> I know this is racy, but I *think* it may be okay.   As long as the reader ignores the elements between start and end (and assuming end - start > SIZE), it seems like the other elements copied from buf are safely published.
+>> 
+>> 
+>> On Thu, Apr 25, 2019 at 2:21 PM Josh Humphries <jhump at bluegosling.com <mailto:jhump at bluegosling.com>> wrote:
+>> Does the reader read the entire ring buffer? Or does it try track some sort of cursor and try to only read newly inserted items?
+>> 
+>> If reading the entire ring buffer at once, I can think of a couple of ways that I believe would work:
+>> 
+>> Allocate entry with each write
+>> If you allocate a new record every time you write an entry into the buffer, you can use VarHandles or AtomicReferenceArray to do volatile reads of each entry. The writer must of course use a volatile write for each store.
+>> 
+>> Don't allocate new entries
+>> If you're wanting to not allocate entries but just mutate existing objects in the buffer that get pre-allocated, you can use a stamp field on each entry. Since there is only one writer, you don't need extra synchronization around read-modify-write sequences on the stamp. You just need to end the sequence with a volatile write. So the writer reads the stamp (call this value "initial stamp"), then negates it (or bitwise-invert), and volatile writes the new value. (So the stamp's sign bit is a dirty flag, indicating that the writer is concurrently making changes). The writer then updates all of the fields in the entry (no need for volatile writes). Finally, it volatile writes the stamp to "initial stamp plus one".
+>> 
+>> Readers need to (volatile) read the stamp at the start, then read all of the relevant fields (which can be plain reads, not volatile ones), then (volatile) re-read the stamp at the end. If the stamp changed between the two reads, the field values read may be garbage/inconsistent, so the reader must try again. This would go into a loop until the read is successful (same stamp values before and after).
+>> 
+>> The writer is non-blocking and non-locking. Readers are non-locking (but not necessarily non-blocking since they may need to perform nondeterministic number of re-reads). If the critical section is not short, readers will be busy waiting for writers to finish modifying an entry (so they should likely Thread.yield() periodically, perhaps even after every failed read attempt).
+>> 
+>> If you wanted to further reduce volatile writes, you could make a sharded ring buffer: break the buffer up into N buffers. The writer round-robins across shards. Then you could put the stamp on the shard, not on individual entries. This would allow the writer to potentially batch up writes by dirtying the stamp on a shard, recording multiple entries (which do not need to use volatile writes), and then setting the new stamp value. This means longer critical sections, though, so more wasted busy-wait cycles in readers potentially. (Introducing a signaling mechanism seems like it would greatly complicate the scheme and may require introduction of other synchronizers, which seems to defeat the point.)
+>> 
+>> 
+>> 
+>> For both of the above cases, after the reader scans the entire buffer, it would need to re-order the results based on something (like a monotonic counter/ID on each row, recorded by the writer) to reconstruct the correct order. There is the possibility, of course, that the reader misses some items or even has "holes" in the sequence of entries it reads.
+>> 
+>> ----
+>> Josh Humphries
+>> jhump at bluegosling.com <mailto:jhump at bluegosling.com>
+>> 
+>> 
+>> On Thu, Apr 25, 2019 at 4:29 PM Carl Mastrangelo via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>> Hi,
+>> 
+>> I am looking for a synchronization pattern where there is a single writer and 0-1 readers.  Writes happen much more frequently than reads, and in fact reads may never happen.
+>> 
+>> The use case is a simple logger which writes to a threadlocal ring buffer, which overwrites stale entries.  The reader comes in occasionally to read the buffer, but is in no rush. I am wondering if there is a way to make the writer lock free or wait free, while putting all the synchronization burden on the reader.
+>> 
+>> My current approach is a ConcurrentHashMap, with a WeakRef for keys/values, each pointing to a ThreadLocal.   Writes and reads on the ThreadLocal are done using plain old `synchronized`, which are mostly uncontended.
+>> 
+>> Questions:
+>> 
+>> 1.  Is there a faster way to implemented write-heavy, single producer code?
+>> 
+>> 2.  If the writes happen in quick succession, will lock coarsening reduce the number of synchronization points?   (i.e. is it possible to do better than volatile reads using `synchronized`?)
+>> 
+>> 3.  Is there a "lease" like synchronization pattern where a thread can request access to data for a limited time without syncrhonizing each modification?  I was thinking of maybe using System.nanoTime() with some safety bounds, since I have to make the nanoTime call anyways.
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190430/d0adc556/attachment-0001.html>
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 833 bytes
+Desc: Message signed with OpenPGP
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190430/d0adc556/attachment-0001.sig>
+
+From notcarl at google.com  Tue Apr 30 13:47:29 2019
+From: notcarl at google.com (Carl Mastrangelo)
+Date: Tue, 30 Apr 2019 10:47:29 -0700
+Subject: [concurrency-interest] Mostly Thread Local
+In-Reply-To: <AB8E7AC3-68E0-49A4-B0A9-3CEADB491542@azul.com>
+References: <CAAcqB+tcyfW9cQZOY=pvbgmQpC+7zSB0JjP-L+u8JWuMCAkTgw@mail.gmail.com>
+ <CAO78j++bxpzJenoxN+kg1AdoWxF74DhjjF_kEcyfpTDztwMJ8Q@mail.gmail.com>
+ <CAAcqB+vqiOfCC94XtkUp-dZPPKnycDE1by3+5Z7rihq5Qs+oHg@mail.gmail.com>
+ <CANkgWKgCG+9=ZDaa0Sm=jBPmezLViPhPeKafb4As8O_9Yo4tjw@mail.gmail.com>
+ <CAAcqB+v_VAnGPwRGvO9StXJZRbn0qTe2vRZbQ6ArzC0ofuSRjg@mail.gmail.com>
+ <9EA32DFA-21B2-4264-A467-49D252152EAE@azul.com>
+ <CAAcqB+uBunkoMsz7hWBD=JwYUpdTBBFph=RXSCmhGXEfmGvb7A@mail.gmail.com>
+ <AB8E7AC3-68E0-49A4-B0A9-3CEADB491542@azul.com>
+Message-ID: <CAAcqB+uFiT_DKaA8gRAp-pLX_iPN92pt+WeHT8ueRp_GLaYj1w@mail.gmail.com>
+
+I tried out an implementation inspired by WriterReaderPhaser with my code,
+and was able to get the the per method call time down to about 11ns for the
+two atomic increments.  This is low, but the original snippet I provided
+(with volatile read and lazy-set) brings the time to about 3ns.  If there
+is some way to keep this lower time, it would be highly preferable.   It
+would be good if the synchronization overhead is as low as possible.
+
+Comments below on the checks:
+
+On Mon, Apr 29, 2019 at 8:15 PM Gil Tene <gil at azul.com> wrote:
+
+>
+>
+> On Apr 29, 2019, at 4:46 PM, Carl Mastrangelo <notcarl at google.com> wrote:
+>
+>
+>
+> On Mon, Apr 29, 2019 at 3:28 PM Gil Tene <gil at azul.com> wrote:
+>
+>>
+>>
+>> On Apr 29, 2019, at 2:49 PM, Carl Mastrangelo via Concurrency-interest <
+>> concurrency-interest at cs.oswego.edu> wrote:
+>>
+>> @Gil: I had seen that before, though I think it is optimized for the
+>> multiproducer case.
+>>
+>>
+>> I guess the way I see it, the multi-producer support is just a nice
+>> side-effect. Even with a single writer, you'd need that writer to indicate
+>> critical section boundaries in so me way (or coordinate in some other way
+>> with e.g. atomically modified caret position trackers in your ring buffer)
+>> if it wants to remain wait-free while coordinating with a reader.
+>>
+>> The issue with it is the reader needs to keep track of the old snapshots
+>> after it completes reading, because the writer will have moved on.
+>>
+>>
+>> The common pattern is a classic double-buffer. The writer(s) only ever
+>> interacts with the "active" data structures, and the reader will typically
+>> have one "inactive" data structure that it is working on, knowing that the
+>> inactive data is at rest because no writer(s) are interacting with it.
+>> Efficient implementations will "flip" the active and inactive versions and
+>> never allocate a new structure.
+>>
+>
+> I am worried that this would affect the fast write path, since now it
+> would have to reverify the array is not null, and reverify the bounds check
+> for the write.  Since this write is not done in a loop, I don't think the
+> bounds check or null check can be so easily eliminated, which it may be
+> able to if the array was in a final variable.
+>
+>
+> Since this (seems to be) targeting Java:
+>
+> a) Not that it's material anyway, but the null check is actually "free".
+> Modern JVMs don't actually check for nulls in the hot path. Instead, on
+> attempting to access through null references, they catch SEGV's, deopt, and
+> throw the exception as if the check was there. So as long as you don't
+> actually try to use a null array, you won't see any null check costs.
+>
+
+The free-ness of this is in question.   I looked at the PrintAssembly
+output and it seems like the null check comes free because the length of
+the array is read. The problem is that it isn't free, at least according to
+the percentages from perfasm.  The mov instruction varied anywhere from
+2-5% of the time of that 3ns duration.  (its low I know, but it was one of
+the hotter spots).
+
+
+>
+> b) The bounds check would not be eliminated if the writes are not in a
+> loop, but the bounds check cost is probably negligible compared to the rest
+> of the work involved (e.g. compared to the two atomic increments in my
+> scheme, or compared to atomic updates or whatever other synchronization
+> mechanisms you would need to use in other schemes in order to prevent
+> "funny" situations with the reader and the carets).
+>
+
+I thought compilers have some sort of Prover phase, where mathematical
+identities are known that allow it to skip checks.   For example:
+
+private static final int SIZE = 16;
+private static final int MASK = 0xF;
+private final T[] buf = new T[SIZE];
+
+...
+buf[i & MASK] = val
+
+In this example, the compiler provably knows 0 <= i & MASK < 16, it knows
+the buf is not going to change, and the length of the array is constant.
+ Even outside of a loop, it seems like optimizing compilers should know
+this.
+
+
+
+
+>
+>
+>
+>
+>>
+>> You can use other patterns (e.g. multi-interval buffers used in moving
+>> window applications), but the double-buffer is by far the simplest and most
+>> common.
+>>
+>> In your use case, you would just have active and inactive instances of
+>> your ringbuffer, with the reader controlling which is which (and flipping
+>> between them to read), and the writer (the logger in your case) only ever
+>> writing to the active one. If you size your buffer large enough and the
+>> reader visits often enough (for the buffer size and write rate),  you can
+>> maintain lossless reading.
+>>
+>> Whether or not you need allocation for the actual elements you are
+>> logging is up to you and what you are logging. You can certainly have each
+>> of the two ring buffer instance be an array of references to e.g. String,
+>> with String entries instantiated and allocated per logging event, but zero
+>> allocation recorders or loggers with this pattern are common, where each of
+>> the two instances are pre-allocated to hold the entire data needed. E.g. if
+>> a reasonable cap for a logging entry size is known, all entries in the ring
+>> buffer can be pre-allocated.
+>>
+>
+> I am logging strings, but they are preallocated constants.   I'm confident
+> there won't be any memory allocation (and use JMH's gc profiler to check
+> this).
+>
+>
+>>
+>> I guess thats okay, but then the writer has to syncrhonize before each
+>> write.
+>>
+>>
+>> The synchronization cost on the writer side is a single atomic increment
+>> on each side of a critical section. This (with a simple array based ring
+>> buffer and non-atomic manipulation of the "active caret" in that buffer
+>> since you have only a single writer) is probably much cheaper than using
+>> ConcurrentHashMap, ThreadLocal lookups, and WeakRef manipulations.
+>>
+>
+> I may not have been clear, the ConcurrentHashMap and Weakref code is an
+> index for the reader to track down each thread's data.  I think the
+> threadlocal is still needed for contention free writing.
+>
+>
+>>
+>> As for "coarsening": the critical section can have as many data
+>> operations folded together in a "coarsening effect" as you want.
+>>
+>>
+>> @Alex:  Can you explain why?  I'm trying to understand the flaw in my
+>> reasoning.  From my PoV, as long as System.arraycopy copies the data in
+>> (Release|Opaque|Volatile), it should be sufficient.  My thought process:
+>>
+>> Suppose the buffer is size 16, and the write idx is at 20.
+>>
+>> T1(writer):  Read idx
+>> T1: Write buf[idx&0xF]
+>> T1: Write release idx + 1
+>>
+>> T2(reader): Read volatile idx
+>> T2: Start arraycopy of buf
+>>
+>> T1:  Read idx
+>> T1: Write buf[idx&0xF]
+>> T1: Write release idx + 1
+>>
+>> T2: finish array copy
+>> T2: Read volatile idx
+>>
+>>
+>> From T2's perspective, idx2 - idx1  would be how many entrees after idx1
+>> are racy garbage values.  All other values, [0-3], [5-15]  were correctly
+>> synchronized by the released write and volatile read of idx.
+>>
+>>
+>>
+>>
+>> On Mon, Apr 29, 2019 at 2:16 PM Alex Otenko <oleksandr.otenko at gmail.com>
+>> wrote:
+>>
+>>> No, this is totally broken.
+>>>
+>>> You need more barriers after arraycopy and before end=....getVolatile
+>>>
+>>> setRelease is also suspicious, not obvious it is doing what you want.
+>>>
+>>> Alex
+>>>
+>>>
+>>> On Mon, 29 Apr 2019, 18:48 Carl Mastrangelo via Concurrency-interest, <
+>>> concurrency-interest at cs.oswego.edu> wrote:
+>>>
+>>>> Thanks for the ideas.   I put together a proof of concept where the
+>>>> writer writes to a ring buffer, but publishes the write index after each
+>>>> write.  I am not sure it's threadsafe:
+>>>>
+>>>> WriterThread:
+>>>> i = idxHandle.get(this)
+>>>> i %= SIZE;
+>>>> buf[i] = val;
+>>>> idxHandle.setRelease(this, i + 1);
+>>>>
+>>>> ReaderThread:
+>>>> T[] copyBuf = new T[SIZE];
+>>>> start = idxHandle.getVolatile(this);
+>>>> System.arraycopy(buf, 0, copyBuf, 0, SIZE);
+>>>> end = idxHandle.getVolatile(this);
+>>>>
+>>>>
+>>>> I know this is racy, but I *think* it may be okay.   As long as the
+>>>> reader ignores the elements between start and end (and assuming end - start
+>>>> > SIZE), it seems like the other elements copied from buf are safely
+>>>> published.
+>>>>
+>>>>
+>>>> On Thu, Apr 25, 2019 at 2:21 PM Josh Humphries <jhump at bluegosling.com>
+>>>> wrote:
+>>>>
+>>>>> Does the reader read the entire ring buffer? Or does it try track some
+>>>>> sort of cursor and try to only read newly inserted items?
+>>>>>
+>>>>> If reading the entire ring buffer at once, I can think of a couple of
+>>>>> ways that I believe would work:
+>>>>>
+>>>>> *Allocate entry with each write*
+>>>>> If you allocate a new record every time you write an entry into the
+>>>>> buffer, you can use VarHandles or AtomicReferenceArray to do volatile reads
+>>>>> of each entry. The writer must of course use a volatile write for each
+>>>>> store.
+>>>>>
+>>>>> *Don't allocate new entries*
+>>>>> If you're wanting to *not* allocate entries but just mutate existing
+>>>>> objects in the buffer that get pre-allocated, you can use a stamp field on
+>>>>> each entry. Since there is only one writer, you don't need extra
+>>>>> synchronization around read-modify-write sequences on the stamp. You just
+>>>>> need to end the sequence with a volatile write. So the writer reads the
+>>>>> stamp (call this value "initial stamp"), then negates it (or
+>>>>> bitwise-invert), and volatile writes the new value. (So the stamp's sign
+>>>>> bit is a dirty flag, indicating that the writer is concurrently making
+>>>>> changes). The writer then updates all of the fields in the entry (no need
+>>>>> for volatile writes). Finally, it volatile writes the stamp to "initial
+>>>>> stamp plus one".
+>>>>>
+>>>>> Readers need to (volatile) read the stamp at the start, then read all
+>>>>> of the relevant fields (which can be plain reads, not volatile ones), then
+>>>>> (volatile) re-read the stamp at the end. If the stamp changed between the
+>>>>> two reads, the field values read may be garbage/inconsistent, so the reader
+>>>>> must try again. This would go into a loop until the read is successful
+>>>>> (same stamp values before and after).
+>>>>>
+>>>>> The writer is non-blocking and non-locking. Readers are non-locking
+>>>>> (but not necessarily non-blocking since they may need to perform
+>>>>> nondeterministic number of re-reads). If the critical section is not short,
+>>>>> readers will be busy waiting for writers to finish modifying an entry (so
+>>>>> they should likely Thread.yield() periodically, perhaps even after every
+>>>>> failed read attempt).
+>>>>>
+>>>>> If you wanted to further reduce volatile writes, you could make a
+>>>>> sharded ring buffer: break the buffer up into N buffers. The writer
+>>>>> round-robins across shards. Then you could put the stamp on the shard, not
+>>>>> on individual entries. This would allow the writer to potentially batch up
+>>>>> writes by dirtying the stamp on a shard, recording multiple entries (which
+>>>>> do not need to use volatile writes), and then setting the new stamp value.
+>>>>> This means longer critical sections, though, so more wasted busy-wait
+>>>>> cycles in readers potentially. (Introducing a signaling mechanism seems
+>>>>> like it would greatly complicate the scheme and may require introduction of
+>>>>> other synchronizers, which seems to defeat the point.)
+>>>>>
+>>>>>
+>>>>>
+>>>>> For both of the above cases, after the reader scans the entire buffer,
+>>>>> it would need to re-order the results based on something (like a monotonic
+>>>>> counter/ID on each row, recorded by the writer) to reconstruct the correct
+>>>>> order. There is the possibility, of course, that the reader misses some
+>>>>> items or even has "holes" in the sequence of entries it reads.
+>>>>>
+>>>>> ----
+>>>>> *Josh Humphries*
+>>>>> jhump at bluegosling.com
+>>>>>
+>>>>>
+>>>>> On Thu, Apr 25, 2019 at 4:29 PM Carl Mastrangelo via
+>>>>> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>>>>>
+>>>>>> Hi,
+>>>>>>
+>>>>>> I am looking for a synchronization pattern where there is a single
+>>>>>> writer and 0-1 readers.  Writes happen much more frequently than reads, and
+>>>>>> in fact reads may never happen.
+>>>>>>
+>>>>>> The use case is a simple logger which writes to a threadlocal ring
+>>>>>> buffer, which overwrites stale entries.  The reader comes in
+>>>>>> occasionally to read the buffer, but is in no rush. I am wondering if there
+>>>>>> is a way to make the writer lock free or wait free, while putting all the
+>>>>>> synchronization burden on the reader.
+>>>>>>
+>>>>>> My current approach is a ConcurrentHashMap, with a WeakRef for
+>>>>>> keys/values, each pointing to a ThreadLocal.   Writes and reads on the
+>>>>>> ThreadLocal are done using plain old `synchronized`, which are mostly
+>>>>>> uncontended.
+>>>>>>
+>>>>>> Questions:
+>>>>>>
+>>>>>> 1.  Is there a faster way to implemented write-heavy, single producer
+>>>>>> code?
+>>>>>>
+>>>>>> 2.  If the writes happen in quick succession, will lock coarsening
+>>>>>> reduce the number of synchronization points?   (i.e. is it possible to do
+>>>>>> better than volatile reads using `synchronized`?)
+>>>>>>
+>>>>>> 3.  Is there a "lease" like synchronization pattern where a thread
+>>>>>> can request access to data for a limited time without syncrhonizing each
+>>>>>> modification?  I was thinking of maybe using System.nanoTime() with some
+>>>>>> safety bounds, since I have to make the nanoTime call anyways.
+>>>>>> _______________________________________________
+>>>>>> Concurrency-interest mailing list
+>>>>>> Concurrency-interest at cs.oswego.edu
+>>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>>>
+>>>>> _______________________________________________
+>>>> Concurrency-interest mailing list
+>>>> Concurrency-interest at cs.oswego.edu
+>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>
+>>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+>>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190430/baa1acf4/attachment-0001.html>
+

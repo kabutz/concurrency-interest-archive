@@ -1,0 +1,4378 @@
+From luke.hutch at gmail.com  Fri Mar  6 05:40:34 2020
+From: luke.hutch at gmail.com (Luke Hutchison)
+Date: Fri, 6 Mar 2020 03:40:34 -0700
+Subject: [concurrency-interest] Java Memory Model and ParallelStream
+In-Reply-To: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+References: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+Message-ID: <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+
+Reposting a question I posted to jdk-dev concerning the non-volatility of
+array elements in Java, and assumptions that can be made about the
+synchronization barrier at the end of a parallel stream. Any insight into
+this would be appreciated.
+
+
+---------- Forwarded message ---------
+From: Luke Hutchison <luke.hutch at gmail.com>
+Date: Thu, Mar 5, 2020 at 6:03 PM
+Subject: Java memory model question
+To: jdk-dev <jdk-dev at openjdk.java.net>
+
+
+Under the Java memory model, is it fair to assume that memory reads and
+writes can only be reorderered within a method, but not across method
+boundaries? (Define "method" here as what's left after any inlining has
+taken place.)
+
+Specifically I'm wondering: if a thread X launches a parallel stream that
+writes at most once to each independent element of an array, can it be
+assumed that when the stream processing ends, X will always read the value
+of all written array elements? In other words, can the termination of the
+stream be seen as a memory ordering barrier (in a weak sense)?
+
+I'm not asking whether the following code is advisable, only whether
+there's any chance of the main thread reading an old value from the array.
+
+    int N = 50;
+    String[] strValues = new String[N];
+    IntStream.range(0, N)
+            .parallel()
+            .forEach(i -> strValues[i] = Integer.toString(i));
+    // (*) Are the new strValues[i] all guaranteed to be visible here?
+    for (String strValue : strValues) {
+        System.out.println(strValue);
+    }
+
+
+
+
+---------- Forwarded message ---------
+From: David Holmes <david.holmes at oracle.com>
+Date: Thu, Mar 5, 2020 at 7:09 PM
+Subject: Re: Java memory model question
+To: Luke Hutchison <luke.hutch at gmail.com>, jdk-dev <jdk-dev at openjdk.java.net
+>
+
+
+Hi Luke,
+
+Probably a question better asked on concurrency-interest at cs.oswego.edu
+
+On 6/03/2020 11:03 am, Luke Hutchison wrote:
+> Under the Java memory model, is it fair to assume that memory reads and
+> writes can only be reorderered within a method, but not across method
+> boundaries? (Define "method" here as what's left after any inlining has
+> taken place.)
+
+No. Theoretically you could inline the entire program into a single
+"method". Method entry/exit don't in themselves define synchronization
+points.
+
+> Specifically I'm wondering: if a thread X launches a parallel stream that
+> writes at most once to each independent element of an array, can it be
+> assumed that when the stream processing ends, X will always read the value
+> of all written array elements? In other words, can the termination of the
+> stream be seen as a memory ordering barrier (in a weak sense)?
+
+I would have expected this to be explicitly stated somewhere in the
+streams documentation, but I don't see it. My expectation is that
+terminal operations would act as synchronization points.
+
+> I'm not asking whether the following code is advisable, only whether
+> there's any chance of the main thread reading an old value from the array.
+>
+>      int N = 50;
+>      String[] strValues = new String[N];
+>      IntStream.range(0, N)
+>              .parallel()
+>              .forEach(i -> strValues[i] = Integer.toString(i));
+>      // (*) Are the new strValues[i] all guaranteed to be visible here?
+>      for (String strValue : strValues) {
+>          System.out.println(strValue);
+>      }
+
+I would expect that code to be fine. parallel() would not be usable
+otherwise.
+
+Cheers,
+David
+
+
+---------- Forwarded message ---------
+From: Brian Goetz <brian.goetz at oracle.com>
+Date: Fri, Mar 6, 2020 at 12:46 AM
+Subject: Re: Java memory model question
+To: Luke Hutchison <luke.hutch at gmail.com>
+Cc: jdk-dev <jdk-dev at openjdk.java.net>
+
+
+No, but  this is a common myth.  Method boundaries are not part of the JMM,
+and the JIT regularly makes optimizations that have the effect of
+reordering operations across method boundaries.
+
+
+---------- Forwarded message ---------
+From: Luke Hutchison <luke.hutch at gmail.com>
+Date: Fri, Mar 6, 2020 at 3:27 AM
+Subject: Re: Java memory model question
+To: Brian Goetz <brian.goetz at oracle.com>
+Cc: jdk-dev <jdk-dev at openjdk.java.net>
+
+
+On Fri, Mar 6, 2020 at 12:46 AM Brian Goetz <brian.goetz at oracle.com> wrote:
+
+> No, but  this is a common myth.  Method boundaries are not part of the
+> JMM, and the JIT regularly makes optimizations that have the effect of
+> reordering operations across method boundaries.
+>
+
+Thanks. That's pretty interesting, but I can't think of an optimization
+that would have that effect. Can you give an example?
+
+On Thu, Mar 5, 2020 at 7:09 PM David Holmes <david.holmes at oracle.com> wrote:
+
+> Probably a question better asked on concurrency-interest at cs.oswego.edu
+
+
+Thanks, I didn't know about that list.
+
+> can the termination of the
+> > stream be seen as a memory ordering barrier (in a weak sense)?
+>
+> I would have expected this to be explicitly stated somewhere in the
+> streams documentation, but I don't see it. My expectation is that
+> terminal operations would act as synchronization points.
+>
+
+Right, although I wasn't asking about "high-level concurrency" (i.e.
+coordination between threads), but rather "low-level concurrency" (memory
+operation ordering). The question arises from the Java limitation that
+fields can be marked volatile, but if the field is of array type, then the
+individual elements of the array cannot be marked volatile. There's no
+"element-wise volatile" array unless you resort to using an
+AtomicReferenceArray, which creates a wrapper object per array element,
+which is wasteful on computation and space.
+
+I understand that the lack of "element-wise volatile" arrays means that
+threads can end up reading stale values if two or more threads are reading
+from and writing to the same array elements. However for this example, I
+specifically exclude that issue by ensuring that there's only ever either
+zero readers / one writer, or any number of readers / zero writers (every
+array element is only written once by any thread, then after the end of the
+stream, there are zero writers).
+
+I'm really just asking if there is some "macro-scale memory operation
+reordering" that could somehow occur across the synchronization barrier at
+the end of the stream. I don't know how deep the rabbit hole of memory
+operation reordering goes.
+
+I have to assume this is not the case, because the worker threads should
+all go quiescent at the end of the stream, so should have flushed their
+values out to at least L1 cache, and the CPU should ensure cache coherency
+between all cores beyond that point. But I want to make sure that can be
+guaranteed.
+
+In practice I have never seen this pattern fail, and it's exceptionally
+useful to be able to write to disjoint array elements from an
+IntStream.range(0, N) parallel stream, particularly as a pattern to very
+quickly parallelize orignially-serial code to have maximum efficiency, by
+simply replacing for loops that have no dependencies between operations
+with parallel streams -- but I have been nervous to use this pattern since
+I realized that arrays cannot have volatile elements. Logically my brain
+tells me the fear is unfounded, but I wanted to double check.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200306/c6adca82/attachment.htm>
+
+From shade at redhat.com  Fri Mar  6 05:51:26 2020
+From: shade at redhat.com (Aleksey Shipilev)
+Date: Fri, 6 Mar 2020 11:51:26 +0100
+Subject: [concurrency-interest] Java Memory Model and ParallelStream
+In-Reply-To: <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+References: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+ <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+Message-ID: <ab391e17-d0bb-0785-229a-58f2a7880b80@redhat.com>
+
+Hi,
+
+On 3/6/20 11:40 AM, Luke Hutchison via Concurrency-interest wrote:
+> Thanks. That's pretty interesting, but I can't think of an optimization that would have that effect.
+> Can you give an example?
+
+Method gets inlined, and boom: optimizer does not even see the method boundary.
+
+> There's no "element-wise volatile" array unless you resort to using an AtomicReferenceArray,
+> which creates a wrapper object per array element, which is wasteful on computation and space.
+
+Not really related to this question, but: VarHandles provide "use-site" volatility without
+"def-site" volatility. In other words, you can access any non-volatile element as if it is volatile.
+
+> I have to assume this is not the case, because the worker threads should all go quiescent at the end
+> of the stream, so should have flushed their values out to at least L1 cache, and the CPU should
+> ensure cache coherency between all cores beyond that point. But I want to make sure that can be
+> guaranteed.
+
+Stop thinking in low level? That would only confuse you.
+
+Before trying to wrap your head around Streams, consider the plain thread pool:
+
+    ExecutorService e = Executors.newFixedThreadPool(1);
+    int[] a = new int[1];
+    Future<?> f = e.submit(() -> a[0]++);
+    f.get();
+    System.out.println(a[0]); // guaranteed to print "1".
+
+This happens because all actions in the worker thread (so all writes in lambda body) happen-before
+all actions after result acquisition (so all reads after Future.get). Parallel streams carry the
+similar property.
+
+-- 
+Thanks,
+-Aleksey
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 833 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200306/e2926ffa/attachment-0001.sig>
+
+From luke.hutch at gmail.com  Fri Mar  6 06:11:58 2020
+From: luke.hutch at gmail.com (Luke Hutchison)
+Date: Fri, 6 Mar 2020 04:11:58 -0700
+Subject: [concurrency-interest] Java Memory Model and ParallelStream
+In-Reply-To: <ab391e17-d0bb-0785-229a-58f2a7880b80@redhat.com>
+References: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+ <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+ <ab391e17-d0bb-0785-229a-58f2a7880b80@redhat.com>
+Message-ID: <CAHLUFOnrPrs8naWuw31Gj0OtbzZrkCp2n15PPAVa2CnJ9WYwuw@mail.gmail.com>
+
+On Fri, Mar 6, 2020 at 3:51 AM Aleksey Shipilev <shade at redhat.com> wrote:
+
+> On 3/6/20 11:40 AM, Luke Hutchison via Concurrency-interest wrote:
+> > Thanks. That's pretty interesting, but I can't think of an optimization
+> that would have that effect.
+> > Can you give an example?
+>
+> Method gets inlined, and boom: optimizer does not even see the method
+> boundary.
+>
+
+...which is why I specifically excluded inlining in my original question
+(or said consider the state after all inlining has taken place). I realize
+that inlining doesn't just happen at compiletime, and the JIT could decide
+at any point to inline a function, but I want to ignore that (very real)
+possibility to understand whether reordering can take place across method
+boundaries _if inlining never happens_. Brian Goetz commented that "JIT
+regularly makes optimizations that have the effect of reordering operations
+across method boundaries" -- so I think the answer is yes. I just don't
+understand how that would happen.
+
+> There's no "element-wise volatile" array unless you resort to using an
+> AtomicReferenceArray,
+> > which creates a wrapper object per array element, which is wasteful on
+> computation and space.
+>
+> Not really related to this question, but: VarHandles provide "use-site"
+> volatility without
+> "def-site" volatility. In other words, you can access any non-volatile
+> element as if it is volatile.
+>
+
+Thanks for the pointer, although if you need to create one VarHandle per
+array element to guarantee this behavior, then that's logically no
+different than wrapping each array element in a wrapper object with
+AtomicReferenceArray.
+
+(Maybe Java could provide something like a "volatile volatile" type that
+could be used with array-typed fields to make "volatile" apply to elements
+of an array-typed field, not just to the field itself?)
+
+> I have to assume this is not the case, because the worker threads should
+> all go quiescent at the end
+> > of the stream, so should have flushed their values out to at least L1
+> cache, and the CPU should
+> > ensure cache coherency between all cores beyond that point. But I want
+> to make sure that can be
+> > guaranteed.
+>
+> Stop thinking in low level? That would only confuse you.
+>
+> Before trying to wrap your head around Streams, consider the plain thread
+> pool:
+>
+>     ExecutorService e = Executors.newFixedThreadPool(1);
+>     int[] a = new int[1];
+>     Future<?> f = e.submit(() -> a[0]++);
+>     f.get();
+>     System.out.println(a[0]); // guaranteed to print "1".
+>
+> This happens because all actions in the worker thread (so all writes in
+> lambda body) happen-before
+> all actions after result acquisition (so all reads after Future.get).
+> Parallel streams carry the
+> similar property.
+
+
+Good example, and I guess the "guaranteed" here answers my question.
+
+I guess fundamentally I was asking if any memory reordering (or cache
+staleness) can happen across synchronization barriers. It sounds like that
+is not the case, due to synchronization barriers implementing a
+computational "happens-before" guarantee, which enforces the same
+"happens-before" total ordering on memory operations across the barrier.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200306/dd6757e8/attachment.htm>
+
+From shade at redhat.com  Fri Mar  6 06:44:57 2020
+From: shade at redhat.com (Aleksey Shipilev)
+Date: Fri, 6 Mar 2020 12:44:57 +0100
+Subject: [concurrency-interest] Java Memory Model and ParallelStream
+In-Reply-To: <CAHLUFOnrPrs8naWuw31Gj0OtbzZrkCp2n15PPAVa2CnJ9WYwuw@mail.gmail.com>
+References: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+ <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+ <ab391e17-d0bb-0785-229a-58f2a7880b80@redhat.com>
+ <CAHLUFOnrPrs8naWuw31Gj0OtbzZrkCp2n15PPAVa2CnJ9WYwuw@mail.gmail.com>
+Message-ID: <8be02ab9-1414-09f8-5d98-5227c9381ccf@redhat.com>
+
+On 3/6/20 12:11 PM, Luke Hutchison wrote:
+> ...which is why I specifically excluded inlining in my original question (or said consider the state
+> after all inlining has taken place). I realize that inlining doesn't just happen at compiletime, and
+> the JIT could decide at any point to inline a function, but I want to ignore that (very real)
+> possibility to understand whether reordering can take place across method boundaries _if inlining
+> never happens_. 
+
+That is an odd exclusion. Inlining is the mother of all optimizations: it expands the optimization
+scope. But even "if" formal inlining does not happen, you can devise the closed-world/speculatve
+optimizations that peek into method implementations and use that knowledge to optimize. Coming up
+with the concrete example is counter-productive, IMO, because it plays into caring about
+implementation specifics, rather than the high-level guarantees.
+
+
+>     > There's no "element-wise volatile" array unless you resort to using an AtomicReferenceArray,
+>     > which creates a wrapper object per array element, which is wasteful on computation and space.
+> 
+>     Not really related to this question, but: VarHandles provide "use-site" volatility without
+>     "def-site" volatility. In other words, you can access any non-volatile element as if it is volatile.
+> 
+> Thanks for the pointer, although if you need to create one VarHandle per array element to guarantee
+> this behavior, 
+
+No, you don't need a VH per array element, you can have one that accepts the array and the index:
+https://docs.oracle.com/javase/9/docs/api/java/lang/invoke/MethodHandles.html#arrayElementVarHandle-java.lang.Class-
+
+> then that's logically no different than wrapping each array element in a wrapper
+> object with AtomicReferenceArray.
+
+No, it is not the same. AtomicReferenceArray gives you one additional indirection to its own array.
+VarHandle can do the operation _on the array you give it_.
+
+
+> I guess fundamentally I was asking if any memory reordering (or cache staleness) can happen across
+> synchronization barriers. It sounds like that is not the case, due to synchronization barriers
+> implementing a computational "happens-before" guarantee, which enforces the same "happens-before"
+> total ordering on memory operations across the barrier.
+
+Tell me what do you mean by "Synchronization barrier" (and how it relates to the what you are
+asking, to avoid XY Problem), and then we can talk about what properties does it have. Loosely
+defined things can have whatever properties :)
+
+Otherwise, look, high-level guarantees are the king. They do not force you to know the low-level
+details. In just about every parallel implementation everything that worker threads do
+happens-before their thread/task termination/publication, and thread/result termination/publication
+happens-before the detection/acquisition of the result.
+
+It is not really relevant how that detection/acquisition happens:
+ - successful Thread.join() for a terminating worker; (guaranteed by JLS)
+ - successful Future.get() from executor; (guaranteed by package spec in java.util.concurrent.*)
+ - successful forEach for a parallel stream; (provided by extension?)
+
+-- 
+Thanks,
+-Aleksey
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 833 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200306/0e9447aa/attachment.sig>
+
+From luke.hutch at gmail.com  Fri Mar  6 07:18:59 2020
+From: luke.hutch at gmail.com (Luke Hutchison)
+Date: Fri, 6 Mar 2020 05:18:59 -0700
+Subject: [concurrency-interest] Java Memory Model and ParallelStream
+In-Reply-To: <8be02ab9-1414-09f8-5d98-5227c9381ccf@redhat.com>
+References: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+ <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+ <ab391e17-d0bb-0785-229a-58f2a7880b80@redhat.com>
+ <CAHLUFOnrPrs8naWuw31Gj0OtbzZrkCp2n15PPAVa2CnJ9WYwuw@mail.gmail.com>
+ <8be02ab9-1414-09f8-5d98-5227c9381ccf@redhat.com>
+Message-ID: <CAHLUFOn58dC+ggw7zstiaqcLid8PDcOCZ23O1BOWrMPKVdnkoQ@mail.gmail.com>
+
+OK, that answers all my questions. Thanks for taking the time to respond
+(and for the pointer to MethodHandles.arrayElementVarHandle).
+
+
+On Fri, Mar 6, 2020 at 4:45 AM Aleksey Shipilev <shade at redhat.com> wrote:
+
+> On 3/6/20 12:11 PM, Luke Hutchison wrote:
+> > ...which is why I specifically excluded inlining in my original question
+> (or said consider the state
+> > after all inlining has taken place). I realize that inlining doesn't
+> just happen at compiletime, and
+> > the JIT could decide at any point to inline a function, but I want to
+> ignore that (very real)
+> > possibility to understand whether reordering can take place across
+> method boundaries _if inlining
+> > never happens_.
+>
+> That is an odd exclusion. Inlining is the mother of all optimizations: it
+> expands the optimization
+> scope. But even "if" formal inlining does not happen, you can devise the
+> closed-world/speculatve
+> optimizations that peek into method implementations and use that knowledge
+> to optimize. Coming up
+> with the concrete example is counter-productive, IMO, because it plays
+> into caring about
+> implementation specifics, rather than the high-level guarantees.
+>
+>
+> >     > There's no "element-wise volatile" array unless you resort to
+> using an AtomicReferenceArray,
+> >     > which creates a wrapper object per array element, which is
+> wasteful on computation and space.
+> >
+> >     Not really related to this question, but: VarHandles provide
+> "use-site" volatility without
+> >     "def-site" volatility. In other words, you can access any
+> non-volatile element as if it is volatile.
+> >
+> > Thanks for the pointer, although if you need to create one VarHandle per
+> array element to guarantee
+> > this behavior,
+>
+> No, you don't need a VH per array element, you can have one that accepts
+> the array and the index:
+>
+> https://docs.oracle.com/javase/9/docs/api/java/lang/invoke/MethodHandles.html#arrayElementVarHandle-java.lang.Class-
+>
+> > then that's logically no different than wrapping each array element in a
+> wrapper
+> > object with AtomicReferenceArray.
+>
+> No, it is not the same. AtomicReferenceArray gives you one additional
+> indirection to its own array.
+> VarHandle can do the operation _on the array you give it_.
+>
+>
+> > I guess fundamentally I was asking if any memory reordering (or cache
+> staleness) can happen across
+> > synchronization barriers. It sounds like that is not the case, due to
+> synchronization barriers
+> > implementing a computational "happens-before" guarantee, which enforces
+> the same "happens-before"
+> > total ordering on memory operations across the barrier.
+>
+> Tell me what do you mean by "Synchronization barrier" (and how it relates
+> to the what you are
+> asking, to avoid XY Problem), and then we can talk about what properties
+> does it have. Loosely
+> defined things can have whatever properties :)
+>
+> Otherwise, look, high-level guarantees are the king. They do not force you
+> to know the low-level
+> details. In just about every parallel implementation everything that
+> worker threads do
+> happens-before their thread/task termination/publication, and
+> thread/result termination/publication
+> happens-before the detection/acquisition of the result.
+>
+> It is not really relevant how that detection/acquisition happens:
+>  - successful Thread.join() for a terminating worker; (guaranteed by JLS)
+>  - successful Future.get() from executor; (guaranteed by package spec in
+> java.util.concurrent.*)
+>  - successful forEach for a parallel stream; (provided by extension?)
+>
+> --
+> Thanks,
+> -Aleksey
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200306/b084632e/attachment-0001.htm>
+
+From dl at cs.oswego.edu  Fri Mar  6 07:22:18 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 6 Mar 2020 07:22:18 -0500
+Subject: [concurrency-interest] Java Memory Model and ParallelStream
+In-Reply-To: <8be02ab9-1414-09f8-5d98-5227c9381ccf@redhat.com>
+References: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+ <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+ <ab391e17-d0bb-0785-229a-58f2a7880b80@redhat.com>
+ <CAHLUFOnrPrs8naWuw31Gj0OtbzZrkCp2n15PPAVa2CnJ9WYwuw@mail.gmail.com>
+ <8be02ab9-1414-09f8-5d98-5227c9381ccf@redhat.com>
+Message-ID: <232b0b55-98b1-b0a2-327d-8fa3f15880cf@cs.oswego.edu>
+
+
+Just to emphasize Alexey's main point...
+
+On 3/6/20 6:44 AM, Aleksey Shipilev via Concurrency-interest wrote:
+
+> Otherwise, look, high-level guarantees are the king.
+> 
+> It is not really relevant how that detection/acquisition happens:
+>  - successful Thread.join() for a terminating worker; (guaranteed by JLS)
+>  - successful Future.get() from executor; (guaranteed by package spec in java.util.concurrent.*)
+>  - successful forEach for a parallel stream; (provided by extension?)
+
+(See also the java.util.stream package docs. Current version at:
+https://docs.oracle.com/en/java/javase/13/docs/api/java.base/java/util/stream/package-summary.html
+
+In other words, java.util.concurrent components make strong enough
+guarantees that almost nobody ever needs to think about them. On the
+other hand, they so often invisibly do what people expect that is too
+easy for some to imagine other nonexistent rules are responsible.
+
+-Doug
+
+
+From luke.hutch at gmail.com  Fri Mar  6 07:51:19 2020
+From: luke.hutch at gmail.com (Luke Hutchison)
+Date: Fri, 6 Mar 2020 05:51:19 -0700
+Subject: [concurrency-interest] Java Memory Model and ParallelStream
+In-Reply-To: <232b0b55-98b1-b0a2-327d-8fa3f15880cf@cs.oswego.edu>
+References: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+ <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+ <ab391e17-d0bb-0785-229a-58f2a7880b80@redhat.com>
+ <CAHLUFOnrPrs8naWuw31Gj0OtbzZrkCp2n15PPAVa2CnJ9WYwuw@mail.gmail.com>
+ <8be02ab9-1414-09f8-5d98-5227c9381ccf@redhat.com>
+ <232b0b55-98b1-b0a2-327d-8fa3f15880cf@cs.oswego.edu>
+Message-ID: <CAHLUFO=h9z4XrhXDsGi1WGp6Kwd5aB85vedvD-O6xJ_0W63G7w@mail.gmail.com>
+
+On Fri, Mar 6, 2020 at 5:26 AM Doug Lea via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> In other words, java.util.concurrent components make strong enough
+> guarantees that almost nobody ever needs to think about them. On the
+> other hand, they so often invisibly do what people expect that is too
+> easy for some to imagine other nonexistent rules are responsible.
+>
+
+Yes, I have significantly benefited from java.util.concurrent over many
+years, and I'm grateful for your work on it. I use these classes in almost
+every program I ever write, and have done for many years. Usually I use
+concurrent collections along with futures for imposing a partial ordering
+where needed, but sometimes I have to get down to a lower level and
+implement custom locking schemes with semaphores and mutexes, etc. -- and
+semaphores and mutexes already get to the level of "this is hard enough to
+get right that there's a good reason for higher-level concurrency
+abstractions".
+
+However I also know there was a lot of very careful and principled work
+that went into the implementation of java.util.concurrent, and I have run
+into a situation a few times where deferring to any sort of high-level
+abstractions just wasn't enough, sometimes because I was running into
+performance issues. The code example I gave does not use
+java.util.concurrent, because it doesn't need those classes. I just wanted
+to know if this pattern is safe. My logical mind said: Of course, logically
+how could this not be safe? -- but I have seen enough warnings about
+non-volatility of Java array elements that I thought I should check with
+the experts.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200306/1fb2007d/attachment.htm>
+
+From aph at redhat.com  Fri Mar  6 09:15:26 2020
+From: aph at redhat.com (Andrew Haley)
+Date: Fri, 6 Mar 2020 14:15:26 +0000
+Subject: [concurrency-interest] Java Memory Model and ParallelStream
+In-Reply-To: <CAHLUFOnrPrs8naWuw31Gj0OtbzZrkCp2n15PPAVa2CnJ9WYwuw@mail.gmail.com>
+References: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+ <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+ <ab391e17-d0bb-0785-229a-58f2a7880b80@redhat.com>
+ <CAHLUFOnrPrs8naWuw31Gj0OtbzZrkCp2n15PPAVa2CnJ9WYwuw@mail.gmail.com>
+Message-ID: <aff12168-5d5c-245d-3375-5ec86e972b31@redhat.com>
+
+On 3/6/20 11:11 AM, Luke Hutchison via Concurrency-interest wrote:
+> I realize
+> that inlining doesn't just happen at compiletime, and the JIT could decide
+> at any point to inline a function, but I want to ignore that (very real)
+> possibility to understand whether reordering can take place across method
+> boundaries _if inlining never happens_. Brian Goetz commented that "JIT
+> regularly makes optimizations that have the effect of reordering operations
+> across method boundaries" -- so I think the answer is yes. I just don't
+> understand how that would happen.
+
+The CPU *hardware* does this all the time. Few processors have a
+total store order: x86, which does, is the exception here.
+
+-- 
+Andrew Haley  (he/him)
+Java Platform Lead Engineer
+Red Hat UK Ltd. <https://www.redhat.com>
+https://keybase.io/andrewhaley
+EAC8 43EB D3EF DB98 CC77 2FAD A5CD 6035 332F A671
+
+
+From luke.hutch at gmail.com  Fri Mar  6 09:35:16 2020
+From: luke.hutch at gmail.com (Luke Hutchison)
+Date: Fri, 6 Mar 2020 07:35:16 -0700
+Subject: [concurrency-interest] Java Memory Model and ParallelStream
+In-Reply-To: <aff12168-5d5c-245d-3375-5ec86e972b31@redhat.com>
+References: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+ <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+ <ab391e17-d0bb-0785-229a-58f2a7880b80@redhat.com>
+ <CAHLUFOnrPrs8naWuw31Gj0OtbzZrkCp2n15PPAVa2CnJ9WYwuw@mail.gmail.com>
+ <aff12168-5d5c-245d-3375-5ec86e972b31@redhat.com>
+Message-ID: <CAHLUFO=-15yZEHdmrAcpP1w7LgeGJd7=LokZ0k9-AvqWG7nhug@mail.gmail.com>
+
+On Fri, Mar 6, 2020, 7:15 AM Andrew Haley <aph at redhat.com> wrote:
+
+> The CPU *hardware* does this all the time. Few processors have a
+> total store order: x86, which does, is the exception here.
+>
+
+Well that gets at my core question: whether a computational barrier always
+strictly enforces memory happens-before ordering across the barrier, i.e.
+whether a computational barrier is always also a memory ordering barrier.
+
+If the CPU does not have a total store order, I could imagine cases where a
+computational barrier does not enforce memory ordering. What am I missing?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200306/c200e253/attachment.htm>
+
+From aph at redhat.com  Fri Mar  6 09:44:52 2020
+From: aph at redhat.com (Andrew Haley)
+Date: Fri, 6 Mar 2020 14:44:52 +0000
+Subject: [concurrency-interest] Java Memory Model and ParallelStream
+In-Reply-To: <CAHLUFO=-15yZEHdmrAcpP1w7LgeGJd7=LokZ0k9-AvqWG7nhug@mail.gmail.com>
+References: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+ <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+ <ab391e17-d0bb-0785-229a-58f2a7880b80@redhat.com>
+ <CAHLUFOnrPrs8naWuw31Gj0OtbzZrkCp2n15PPAVa2CnJ9WYwuw@mail.gmail.com>
+ <aff12168-5d5c-245d-3375-5ec86e972b31@redhat.com>
+ <CAHLUFO=-15yZEHdmrAcpP1w7LgeGJd7=LokZ0k9-AvqWG7nhug@mail.gmail.com>
+Message-ID: <adcd3e5d-0f52-17dd-70f1-ed8224ef5006@redhat.com>
+
+On 3/6/20 2:35 PM, Luke Hutchison wrote:
+> On Fri, Mar 6, 2020, 7:15 AM Andrew Haley <aph at redhat.com> wrote:
+> 
+>> The CPU *hardware* does this all the time. Few processors have a
+>> total store order: x86, which does, is the exception here.
+> 
+> Well that gets at my core question: whether a computational barrier always
+> strictly enforces memory happens-before ordering across the barrier, i.e.
+> whether a computational barrier
+
+To answer that I'd need to be told what a "computational barrier" is. I
+have some guesses, but I think you should spell it out.
+
+> is always also a memory ordering barrier.
+> 
+> If the CPU does not have a total store order, I could imagine cases where a
+> computational barrier does not enforce memory ordering. What am I missing?
+-- 
+Andrew Haley  (he/him)
+Java Platform Lead Engineer
+Red Hat UK Ltd. <https://www.redhat.com>
+https://keybase.io/andrewhaley
+EAC8 43EB D3EF DB98 CC77 2FAD A5CD 6035 332F A671
+
+
+From dl at cs.oswego.edu  Fri Mar  6 09:54:14 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 6 Mar 2020 09:54:14 -0500
+Subject: [concurrency-interest] Java Memory Model and ParallelStream
+In-Reply-To: <CAHLUFO=-15yZEHdmrAcpP1w7LgeGJd7=LokZ0k9-AvqWG7nhug@mail.gmail.com>
+References: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+ <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+ <ab391e17-d0bb-0785-229a-58f2a7880b80@redhat.com>
+ <CAHLUFOnrPrs8naWuw31Gj0OtbzZrkCp2n15PPAVa2CnJ9WYwuw@mail.gmail.com>
+ <aff12168-5d5c-245d-3375-5ec86e972b31@redhat.com>
+ <CAHLUFO=-15yZEHdmrAcpP1w7LgeGJd7=LokZ0k9-AvqWG7nhug@mail.gmail.com>
+Message-ID: <c93e7483-57c0-0f7c-1363-aaaa0ec22cc2@cs.oswego.edu>
+
+On 3/6/20 9:35 AM, Luke Hutchison via Concurrency-interest wrote:
+
+> If the CPU does not have a total store order, I could imagine cases
+> where a computational barrier does not enforce memory ordering. What am
+> I missing?
+
+You are missing us not having our act together and turning the guide at
+http://gee.cs.oswego.edu/dl/html/j9mm.html along with most of a
+formalization at http://compilers.cs.ucla.edu/papers/jam/ into a spec
+update. Any year now...
+
+-Doug
+
+
+
+From fw at deneb.enyo.de  Fri Mar  6 09:59:14 2020
+From: fw at deneb.enyo.de (Florian Weimer)
+Date: Fri, 06 Mar 2020 15:59:14 +0100
+Subject: [concurrency-interest] Java Memory Model and ParallelStream
+In-Reply-To: <c93e7483-57c0-0f7c-1363-aaaa0ec22cc2@cs.oswego.edu> (Doug Lea
+ via Concurrency-interest's message of "Fri, 6 Mar 2020 09:54:14
+ -0500")
+References: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+ <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+ <ab391e17-d0bb-0785-229a-58f2a7880b80@redhat.com>
+ <CAHLUFOnrPrs8naWuw31Gj0OtbzZrkCp2n15PPAVa2CnJ9WYwuw@mail.gmail.com>
+ <aff12168-5d5c-245d-3375-5ec86e972b31@redhat.com>
+ <CAHLUFO=-15yZEHdmrAcpP1w7LgeGJd7=LokZ0k9-AvqWG7nhug@mail.gmail.com>
+ <c93e7483-57c0-0f7c-1363-aaaa0ec22cc2@cs.oswego.edu>
+Message-ID: <87y2sdy1fh.fsf@mid.deneb.enyo.de>
+
+* Doug Lea via Concurrency-interest:
+
+> On 3/6/20 9:35 AM, Luke Hutchison via Concurrency-interest wrote:
+>
+>> If the CPU does not have a total store order, I could imagine cases
+>> where a computational barrier does not enforce memory ordering. What am
+>> I missing?
+>
+> You are missing us not having our act together and turning the guide at
+> http://gee.cs.oswego.edu/dl/html/j9mm.html along with most of a
+> formalization at http://compilers.cs.ucla.edu/papers/jam/ into a spec
+> update. Any year now...
+
+And please specify it at the JVM level this time, not at the Java
+language leve. 8-)
+
+From luke.hutch at gmail.com  Fri Mar  6 10:16:42 2020
+From: luke.hutch at gmail.com (Luke Hutchison)
+Date: Fri, 6 Mar 2020 08:16:42 -0700
+Subject: [concurrency-interest] Java Memory Model and ParallelStream
+In-Reply-To: <adcd3e5d-0f52-17dd-70f1-ed8224ef5006@redhat.com>
+References: <CAHLUFOmkG9ZCXdw-11S8yxwDe3WRjXvqs9yPOQVG4JMYYm6rtg@mail.gmail.com>
+ <CAHLUFO=zTBY+Fdes9hhmVK5JGsBsRLnezOnxWZ7eULDw5wzPbg@mail.gmail.com>
+ <ab391e17-d0bb-0785-229a-58f2a7880b80@redhat.com>
+ <CAHLUFOnrPrs8naWuw31Gj0OtbzZrkCp2n15PPAVa2CnJ9WYwuw@mail.gmail.com>
+ <aff12168-5d5c-245d-3375-5ec86e972b31@redhat.com>
+ <CAHLUFO=-15yZEHdmrAcpP1w7LgeGJd7=LokZ0k9-AvqWG7nhug@mail.gmail.com>
+ <adcd3e5d-0f52-17dd-70f1-ed8224ef5006@redhat.com>
+Message-ID: <CAHLUFO=xjUXLJPYsGmCQSs0i-=d=UBTuKJcrkQXOJQd_nVsqgA@mail.gmail.com>
+
+On Fri, Mar 6, 2020, 7:45 AM Andrew Haley <aph at redhat.com> wrote:
+
+> To answer that I'd need to be told what a "computational barrier" is. I
+> have some guesses, but I think you should spell it out.
+>
+
+I was referring to a barrier in the standard sense of a synchronization
+mechanism that waits for some set of threads to finish some set of tasks
+before continuing. I added the word "computational" and "memory" before
+"barrier" to disambiguate the "happens-before" of computational work from
+the "happens-before" of writing values to memory, viz JMM. I then asked if
+these two "happens-before" relationships can be assumed to be exactly
+equivalent (i.e. taking into account JMM, and how JMM works with cache
+coherency behavior, out-of-order execution, etc.).
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200306/95391b24/attachment.htm>
+
+From dl at cs.oswego.edu  Fri Mar  6 10:21:54 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 6 Mar 2020 10:21:54 -0500
+Subject: [concurrency-interest] draft Carrier API
+Message-ID: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+
+
+[Cross-posting concurrency-interest and loom-dev.]
+
+To continue improving java.util.concurrent support for increasingly
+diverse programming styles (while still avoiding arguments about whether
+any of them are best!), it would be helpful to provide "BlockingQueues
+meet AutoCloseable" APIs that are loom-friendly, but not loom-specific.
+A sketch is pasted below. To avoid mail-reader glitches, you might want
+to read updated snapshots at gee.cs.oswego.edu/dl/wwwtmp/Carrier.java
+
+Suggestions and comments are welcome. An initial implementation class
+(LinkedCarrier) should be available shortly after API issues settle;
+others later.
+
+...
+
+// API sketches, with "public" omitted throughout
+
+/**
+ * A component for sending and receiving messages. Carriers support
+ * usages similar to those of BlockingQueues, but additionally
+ * implement AutoCloseable, and may be explicitly closed for sending,
+ * receiving, or both. Carriers also provide policy-based control for
+ * responses to Thread.interrupt while blocked (ignoring, cancelling
+ * the current operation only, or closing the carrier). Concrete
+ * implementation classes may be created with a given capacity (after
+ * which method send will block waiting for available space), or
+ * effectively unbounded, in which case method send will never block
+ * but may fail with an OutOfMemoryError.
+ *
+ * Design notes:
+ *
+ * (1) Both send and receive methods are declared here, but allowing
+ * either side to be permanently (vs eventually) closed for send-only
+ * or receive-only components. This loses some static type checking
+ * opportunities of separate send and receive APIs. However the class
+ * includes methods (in the style of Collections.unmodifiableX) to
+ * produce views that provide dynamic directionality enforcement.
+ *
+ * (2) This is an abstract class (rather than interface) providing
+ * uniform Observer-syle methods for Selectors and related
+ * classes. The alternative is some sort of SPI.
+ *
+ * (3) To control interactions between Thread interrupts and state,
+ * rather than throwing InterruptedExceptions, potentially blocking
+ * methods rely on a provided policy to distinguish cancelling the
+ * operation vs closing the carrier vs ignoring the interrupt. The
+ * default is CANCEL, because it is the least constraining; for
+ * example some mixed usages can catch CancellationException to then
+ * close only when desired.
+ *
+ * (4) To broaden coverage of channel-based programming styles,
+ * implementations support sendSynchronously, which is otherwise
+ * available in BlockingQueues only as the poorly-named and underused
+ * method LinkedTransferQueue.transfer.
+ */
+abstract class Carrier<T> implements AutoCloseable {
+    Carrier(OnInterrupt policy);
+    Carrier() { this(OnInterrupt.CANCEL); } // default
+
+    // Basic messaging
+
+    /**
+     * Consume item, throw if isClosedForReceiving, block if empty.
+     * May cancel or close on interrupt, depending on OnInterrupt policy.
+     */
+    T receive() throws ClosedException, CancellationException;
+
+    /**
+     * Send item, throw if isClosedForSending, block if full.
+     * May cancel or close on interrupt, depending on OnInterrupt policy.
+     */
+    void send(T item) throws ClosedException, CancellationException;
+
+    /** Send and block until item received */
+    void sendSynchronously(T item) throws ClosedException,
+CancellationException;
+
+    // Timeout versions
+    T receive(Duration timeout)
+        throws ClosedException, CancellationException, TimeoutException;
+    void send(T item, Duration timeout)
+        throws ClosedException, CancellationException, TimeoutException;
+    void sendSynchronously(T item, Duration timeout)
+        throws ClosedException, CancellationException, TimeoutException;
+
+    // Non-blocking access
+    boolean trySend(T item);        // false if closed or full
+    T tryReceive(T resultIfAbsent); // absent if closed or empty
+    T peek(T resultIfAbsent);       // may false-positive
+
+    // Termination
+    void closeForSending();         // fully close when isClosedForReceiving
+    void closeForReceiving();       // vice-versa
+    void close();                   // immediate close
+    void awaitClose() throws interruptedException;
+    void onClose(Runnable closeHandler); // run by thread triggering close
+
+    // Status
+    boolean isClosedForSending();
+    boolean isClosedForReceiving();
+    boolean isClosed();             // true if both sides closed
+    boolean isOpen()                { return !isClosed(); }
+    boolean isEmpty();
+    boolean isFull();               // never true if unbounded
+    long    capacity();             // Long.MAX_VALUE if unbounded
+    OnInterrupt interruptPolicy();  // return policy
+
+    // linkage support, noops here; locators are opaque cookie-like
+identifiers
+    protected void registerSource(Carrier<? super T> c, long locator) {}
+    // notification of send or close by registered carrier
+    protected void sourceEvent(long locator, boolean isClosed) {}
+
+    // views to disable one direction; similar to Collections.unmodifiableX
+    static <E> Carrier<E> sendOnlyCarrier(Carrier<E> c);
+    static <E> Carrier<E> receiveOnlyCarrier(Carrier<E> c);
+
+    // other possible utilities
+    Stream<T> stream();             // destructive (consume-on-traverse)
+    static <E> Carrier<E> discardingCarrier(); // /dev/null analog
+    // TBD: selector as static factory method vs class (as below)
+    // TBD: Flow (reactive stream) adaptors
+}
+
+class LinkedCarrier<T> extends Carrier<T> {
+    // main linked implementation
+    // coming soon, based on LinkedTransferQueue algorithms
+}
+
+class BufferedCarrier<T> extends Carrier<T> {
+    // main array-based implementation(s)
+    // coming later, with single- vs multiple- sink/source options
+}
+
+/**
+ * A Carrier that aggregates sources established in its constructor.
+ * The receive method blocks waiting for any to become available, then
+ * returns the corresponding item. Selectors are always closed for
+ * sending, and may become fully closed when all sources close.
+ */
+class Selector<T> extends Carrier<T> { // possibly a more specific name
+    Selector(<Carrier<? extends T> c, ...) {
+        // for each c { c.registerSource(this, locatorFor(c)); }
+    }
+    boolean isClosedForSending() { return true; }
+    // ...
+}
+
+/**
+ * A policy for responding to Thread.interrupt in blocking methods in
+ * classes implementing AutoCloseable
+ */
+static Enum OnInterrupt {
+    IGNORE,  // continue waiting
+    CANCEL,  // throw CancellationException
+    CLOSE    // close and throw ClosedException
+}
+
+// This could be placed in java.lang for use with any AutoCloseable
+class ClosedException extends IllegalStateException {
+    ClosedException(AutoCloseable c); // the closed component
+    // ...
+}
+
+
+From akarnokd at gmail.com  Fri Mar  6 13:04:31 2020
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Fri, 6 Mar 2020 19:04:31 +0100
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+Message-ID: <CAAWwtm-PvGOim0pvJcVHYdj3WhqABnvrF+zHOBktjib9NWGSaA@mail.gmail.com>
+
+Hi. I have a few comments:
+
+onClose(Runnable): will this allow one handler at most, many handler, or
+calling multiple times will replace the handler and run the old one?
+Calling onClose the first time after the carrier was closed runs the
+Runnable immediately, right?
+
+tryReceive(T def): always somewhat trouble to expect a default value of T,
+perhaps return Optional<T> if T is planned to be non-null.
+
+stream(): I presume closing the stream closes the carrier
+
++ receive(Consumer): boolean: could allow receiving without making a
+default T
+
++ closeExceptionally(Throwable) : perhaps for both sides? Certainly, one
+can send a record of T+Throwable one way, but not the other.
+
++ onSenderReady(Runnable r): would allow a non-blocking consumer to react
+to items or sender-side close.
++ onReceiverReady(Runnable r): would allow a non-blocking producer to react
+to buffer slots becoming available or receiver-side close.
+
++ receiveAsPublisher(Executor):
+  ~ probably should only allow one subscriber and rely on external
+multicasting
+  ~ without onSenderReady, it has to rely on blocking and thus run on a
+suspendable thread
+
++ sendAsSubscriber(Executor)
+  ~ a full buffer requires suspending so that when a slot becomes
+available, the upstream can now to send more items
+  ~ without onReceiverReady and blocking on send, I'm not sure how to link
+cancel to a receiver-side close - depends on how onClose allows registering
+multiple runnables
+  ~ unbounded capacity <-> unbounded request?
+
+
+
+Doug Lea via Concurrency-interest <concurrency-interest at cs.oswego.edu> ezt
+írta (időpont: 2020. márc. 6., P, 16:22):
+
+>
+> [Cross-posting concurrency-interest and loom-dev.]
+>
+> To continue improving java.util.concurrent support for increasingly
+> diverse programming styles (while still avoiding arguments about whether
+> any of them are best!), it would be helpful to provide "BlockingQueues
+> meet AutoCloseable" APIs that are loom-friendly, but not loom-specific.
+> A sketch is pasted below. To avoid mail-reader glitches, you might want
+> to read updated snapshots at gee.cs.oswego.edu/dl/wwwtmp/Carrier.java
+>
+> Suggestions and comments are welcome. An initial implementation class
+> (LinkedCarrier) should be available shortly after API issues settle;
+> others later.
+>
+> ...
+>
+> // API sketches, with "public" omitted throughout
+>
+> /**
+>  * A component for sending and receiving messages. Carriers support
+>  * usages similar to those of BlockingQueues, but additionally
+>  * implement AutoCloseable, and may be explicitly closed for sending,
+>  * receiving, or both. Carriers also provide policy-based control for
+>  * responses to Thread.interrupt while blocked (ignoring, cancelling
+>  * the current operation only, or closing the carrier). Concrete
+>  * implementation classes may be created with a given capacity (after
+>  * which method send will block waiting for available space), or
+>  * effectively unbounded, in which case method send will never block
+>  * but may fail with an OutOfMemoryError.
+>  *
+>  * Design notes:
+>  *
+>  * (1) Both send and receive methods are declared here, but allowing
+>  * either side to be permanently (vs eventually) closed for send-only
+>  * or receive-only components. This loses some static type checking
+>  * opportunities of separate send and receive APIs. However the class
+>  * includes methods (in the style of Collections.unmodifiableX) to
+>  * produce views that provide dynamic directionality enforcement.
+>  *
+>  * (2) This is an abstract class (rather than interface) providing
+>  * uniform Observer-syle methods for Selectors and related
+>  * classes. The alternative is some sort of SPI.
+>  *
+>  * (3) To control interactions between Thread interrupts and state,
+>  * rather than throwing InterruptedExceptions, potentially blocking
+>  * methods rely on a provided policy to distinguish cancelling the
+>  * operation vs closing the carrier vs ignoring the interrupt. The
+>  * default is CANCEL, because it is the least constraining; for
+>  * example some mixed usages can catch CancellationException to then
+>  * close only when desired.
+>  *
+>  * (4) To broaden coverage of channel-based programming styles,
+>  * implementations support sendSynchronously, which is otherwise
+>  * available in BlockingQueues only as the poorly-named and underused
+>  * method LinkedTransferQueue.transfer.
+>  */
+> abstract class Carrier<T> implements AutoCloseable {
+>     Carrier(OnInterrupt policy);
+>     Carrier() { this(OnInterrupt.CANCEL); } // default
+>
+>     // Basic messaging
+>
+>     /**
+>      * Consume item, throw if isClosedForReceiving, block if empty.
+>      * May cancel or close on interrupt, depending on OnInterrupt policy.
+>      */
+>     T receive() throws ClosedException, CancellationException;
+>
+>     /**
+>      * Send item, throw if isClosedForSending, block if full.
+>      * May cancel or close on interrupt, depending on OnInterrupt policy.
+>      */
+>     void send(T item) throws ClosedException, CancellationException;
+>
+>     /** Send and block until item received */
+>     void sendSynchronously(T item) throws ClosedException,
+> CancellationException;
+>
+>     // Timeout versions
+>     T receive(Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>     void send(T item, Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>     void sendSynchronously(T item, Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>
+>     // Non-blocking access
+>     boolean trySend(T item);        // false if closed or full
+>     T tryReceive(T resultIfAbsent); // absent if closed or empty
+>     T peek(T resultIfAbsent);       // may false-positive
+>
+>     // Termination
+>     void closeForSending();         // fully close when
+> isClosedForReceiving
+>     void closeForReceiving();       // vice-versa
+>     void close();                   // immediate close
+>     void awaitClose() throws interruptedException;
+>     void onClose(Runnable closeHandler); // run by thread triggering close
+>
+>     // Status
+>     boolean isClosedForSending();
+>     boolean isClosedForReceiving();
+>     boolean isClosed();             // true if both sides closed
+>     boolean isOpen()                { return !isClosed(); }
+>     boolean isEmpty();
+>     boolean isFull();               // never true if unbounded
+>     long    capacity();             // Long.MAX_VALUE if unbounded
+>     OnInterrupt interruptPolicy();  // return policy
+>
+>     // linkage support, noops here; locators are opaque cookie-like
+> identifiers
+>     protected void registerSource(Carrier<? super T> c, long locator) {}
+>     // notification of send or close by registered carrier
+>     protected void sourceEvent(long locator, boolean isClosed) {}
+>
+>     // views to disable one direction; similar to Collections.unmodifiableX
+>     static <E> Carrier<E> sendOnlyCarrier(Carrier<E> c);
+>     static <E> Carrier<E> receiveOnlyCarrier(Carrier<E> c);
+>
+>     // other possible utilities
+>     Stream<T> stream();             // destructive (consume-on-traverse)
+>     static <E> Carrier<E> discardingCarrier(); // /dev/null analog
+>     // TBD: selector as static factory method vs class (as below)
+>     // TBD: Flow (reactive stream) adaptors
+> }
+>
+> class LinkedCarrier<T> extends Carrier<T> {
+>     // main linked implementation
+>     // coming soon, based on LinkedTransferQueue algorithms
+> }
+>
+> class BufferedCarrier<T> extends Carrier<T> {
+>     // main array-based implementation(s)
+>     // coming later, with single- vs multiple- sink/source options
+> }
+>
+> /**
+>  * A Carrier that aggregates sources established in its constructor.
+>  * The receive method blocks waiting for any to become available, then
+>  * returns the corresponding item. Selectors are always closed for
+>  * sending, and may become fully closed when all sources close.
+>  */
+> class Selector<T> extends Carrier<T> { // possibly a more specific name
+>     Selector(<Carrier<? extends T> c, ...) {
+>         // for each c { c.registerSource(this, locatorFor(c)); }
+>     }
+>     boolean isClosedForSending() { return true; }
+>     // ...
+> }
+>
+> /**
+>  * A policy for responding to Thread.interrupt in blocking methods in
+>  * classes implementing AutoCloseable
+>  */
+> static Enum OnInterrupt {
+>     IGNORE,  // continue waiting
+>     CANCEL,  // throw CancellationException
+>     CLOSE    // close and throw ClosedException
+> }
+>
+> // This could be placed in java.lang for use with any AutoCloseable
+> class ClosedException extends IllegalStateException {
+>     ClosedException(AutoCloseable c); // the closed component
+>     // ...
+> }
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200306/de785f5d/attachment.htm>
+
+From oleksandr.otenko at gmail.com  Fri Mar  6 18:06:06 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Fri, 6 Mar 2020 23:06:06 +0000
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+Message-ID: <CANkgWKizgL22XsqdZR=PQB6V=_1YdGDV4AN4NmQBEF-AsFW6Hg@mail.gmail.com>
+
+Can methods return something more useful than void? Eg something that can
+be used to test progress? (I am afraid my imagination is limited to
+returning a ticket number, and a sequencer API to inspect whether send /
+close has a matching receive / await for such an event)
+
+SendSynchronously with timeout is ambiguous. If timeout occurs, was it
+placed in the buffer, and not received yet, or not even buffered?
+
+Alex
+
+On Fri, 6 Mar 2020, 15:22 Doug Lea, <dl at cs.oswego.edu> wrote:
+
+>
+> [Cross-posting concurrency-interest and loom-dev.]
+>
+> To continue improving java.util.concurrent support for increasingly
+> diverse programming styles (while still avoiding arguments about whether
+> any of them are best!), it would be helpful to provide "BlockingQueues
+> meet AutoCloseable" APIs that are loom-friendly, but not loom-specific.
+> A sketch is pasted below. To avoid mail-reader glitches, you might want
+> to read updated snapshots at gee.cs.oswego.edu/dl/wwwtmp/Carrier.java
+>
+> Suggestions and comments are welcome. An initial implementation class
+> (LinkedCarrier) should be available shortly after API issues settle;
+> others later.
+>
+> ...
+>
+> // API sketches, with "public" omitted throughout
+>
+> /**
+>  * A component for sending and receiving messages. Carriers support
+>  * usages similar to those of BlockingQueues, but additionally
+>  * implement AutoCloseable, and may be explicitly closed for sending,
+>  * receiving, or both. Carriers also provide policy-based control for
+>  * responses to Thread.interrupt while blocked (ignoring, cancelling
+>  * the current operation only, or closing the carrier). Concrete
+>  * implementation classes may be created with a given capacity (after
+>  * which method send will block waiting for available space), or
+>  * effectively unbounded, in which case method send will never block
+>  * but may fail with an OutOfMemoryError.
+>  *
+>  * Design notes:
+>  *
+>  * (1) Both send and receive methods are declared here, but allowing
+>  * either side to be permanently (vs eventually) closed for send-only
+>  * or receive-only components. This loses some static type checking
+>  * opportunities of separate send and receive APIs. However the class
+>  * includes methods (in the style of Collections.unmodifiableX) to
+>  * produce views that provide dynamic directionality enforcement.
+>  *
+>  * (2) This is an abstract class (rather than interface) providing
+>  * uniform Observer-syle methods for Selectors and related
+>  * classes. The alternative is some sort of SPI.
+>  *
+>  * (3) To control interactions between Thread interrupts and state,
+>  * rather than throwing InterruptedExceptions, potentially blocking
+>  * methods rely on a provided policy to distinguish cancelling the
+>  * operation vs closing the carrier vs ignoring the interrupt. The
+>  * default is CANCEL, because it is the least constraining; for
+>  * example some mixed usages can catch CancellationException to then
+>  * close only when desired.
+>  *
+>  * (4) To broaden coverage of channel-based programming styles,
+>  * implementations support sendSynchronously, which is otherwise
+>  * available in BlockingQueues only as the poorly-named and underused
+>  * method LinkedTransferQueue.transfer.
+>  */
+> abstract class Carrier<T> implements AutoCloseable {
+>     Carrier(OnInterrupt policy);
+>     Carrier() { this(OnInterrupt.CANCEL); } // default
+>
+>     // Basic messaging
+>
+>     /**
+>      * Consume item, throw if isClosedForReceiving, block if empty.
+>      * May cancel or close on interrupt, depending on OnInterrupt policy.
+>      */
+>     T receive() throws ClosedException, CancellationException;
+>
+>     /**
+>      * Send item, throw if isClosedForSending, block if full.
+>      * May cancel or close on interrupt, depending on OnInterrupt policy.
+>      */
+>     void send(T item) throws ClosedException, CancellationException;
+>
+>     /** Send and block until item received */
+>     void sendSynchronously(T item) throws ClosedException,
+> CancellationException;
+>
+>     // Timeout versions
+>     T receive(Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>     void send(T item, Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>     void sendSynchronously(T item, Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>
+>     // Non-blocking access
+>     boolean trySend(T item);        // false if closed or full
+>     T tryReceive(T resultIfAbsent); // absent if closed or empty
+>     T peek(T resultIfAbsent);       // may false-positive
+>
+>     // Termination
+>     void closeForSending();         // fully close when
+> isClosedForReceiving
+>     void closeForReceiving();       // vice-versa
+>     void close();                   // immediate close
+>     void awaitClose() throws interruptedException;
+>     void onClose(Runnable closeHandler); // run by thread triggering close
+>
+>     // Status
+>     boolean isClosedForSending();
+>     boolean isClosedForReceiving();
+>     boolean isClosed();             // true if both sides closed
+>     boolean isOpen()                { return !isClosed(); }
+>     boolean isEmpty();
+>     boolean isFull();               // never true if unbounded
+>     long    capacity();             // Long.MAX_VALUE if unbounded
+>     OnInterrupt interruptPolicy();  // return policy
+>
+>     // linkage support, noops here; locators are opaque cookie-like
+> identifiers
+>     protected void registerSource(Carrier<? super T> c, long locator) {}
+>     // notification of send or close by registered carrier
+>     protected void sourceEvent(long locator, boolean isClosed) {}
+>
+>     // views to disable one direction; similar to Collections.unmodifiableX
+>     static <E> Carrier<E> sendOnlyCarrier(Carrier<E> c);
+>     static <E> Carrier<E> receiveOnlyCarrier(Carrier<E> c);
+>
+>     // other possible utilities
+>     Stream<T> stream();             // destructive (consume-on-traverse)
+>     static <E> Carrier<E> discardingCarrier(); // /dev/null analog
+>     // TBD: selector as static factory method vs class (as below)
+>     // TBD: Flow (reactive stream) adaptors
+> }
+>
+> class LinkedCarrier<T> extends Carrier<T> {
+>     // main linked implementation
+>     // coming soon, based on LinkedTransferQueue algorithms
+> }
+>
+> class BufferedCarrier<T> extends Carrier<T> {
+>     // main array-based implementation(s)
+>     // coming later, with single- vs multiple- sink/source options
+> }
+>
+> /**
+>  * A Carrier that aggregates sources established in its constructor.
+>  * The receive method blocks waiting for any to become available, then
+>  * returns the corresponding item. Selectors are always closed for
+>  * sending, and may become fully closed when all sources close.
+>  */
+> class Selector<T> extends Carrier<T> { // possibly a more specific name
+>     Selector(<Carrier<? extends T> c, ...) {
+>         // for each c { c.registerSource(this, locatorFor(c)); }
+>     }
+>     boolean isClosedForSending() { return true; }
+>     // ...
+> }
+>
+> /**
+>  * A policy for responding to Thread.interrupt in blocking methods in
+>  * classes implementing AutoCloseable
+>  */
+> static Enum OnInterrupt {
+>     IGNORE,  // continue waiting
+>     CANCEL,  // throw CancellationException
+>     CLOSE    // close and throw ClosedException
+> }
+>
+> // This could be placed in java.lang for use with any AutoCloseable
+> class ClosedException extends IllegalStateException {
+>     ClosedException(AutoCloseable c); // the closed component
+>     // ...
+> }
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200306/cf260f1e/attachment-0001.htm>
+
+From dl at cs.oswego.edu  Sat Mar  7 11:29:22 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sat, 7 Mar 2020 11:29:22 -0500
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+Message-ID: <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+
+
+Collecting replies/responses, with updated sketches pasted below and at
+http://gee.cs.oswego.edu/dl/wwwtmp/Carrier.java
+
+On 3/6/20 3:56 PM, John Rose wrote:
+
+> This design puts both endpoints on one type, as opposed to two 
+> similar types, like InputStream and OutputStream. This leads to
+> fewer types and objects (good) but broader ones. Broader is little
+> less good, since most use points only care about 1/2 of the methods;
+> the other 1/2 is then noise.
+
+The main API design issue here is that there are three (not two) views
+of a Carrier: the protocol state (closed, empty, etc), sender-side, and
+ receiver-side operations. If you split them, you need at least four
+interfaces/classes total (one to combine them). Doing this in a way that
+does not result in nearly all usages needing the combined interface
+requires other tradeoffs (like declaring some bookkeeping methods public
+and breaking read-only-ness of base interface). But given the reaction
+so far, I'm back to thinking this can be done in a way that more people
+will prefer. (Aside: I've waffled on this many many times, including
+pre-j.u.c
+http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/intro.html
+, and several previous Carrier drafts.)
+
+So, back to a refreshed 4-interface version.
+
+On 3/6/20 1:04 PM, Dávid Karnok wrote:
+
+> onClose(Runnable): will this allow one handler ...
+
+Thanks for the prod. It is much better to define:
+  /** Returns a CompletableFuture that isDone when closed. */
+  CompletionStage<Carriable<T>> onClose();
+In which case these questions and others are already answered, and we
+can also omit awaitClose method.
+
+> 
+> tryReceive(T def): always somewhat trouble to expect a default value 
+> of T, perhaps return Optional<T> if T is planned to be non-null.
+
+I think best to keep this, but also add a variant of your other suggestion:
+  boolean tryConsume(Consumer<? super T> proc); // false if closed or empty
+
+> + closeExceptionally(Throwable) :
+
+Yes, thanks; for the same reasons we added to SubmissionPublisher. Also
+adding getClosedException() method.
+
+> + onSenderReady(Runnable r) receiveAsPublisher(Executor) sendAsSubscriber(Executor)
+
+... among other possibilities. I'm leaving interplay with Flow as TBD
+for now, in part because...
+
+On 3/6/20 5:14 PM, Thomas May wrote:
+
+> It also could introduce interesting patterns like multiplexing… (IE,
+> having multiple receivers getting the same message)
+
+We already have a good multicaster, SubmissionPublisher. But I'm still
+not sure of the best linkages.
+
+On 3/6/20 6:06 PM, Alex Otenko wrote:
+
+> Can methods return something more useful than void? Eg something
+> that can be used to test progress? (I am afraid my imagination is
+> limited to returning a ticket number, and a sequencer API to inspect
+> whether send / close has a matching receive / await for such an
+> event)
+
+I can't think of enough use cases to justified added cost. Can you?
+
+> 
+> SendSynchronously with timeout is ambiguous. If timeout occurs, was
+> it placed in the buffer, and not received yet, or not even buffered?
+> 
+
+The only thing you know is that upon exception, the item cannot have
+been (and never will be) received. This is no different than other
+methods. (although you are right that bounded+synchronous+timeout is
+the most complicated to implement.)
+
+... pasting updated draft ...
+
+
+// snapshot: Sat Mar  7 11:13:22 2020  Doug Lea  (dl at nuc40)
+
+// API sketches, with "public" omitted throughout
+
+/**
+ * A component for sending and receiving data. Carriers support
+ * usages similar to those of BlockingQueues, but additionally
+ * implement AutoCloseable, and may be explicitly closed for sending,
+ * receiving, or both.
+ *
+ * This interface combines three sets of methods, defined in three
+ * interfaces: Carriable methods access protocol state and
+ * configuration. Interfaces CarrierSender and CarrierReceiver extend
+ * Carriable with sender- and receiver- side views. Finally, this
+ * interface combines these views.
+ *
+ * To control interactions between Thread interrupts and state, rather
+ * than throwing InterruptedExceptions, potentially blocking methods
+ * rely on a provided policy to distinguish cancelling the operation
+ * vs closing the carrier vs ignoring the interrupt. The default for
+ * current implementations is CANCEL, because it is the least
+ * constraining; for example some mixed usages can catch
+ * CancellationException to then close only when desired.
+ *
+ * Concrete implementation classes may enforce a given capacity (after
+ * which method send will block waiting for available space), or be
+ * effectively unbounded, in which case method send will never block
+ * but may fail with an OutOfMemoryError.
+ */
+interface Carrier<T> extends CarrierSender<T>, CarrierReceiver<T> {
+    // TBD: factory methods for jdk implementations
+    // some utility methods, such as...
+    static <E> CarrierReceiver<E> discardingCarrier(); // /dev/null analog
+    // TBD: Flow (reactive stream) adaptors
+}
+
+/**
+ * Methods accessing the protocol state and configuration of a
+ * Carrier.
+ */
+interface Carriable<T> extends AutoCloseable {
+    boolean isClosedForSending();
+    boolean isClosedForReceiving();
+    boolean isClosed();             // true if both sides closed
+    boolean isOpen();               // { return !isClosed(); }
+    boolean isEmpty();
+    boolean isFull();               // never true if unbounded
+    long    capacity();             // Long.MAX_VALUE if unbounded
+    OnInterrupt interruptPolicy();  // return policy
+
+    void close();                   // immediate close both sides
+    void closeExceptionally(Throwable cause); // record as cause
+    Throwable getClosedException();
+
+    /** Returns a CompletableFuture that isDone when closed. */
+    CompletionStage<Carriable<T>> onClose();
+}
+
+/**
+ * Methods defining the sender-side view of a Carrier.
+ */
+interface CarrierSender<T> extends Carriable<T> {
+    /**
+     * Send item, throw if isClosedForSending, block if full.
+     * May cancel or close on interrupt, depending on OnInterrupt policy.
+     */
+    void send(T item) throws ClosedException, CancellationException;
+
+    /** Send and block until item received */
+    void sendSynchronously(T item) throws ClosedException,
+CancellationException;
+
+    /** Try to send, upon timeout, the item is no longer available. */
+    void send(T item, Duration timeout)
+        throws ClosedException, CancellationException, TimeoutException;
+    void sendSynchronously(T item, Duration timeout)
+        throws ClosedException, CancellationException, TimeoutException;
+
+    boolean trySend(T item);        // false if closed or full
+    void closeForSending();         // fully close when isClosedForReceiving
+
+    // linkage support; locators are opaque cookie-like identifiers
+    void registerSource(CarrierSender<? super T> c, long locator);
+}
+
+/**
+ * Methods defining the receiver-side view of a Carrier.
+ */
+interface CarrierReceiver<T> extends Carriable<T> {
+    /**
+     * Consume item, throw if isClosedForReceiving, block if empty.
+     * May cancel or close on interrupt, depending on OnInterrupt policy.
+     */
+    T receive() throws ClosedException, CancellationException;
+    T receive(Duration timeout)
+        throws ClosedException, CancellationException, TimeoutException;
+
+    T tryReceive(T resultIfAbsent); // absent if closed or empty
+    T peek(T resultIfAbsent);       // may false-positive
+
+    void closeForReceiving();       // fully close when isClosedForSending
+
+    boolean tryConsume(Consumer<? super T> proc); // false if closed or
+empty
+    Stream<T> stream();             // destructive (consume-on-traverse)
+
+    // notification of send or close by registered source
+    void sourceSent(CarrierSender<? extends T> source, long locator, T
+item);
+    void sourceClosed(CarrierSender<? extends T> source, long locator);
+}
+
+// TBD: provide abstract class AbstractCarrier<T>.
+
+class LinkedCarrier<T> implements Carrier<T> {
+    LinkedCarrier(OnInterrupt policy);
+    LinkedCarrier() { this(OnInterrupt.CANCEL); } // default
+    // main linked implementation
+    // coming soon, based on LinkedTransferQueue algorithms
+}
+
+class BufferedCarrier<T> implemnts Carrier<T> {
+    // main array-based implementation(s)
+    // coming later, with single- vs multiple- sink/source options
+}
+
+/**
+ * A Carrier that aggregates sources established in its constructor.
+ * The receive method blocks waiting for any to become available, then
+ * returns the corresponding item.
+ */
+class CarrierSelector<T> implements CarrierReceiver<T> {
+    Selector(<CarrierSender<? extends T> c, ...) {
+        // for each c { c.registerSource(this, locatorFor(c)); }
+    }
+}
+
+/**
+ * A policy for responding to Thread.interrupt in blocking methods in
+ * classes implementing AutoCloseable
+ */
+static Enum OnInterrupt {
+    IGNORE,  // continue waiting
+    CANCEL,  // throw CancellationException
+    CLOSE    // close and throw ClosedException
+}
+
+// This could be placed in java.lang for use with any AutoCloseable
+class ClosedException extends IllegalStateException {
+    ClosedException(AutoCloseable c); // the closed component
+    // copied from ExecutionException:
+    /**
+     * Constructs an {@code ClosedException} with the specified cause.
+     * The detail message is set to {@code (cause == null ? null :
+     * cause.toString())} (which typically contains the class and
+     * detail message of {@code cause}).
+     *
+     * @param  cause the cause (which is saved for later retrieval by the
+     *         {@link #getCause()} method)
+     */
+    public ClosedException(Throwable cause) {
+        super(cause);
+    }
+    // ...
+}
+
+
+
+
+
+From oleksandr.otenko at gmail.com  Sat Mar  7 18:17:14 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sat, 7 Mar 2020 23:17:14 +0000
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+Message-ID: <CANkgWKhnXz+L9J+g48G76JQHzdVE-z=QUqzHSLORwM-bC2TxTw@mail.gmail.com>
+
+> enough use cases to justified added cost
+
+Most primitives we have are really monolithic. You get only two ways of
+interacting with them: try or get blocked indefinitely.
+
+A ticket system allows to build nicer things, because essentially you give
+away a bit of control what to do during  the wait. You can switch between
+try* and blocking after you made the call, choosing when the time to block
+is more suitable.
+
+Alex
+
+On Sat, 7 Mar 2020, 16:30 Doug Lea, <dl at cs.oswego.edu> wrote:
+
+>
+> Collecting replies/responses, with updated sketches pasted below and at
+> http://gee.cs.oswego.edu/dl/wwwtmp/Carrier.java
+>
+> On 3/6/20 3:56 PM, John Rose wrote:
+>
+> > This design puts both endpoints on one type, as opposed to two
+> > similar types, like InputStream and OutputStream. This leads to
+> > fewer types and objects (good) but broader ones. Broader is little
+> > less good, since most use points only care about 1/2 of the methods;
+> > the other 1/2 is then noise.
+>
+> The main API design issue here is that there are three (not two) views
+> of a Carrier: the protocol state (closed, empty, etc), sender-side, and
+>  receiver-side operations. If you split them, you need at least four
+> interfaces/classes total (one to combine them). Doing this in a way that
+> does not result in nearly all usages needing the combined interface
+> requires other tradeoffs (like declaring some bookkeeping methods public
+> and breaking read-only-ness of base interface). But given the reaction
+> so far, I'm back to thinking this can be done in a way that more people
+> will prefer. (Aside: I've waffled on this many many times, including
+> pre-j.u.c
+>
+> http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/intro.html
+> , and several previous Carrier drafts.)
+>
+> So, back to a refreshed 4-interface version.
+>
+> On 3/6/20 1:04 PM, Dávid Karnok wrote:
+>
+> > onClose(Runnable): will this allow one handler ...
+>
+> Thanks for the prod. It is much better to define:
+>   /** Returns a CompletableFuture that isDone when closed. */
+>   CompletionStage<Carriable<T>> onClose();
+> In which case these questions and others are already answered, and we
+> can also omit awaitClose method.
+>
+> >
+> > tryReceive(T def): always somewhat trouble to expect a default value
+> > of T, perhaps return Optional<T> if T is planned to be non-null.
+>
+> I think best to keep this, but also add a variant of your other suggestion:
+>   boolean tryConsume(Consumer<? super T> proc); // false if closed or empty
+>
+> > + closeExceptionally(Throwable) :
+>
+> Yes, thanks; for the same reasons we added to SubmissionPublisher. Also
+> adding getClosedException() method.
+>
+> > + onSenderReady(Runnable r) receiveAsPublisher(Executor)
+> sendAsSubscriber(Executor)
+>
+> ... among other possibilities. I'm leaving interplay with Flow as TBD
+> for now, in part because...
+>
+> On 3/6/20 5:14 PM, Thomas May wrote:
+>
+> > It also could introduce interesting patterns like multiplexing… (IE,
+> > having multiple receivers getting the same message)
+>
+> We already have a good multicaster, SubmissionPublisher. But I'm still
+> not sure of the best linkages.
+>
+> On 3/6/20 6:06 PM, Alex Otenko wrote:
+>
+> > Can methods return something more useful than void? Eg something
+> > that can be used to test progress? (I am afraid my imagination is
+> > limited to returning a ticket number, and a sequencer API to inspect
+> > whether send / close has a matching receive / await for such an
+> > event)
+>
+> I can't think of enough use cases to justified added cost. Can you?
+>
+> >
+> > SendSynchronously with timeout is ambiguous. If timeout occurs, was
+> > it placed in the buffer, and not received yet, or not even buffered?
+> >
+>
+> The only thing you know is that upon exception, the item cannot have
+> been (and never will be) received. This is no different than other
+> methods. (although you are right that bounded+synchronous+timeout is
+> the most complicated to implement.)
+>
+> ... pasting updated draft ...
+>
+>
+> // snapshot: Sat Mar  7 11:13:22 2020  Doug Lea  (dl at nuc40)
+>
+> // API sketches, with "public" omitted throughout
+>
+> /**
+>  * A component for sending and receiving data. Carriers support
+>  * usages similar to those of BlockingQueues, but additionally
+>  * implement AutoCloseable, and may be explicitly closed for sending,
+>  * receiving, or both.
+>  *
+>  * This interface combines three sets of methods, defined in three
+>  * interfaces: Carriable methods access protocol state and
+>  * configuration. Interfaces CarrierSender and CarrierReceiver extend
+>  * Carriable with sender- and receiver- side views. Finally, this
+>  * interface combines these views.
+>  *
+>  * To control interactions between Thread interrupts and state, rather
+>  * than throwing InterruptedExceptions, potentially blocking methods
+>  * rely on a provided policy to distinguish cancelling the operation
+>  * vs closing the carrier vs ignoring the interrupt. The default for
+>  * current implementations is CANCEL, because it is the least
+>  * constraining; for example some mixed usages can catch
+>  * CancellationException to then close only when desired.
+>  *
+>  * Concrete implementation classes may enforce a given capacity (after
+>  * which method send will block waiting for available space), or be
+>  * effectively unbounded, in which case method send will never block
+>  * but may fail with an OutOfMemoryError.
+>  */
+> interface Carrier<T> extends CarrierSender<T>, CarrierReceiver<T> {
+>     // TBD: factory methods for jdk implementations
+>     // some utility methods, such as...
+>     static <E> CarrierReceiver<E> discardingCarrier(); // /dev/null analog
+>     // TBD: Flow (reactive stream) adaptors
+> }
+>
+> /**
+>  * Methods accessing the protocol state and configuration of a
+>  * Carrier.
+>  */
+> interface Carriable<T> extends AutoCloseable {
+>     boolean isClosedForSending();
+>     boolean isClosedForReceiving();
+>     boolean isClosed();             // true if both sides closed
+>     boolean isOpen();               // { return !isClosed(); }
+>     boolean isEmpty();
+>     boolean isFull();               // never true if unbounded
+>     long    capacity();             // Long.MAX_VALUE if unbounded
+>     OnInterrupt interruptPolicy();  // return policy
+>
+>     void close();                   // immediate close both sides
+>     void closeExceptionally(Throwable cause); // record as cause
+>     Throwable getClosedException();
+>
+>     /** Returns a CompletableFuture that isDone when closed. */
+>     CompletionStage<Carriable<T>> onClose();
+> }
+>
+> /**
+>  * Methods defining the sender-side view of a Carrier.
+>  */
+> interface CarrierSender<T> extends Carriable<T> {
+>     /**
+>      * Send item, throw if isClosedForSending, block if full.
+>      * May cancel or close on interrupt, depending on OnInterrupt policy.
+>      */
+>     void send(T item) throws ClosedException, CancellationException;
+>
+>     /** Send and block until item received */
+>     void sendSynchronously(T item) throws ClosedException,
+> CancellationException;
+>
+>     /** Try to send, upon timeout, the item is no longer available. */
+>     void send(T item, Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>     void sendSynchronously(T item, Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>
+>     boolean trySend(T item);        // false if closed or full
+>     void closeForSending();         // fully close when
+> isClosedForReceiving
+>
+>     // linkage support; locators are opaque cookie-like identifiers
+>     void registerSource(CarrierSender<? super T> c, long locator);
+> }
+>
+> /**
+>  * Methods defining the receiver-side view of a Carrier.
+>  */
+> interface CarrierReceiver<T> extends Carriable<T> {
+>     /**
+>      * Consume item, throw if isClosedForReceiving, block if empty.
+>      * May cancel or close on interrupt, depending on OnInterrupt policy.
+>      */
+>     T receive() throws ClosedException, CancellationException;
+>     T receive(Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>
+>     T tryReceive(T resultIfAbsent); // absent if closed or empty
+>     T peek(T resultIfAbsent);       // may false-positive
+>
+>     void closeForReceiving();       // fully close when isClosedForSending
+>
+>     boolean tryConsume(Consumer<? super T> proc); // false if closed or
+> empty
+>     Stream<T> stream();             // destructive (consume-on-traverse)
+>
+>     // notification of send or close by registered source
+>     void sourceSent(CarrierSender<? extends T> source, long locator, T
+> item);
+>     void sourceClosed(CarrierSender<? extends T> source, long locator);
+> }
+>
+> // TBD: provide abstract class AbstractCarrier<T>.
+>
+> class LinkedCarrier<T> implements Carrier<T> {
+>     LinkedCarrier(OnInterrupt policy);
+>     LinkedCarrier() { this(OnInterrupt.CANCEL); } // default
+>     // main linked implementation
+>     // coming soon, based on LinkedTransferQueue algorithms
+> }
+>
+> class BufferedCarrier<T> implemnts Carrier<T> {
+>     // main array-based implementation(s)
+>     // coming later, with single- vs multiple- sink/source options
+> }
+>
+> /**
+>  * A Carrier that aggregates sources established in its constructor.
+>  * The receive method blocks waiting for any to become available, then
+>  * returns the corresponding item.
+>  */
+> class CarrierSelector<T> implements CarrierReceiver<T> {
+>     Selector(<CarrierSender<? extends T> c, ...) {
+>         // for each c { c.registerSource(this, locatorFor(c)); }
+>     }
+> }
+>
+> /**
+>  * A policy for responding to Thread.interrupt in blocking methods in
+>  * classes implementing AutoCloseable
+>  */
+> static Enum OnInterrupt {
+>     IGNORE,  // continue waiting
+>     CANCEL,  // throw CancellationException
+>     CLOSE    // close and throw ClosedException
+> }
+>
+> // This could be placed in java.lang for use with any AutoCloseable
+> class ClosedException extends IllegalStateException {
+>     ClosedException(AutoCloseable c); // the closed component
+>     // copied from ExecutionException:
+>     /**
+>      * Constructs an {@code ClosedException} with the specified cause.
+>      * The detail message is set to {@code (cause == null ? null :
+>      * cause.toString())} (which typically contains the class and
+>      * detail message of {@code cause}).
+>      *
+>      * @param  cause the cause (which is saved for later retrieval by the
+>      *         {@link #getCause()} method)
+>      */
+>     public ClosedException(Throwable cause) {
+>         super(cause);
+>     }
+>     // ...
+> }
+>
+>
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200307/2ed12c86/attachment.htm>
+
+From oleksandr.otenko at gmail.com  Sat Mar  7 18:25:57 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sat, 7 Mar 2020 23:25:57 +0000
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+Message-ID: <CANkgWKj1vdr4M9ehP-w68ywhpcg9HSTTakZ8Pz0ZOvBDHLd_4w@mail.gmail.com>
+
+Send is declared to throw when is closed for sending. Is there a good
+reason to not throw when is closed for receiving? Or what is the intended
+behavior in this case, given that it may block if full?
+
+Alex
+
+On Sat, 7 Mar 2020, 16:30 Doug Lea, <dl at cs.oswego.edu> wrote:
+
+>
+> Collecting replies/responses, with updated sketches pasted below and at
+> http://gee.cs.oswego.edu/dl/wwwtmp/Carrier.java
+>
+> On 3/6/20 3:56 PM, John Rose wrote:
+>
+> > This design puts both endpoints on one type, as opposed to two
+> > similar types, like InputStream and OutputStream. This leads to
+> > fewer types and objects (good) but broader ones. Broader is little
+> > less good, since most use points only care about 1/2 of the methods;
+> > the other 1/2 is then noise.
+>
+> The main API design issue here is that there are three (not two) views
+> of a Carrier: the protocol state (closed, empty, etc), sender-side, and
+>  receiver-side operations. If you split them, you need at least four
+> interfaces/classes total (one to combine them). Doing this in a way that
+> does not result in nearly all usages needing the combined interface
+> requires other tradeoffs (like declaring some bookkeeping methods public
+> and breaking read-only-ness of base interface). But given the reaction
+> so far, I'm back to thinking this can be done in a way that more people
+> will prefer. (Aside: I've waffled on this many many times, including
+> pre-j.u.c
+>
+> http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/intro.html
+> , and several previous Carrier drafts.)
+>
+> So, back to a refreshed 4-interface version.
+>
+> On 3/6/20 1:04 PM, Dávid Karnok wrote:
+>
+> > onClose(Runnable): will this allow one handler ...
+>
+> Thanks for the prod. It is much better to define:
+>   /** Returns a CompletableFuture that isDone when closed. */
+>   CompletionStage<Carriable<T>> onClose();
+> In which case these questions and others are already answered, and we
+> can also omit awaitClose method.
+>
+> >
+> > tryReceive(T def): always somewhat trouble to expect a default value
+> > of T, perhaps return Optional<T> if T is planned to be non-null.
+>
+> I think best to keep this, but also add a variant of your other suggestion:
+>   boolean tryConsume(Consumer<? super T> proc); // false if closed or empty
+>
+> > + closeExceptionally(Throwable) :
+>
+> Yes, thanks; for the same reasons we added to SubmissionPublisher. Also
+> adding getClosedException() method.
+>
+> > + onSenderReady(Runnable r) receiveAsPublisher(Executor)
+> sendAsSubscriber(Executor)
+>
+> ... among other possibilities. I'm leaving interplay with Flow as TBD
+> for now, in part because...
+>
+> On 3/6/20 5:14 PM, Thomas May wrote:
+>
+> > It also could introduce interesting patterns like multiplexing… (IE,
+> > having multiple receivers getting the same message)
+>
+> We already have a good multicaster, SubmissionPublisher. But I'm still
+> not sure of the best linkages.
+>
+> On 3/6/20 6:06 PM, Alex Otenko wrote:
+>
+> > Can methods return something more useful than void? Eg something
+> > that can be used to test progress? (I am afraid my imagination is
+> > limited to returning a ticket number, and a sequencer API to inspect
+> > whether send / close has a matching receive / await for such an
+> > event)
+>
+> I can't think of enough use cases to justified added cost. Can you?
+>
+> >
+> > SendSynchronously with timeout is ambiguous. If timeout occurs, was
+> > it placed in the buffer, and not received yet, or not even buffered?
+> >
+>
+> The only thing you know is that upon exception, the item cannot have
+> been (and never will be) received. This is no different than other
+> methods. (although you are right that bounded+synchronous+timeout is
+> the most complicated to implement.)
+>
+> ... pasting updated draft ...
+>
+>
+> // snapshot: Sat Mar  7 11:13:22 2020  Doug Lea  (dl at nuc40)
+>
+> // API sketches, with "public" omitted throughout
+>
+> /**
+>  * A component for sending and receiving data. Carriers support
+>  * usages similar to those of BlockingQueues, but additionally
+>  * implement AutoCloseable, and may be explicitly closed for sending,
+>  * receiving, or both.
+>  *
+>  * This interface combines three sets of methods, defined in three
+>  * interfaces: Carriable methods access protocol state and
+>  * configuration. Interfaces CarrierSender and CarrierReceiver extend
+>  * Carriable with sender- and receiver- side views. Finally, this
+>  * interface combines these views.
+>  *
+>  * To control interactions between Thread interrupts and state, rather
+>  * than throwing InterruptedExceptions, potentially blocking methods
+>  * rely on a provided policy to distinguish cancelling the operation
+>  * vs closing the carrier vs ignoring the interrupt. The default for
+>  * current implementations is CANCEL, because it is the least
+>  * constraining; for example some mixed usages can catch
+>  * CancellationException to then close only when desired.
+>  *
+>  * Concrete implementation classes may enforce a given capacity (after
+>  * which method send will block waiting for available space), or be
+>  * effectively unbounded, in which case method send will never block
+>  * but may fail with an OutOfMemoryError.
+>  */
+> interface Carrier<T> extends CarrierSender<T>, CarrierReceiver<T> {
+>     // TBD: factory methods for jdk implementations
+>     // some utility methods, such as...
+>     static <E> CarrierReceiver<E> discardingCarrier(); // /dev/null analog
+>     // TBD: Flow (reactive stream) adaptors
+> }
+>
+> /**
+>  * Methods accessing the protocol state and configuration of a
+>  * Carrier.
+>  */
+> interface Carriable<T> extends AutoCloseable {
+>     boolean isClosedForSending();
+>     boolean isClosedForReceiving();
+>     boolean isClosed();             // true if both sides closed
+>     boolean isOpen();               // { return !isClosed(); }
+>     boolean isEmpty();
+>     boolean isFull();               // never true if unbounded
+>     long    capacity();             // Long.MAX_VALUE if unbounded
+>     OnInterrupt interruptPolicy();  // return policy
+>
+>     void close();                   // immediate close both sides
+>     void closeExceptionally(Throwable cause); // record as cause
+>     Throwable getClosedException();
+>
+>     /** Returns a CompletableFuture that isDone when closed. */
+>     CompletionStage<Carriable<T>> onClose();
+> }
+>
+> /**
+>  * Methods defining the sender-side view of a Carrier.
+>  */
+> interface CarrierSender<T> extends Carriable<T> {
+>     /**
+>      * Send item, throw if isClosedForSending, block if full.
+>      * May cancel or close on interrupt, depending on OnInterrupt policy.
+>      */
+>     void send(T item) throws ClosedException, CancellationException;
+>
+>     /** Send and block until item received */
+>     void sendSynchronously(T item) throws ClosedException,
+> CancellationException;
+>
+>     /** Try to send, upon timeout, the item is no longer available. */
+>     void send(T item, Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>     void sendSynchronously(T item, Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>
+>     boolean trySend(T item);        // false if closed or full
+>     void closeForSending();         // fully close when
+> isClosedForReceiving
+>
+>     // linkage support; locators are opaque cookie-like identifiers
+>     void registerSource(CarrierSender<? super T> c, long locator);
+> }
+>
+> /**
+>  * Methods defining the receiver-side view of a Carrier.
+>  */
+> interface CarrierReceiver<T> extends Carriable<T> {
+>     /**
+>      * Consume item, throw if isClosedForReceiving, block if empty.
+>      * May cancel or close on interrupt, depending on OnInterrupt policy.
+>      */
+>     T receive() throws ClosedException, CancellationException;
+>     T receive(Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>
+>     T tryReceive(T resultIfAbsent); // absent if closed or empty
+>     T peek(T resultIfAbsent);       // may false-positive
+>
+>     void closeForReceiving();       // fully close when isClosedForSending
+>
+>     boolean tryConsume(Consumer<? super T> proc); // false if closed or
+> empty
+>     Stream<T> stream();             // destructive (consume-on-traverse)
+>
+>     // notification of send or close by registered source
+>     void sourceSent(CarrierSender<? extends T> source, long locator, T
+> item);
+>     void sourceClosed(CarrierSender<? extends T> source, long locator);
+> }
+>
+> // TBD: provide abstract class AbstractCarrier<T>.
+>
+> class LinkedCarrier<T> implements Carrier<T> {
+>     LinkedCarrier(OnInterrupt policy);
+>     LinkedCarrier() { this(OnInterrupt.CANCEL); } // default
+>     // main linked implementation
+>     // coming soon, based on LinkedTransferQueue algorithms
+> }
+>
+> class BufferedCarrier<T> implemnts Carrier<T> {
+>     // main array-based implementation(s)
+>     // coming later, with single- vs multiple- sink/source options
+> }
+>
+> /**
+>  * A Carrier that aggregates sources established in its constructor.
+>  * The receive method blocks waiting for any to become available, then
+>  * returns the corresponding item.
+>  */
+> class CarrierSelector<T> implements CarrierReceiver<T> {
+>     Selector(<CarrierSender<? extends T> c, ...) {
+>         // for each c { c.registerSource(this, locatorFor(c)); }
+>     }
+> }
+>
+> /**
+>  * A policy for responding to Thread.interrupt in blocking methods in
+>  * classes implementing AutoCloseable
+>  */
+> static Enum OnInterrupt {
+>     IGNORE,  // continue waiting
+>     CANCEL,  // throw CancellationException
+>     CLOSE    // close and throw ClosedException
+> }
+>
+> // This could be placed in java.lang for use with any AutoCloseable
+> class ClosedException extends IllegalStateException {
+>     ClosedException(AutoCloseable c); // the closed component
+>     // copied from ExecutionException:
+>     /**
+>      * Constructs an {@code ClosedException} with the specified cause.
+>      * The detail message is set to {@code (cause == null ? null :
+>      * cause.toString())} (which typically contains the class and
+>      * detail message of {@code cause}).
+>      *
+>      * @param  cause the cause (which is saved for later retrieval by the
+>      *         {@link #getCause()} method)
+>      */
+>     public ClosedException(Throwable cause) {
+>         super(cause);
+>     }
+>     // ...
+> }
+>
+>
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200307/b35e0c42/attachment-0001.htm>
+
+From dl at cs.oswego.edu  Sun Mar  8 07:54:24 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 8 Mar 2020 07:54:24 -0400
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <CANkgWKj1vdr4M9ehP-w68ywhpcg9HSTTakZ8Pz0ZOvBDHLd_4w@mail.gmail.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <CANkgWKj1vdr4M9ehP-w68ywhpcg9HSTTakZ8Pz0ZOvBDHLd_4w@mail.gmail.com>
+Message-ID: <4576e460-6abe-2676-2828-77cf357c8389@cs.oswego.edu>
+
+On 3/7/20 6:25 PM, Alex Otenko wrote:
+> Send is declared to throw when is closed for sending. Is there a good
+> reason to not throw when is closed for receiving? Or what is the
+> intended behavior in this case, given that it may block if full?
+> 
+
+Normally, a completed receiver should invoke (bidirectional) close.
+Calling closeForReceiving provides more flexibility, but with more cases
+for users to consider (like stuck senders).
+
+But this question invites considering whether even having
+closeForReceiving would lead to more errors than correct usages.
+Considering that some of the motivation for Carrier is to reduce
+opportunities for errors people encounter with hand-made components
+built from BlockingQueues etc, I think we could remove it.
+
+-Doug
+
+
+
+From dl at cs.oswego.edu  Sun Mar  8 08:05:47 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 8 Mar 2020 08:05:47 -0400
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <CANkgWKhnXz+L9J+g48G76JQHzdVE-z=QUqzHSLORwM-bC2TxTw@mail.gmail.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <CANkgWKhnXz+L9J+g48G76JQHzdVE-z=QUqzHSLORwM-bC2TxTw@mail.gmail.com>
+Message-ID: <4b01c3cc-c68a-8390-a1c9-ec9fd875a712@cs.oswego.edu>
+
+On 3/7/20 6:17 PM, Alex Otenko wrote:
+
+> A ticket system allows to build nicer things, because essentially you
+> give away a bit of control what to do during  the wait. You can switch
+> between try* and blocking after you made the call, choosing when the
+> time to block is more suitable.
+
+In other words, you'd sometimes like Carrier to act more like
+ExecutorService (obtaining a Future or something like it on submission).
+Stay tuned for part 3 of j.u.c loom-related support for doing this.
+
+-Doug
+
+
+
+From oleksandr.otenko at gmail.com  Sun Mar  8 08:49:27 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sun, 8 Mar 2020 12:49:27 +0000
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <4576e460-6abe-2676-2828-77cf357c8389@cs.oswego.edu>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <CANkgWKj1vdr4M9ehP-w68ywhpcg9HSTTakZ8Pz0ZOvBDHLd_4w@mail.gmail.com>
+ <4576e460-6abe-2676-2828-77cf357c8389@cs.oswego.edu>
+Message-ID: <CANkgWKhRG_uhKCqt78dGCRKurdgvRuWj+1_3DoR-hQtEgbEgzQ@mail.gmail.com>
+
+I think it may be useful to clarify who is meant to call each of the close
+methods.
+
+Eg is it receiver calling closeForSending to stop an inundation, and sender
+closeForReceiving to signal end of stream? Maybe senderDone / receiverDone
+or some better name can help.
+
+Also, it is not clear how the receive for a stream with no more items is
+meant to behave. Sender closes its end, the receiver blocks when empty. Or
+throws? That seems like the only way out, but seems really weird. A bit
+like python throwing StopIterationException.
+
+Alex
+
+On Sun, 8 Mar 2020, 11:55 Doug Lea, <dl at cs.oswego.edu> wrote:
+
+> On 3/7/20 6:25 PM, Alex Otenko wrote:
+> > Send is declared to throw when is closed for sending. Is there a good
+> > reason to not throw when is closed for receiving? Or what is the
+> > intended behavior in this case, given that it may block if full?
+> >
+>
+> Normally, a completed receiver should invoke (bidirectional) close.
+> Calling closeForReceiving provides more flexibility, but with more cases
+> for users to consider (like stuck senders).
+>
+> But this question invites considering whether even having
+> closeForReceiving would lead to more errors than correct usages.
+> Considering that some of the motivation for Carrier is to reduce
+> opportunities for errors people encounter with hand-made components
+> built from BlockingQueues etc, I think we could remove it.
+>
+> -Doug
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200308/e4b2c718/attachment.htm>
+
+From dl at cs.oswego.edu  Sun Mar  8 09:37:34 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 8 Mar 2020 09:37:34 -0400
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <CANkgWKhRG_uhKCqt78dGCRKurdgvRuWj+1_3DoR-hQtEgbEgzQ@mail.gmail.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <CANkgWKj1vdr4M9ehP-w68ywhpcg9HSTTakZ8Pz0ZOvBDHLd_4w@mail.gmail.com>
+ <4576e460-6abe-2676-2828-77cf357c8389@cs.oswego.edu>
+ <CANkgWKhRG_uhKCqt78dGCRKurdgvRuWj+1_3DoR-hQtEgbEgzQ@mail.gmail.com>
+Message-ID: <e45e3d66-0012-52a1-5c03-01ad06473409@cs.oswego.edu>
+
+On 3/8/20 8:49 AM, Alex Otenko via Concurrency-interest wrote:
+> I think it may be useful to clarify who is meant to call each of the
+> close methods.
+
+Right; thanks especially for the questions about what confused
+programmers who aren't used to dealing with half-closed states might do.
+ Probably best to stop using "close" except for full close. And kill
+closeForReceiving. Leaving better names and simpler specs:
+
+interface Carriable<T> extends AutoCloseable {
+    boolean isClosed();
+    boolean isFinishedSending();    // closed or sending disabled
+    //...
+}
+interface CarrierSender<T> extends Carriable<T> {
+    void finishSending();           // disable sending; close when empty
+    // ...
+}
+
+Full versions as usual at: http://gee.cs.oswego.edu/dl/wwwtmp/Carrier.java
+
+
+From oleksandr.otenko at gmail.com  Sun Mar  8 12:36:50 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sun, 8 Mar 2020 16:36:50 +0000
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <e45e3d66-0012-52a1-5c03-01ad06473409@cs.oswego.edu>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <CANkgWKj1vdr4M9ehP-w68ywhpcg9HSTTakZ8Pz0ZOvBDHLd_4w@mail.gmail.com>
+ <4576e460-6abe-2676-2828-77cf357c8389@cs.oswego.edu>
+ <CANkgWKhRG_uhKCqt78dGCRKurdgvRuWj+1_3DoR-hQtEgbEgzQ@mail.gmail.com>
+ <e45e3d66-0012-52a1-5c03-01ad06473409@cs.oswego.edu>
+Message-ID: <CANkgWKgeiZHM=s19sLjTuLvveVEDAOy9_y7se1Q24tU1gi3tJw@mail.gmail.com>
+
+I am familiar with half closed states, but in the socket world. The use of
+the same term is lost on me.
+
+In networking, half closed socket is really a fully closed pipe in a
+duplex. Here it is more of half closed singular pipe - closing one end of
+the same pipe,  just from different ends. So some of the states that become
+possible are really strange.
+
+Calling it finish is better, but perhaps some confusion about possibly
+interpreting it as an imperative instruction is still there. (Telling the
+sender to "Finish!")
+
+My understanding that the intention is to capture Carrier transitioning
+like so:
+
+sending and receiving -> sending complete, receiver can only drain buffered
+items, reject future send attempts
+
+Or
+
+sending and receiving->receiving complete, no more items can be delivered,
+discard all buffered items and reject future send attempts, reject future
+attempts to receive
+
+Is that right?
+
+In the first case receiver needs some hint how many receives are sensible,
+and if a receive is blocked on empty when sender transitions into the
+sending done state, the receiver needs a nice way out. Throwing seems like
+last resort, as typically exceptions indicate transitioning into error
+states. Returning Optional<T> can be better.
+
+Alex
+
+On Sun, 8 Mar 2020, 13:37 Doug Lea, <dl at cs.oswego.edu> wrote:
+
+> On 3/8/20 8:49 AM, Alex Otenko via Concurrency-interest wrote:
+> > I think it may be useful to clarify who is meant to call each of the
+> > close methods.
+>
+> Right; thanks especially for the questions about what confused
+> programmers who aren't used to dealing with half-closed states might do.
+>  Probably best to stop using "close" except for full close. And kill
+> closeForReceiving. Leaving better names and simpler specs:
+>
+> interface Carriable<T> extends AutoCloseable {
+>     boolean isClosed();
+>     boolean isFinishedSending();    // closed or sending disabled
+>     //...
+> }
+> interface CarrierSender<T> extends Carriable<T> {
+>     void finishSending();           // disable sending; close when empty
+>     // ...
+> }
+>
+> Full versions as usual at: http://gee.cs.oswego.edu/dl/wwwtmp/Carrier.java
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200308/30c98ef2/attachment.htm>
+
+From oleksandr.otenko at gmail.com  Sun Mar  8 18:31:48 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sun, 8 Mar 2020 22:31:48 +0000
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <CANkgWKgeiZHM=s19sLjTuLvveVEDAOy9_y7se1Q24tU1gi3tJw@mail.gmail.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <CANkgWKj1vdr4M9ehP-w68ywhpcg9HSTTakZ8Pz0ZOvBDHLd_4w@mail.gmail.com>
+ <4576e460-6abe-2676-2828-77cf357c8389@cs.oswego.edu>
+ <CANkgWKhRG_uhKCqt78dGCRKurdgvRuWj+1_3DoR-hQtEgbEgzQ@mail.gmail.com>
+ <e45e3d66-0012-52a1-5c03-01ad06473409@cs.oswego.edu>
+ <CANkgWKgeiZHM=s19sLjTuLvveVEDAOy9_y7se1Q24tU1gi3tJw@mail.gmail.com>
+Message-ID: <CANkgWKh53TBVUDj5r3kY1NY_zY3wX68897dE5ti68-oi30RL6g@mail.gmail.com>
+
+Naming things is maybe the hardest problem in computer science :) but in
+the end people are going to get used to the convention, whatever you choose.
+
+But the type of receive() is going to affect how the code is structured. So
+I would suggest to spend some time understanding the implications.
+
+Was: blocking queue, can be shown to be a co-list. (take() is the
+destructor removing head)
+
+Now: blocking queue with an end, so it becomes a representation of a list
+(possibly finite). At type level it becomes a union of co-list and a unit.
+The disjoined unit is a special value returned (eg -1 returned by input
+stream read), or a mutually exclusive continuation (onNext delivers head vs
+onComplete delivers unit; fold gets a case for empty list and a function
+for the case when the list has a head). So it's inevitable the special
+value emerges in the API. Null, a special exception, empty Optional are
+probably all you can do in Java.
+
+I'd think Optional is the best choice. Null is not safe. Exceptions require
+quite a bit of boilerplate, which can be annoying, especially given that it
+doesn't reflect an error state.
+
+Alex
+
+On Sun, 8 Mar 2020, 16:36 Alex Otenko, <oleksandr.otenko at gmail.com> wrote:
+
+> I am familiar with half closed states, but in the socket world. The use of
+> the same term is lost on me.
+>
+> In networking, half closed socket is really a fully closed pipe in a
+> duplex. Here it is more of half closed singular pipe - closing one end of
+> the same pipe,  just from different ends. So some of the states that become
+> possible are really strange.
+>
+> Calling it finish is better, but perhaps some confusion about possibly
+> interpreting it as an imperative instruction is still there. (Telling the
+> sender to "Finish!")
+>
+> My understanding that the intention is to capture Carrier transitioning
+> like so:
+>
+> sending and receiving -> sending complete, receiver can only drain
+> buffered items, reject future send attempts
+>
+> Or
+>
+> sending and receiving->receiving complete, no more items can be delivered,
+> discard all buffered items and reject future send attempts, reject future
+> attempts to receive
+>
+> Is that right?
+>
+> In the first case receiver needs some hint how many receives are sensible,
+> and if a receive is blocked on empty when sender transitions into the
+> sending done state, the receiver needs a nice way out. Throwing seems like
+> last resort, as typically exceptions indicate transitioning into error
+> states. Returning Optional<T> can be better.
+>
+> Alex
+>
+> On Sun, 8 Mar 2020, 13:37 Doug Lea, <dl at cs.oswego.edu> wrote:
+>
+>> On 3/8/20 8:49 AM, Alex Otenko via Concurrency-interest wrote:
+>> > I think it may be useful to clarify who is meant to call each of the
+>> > close methods.
+>>
+>> Right; thanks especially for the questions about what confused
+>> programmers who aren't used to dealing with half-closed states might do.
+>>  Probably best to stop using "close" except for full close. And kill
+>> closeForReceiving. Leaving better names and simpler specs:
+>>
+>> interface Carriable<T> extends AutoCloseable {
+>>     boolean isClosed();
+>>     boolean isFinishedSending();    // closed or sending disabled
+>>     //...
+>> }
+>> interface CarrierSender<T> extends Carriable<T> {
+>>     void finishSending();           // disable sending; close when empty
+>>     // ...
+>> }
+>>
+>> Full versions as usual at:
+>> http://gee.cs.oswego.edu/dl/wwwtmp/Carrier.java
+>>
+>>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200308/f9ebcca5/attachment.htm>
+
+From kasperni at gmail.com  Sun Mar  8 18:59:20 2020
+From: kasperni at gmail.com (Kasper Nielsen)
+Date: Sun, 8 Mar 2020 22:59:20 +0000
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+Message-ID: <CAPs61505_iSsfddg4QCrQzEbURdBmBwKvCSNe7rC8kuyjai1jA@mail.gmail.com>
+
+Just a quick comment,
+I would much prefer if Carrier stuck with using the standard [long
+timeout, TimeUnit unit]
+used throughout java.util.concurrent. Instead of adopting Duration for
+a single class.
+
+/Kasper
+
+On Fri, 6 Mar 2020 at 15:22, Doug Lea <dl at cs.oswego.edu> wrote:
+>
+>
+> [Cross-posting concurrency-interest and loom-dev.]
+>
+> To continue improving java.util.concurrent support for increasingly
+> diverse programming styles (while still avoiding arguments about whether
+> any of them are best!), it would be helpful to provide "BlockingQueues
+> meet AutoCloseable" APIs that are loom-friendly, but not loom-specific.
+> A sketch is pasted below. To avoid mail-reader glitches, you might want
+> to read updated snapshots at gee.cs.oswego.edu/dl/wwwtmp/Carrier.java
+>
+> Suggestions and comments are welcome. An initial implementation class
+> (LinkedCarrier) should be available shortly after API issues settle;
+> others later.
+>
+> ...
+>
+> // API sketches, with "public" omitted throughout
+>
+> /**
+>  * A component for sending and receiving messages. Carriers support
+>  * usages similar to those of BlockingQueues, but additionally
+>  * implement AutoCloseable, and may be explicitly closed for sending,
+>  * receiving, or both. Carriers also provide policy-based control for
+>  * responses to Thread.interrupt while blocked (ignoring, cancelling
+>  * the current operation only, or closing the carrier). Concrete
+>  * implementation classes may be created with a given capacity (after
+>  * which method send will block waiting for available space), or
+>  * effectively unbounded, in which case method send will never block
+>  * but may fail with an OutOfMemoryError.
+>  *
+>  * Design notes:
+>  *
+>  * (1) Both send and receive methods are declared here, but allowing
+>  * either side to be permanently (vs eventually) closed for send-only
+>  * or receive-only components. This loses some static type checking
+>  * opportunities of separate send and receive APIs. However the class
+>  * includes methods (in the style of Collections.unmodifiableX) to
+>  * produce views that provide dynamic directionality enforcement.
+>  *
+>  * (2) This is an abstract class (rather than interface) providing
+>  * uniform Observer-syle methods for Selectors and related
+>  * classes. The alternative is some sort of SPI.
+>  *
+>  * (3) To control interactions between Thread interrupts and state,
+>  * rather than throwing InterruptedExceptions, potentially blocking
+>  * methods rely on a provided policy to distinguish cancelling the
+>  * operation vs closing the carrier vs ignoring the interrupt. The
+>  * default is CANCEL, because it is the least constraining; for
+>  * example some mixed usages can catch CancellationException to then
+>  * close only when desired.
+>  *
+>  * (4) To broaden coverage of channel-based programming styles,
+>  * implementations support sendSynchronously, which is otherwise
+>  * available in BlockingQueues only as the poorly-named and underused
+>  * method LinkedTransferQueue.transfer.
+>  */
+> abstract class Carrier<T> implements AutoCloseable {
+>     Carrier(OnInterrupt policy);
+>     Carrier() { this(OnInterrupt.CANCEL); } // default
+>
+>     // Basic messaging
+>
+>     /**
+>      * Consume item, throw if isClosedForReceiving, block if empty.
+>      * May cancel or close on interrupt, depending on OnInterrupt policy.
+>      */
+>     T receive() throws ClosedException, CancellationException;
+>
+>     /**
+>      * Send item, throw if isClosedForSending, block if full.
+>      * May cancel or close on interrupt, depending on OnInterrupt policy.
+>      */
+>     void send(T item) throws ClosedException, CancellationException;
+>
+>     /** Send and block until item received */
+>     void sendSynchronously(T item) throws ClosedException,
+> CancellationException;
+>
+>     // Timeout versions
+>     T receive(Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>     void send(T item, Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>     void sendSynchronously(T item, Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>
+>     // Non-blocking access
+>     boolean trySend(T item);        // false if closed or full
+>     T tryReceive(T resultIfAbsent); // absent if closed or empty
+>     T peek(T resultIfAbsent);       // may false-positive
+>
+>     // Termination
+>     void closeForSending();         // fully close when isClosedForReceiving
+>     void closeForReceiving();       // vice-versa
+>     void close();                   // immediate close
+>     void awaitClose() throws interruptedException;
+>     void onClose(Runnable closeHandler); // run by thread triggering close
+>
+>     // Status
+>     boolean isClosedForSending();
+>     boolean isClosedForReceiving();
+>     boolean isClosed();             // true if both sides closed
+>     boolean isOpen()                { return !isClosed(); }
+>     boolean isEmpty();
+>     boolean isFull();               // never true if unbounded
+>     long    capacity();             // Long.MAX_VALUE if unbounded
+>     OnInterrupt interruptPolicy();  // return policy
+>
+>     // linkage support, noops here; locators are opaque cookie-like
+> identifiers
+>     protected void registerSource(Carrier<? super T> c, long locator) {}
+>     // notification of send or close by registered carrier
+>     protected void sourceEvent(long locator, boolean isClosed) {}
+>
+>     // views to disable one direction; similar to Collections.unmodifiableX
+>     static <E> Carrier<E> sendOnlyCarrier(Carrier<E> c);
+>     static <E> Carrier<E> receiveOnlyCarrier(Carrier<E> c);
+>
+>     // other possible utilities
+>     Stream<T> stream();             // destructive (consume-on-traverse)
+>     static <E> Carrier<E> discardingCarrier(); // /dev/null analog
+>     // TBD: selector as static factory method vs class (as below)
+>     // TBD: Flow (reactive stream) adaptors
+> }
+>
+> class LinkedCarrier<T> extends Carrier<T> {
+>     // main linked implementation
+>     // coming soon, based on LinkedTransferQueue algorithms
+> }
+>
+> class BufferedCarrier<T> extends Carrier<T> {
+>     // main array-based implementation(s)
+>     // coming later, with single- vs multiple- sink/source options
+> }
+>
+> /**
+>  * A Carrier that aggregates sources established in its constructor.
+>  * The receive method blocks waiting for any to become available, then
+>  * returns the corresponding item. Selectors are always closed for
+>  * sending, and may become fully closed when all sources close.
+>  */
+> class Selector<T> extends Carrier<T> { // possibly a more specific name
+>     Selector(<Carrier<? extends T> c, ...) {
+>         // for each c { c.registerSource(this, locatorFor(c)); }
+>     }
+>     boolean isClosedForSending() { return true; }
+>     // ...
+> }
+>
+> /**
+>  * A policy for responding to Thread.interrupt in blocking methods in
+>  * classes implementing AutoCloseable
+>  */
+> static Enum OnInterrupt {
+>     IGNORE,  // continue waiting
+>     CANCEL,  // throw CancellationException
+>     CLOSE    // close and throw ClosedException
+> }
+>
+> // This could be placed in java.lang for use with any AutoCloseable
+> class ClosedException extends IllegalStateException {
+>     ClosedException(AutoCloseable c); // the closed component
+>     // ...
+> }
+>
+
+From dl at cs.oswego.edu  Mon Mar  9 08:45:51 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 9 Mar 2020 08:45:51 -0400
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <CANkgWKgeiZHM=s19sLjTuLvveVEDAOy9_y7se1Q24tU1gi3tJw@mail.gmail.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <CANkgWKj1vdr4M9ehP-w68ywhpcg9HSTTakZ8Pz0ZOvBDHLd_4w@mail.gmail.com>
+ <4576e460-6abe-2676-2828-77cf357c8389@cs.oswego.edu>
+ <CANkgWKhRG_uhKCqt78dGCRKurdgvRuWj+1_3DoR-hQtEgbEgzQ@mail.gmail.com>
+ <e45e3d66-0012-52a1-5c03-01ad06473409@cs.oswego.edu>
+ <CANkgWKgeiZHM=s19sLjTuLvveVEDAOy9_y7se1Q24tU1gi3tJw@mail.gmail.com>
+Message-ID: <2565cf6a-b278-a0aa-ba66-0a35e47647fa@cs.oswego.edu>
+
+On 3/8/20 12:36 PM, Alex Otenko wrote:
+> I am familiar with half closed states, but in the socket world. The use
+> of the same term is lost on me.
+
+Sorry for the mysterious-sounding answer. "Half-closed" is a design
+pattern that might never have been written up well but is encountered
+all the time in concurrent settings under different names. Which makes
+the naming challenging here. On a little more thought, probably the best
+choice of terms here are based on those used in ExecutorService, which
+most people are more familiar with, and where shutdownNow() is a full
+close; and shutdown() disables submissions and triggers full close when
+tasks are completed. So:
+
+interface CarrierSender<T> extends Carriable<T> {
+  void shutdownSending(); // disable further sending; close when empty
+  // ...
+}
+interface Carriable<T> extends AutoCloseable {
+  boolean isClosed();
+  boolean isShutdownSending(); // true after shutdownSending or close
+  // ...
+}
+
+
+
+From dl at cs.oswego.edu  Mon Mar  9 08:50:31 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 9 Mar 2020 08:50:31 -0400
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <CAPs61505_iSsfddg4QCrQzEbURdBmBwKvCSNe7rC8kuyjai1jA@mail.gmail.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <CAPs61505_iSsfddg4QCrQzEbURdBmBwKvCSNe7rC8kuyjai1jA@mail.gmail.com>
+Message-ID: <4ac9508d-a5cd-8874-cd25-f9da1dcb5f8b@cs.oswego.edu>
+
+On 3/8/20 6:59 PM, Kasper Nielsen wrote:
+> Just a quick comment,
+> I would much prefer if Carrier stuck with using the standard [long
+> timeout, TimeUnit unit]
+> used throughout java.util.concurrent. Instead of adopting Duration for
+> a single class.
+> 
+
+Right. Actually, include both. I listed it without TimeUnit overloads
+mainly as a check that we'd get responses confirming that current
+BlockingQueue etc users would consider Carrier as an alternative.
+
+(See updates at http://gee.cs.oswego.edu/dl/wwwtmp/Carrier.java)
+
+-Doug
+
+
+
+From chris.hegarty at oracle.com  Mon Mar  9 10:49:00 2020
+From: chris.hegarty at oracle.com (Chris Hegarty)
+Date: Mon, 9 Mar 2020 14:49:00 +0000
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+Message-ID: <3D77F4A1-D337-4FD3-B05A-6805B005EBA9@oracle.com>
+
+Hi Doug,
+
+> On 7 Mar 2020, at 16:29, Doug Lea via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+> 
+> Collecting replies/responses, with updated sketches pasted below and at
+> https://urldefense.com/v3/__http://gee.cs.oswego.edu/dl/wwwtmp/Carrier.java__;!!GqivPVa7Brio!PZhOkwHJkZRpKSYlBvCwjh6FFuBxTE1YQ5rgYjx4FGbnzfnK03nLFEHaW0lIbt8_SvE$ 
+
+
+This latest version looks like it is headed in the right direction.
+
+Just a few questions / clarifications around closing:
+
+1) closeExceptionally - what effect will the passed `cause` Throwable
+   have on other methods, say, like receive? Will the passed `cause` be
+   the cause of the ClosedException ( thrown from a thread blocked in
+   receive )?   I assume the `onClose` CF will receive this cause too?
+
+2) ClosedException is an IllegalStateException - Ok. If the OnInterrupt
+   policy is `CLOSE`, then a thread already blocked in a receive
+   invocation will throw ClosedException - same as it would if the
+   carrier was already closed before the receive invocation. Receiving
+   an IllegalStateException for an interrupt seems a little odd to me
+   for this case (but maybe that is ok). Given this, then it is not
+   possible to discern the difference between a carrier that was closed
+   prior to receive or if receive was interrupted.  Hmm... maybe this is
+   the point - consistent behavior in the face of async-close? Oops...
+   now I ask myself will async-close result in ClosedException, or
+   interrupt of waiters?
+   
+3) Should all carriers be, in effect, closeable? What would be the
+   affect of Carrier.discardingCarrier().close(). Should this carrier be
+   effectively uncloseable, so there could be a singleton instance?
+
+-Chris.
+
+From oleksandr.otenko at gmail.com  Mon Mar  9 15:29:40 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 9 Mar 2020 19:29:40 +0000
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <3D77F4A1-D337-4FD3-B05A-6805B005EBA9@oracle.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <3D77F4A1-D337-4FD3-B05A-6805B005EBA9@oracle.com>
+Message-ID: <CANkgWKjG0xeFia8TV9Q+9xcKTBtTyL5LX_BmN5Z=qtfP8KkmCw@mail.gmail.com>
+
+IllegalStateException is ok if receiver should've known there are no more
+items to receive. This is a good idea in cases with definite length of
+stream, and the length being known to the receiver before entering
+receive(). This doesn't seem like a good idea for indefinite length cases -
+like, loop to read all items until eof.
+
+If you use exceptions to signal eof, neat loops turn into a cludge of an
+infinite loop with try-catch and a break inside, messing up scopes in the
+process.
+
+Neat loop:
+for(Optional<T> x = carrier.receive(); !x.isEmpty(); x = carrier.receive())
+...
+
+Ugly scope and nesting:
+for(;;) {
+  T x;
+  try{
+    x = carrier.receive();
+  } catch (StopIterationException sie) {
+      // did it collect the stack trace that is not needed?
+      break;
+  }
+  ...
+}
+
+Alex
+
+On Mon, 9 Mar 2020, 14:49 Chris Hegarty, <chris.hegarty at oracle.com> wrote:
+
+> Hi Doug,
+>
+> > On 7 Mar 2020, at 16:29, Doug Lea via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+> >
+> >
+> > Collecting replies/responses, with updated sketches pasted below and at
+> >
+> https://urldefense.com/v3/__http://gee.cs.oswego.edu/dl/wwwtmp/Carrier.java__;!!GqivPVa7Brio!PZhOkwHJkZRpKSYlBvCwjh6FFuBxTE1YQ5rgYjx4FGbnzfnK03nLFEHaW0lIbt8_SvE$
+>
+>
+> This latest version looks like it is headed in the right direction.
+>
+> Just a few questions / clarifications around closing:
+>
+> 1) closeExceptionally - what effect will the passed `cause` Throwable
+>    have on other methods, say, like receive? Will the passed `cause` be
+>    the cause of the ClosedException ( thrown from a thread blocked in
+>    receive )?   I assume the `onClose` CF will receive this cause too?
+>
+> 2) ClosedException is an IllegalStateException - Ok. If the OnInterrupt
+>    policy is `CLOSE`, then a thread already blocked in a receive
+>    invocation will throw ClosedException - same as it would if the
+>    carrier was already closed before the receive invocation. Receiving
+>    an IllegalStateException for an interrupt seems a little odd to me
+>    for this case (but maybe that is ok). Given this, then it is not
+>    possible to discern the difference between a carrier that was closed
+>    prior to receive or if receive was interrupted.  Hmm... maybe this is
+>    the point - consistent behavior in the face of async-close? Oops...
+>    now I ask myself will async-close result in ClosedException, or
+>    interrupt of waiters?
+>
+> 3) Should all carriers be, in effect, closeable? What would be the
+>    affect of Carrier.discardingCarrier().close(). Should this carrier be
+>    effectively uncloseable, so there could be a singleton instance?
+>
+> -Chris.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200309/d8f7d038/attachment.htm>
+
+From dl at cs.oswego.edu  Tue Mar 10 06:41:07 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 10 Mar 2020 06:41:07 -0400
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <3D77F4A1-D337-4FD3-B05A-6805B005EBA9@oracle.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <3D77F4A1-D337-4FD3-B05A-6805B005EBA9@oracle.com>
+Message-ID: <fd712f81-d85d-8a3e-c64e-1262c20b6897@cs.oswego.edu>
+
+On 3/9/20 10:49 AM, Chris Hegarty via Concurrency-interest wrote:
+
+> 
+> 1) closeExceptionally - what effect will the passed `cause` Throwable
+>    have on other methods, say, like receive? Will the passed `cause` be
+>    the cause of the ClosedException ( thrown from a thread blocked in
+>    receive )?  
+
+Yes. To be clearer, method getCloseException  should be renamed
+getCloseCause (returning null if non-exceptional).
+
+>  I assume the `onClose` CF will receive this cause too?
+
+The CF holds "this" so can be accessed.
+
+> 
+> 2) ClosedException is an IllegalStateException - Ok. If the OnInterrupt
+>    policy is `CLOSE`, then a thread already blocked in a receive
+>    invocation will throw ClosedException - same as it would if the
+>    carrier was already closed before the receive invocation. Receiving
+>    an IllegalStateException for an interrupt seems a little odd to me
+>    for this case (but maybe that is ok). Given this, then it is not
+>    possible to discern the difference between a carrier that was closed
+>    prior to receive or if receive was interrupted.  Hmm... maybe this is
+>    the point - consistent behavior in the face of async-close? 
+
+Right.
+>    now I ask myself will async-close result in ClosedException, or
+>    interrupt of waiters?
+Abrupt closes always interrupt blocked threads, and even under "IGNORE"
+policy will cause them to throw ClosedException. (This is one of several
+reasons for policy-based interrupt handling.)
+
+>    
+> 3) Should all carriers be, in effect, closeable? What would be the
+>    affect of Carrier.discardingCarrier().close(). Should this carrier be
+>    effectively uncloseable, so there could be a singleton instance?
+
+Not sure.  It's analogous to the ForkJoinPool.commonPool, that just
+ignores shutdown, in explicit violation of ExecutorService spec. Which
+no one complains about. The same could be done here. I suppose that the
+spec for close could be phrased in a way that allows "permanent"
+entities to ignore close.
+
+-Doug
+
+
+
+
+From chris.hegarty at oracle.com  Tue Mar 10 06:45:25 2020
+From: chris.hegarty at oracle.com (Chris Hegarty)
+Date: Tue, 10 Mar 2020 10:45:25 +0000
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <fd712f81-d85d-8a3e-c64e-1262c20b6897@cs.oswego.edu>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <3D77F4A1-D337-4FD3-B05A-6805B005EBA9@oracle.com>
+ <fd712f81-d85d-8a3e-c64e-1262c20b6897@cs.oswego.edu>
+Message-ID: <1CA9CEA6-3CDA-4779-9FDC-E65735D069D5@oracle.com>
+
+Thanks Doug, all sounds good to me.
+
+-Chris.
+
+> On 10 Mar 2020, at 10:41, Doug Lea <dl at cs.oswego.edu> wrote:
+> 
+> On 3/9/20 10:49 AM, Chris Hegarty via Concurrency-interest wrote:
+> 
+>> 
+>> 1) closeExceptionally - what effect will the passed `cause` Throwable
+>>   have on other methods, say, like receive? Will the passed `cause` be
+>>   the cause of the ClosedException ( thrown from a thread blocked in
+>>   receive )?  
+> 
+> Yes. To be clearer, method getCloseException  should be renamed
+> getCloseCause (returning null if non-exceptional).
+> 
+>> I assume the `onClose` CF will receive this cause too?
+> 
+> The CF holds "this" so can be accessed.
+> 
+>> 
+>> 2) ClosedException is an IllegalStateException - Ok. If the OnInterrupt
+>>   policy is `CLOSE`, then a thread already blocked in a receive
+>>   invocation will throw ClosedException - same as it would if the
+>>   carrier was already closed before the receive invocation. Receiving
+>>   an IllegalStateException for an interrupt seems a little odd to me
+>>   for this case (but maybe that is ok). Given this, then it is not
+>>   possible to discern the difference between a carrier that was closed
+>>   prior to receive or if receive was interrupted.  Hmm... maybe this is
+>>   the point - consistent behavior in the face of async-close? 
+> 
+> Right.
+>>   now I ask myself will async-close result in ClosedException, or
+>>   interrupt of waiters?
+> Abrupt closes always interrupt blocked threads, and even under "IGNORE"
+> policy will cause them to throw ClosedException. (This is one of several
+> reasons for policy-based interrupt handling.)
+> 
+>> 
+>> 3) Should all carriers be, in effect, closeable? What would be the
+>>   affect of Carrier.discardingCarrier().close(). Should this carrier be
+>>   effectively uncloseable, so there could be a singleton instance?
+> 
+> Not sure.  It's analogous to the ForkJoinPool.commonPool, that just
+> ignores shutdown, in explicit violation of ExecutorService spec. Which
+> no one complains about. The same could be done here. I suppose that the
+> spec for close could be phrased in a way that allows "permanent"
+> entities to ignore close.
+> 
+> -Doug
+> 
+> 
+> 
+
+
+From dl at cs.oswego.edu  Tue Mar 10 07:29:27 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 10 Mar 2020 07:29:27 -0400
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <CANkgWKjG0xeFia8TV9Q+9xcKTBtTyL5LX_BmN5Z=qtfP8KkmCw@mail.gmail.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <3D77F4A1-D337-4FD3-B05A-6805B005EBA9@oracle.com>
+ <CANkgWKjG0xeFia8TV9Q+9xcKTBtTyL5LX_BmN5Z=qtfP8KkmCw@mail.gmail.com>
+Message-ID: <6f9fb83e-7ad3-e8e6-759c-446fa0407f9c@cs.oswego.edu>
+
+On 3/9/20 3:29 PM, Alex Otenko wrote:
+> IllegalStateException is ok if receiver should've known there are no
+> more items to receive. This is a good idea in cases with definite length
+> of stream, and the length being known to the receiver before entering
+> receive(). This doesn't seem like a good idea for indefinite length
+> cases - like, loop to read all items until eof.
+> 
+This is the reason for:
+    Stream<T> stream();             // destructive (consume-on-traverse)
+But it is also sensible to provide a simpler forEach analog:
+    long consumeEach(Consumer<? super T> proc); // return count
+
+For those who need stateful loops, we could add "eventually" forms of
+tryReceive. With non-value-types, the preferable form that can co-exist
+with value-types is usually to return a resultIfAbsent (that is almost
+always chosen to be null), and for value types, Optional. To avoid
+annoying people, we should probably have both.
+
+    T tryReceive(T resultIfAbsent); // resultIfAbsent if closed or empty
+    Optional<T> tryReceive();       // Optional.empty if closed or empty
+
+    T tryReceiveEventually(T resultIfAbsent); // resultIfAbsent if closed
+    Optional<T> tryReceiveEventually(); // Optional.empty if closed
+
+Maybe there is a better method name.
+
+(See updates at http://gee.cs.oswego.edu/dl/wwwtmp/Carrier.java)
+
+-Doug
+
+
+From oleksandr.otenko at gmail.com  Tue Mar 10 07:48:24 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Tue, 10 Mar 2020 11:48:24 +0000
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <6f9fb83e-7ad3-e8e6-759c-446fa0407f9c@cs.oswego.edu>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <3D77F4A1-D337-4FD3-B05A-6805B005EBA9@oracle.com>
+ <CANkgWKjG0xeFia8TV9Q+9xcKTBtTyL5LX_BmN5Z=qtfP8KkmCw@mail.gmail.com>
+ <6f9fb83e-7ad3-e8e6-759c-446fa0407f9c@cs.oswego.edu>
+Message-ID: <CANkgWKhoe0uO5sXHmC3X_77jeZN5_z7vDHb68nqFi-tahr76iQ@mail.gmail.com>
+
+Thanks, that will probably work. Or some tryReceive version like poll with
+timeout. Passing max_value is essentially blocking until closed or a value
+arrives (or spurious wakeup-like condition).
+
+Alex
+
+On Tue, 10 Mar 2020, 11:30 Doug Lea via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> On 3/9/20 3:29 PM, Alex Otenko wrote:
+> > IllegalStateException is ok if receiver should've known there are no
+> > more items to receive. This is a good idea in cases with definite length
+> > of stream, and the length being known to the receiver before entering
+> > receive(). This doesn't seem like a good idea for indefinite length
+> > cases - like, loop to read all items until eof.
+> >
+> This is the reason for:
+>     Stream<T> stream();             // destructive (consume-on-traverse)
+> But it is also sensible to provide a simpler forEach analog:
+>     long consumeEach(Consumer<? super T> proc); // return count
+>
+> For those who need stateful loops, we could add "eventually" forms of
+> tryReceive. With non-value-types, the preferable form that can co-exist
+> with value-types is usually to return a resultIfAbsent (that is almost
+> always chosen to be null), and for value types, Optional. To avoid
+> annoying people, we should probably have both.
+>
+>     T tryReceive(T resultIfAbsent); // resultIfAbsent if closed or empty
+>     Optional<T> tryReceive();       // Optional.empty if closed or empty
+>
+>     T tryReceiveEventually(T resultIfAbsent); // resultIfAbsent if closed
+>     Optional<T> tryReceiveEventually(); // Optional.empty if closed
+>
+> Maybe there is a better method name.
+>
+> (See updates at http://gee.cs.oswego.edu/dl/wwwtmp/Carrier.java)
+>
+> -Doug
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200310/20ef92f7/attachment-0001.htm>
+
+From gshayban at gmail.com  Tue Mar 10 23:08:39 2020
+From: gshayban at gmail.com (Ghadi Shayban)
+Date: Tue, 10 Mar 2020 23:08:39 -0400
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <CANkgWKhoe0uO5sXHmC3X_77jeZN5_z7vDHb68nqFi-tahr76iQ@mail.gmail.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <3D77F4A1-D337-4FD3-B05A-6805B005EBA9@oracle.com>
+ <CANkgWKjG0xeFia8TV9Q+9xcKTBtTyL5LX_BmN5Z=qtfP8KkmCw@mail.gmail.com>
+ <6f9fb83e-7ad3-e8e6-759c-446fa0407f9c@cs.oswego.edu>
+ <CANkgWKhoe0uO5sXHmC3X_77jeZN5_z7vDHb68nqFi-tahr76iQ@mail.gmail.com>
+Message-ID: <CAO3q7t__hc3ywp7Dewpty0v3Px4OViZuR5x2VjkPjYK-6A7FBg@mail.gmail.com>
+
+As an API comparison point, Clojure's CSP library is called core.async. It
+features channels and send/receive operations, and the CSP select operation
+called "alts". The alts op is a plain function (no compiler magic) which
+non-deterministically chooses the first operation that can proceed, whether
+it is a channel put or a take. Channel buffers are polymorphic (fixed,
+sliding and dropping; or no buffer, meaning rendezvous semantics).
+
+Channel put returns whether the put succeeded (false if channel is
+closed).  Critically, the channel isClosed predicate is not exposed
+publicly, as it is hard to use without a TOCTOU bug.  Channel take receives
+the item (which is any reference, including Boolean false!) or receives nil
+when a channel is closed. There is only a single concrete implementation of
+a channel, ManyToManyChannel, but the underlying interfaces are split into
+read/write.
+
+When is it useful to use the exception throwing variants of Carrier, rather
+than trySend/tryReceive? Seems like there is a whole lot of API surface
+area to deal with channels being closed or closing.
+
+>From a receivers point of view, the distinction between shutdown & closed
+seems arbitrary. You're not done receiving until a buffer (if present)
+drains. Over the years, I have found from my usage of core.async that the
+most useful ops around termination are: a sender signaling that they're
+done, or a receiver abandoning the interaction early. Generally only one
+side is in charge of closing a channel, but in the consumer abandonment
+scenario, the producer will detect that the channel has closed during its
+next put (then walks away, too.)
+
+I don't understand the distinction between send+timeout and
+sendSynchronously(). Isn't synchronicity more a property of whether a
+buffer is present or not (rendezvous channel)?  Same question re:
+tryReceiveEventually
+
+I love that there is something CSP-like going into the JVM - it will be
+killer when Loom drops.
+
+On Tue, Mar 10, 2020 at 7:49 AM Alex Otenko via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Thanks, that will probably work. Or some tryReceive version like poll with
+> timeout. Passing max_value is essentially blocking until closed or a value
+> arrives (or spurious wakeup-like condition).
+>
+> Alex
+>
+> On Tue, 10 Mar 2020, 11:30 Doug Lea via Concurrency-interest, <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>> On 3/9/20 3:29 PM, Alex Otenko wrote:
+>> > IllegalStateException is ok if receiver should've known there are no
+>> > more items to receive. This is a good idea in cases with definite length
+>> > of stream, and the length being known to the receiver before entering
+>> > receive(). This doesn't seem like a good idea for indefinite length
+>> > cases - like, loop to read all items until eof.
+>> >
+>> This is the reason for:
+>>     Stream<T> stream();             // destructive (consume-on-traverse)
+>> But it is also sensible to provide a simpler forEach analog:
+>>     long consumeEach(Consumer<? super T> proc); // return count
+>>
+>> For those who need stateful loops, we could add "eventually" forms of
+>> tryReceive. With non-value-types, the preferable form that can co-exist
+>> with value-types is usually to return a resultIfAbsent (that is almost
+>> always chosen to be null), and for value types, Optional. To avoid
+>> annoying people, we should probably have both.
+>>
+>>     T tryReceive(T resultIfAbsent); // resultIfAbsent if closed or empty
+>>     Optional<T> tryReceive();       // Optional.empty if closed or empty
+>>
+>>     T tryReceiveEventually(T resultIfAbsent); // resultIfAbsent if closed
+>>     Optional<T> tryReceiveEventually(); // Optional.empty if closed
+>>
+>> Maybe there is a better method name.
+>>
+>> (See updates at http://gee.cs.oswego.edu/dl/wwwtmp/Carrier.java)
+>>
+>> -Doug
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200310/5afca11b/attachment.htm>
+
+From oleksandr.otenko at gmail.com  Wed Mar 11 02:55:55 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Wed, 11 Mar 2020 06:55:55 +0000
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <CAO3q7t__hc3ywp7Dewpty0v3Px4OViZuR5x2VjkPjYK-6A7FBg@mail.gmail.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <3D77F4A1-D337-4FD3-B05A-6805B005EBA9@oracle.com>
+ <CANkgWKjG0xeFia8TV9Q+9xcKTBtTyL5LX_BmN5Z=qtfP8KkmCw@mail.gmail.com>
+ <6f9fb83e-7ad3-e8e6-759c-446fa0407f9c@cs.oswego.edu>
+ <CANkgWKhoe0uO5sXHmC3X_77jeZN5_z7vDHb68nqFi-tahr76iQ@mail.gmail.com>
+ <CAO3q7t__hc3ywp7Dewpty0v3Px4OViZuR5x2VjkPjYK-6A7FBg@mail.gmail.com>
+Message-ID: <CANkgWKg6WQBeTmk=RWm3jo60fRmOOXeu3_eHWefx62fcQ-Hm+g@mail.gmail.com>
+
+I think the mapping between poll, take of blocking queue and various
+versions of receive are fairly obvious. Same for offer, put and various
+send, including the versions with timeouts. The substantial difference is
+in dealing with "closed" states in blocking send/receive. It is difficult
+to signal that state without changing return type. Returning arbitrary
+references or null is a source of errors. I see returning Optional as a
+necessary deviation from the direct mapping of the blocking put/take, but I
+see dealing with Optional can also be awkward. I guess we'll wait and see.
+
+SendSynchronous is not just a wait for send to succeed, it also ensures the
+corresponding receive consuming the sent item has occurred. You can see
+this as an ack of that item and all the preceding items, although I don't
+know if the API goes as far as the guarantee for the preceding receives.
+
+
+Alex
+
+On Wed, 11 Mar 2020, 03:10 Ghadi Shayban, <gshayban at gmail.com> wrote:
+
+> As an API comparison point, Clojure's CSP library is called core.async. It
+> features channels and send/receive operations, and the CSP select operation
+> called "alts". The alts op is a plain function (no compiler magic) which
+> non-deterministically chooses the first operation that can proceed, whether
+> it is a channel put or a take. Channel buffers are polymorphic (fixed,
+> sliding and dropping; or no buffer, meaning rendezvous semantics).
+>
+> Channel put returns whether the put succeeded (false if channel is
+> closed).  Critically, the channel isClosed predicate is not exposed
+> publicly, as it is hard to use without a TOCTOU bug.  Channel take receives
+> the item (which is any reference, including Boolean false!) or receives nil
+> when a channel is closed. There is only a single concrete implementation of
+> a channel, ManyToManyChannel, but the underlying interfaces are split into
+> read/write.
+>
+> When is it useful to use the exception throwing variants of Carrier, rather
+> than trySend/tryReceive? Seems like there is a whole lot of API surface
+> area to deal with channels being closed or closing.
+>
+> From a receivers point of view, the distinction between shutdown & closed
+> seems arbitrary. You're not done receiving until a buffer (if present)
+> drains. Over the years, I have found from my usage of core.async that the
+> most useful ops around termination are: a sender signaling that they're
+> done, or a receiver abandoning the interaction early. Generally only one
+> side is in charge of closing a channel, but in the consumer abandonment
+> scenario, the producer will detect that the channel has closed during its
+> next put (then walks away, too.)
+>
+> I don't understand the distinction between send+timeout and
+> sendSynchronously(). Isn't synchronicity more a property of whether a
+> buffer is present or not (rendezvous channel)?  Same question re:
+> tryReceiveEventually
+>
+> I love that there is something CSP-like going into the JVM - it will be
+> killer when Loom drops.
+>
+> On Tue, Mar 10, 2020 at 7:49 AM Alex Otenko via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+> > Thanks, that will probably work. Or some tryReceive version like poll
+> with
+> > timeout. Passing max_value is essentially blocking until closed or a
+> value
+> > arrives (or spurious wakeup-like condition).
+> >
+> > Alex
+> >
+> > On Tue, 10 Mar 2020, 11:30 Doug Lea via Concurrency-interest, <
+> > concurrency-interest at cs.oswego.edu> wrote:
+> >
+> >> On 3/9/20 3:29 PM, Alex Otenko wrote:
+> >> > IllegalStateException is ok if receiver should've known there are no
+> >> > more items to receive. This is a good idea in cases with definite
+> length
+> >> > of stream, and the length being known to the receiver before entering
+> >> > receive(). This doesn't seem like a good idea for indefinite length
+> >> > cases - like, loop to read all items until eof.
+> >> >
+> >> This is the reason for:
+> >>     Stream<T> stream();             // destructive (consume-on-traverse)
+> >> But it is also sensible to provide a simpler forEach analog:
+> >>     long consumeEach(Consumer<? super T> proc); // return count
+> >>
+> >> For those who need stateful loops, we could add "eventually" forms of
+> >> tryReceive. With non-value-types, the preferable form that can co-exist
+> >> with value-types is usually to return a resultIfAbsent (that is almost
+> >> always chosen to be null), and for value types, Optional. To avoid
+> >> annoying people, we should probably have both.
+> >>
+> >>     T tryReceive(T resultIfAbsent); // resultIfAbsent if closed or empty
+> >>     Optional<T> tryReceive();       // Optional.empty if closed or empty
+> >>
+> >>     T tryReceiveEventually(T resultIfAbsent); // resultIfAbsent if
+> closed
+> >>     Optional<T> tryReceiveEventually(); // Optional.empty if closed
+> >>
+> >> Maybe there is a better method name.
+> >>
+> >> (See updates at http://gee.cs.oswego.edu/dl/wwwtmp/Carrier.java)
+> >>
+> >> -Doug
+> >>
+> >> _______________________________________________
+> >> Concurrency-interest mailing list
+> >> Concurrency-interest at cs.oswego.edu
+> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >>
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200311/17706e37/attachment-0001.htm>
+
+From alexei.kaigorodov at gmail.com  Wed Mar 11 04:21:17 2020
+From: alexei.kaigorodov at gmail.com (Alexei Kaigorodov)
+Date: Wed, 11 Mar 2020 01:21:17 -0700 (MST)
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+Message-ID: <1583914877299-0.post@n7.nabble.com>
+
+The method sendSynchronously() requires to wrap each message in an envelope
+which also contains a reference to sender, to pass ack signal. This is a
+pure performance loss for (most frequent) cases where acknowledge is not
+required. Besides, this method has little sense. It notificates sender that
+the message has left the carrier, but did it reached the destination? There
+can be other intermediate steps between the sender and the destination.
+I propose to remove this method.
+
+
+
+--
+Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+
+From chris.hegarty at oracle.com  Wed Mar 11 06:46:12 2020
+From: chris.hegarty at oracle.com (Chris Hegarty)
+Date: Wed, 11 Mar 2020 10:46:12 +0000 (UTC)
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <180EE1B7-8FB2-49F5-A35F-17426E8C0F16@oracle.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <2E3C04E5-ABAD-4C27-B7C9-3411838A7C9D@oracle.com>
+ <477699d6-7813-c13b-ab5b-4a7d10820173@cs.oswego.edu>
+ <CANkgWKj1vdr4M9ehP-w68ywhpcg9HSTTakZ8Pz0ZOvBDHLd_4w@mail.gmail.com>
+ <4576e460-6abe-2676-2828-77cf357c8389@cs.oswego.edu>
+ <CANkgWKhRG_uhKCqt78dGCRKurdgvRuWj+1_3DoR-hQtEgbEgzQ@mail.gmail.com>
+ <e45e3d66-0012-52a1-5c03-01ad06473409@cs.oswego.edu>
+ <180EE1B7-8FB2-49F5-A35F-17426E8C0F16@oracle.com>
+Message-ID: <A14A4826-4863-4C68-AAD7-CAF4C4AFCFE9@oracle.com>
+
+
+> On 11 Mar 2020, at 05:00, John Rose <john.r.rose at oracle.com> wrote:
+> 
+> On Mar 8, 2020, at 6:37 AM, Doug Lea <dl at cs.oswego.edu> wrote:
+>> 
+>> interface CarrierSender<T> extends Carriable<T> {
+>>   void finishSending();           // disable sending; close when empty
+>>   // ...
+>> }
+> 
+> This rings true to me (but I’m not an expert in these APIs).
+> 
+> Would there be a use case where the sender side of a connection
+> is the subject of a try-with-resources, where the end of the block
+> needs to issue a `finishSending` call?  In that case, the sender
+> side (in isolation from the whole channel) might benefit from
+> a view object whose close method is an alias for `finishSending`.
+
+
+Yeah, I was going to ask something similar, about how we see common
+usage of senders. I suspect that a lot (the majority?) of folk will
+want orderly shutdown on the sender-side, so will invoke
+`shutdownSending`, which first disables further sending, and secondly
+closes when empty.
+
+For scenarios where the receiver and sender do not have intimate or
+direct knowledge of each other, then I'm not sure if it makes all that
+much sense to use a try-with-resources on the sender side - unless it is
+being used as an abort mechanism if orderly-close has not been completed
+by the end of the try-with-resources block.
+
+If we think that orderly-close will be more common that abortive-close,
+then it could be made the default, and an explicit method added to
+CarrierSender for abortive-close. This would more easily facilitate the
+use within try-with-resources blocks - but of course the resource is not
+really "freed", that depends on a well-behaved receiver. I don't think
+that this would have any adverse negative affect on the receiver.
+
+-Chris.
+
+
+From oleksandr.otenko at gmail.com  Wed Mar 11 07:17:23 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Wed, 11 Mar 2020 11:17:23 +0000
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <1583914877299-0.post@n7.nabble.com>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+ <1583914877299-0.post@n7.nabble.com>
+Message-ID: <CANkgWKjxL+b59LitVwnOpjXpVtraLm_HtwxPp5f7e5rrJPuy+Q@mail.gmail.com>
+
+I don't think so.
+
+Count messages sent, and count messages returned by receive. When the count
+of receive reaches the number for the message sent using sendSynchronously,
+unblock the sendSynchronously.
+
+It is useful as a barrier.
+
+Alex
+
+On Wed, 11 Mar 2020, 08:23 Alexei Kaigorodov via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> The method sendSynchronously() requires to wrap each message in an envelope
+> which also contains a reference to sender, to pass ack signal. This is a
+> pure performance loss for (most frequent) cases where acknowledge is not
+> required. Besides, this method has little sense. It notificates sender that
+> the message has left the carrier, but did it reached the destination? There
+> can be other intermediate steps between the sender and the destination.
+> I propose to remove this method.
+>
+>
+>
+> --
+> Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200311/18403f47/attachment.htm>
+
+From qwwdfsad at gmail.com  Wed Mar 11 07:51:13 2020
+From: qwwdfsad at gmail.com (Vsevolod Tolstopyatov)
+Date: Wed, 11 Mar 2020 14:51:13 +0300
+Subject: [concurrency-interest] draft Carrier API
+In-Reply-To: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+Message-ID: <CAEH0ZEFumnTzOFu=To2YV44XwswmjJZ7SViFCSYTg483x+VLyw@mail.gmail.com>
+
+Hi,
+
+We have a similar API at Kotlin [1] with both sending and receiving parts;
+happy to see a j.u.c is moving toward a similar API shape!
+
+I have a few notes based on our experience with Kotlin Channel's API:
+
+1) isFull method. We used to have it as well and eventually decided to
+deprecate it. We didn't find any compelling use-cases, its semantics is
+vague (e.g. is "TransferCarrier" always full?), and it is hard to make it
+linearizable with the rest of operations for buffered carriers.
+
+2) receive throws ClosedException (that is IllegalStateException). To be
+somehow consistent with the Collections API, we've decided that attempt to
+receive from a closed carrier/channel is similar to 'remove' from an empty
+queue and thus should be NoSuchElementException. Send attempt to a closed
+channel, though, is still IllegalStateException. Maybe it is something
+worth considering here as well.
+
+3) trySend. We have an analogue called offer, that also returns boolean,
+**but** may throw an exception if a channel was closed with an exception
+(aka "failure" rather than a normal close). In retrospect, this was not the
+best design decision: users do not expect method with a signature 'boolean
+offer(value)' to throw. We currently are thinking about migrating users to
+'trySend' that never throws.
+The question here is whether to return boolean or some value-type like
+"Try<Boolean>" or "Either<Boolean|Throwable>"  to avoid check-and-act
+misusages. Otherwise, it is impossible to deterministically know whether
+'trySend' failed because the source was closed or because buffer was full.
+
+4) Conflation. There are primitives (in Channels, Rx, etc.) that allow
+value conflation: if there is no place in a (usually, single-slot) buffer
+on send, the current value just gets overwritten.
+I am not sure whether such API is in the scope of Carrier API, but if so,
+contracts around Carriable methods (capacity, estimatedSize, close etc.)
+require a really careful wording to make conflation fit here.
+
+5) Send atomicity along with cancellation. If one sends a closeable
+resource via carrier, is there any guarantee on when it is safe to close a
+resource on the sending side (because a carrier is closed and there are no
+receivers) and when it is not? E.g. if 'send' throws ClosedException or
+CancellationException, is it safe to close an item in a catch block?
+"upon timeout, the item is no longer available" on send with timeout really
+caught my eye here.
+
+
+[1]
+https://kotlin.github.io/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.channels/-channel/index.html
+--
+Best regards,
+Tolstopyatov Vsevolod
+
+
+On Fri, Mar 6, 2020 at 6:22 PM Doug Lea <dl at cs.oswego.edu> wrote:
+
+>
+> [Cross-posting concurrency-interest and loom-dev.]
+>
+> To continue improving java.util.concurrent support for increasingly
+> diverse programming styles (while still avoiding arguments about whether
+> any of them are best!), it would be helpful to provide "BlockingQueues
+> meet AutoCloseable" APIs that are loom-friendly, but not loom-specific.
+> A sketch is pasted below. To avoid mail-reader glitches, you might want
+> to read updated snapshots at gee.cs.oswego.edu/dl/wwwtmp/Carrier.java
+>
+> Suggestions and comments are welcome. An initial implementation class
+> (LinkedCarrier) should be available shortly after API issues settle;
+> others later.
+>
+> ...
+>
+> // API sketches, with "public" omitted throughout
+>
+> /**
+>  * A component for sending and receiving messages. Carriers support
+>  * usages similar to those of BlockingQueues, but additionally
+>  * implement AutoCloseable, and may be explicitly closed for sending,
+>  * receiving, or both. Carriers also provide policy-based control for
+>  * responses to Thread.interrupt while blocked (ignoring, cancelling
+>  * the current operation only, or closing the carrier). Concrete
+>  * implementation classes may be created with a given capacity (after
+>  * which method send will block waiting for available space), or
+>  * effectively unbounded, in which case method send will never block
+>  * but may fail with an OutOfMemoryError.
+>  *
+>  * Design notes:
+>  *
+>  * (1) Both send and receive methods are declared here, but allowing
+>  * either side to be permanently (vs eventually) closed for send-only
+>  * or receive-only components. This loses some static type checking
+>  * opportunities of separate send and receive APIs. However the class
+>  * includes methods (in the style of Collections.unmodifiableX) to
+>  * produce views that provide dynamic directionality enforcement.
+>  *
+>  * (2) This is an abstract class (rather than interface) providing
+>  * uniform Observer-syle methods for Selectors and related
+>  * classes. The alternative is some sort of SPI.
+>  *
+>  * (3) To control interactions between Thread interrupts and state,
+>  * rather than throwing InterruptedExceptions, potentially blocking
+>  * methods rely on a provided policy to distinguish cancelling the
+>  * operation vs closing the carrier vs ignoring the interrupt. The
+>  * default is CANCEL, because it is the least constraining; for
+>  * example some mixed usages can catch CancellationException to then
+>  * close only when desired.
+>  *
+>  * (4) To broaden coverage of channel-based programming styles,
+>  * implementations support sendSynchronously, which is otherwise
+>  * available in BlockingQueues only as the poorly-named and underused
+>  * method LinkedTransferQueue.transfer.
+>  */
+> abstract class Carrier<T> implements AutoCloseable {
+>     Carrier(OnInterrupt policy);
+>     Carrier() { this(OnInterrupt.CANCEL); } // default
+>
+>     // Basic messaging
+>
+>     /**
+>      * Consume item, throw if isClosedForReceiving, block if empty.
+>      * May cancel or close on interrupt, depending on OnInterrupt policy.
+>      */
+>     T receive() throws ClosedException, CancellationException;
+>
+>     /**
+>      * Send item, throw if isClosedForSending, block if full.
+>      * May cancel or close on interrupt, depending on OnInterrupt policy.
+>      */
+>     void send(T item) throws ClosedException, CancellationException;
+>
+>     /** Send and block until item received */
+>     void sendSynchronously(T item) throws ClosedException,
+> CancellationException;
+>
+>     // Timeout versions
+>     T receive(Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>     void send(T item, Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>     void sendSynchronously(T item, Duration timeout)
+>         throws ClosedException, CancellationException, TimeoutException;
+>
+>     // Non-blocking access
+>     boolean trySend(T item);        // false if closed or full
+>     T tryReceive(T resultIfAbsent); // absent if closed or empty
+>     T peek(T resultIfAbsent);       // may false-positive
+>
+>     // Termination
+>     void closeForSending();         // fully close when
+> isClosedForReceiving
+>     void closeForReceiving();       // vice-versa
+>     void close();                   // immediate close
+>     void awaitClose() throws interruptedException;
+>     void onClose(Runnable closeHandler); // run by thread triggering close
+>
+>     // Status
+>     boolean isClosedForSending();
+>     boolean isClosedForReceiving();
+>     boolean isClosed();             // true if both sides closed
+>     boolean isOpen()                { return !isClosed(); }
+>     boolean isEmpty();
+>     boolean isFull();               // never true if unbounded
+>     long    capacity();             // Long.MAX_VALUE if unbounded
+>     OnInterrupt interruptPolicy();  // return policy
+>
+>     // linkage support, noops here; locators are opaque cookie-like
+> identifiers
+>     protected void registerSource(Carrier<? super T> c, long locator) {}
+>     // notification of send or close by registered carrier
+>     protected void sourceEvent(long locator, boolean isClosed) {}
+>
+>     // views to disable one direction; similar to Collections.unmodifiableX
+>     static <E> Carrier<E> sendOnlyCarrier(Carrier<E> c);
+>     static <E> Carrier<E> receiveOnlyCarrier(Carrier<E> c);
+>
+>     // other possible utilities
+>     Stream<T> stream();             // destructive (consume-on-traverse)
+>     static <E> Carrier<E> discardingCarrier(); // /dev/null analog
+>     // TBD: selector as static factory method vs class (as below)
+>     // TBD: Flow (reactive stream) adaptors
+> }
+>
+> class LinkedCarrier<T> extends Carrier<T> {
+>     // main linked implementation
+>     // coming soon, based on LinkedTransferQueue algorithms
+> }
+>
+> class BufferedCarrier<T> extends Carrier<T> {
+>     // main array-based implementation(s)
+>     // coming later, with single- vs multiple- sink/source options
+> }
+>
+> /**
+>  * A Carrier that aggregates sources established in its constructor.
+>  * The receive method blocks waiting for any to become available, then
+>  * returns the corresponding item. Selectors are always closed for
+>  * sending, and may become fully closed when all sources close.
+>  */
+> class Selector<T> extends Carrier<T> { // possibly a more specific name
+>     Selector(<Carrier<? extends T> c, ...) {
+>         // for each c { c.registerSource(this, locatorFor(c)); }
+>     }
+>     boolean isClosedForSending() { return true; }
+>     // ...
+> }
+>
+> /**
+>  * A policy for responding to Thread.interrupt in blocking methods in
+>  * classes implementing AutoCloseable
+>  */
+> static Enum OnInterrupt {
+>     IGNORE,  // continue waiting
+>     CANCEL,  // throw CancellationException
+>     CLOSE    // close and throw ClosedException
+> }
+>
+> // This could be placed in java.lang for use with any AutoCloseable
+> class ClosedException extends IllegalStateException {
+>     ClosedException(AutoCloseable c); // the closed component
+>     // ...
+> }
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200311/1d0005b6/attachment-0001.htm>
+
+From alexei.kaigorodov at gmail.com  Wed Mar 11 11:26:20 2020
+From: alexei.kaigorodov at gmail.com (Alexei Kaigorodov)
+Date: Wed, 11 Mar 2020 08:26:20 -0700 (MST)
+Subject: [concurrency-interest] Separate implementations of CarrierSender
+ and CarrierReceiver, and firing mechanism
+In-Reply-To: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+References: <8c2949c3-e01e-e966-e06a-db9b6eb15c39@cs.oswego.edu>
+Message-ID: <1583940380349-0.post@n7.nabble.com>
+
+If we make:
+ - separate implementations of CarrierSender and CarrierReceiver, 
+ - mechanism that watches their state, and when both instances are ready
+(!CarrierSender.isEmpty() && !CarrierReceiver.isFull()) and not closed,
+fires a user-defined method (say, run()), 
+
+then the whole implementation of the Carrier becomes trivial:
+
+class CarrierImpl<T> implements Carrier<T> {
+    CarrierReceiver<T> receiver;
+    CarrierSender <T> sender;
+
+   public CarrierImpl() {
+      // initialize sender and receiver
+   }
+
+   protected void run() {
+     if (receiver.isClosed) {
+        sender.close();
+        return;
+     }
+     T item= receiver.receive();
+     sender.send(item);
+  }
+
+// a lot of delegating methods like
+   void send(T item) throws ClosedException, CancellationException {
+       sender.send(item);
+   }
+}
+
+
+(I omitted some subtle nuances like how to provide serial execution of the
+run() method and avoid violations of the message order).
+
+This implementation is not the most performant, but can be used as a basis
+of numerous other use cases:
+
+1) allow user to override method run() and create simple message processor.
+2) let CarrierSender implement Flow.Publisher and CarrierReceiver implement
+Flow.Subscriber, and we have basic implementation of Flow.Processor
+3) extend firing mechanism so that it can watch arbitrary set of Carriables,
+and we have a basis for  processors with arbitrary number of inputs and
+outputs, including pure producers and pure consumers.
+4) expose implementations of CarrierReceiver and CarrierSender to user and
+allow user to extend that classes. Very quickly implementations of
+org.reactivestreams.{Publisher, Subscriber} and 
+reactor.core.publisher.{Mono, Flux} appear, and JDK would become
+interoperable with any existing and future synchronous and asynchronous
+message-passing libraries.
+
+The killer feature of this approach is the firing mechanism, which is easy
+to implement.
+
+
+
+
+
+--
+Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+
+From benjamin.john.evans at gmail.com  Mon Mar 16 08:11:27 2020
+From: benjamin.john.evans at gmail.com (Ben Evans)
+Date: Mon, 16 Mar 2020 13:11:27 +0100
+Subject: [concurrency-interest] Amazon Graviton and implications for
+ concurrent Java apps
+Message-ID: <CABKW8Rgdw_B5p_w2Hd=3ELTrT1p=J3jdjLxya12+R3wt8a5_FQ@mail.gmail.com>
+
+Hi everyone,
+
+I note that Amazon's Graviton processor is approaching availability
+and has some interesting performance and other stats:
+
+https://www.infoq.com/news/2020/03/Graviton2-benchmarks/
+
+I was reminded of the oft-repeated idea that Java programmers don't
+actually code to the JMM, they code to the stronger x86 hardware
+memory model.
+
+With the arrival of these new processors at an attractive price point
+in AWS, are we going to see a wave of previously-dormant concurrency
+bugs that are tickled by the difference in hardware memory model?
+
+What can we do to prepare for such bugs, and is there anything clever
+we can do to help spot them before they cause issues in production?
+
+Thanks,
+
+Ben
+
+From aph at redhat.com  Mon Mar 16 11:43:45 2020
+From: aph at redhat.com (Andrew Haley)
+Date: Mon, 16 Mar 2020 15:43:45 +0000
+Subject: [concurrency-interest] Amazon Graviton and implications for
+ concurrent Java apps
+In-Reply-To: <CABKW8Rgdw_B5p_w2Hd=3ELTrT1p=J3jdjLxya12+R3wt8a5_FQ@mail.gmail.com>
+References: <CABKW8Rgdw_B5p_w2Hd=3ELTrT1p=J3jdjLxya12+R3wt8a5_FQ@mail.gmail.com>
+Message-ID: <628e5ce7-c9e9-9385-28c9-9dd3b4e8bc42@redhat.com>
+
+Hi,
+
+On 3/16/20 12:11 PM, Ben Evans via Concurrency-interest wrote:
+
+> I note that Amazon's Graviton processor is approaching availability
+> and has some interesting performance and other stats:
+>
+> https://www.infoq.com/news/2020/03/Graviton2-benchmarks/
+>
+> I was reminded of the oft-repeated idea that Java programmers don't
+> actually code to the JMM, they code to the stronger x86 hardware
+> memory model.
+>
+> With the arrival of these new processors at an attractive price point
+> in AWS, are we going to see a wave of previously-dormant concurrency
+> bugs that are tickled by the difference in hardware memory model?
+
+I don't think so, because we've been running a bunch of stuff on
+AArch64 without many problems. If I had to guess the reasons for that,
+they'd be
+
+1. Lock-free programming is something of an extreme sport among Java
+programmers: normal people use synchronized regions and j.u.c
+structures.
+
+2. Many of the reorderings that processors with relaxed memory
+ordering do are also allowed to be done by compilers, and Java's C2
+compiler is quite happy to do them. So even though x86 has a total
+store order model, the compiler will still mess things up for people
+who write racy programs.
+
+> What can we do to prepare for such bugs, and is there anything clever
+> we can do to help spot them before they cause issues in production?
+
+Ooh, great question! I don't think we have race detectors for Java, but
+there are severl projects out there.  See also
+https://openjdk.java.net/jeps/8208520.
+
+-- 
+Andrew Haley  (he/him)
+Java Platform Lead Engineer
+Red Hat UK Ltd. <https://www.redhat.com>
+https://keybase.io/andrewhaley
+EAC8 43EB D3EF DB98 CC77 2FAD A5CD 6035 332F A671
+
+
+From numeralnathan at gmail.com  Mon Mar 16 12:01:36 2020
+From: numeralnathan at gmail.com (Nathan Reynolds)
+Date: Mon, 16 Mar 2020 10:01:36 -0600
+Subject: [concurrency-interest] Amazon Graviton and implications for
+ concurrent Java apps
+In-Reply-To: <628e5ce7-c9e9-9385-28c9-9dd3b4e8bc42@redhat.com>
+References: <CABKW8Rgdw_B5p_w2Hd=3ELTrT1p=J3jdjLxya12+R3wt8a5_FQ@mail.gmail.com>
+ <628e5ce7-c9e9-9385-28c9-9dd3b4e8bc42@redhat.com>
+Message-ID: <5a378137-1bc4-5597-78de-3a774fe70273@gmail.com>
+
+Java Pathfinder is a great tool for finding races, hangs and deadlocks.  
+It is a JVM written in Java.  It executes bytecode. Every time the 
+bytecode accesses a shared variable, synchronizes, etc. then Java 
+Pathfinder makes a schedule branch.  This means Java Pathfinder 
+interleaves every possible thread ordering.  If a deadlock can happen, 
+Java Pathfinder will reproduce the problem.
+
+With only 2 threads, the number of thread orderings can be exponential.  
+Java Pathfinder keeps track of visited states and when two different 
+interleavings are identical then the duplicates are no longer explored.  
+However, do not attempt to run anything very large.  Typically, a single 
+class is complex enough.
+
+https://en.wikipedia.org/wiki/Java_Pathfinder
+
+-Nathan
+
+On 3/16/2020 9:43 AM, Andrew Haley via Concurrency-interest wrote:
+> Hi,
+>
+> On 3/16/20 12:11 PM, Ben Evans via Concurrency-interest wrote:
+>
+>> I note that Amazon's Graviton processor is approaching availability
+>> and has some interesting performance and other stats:
+>>
+>> https://www.infoq.com/news/2020/03/Graviton2-benchmarks/
+>>
+>> I was reminded of the oft-repeated idea that Java programmers don't
+>> actually code to the JMM, they code to the stronger x86 hardware
+>> memory model.
+>>
+>> With the arrival of these new processors at an attractive price point
+>> in AWS, are we going to see a wave of previously-dormant concurrency
+>> bugs that are tickled by the difference in hardware memory model?
+> I don't think so, because we've been running a bunch of stuff on
+> AArch64 without many problems. If I had to guess the reasons for that,
+> they'd be
+>
+> 1. Lock-free programming is something of an extreme sport among Java
+> programmers: normal people use synchronized regions and j.u.c
+> structures.
+>
+> 2. Many of the reorderings that processors with relaxed memory
+> ordering do are also allowed to be done by compilers, and Java's C2
+> compiler is quite happy to do them. So even though x86 has a total
+> store order model, the compiler will still mess things up for people
+> who write racy programs.
+>
+>> What can we do to prepare for such bugs, and is there anything clever
+>> we can do to help spot them before they cause issues in production?
+> Ooh, great question! I don't think we have race detectors for Java, but
+> there are severl projects out there.  See also
+> https://openjdk.java.net/jeps/8208520.
+>
+
+From oleksandr.otenko at gmail.com  Wed Mar 18 06:44:30 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Wed, 18 Mar 2020 10:44:30 +0000
+Subject: [concurrency-interest] Amazon Graviton and implications for
+ concurrent Java apps
+In-Reply-To: <5a378137-1bc4-5597-78de-3a774fe70273@gmail.com>
+References: <CABKW8Rgdw_B5p_w2Hd=3ELTrT1p=J3jdjLxya12+R3wt8a5_FQ@mail.gmail.com>
+ <628e5ce7-c9e9-9385-28c9-9dd3b4e8bc42@redhat.com>
+ <5a378137-1bc4-5597-78de-3a774fe70273@gmail.com>
+Message-ID: <CANkgWKg3jU_=u6BJx5pGuDcc7s5o-25N-=xWN=x1E6p4g50R4w@mail.gmail.com>
+
+I used it. Java pathfinder gives you false hope.
+
+That is, if it finds races, they exist. If it doesn't, it is not a proof of
+correctness.
+
+For example, how to decide how many threads should be run in a test? Two?
+It can be shown to be wrong for most locks.
+
+More threads - more states that it cannot determine to be the same.
+
+Alex
+
+On Mon, 16 Mar 2020, 16:03 Nathan Reynolds via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Java Pathfinder is a great tool for finding races, hangs and deadlocks.
+> It is a JVM written in Java.  It executes bytecode. Every time the
+> bytecode accesses a shared variable, synchronizes, etc. then Java
+> Pathfinder makes a schedule branch.  This means Java Pathfinder
+> interleaves every possible thread ordering.  If a deadlock can happen,
+> Java Pathfinder will reproduce the problem.
+>
+> With only 2 threads, the number of thread orderings can be exponential.
+> Java Pathfinder keeps track of visited states and when two different
+> interleavings are identical then the duplicates are no longer explored.
+> However, do not attempt to run anything very large.  Typically, a single
+> class is complex enough.
+>
+> https://en.wikipedia.org/wiki/Java_Pathfinder
+>
+> -Nathan
+>
+> On 3/16/2020 9:43 AM, Andrew Haley via Concurrency-interest wrote:
+> > Hi,
+> >
+> > On 3/16/20 12:11 PM, Ben Evans via Concurrency-interest wrote:
+> >
+> >> I note that Amazon's Graviton processor is approaching availability
+> >> and has some interesting performance and other stats:
+> >>
+> >> https://www.infoq.com/news/2020/03/Graviton2-benchmarks/
+> >>
+> >> I was reminded of the oft-repeated idea that Java programmers don't
+> >> actually code to the JMM, they code to the stronger x86 hardware
+> >> memory model.
+> >>
+> >> With the arrival of these new processors at an attractive price point
+> >> in AWS, are we going to see a wave of previously-dormant concurrency
+> >> bugs that are tickled by the difference in hardware memory model?
+> > I don't think so, because we've been running a bunch of stuff on
+> > AArch64 without many problems. If I had to guess the reasons for that,
+> > they'd be
+> >
+> > 1. Lock-free programming is something of an extreme sport among Java
+> > programmers: normal people use synchronized regions and j.u.c
+> > structures.
+> >
+> > 2. Many of the reorderings that processors with relaxed memory
+> > ordering do are also allowed to be done by compilers, and Java's C2
+> > compiler is quite happy to do them. So even though x86 has a total
+> > store order model, the compiler will still mess things up for people
+> > who write racy programs.
+> >
+> >> What can we do to prepare for such bugs, and is there anything clever
+> >> we can do to help spot them before they cause issues in production?
+> > Ooh, great question! I don't think we have race detectors for Java, but
+> > there are severl projects out there.  See also
+> > https://openjdk.java.net/jeps/8208520.
+> >
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200318/1e48d461/attachment.htm>
+
+From fw at deneb.enyo.de  Wed Mar 18 08:18:48 2020
+From: fw at deneb.enyo.de (Florian Weimer)
+Date: Wed, 18 Mar 2020 13:18:48 +0100
+Subject: [concurrency-interest] Amazon Graviton and implications for
+ concurrent Java apps
+In-Reply-To: <628e5ce7-c9e9-9385-28c9-9dd3b4e8bc42@redhat.com> (Andrew Haley
+ via Concurrency-interest's message of "Mon, 16 Mar 2020 15:43:45
+ +0000")
+References: <CABKW8Rgdw_B5p_w2Hd=3ELTrT1p=J3jdjLxya12+R3wt8a5_FQ@mail.gmail.com>
+ <628e5ce7-c9e9-9385-28c9-9dd3b4e8bc42@redhat.com>
+Message-ID: <87imj1svo7.fsf@mid.deneb.enyo.de>
+
+* Andrew Haley via Concurrency-interest:
+
+> I don't think so, because we've been running a bunch of stuff on
+> AArch64 without many problems. If I had to guess the reasons for that,
+> they'd be
+>
+> 1. Lock-free programming is something of an extreme sport among Java
+> programmers: normal people use synchronized regions and j.u.c
+> structures.
+>
+> 2. Many of the reorderings that processors with relaxed memory
+> ordering do are also allowed to be done by compilers, and Java's C2
+> compiler is quite happy to do them. So even though x86 has a total
+> store order model, the compiler will still mess things up for people
+> who write racy programs.
+
+Porting enterprise Java software to run on POWER probably has ironed
+out quite a few bugs as well.
+
+From thomas.krieger at vmlens.com  Thu Mar 26 03:55:15 2020
+From: thomas.krieger at vmlens.com (Thomas Krieger)
+Date: Thu, 26 Mar 2020 08:55:15 +0100 (CET)
+Subject: [concurrency-interest] Potential data race in
+ java.util.concurrent.ConcurrentHashMap at the fields TreeNode.left and
+ right
+Message-ID: <425177636.1048492.1585209315118@communicator.strato.com>
+
+I think there is a data race in the class java.util.concurrent.ConcurrentHashMap.
+When reading from the fields TreeNode.left and TreeNode.right using get and writing to those fields using put those fields are not synchronized.
+I think they both should be volatile similar to the field next of the class Node.
+
+
+I have created a test in the git project https://github.com/vmlens/race-conditions-java.git to reproduce the data race using https://vmlens.com, a tool I have written to test multi-threaded Java.
+
+Regards
+Thomas Krieger
+
+From kasperni at gmail.com  Thu Mar 26 04:35:34 2020
+From: kasperni at gmail.com (Kasper Nielsen)
+Date: Thu, 26 Mar 2020 08:35:34 +0000
+Subject: [concurrency-interest] Potential data race in
+ java.util.concurrent.ConcurrentHashMap at the fields TreeNode.left and
+ right
+In-Reply-To: <425177636.1048492.1585209315118@communicator.strato.com>
+References: <425177636.1048492.1585209315118@communicator.strato.com>
+Message-ID: <CAPs6151odCx4xpLXh5Ff1-gyY6bZZ=wvOLD34HU97qQ5NNGQEA@mail.gmail.com>
+
+> I think there is a data race in the class java.util.concurrent.ConcurrentHashMap.
+> When reading from the fields TreeNode.left and TreeNode.right using get and writing to those fields using put those fields are not synchronized.
+> I think they both should be volatile similar to the field next of the class Node.
+
+All the fields in TreeNode are only read/written while synchronizing
+on the TreeBin they belong to.
+See, for example,
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ConcurrentHashMap.java?revision=1.323&view=markup#l1902
+
+Normal
+
+/Kasper
+
+From thomas.krieger at vmlens.com  Thu Mar 26 08:08:14 2020
+From: thomas.krieger at vmlens.com (Thomas Krieger)
+Date: Thu, 26 Mar 2020 13:08:14 +0100 (CET)
+Subject: [concurrency-interest] Potential data race in
+ java.util.concurrent.ConcurrentHashMap at the fields TreeNode.left and
+ right
+In-Reply-To: <CAPs6151odCx4xpLXh5Ff1-gyY6bZZ=wvOLD34HU97qQ5NNGQEA@mail.gmail.com>
+References: <425177636.1048492.1585209315118@communicator.strato.com>
+ <CAPs6151odCx4xpLXh5Ff1-gyY6bZZ=wvOLD34HU97qQ5NNGQEA@mail.gmail.com>
+Message-ID: <766047799.960345.1585224494544@communicator.strato.com>
+
+Write only is o.k. Reading and writing using the class Node is also o.k. Only reading and writing using the class TreeNode leads to a data race.
+
+Here is a scenario which leads to the data race:
+The ConcurrentHashMap is filled with 10 keys with the same hash code, more than the TREEIFY_THRESHOLD of 8. So the class TreeNode is used.
+The first Thread calls put, the second Thread calls get.
+
+The first Thread is executing the following operations in the given method. I only show synchronization actions and the read and write of the data race:
+     
+ConcurrentHashMap.putVal(java.lang.Object,java.lang.Object,boolean)                  
+	read ConcurrentHashMap.table
+ConcurrentHashMap.tabAt(ConcurrentHashMap$Node[],int)                              
+	read Unsafe or VarHandle array access        
+ConcurrentHashMap.put(java.lang.Object,java.lang.Object)                           
+	monitor enter
+ConcurrentHashMap.tabAt(ConcurrentHashMap$Node[],int)                           
+	read Unsafe or VarHandle array access
+ConcurrentHashMap$TreeBin.putTreeVal(int,java.lang.Object,java.lang.Object)     
+	read ConcurrentHashMap$TreeBin.first    
+ConcurrentHashMap$TreeBin.putTreeVal(int,java.lang.Object,java.lang.Object)     
+	write ConcurrentHashMap$TreeBin.first
+ConcurrentHashMap$TreeBin.putTreeVal(int,java.lang.Object,java.lang.Object)       
+	write <<race>> ConcurrentHashMap$TreeNode.left       The write of the race happens here  
+ConcurrentHashMap.put(java.lang.Object,java.lang.Object)                           
+	monitor exit    
+ConcurrentHashMap.addCount(long,int)                                             
+	read ConcurrentHashMap.counterCells
+ConcurrentHashMap.addCount(long,int)                                             
+	read ConcurrentHashMap.baseCount
+ConcurrentHashMap.addCount(long,int)                                             
+	compare and swap ConcurrentHashMap.baseCount
+ConcurrentHashMap.addCount(long,int)                                             
+	read ConcurrentHashMap.sizeCtl
+    
+Now the second thread executes the following  synchronization actions and read of the field left:
+          
+ConcurrentHashMap.get(java.lang.Object)                                         
+	read ConcurrentHashMap.table        
+ConcurrentHashMap.tabAt(ConcurrentHashMap$Node[],int)                             
+	read Unsafe or VarHandle array access
+ConcurrentHashMap$TreeBin.find(int,java.lang.Object)                              
+	read ConcurrentHashMap$TreeBin.first
+ConcurrentHashMap$TreeBin.find(int,java.lang.Object)                              
+	read ConcurrentHashMap$TreeBin.lockState    
+ConcurrentHashMap$TreeBin.find(int,java.lang.Object)                              
+	compare and swap ConcurrentHashMap$TreeBin.lockState        
+ConcurrentHashMap$TreeNode.findTreeNode(int,java.lang.Object,java.lang.Class)    
+	read <<race>> ConcurrentHashMap$TreeNode.left      The read of the race happens here  
+ConcurrentHashMap$TreeBin.find(int,java.lang.Object)                             
+	compare and swap ConcurrentHashMap$TreeBin.lockState    
+ConcurrentHashMap.get(java.lang.Object) read                                     
+	ConcurrentHashMap$Node.val    
+          
+          
+Here is a similar scenario with the class Node node instead of TreeNode. 
+The ConcurrentHashMap is filled with 3 keys with the same hash code, less than the TREEIFY_THRESHOLD of 8. So the class Node is used.
+It is almost the same as the scenario for the class TreeNode only that this time the field next which is used for traversing the link structure is volatile:
+The first Thread calls put, the second Thread calls get.
+The first Thread executes the following  synchronization actions
+
+ConcurrentHashMap.putVal(java.lang.Object,java.lang.Object,boolean)              
+	read ConcurrentHashMap.table
+ConcurrentHashMap.tabAt(ConcurrentHashMap$Node[],int)                              
+	read Unsafe or VarHandle array access    
+ConcurrentHashMap.put(java.lang.Object,java.lang.Object)                          
+	monitor enter    
+ConcurrentHashMap.tabAt(ConcurrentHashMap$Node[],int)                             
+	read Unsafe or VarHandle array access    
+ConcurrentHashMap.putVal(java.lang.Object,java.lang.Object,boolean)             
+	3 * read ConcurrentHashMap$Node.next    
+ConcurrentHashMap.putVal(java.lang.Object,java.lang.Object,boolean)             
+	write ConcurrentHashMap$Node.next
+ConcurrentHashMap.put(java.lang.Object,java.lang.Object)                         
+	monitor exit
+ConcurrentHashMap.addCount(long,int)                                             
+	read ConcurrentHashMap.counterCells
+ConcurrentHashMap.addCount(long,int)                                             
+	read ConcurrentHashMap.baseCount
+ConcurrentHashMap.addCount(long,int)                                             
+	compare and swap ConcurrentHashMap.baseCount
+ConcurrentHashMap.addCount(long,int)                                             
+	read ConcurrentHashMap.sizeCtl
+
+Now the second thread executes the following  synchronization actions
+
+ConcurrentHashMap.get(java.lang.Object)                                          
+	read ConcurrentHashMap.table
+ConcurrentHashMap.tabAt(ConcurrentHashMap$Node[],int)                             
+	read Unsafe or VarHandle array access
+ConcurrentHashMap.get(java.lang.Object)                                         
+	3 * read ConcurrentHashMap$Node.next
+ConcurrentHashMap.get(java.lang.Object)                                         
+	read ConcurrentHashMap$Node.val
+
+
+Regards
+Thomas
+> On 26 March 2020 09:35 Kasper Nielsen <kasperni at gmail.com> wrote:
+> 
+>  
+> > I think there is a data race in the class java.util.concurrent.ConcurrentHashMap.
+> > When reading from the fields TreeNode.left and TreeNode.right using get and writing to those fields using put those fields are not synchronized.
+> > I think they both should be volatile similar to the field next of the class Node.
+> 
+> All the fields in TreeNode are only read/written while synchronizing
+> on the TreeBin they belong to.
+> See, for example,
+> http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ConcurrentHashMap.java?revision=1.323&view=markup#l1902
+> 
+> Normal
+> 
+> /Kasper
+
+From java at rkive.org  Sun Mar 29 19:38:25 2020
+From: java at rkive.org (Carl M)
+Date: Sun, 29 Mar 2020 19:38:25 -0400 (EDT)
+Subject: [concurrency-interest] Abstract Stacked Synchronizer?
+Message-ID: <362962957.139314.1585525105412@email.ionos.com>
+
+Hi,
+
+I have a ThreadPoolExecutor that showed some surprising behavior.   It is configured to have a core pool size of 10, max size of 400, and a keep alive time of 1 minute.  When the code runs, short lived tasks are executed on the executor at a high rate, about 300 per second.  These tasks only take about 10ms each, so there isn't much work to do.
+
+What I noticed is that spikes in load cause the pool size to go up, but it never goes back down.  This makes sense, but it isn't a desired behavior.   When the rate of tasks submitted goes beyond the queue size, more threads are brought in, take the work, and then contend on the queue.    The queue uses a AbstractQueuedSynchronizer, which enqueues threads to accept more work.   
+
+The problem here is that thread are effectively round-robin as work comes in (even in unfair mode).  Each time a 10ms task comes  in, it's enough time for the other threads to move up in line.   In effect, despite there being hardly enough work to for hundreds of threads, because the load is spread so evenly among them, they never reach the keep alive timeout.  
+
+What I think the solution to this should be is a BlockingQueue that has an unfair Lock.  The least-fair lock that can be made, where threads always cut in line to be at the front.  I believe using a stack instead of a queue in AQS would lower the thread pool size much more aggressively.   Considering how little work is actually coming in, I don't think contention between the threads would be a serious issue.   
+
+Does something like this exist?
+
+From viktor.klang at gmail.com  Mon Mar 30 03:34:23 2020
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Mon, 30 Mar 2020 07:34:23 +0000
+Subject: [concurrency-interest] Abstract Stacked Synchronizer?
+In-Reply-To: <362962957.139314.1585525105412@email.ionos.com>
+References: <362962957.139314.1585525105412@email.ionos.com>
+Message-ID: <CANPzfU_kbMa6QsdtKaCumHAP6OsDpGsRPoBF9mYQVbVR=Do1ow@mail.gmail.com>
+
+TBH it would be interesting to have the size driven by utilization—it looks
+to be rather straightforward to use Queuing Theory in this case and have
+each worker keep track of time-spent-servicing vs time-spent-waiting.
+
+On Sun, Mar 29, 2020 at 11:40 PM Carl M via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Hi,
+>
+> I have a ThreadPoolExecutor that showed some surprising behavior.   It is
+> configured to have a core pool size of 10, max size of 400, and a keep
+> alive time of 1 minute.  When the code runs, short lived tasks are executed
+> on the executor at a high rate, about 300 per second.  These tasks only
+> take about 10ms each, so there isn't much work to do.
+>
+> What I noticed is that spikes in load cause the pool size to go up, but it
+> never goes back down.  This makes sense, but it isn't a desired behavior.
+>  When the rate of tasks submitted goes beyond the queue size, more threads
+> are brought in, take the work, and then contend on the queue.    The queue
+> uses a AbstractQueuedSynchronizer, which enqueues threads to accept more
+> work.
+>
+> The problem here is that thread are effectively round-robin as work comes
+> in (even in unfair mode).  Each time a 10ms task comes  in, it's enough
+> time for the other threads to move up in line.   In effect, despite there
+> being hardly enough work to for hundreds of threads, because the load is
+> spread so evenly among them, they never reach the keep alive timeout.
+>
+> What I think the solution to this should be is a BlockingQueue that has an
+> unfair Lock.  The least-fair lock that can be made, where threads always
+> cut in line to be at the front.  I believe using a stack instead of a queue
+> in AQS would lower the thread pool size much more aggressively.
+>  Considering how little work is actually coming in, I don't think
+> contention between the threads would be a serious issue.
+>
+> Does something like this exist?
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+-- 
+Cheers,
+√
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200330/4238cce9/attachment.htm>
+
+From ben.manes at gmail.com  Mon Mar 30 03:43:00 2020
+From: ben.manes at gmail.com (Benjamin Manes)
+Date: Mon, 30 Mar 2020 00:43:00 -0700
+Subject: [concurrency-interest] Abstract Stacked Synchronizer?
+In-Reply-To: <CANPzfU_kbMa6QsdtKaCumHAP6OsDpGsRPoBF9mYQVbVR=Do1ow@mail.gmail.com>
+References: <362962957.139314.1585525105412@email.ionos.com>
+ <CANPzfU_kbMa6QsdtKaCumHAP6OsDpGsRPoBF9mYQVbVR=Do1ow@mail.gmail.com>
+Message-ID: <CAGu0=MPMecRB2=ORsZoMTMY4dmYFhwfO-ns1YkN5UQVY5uiJ1w@mail.gmail.com>
+
+The CLR’s thread injection algorithm is fairly interesting in this respect
+by using hill climbing to determine the thread count of its pool.
+
+On Mon, Mar 30, 2020 at 12:36 AM Viktor Klang via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> TBH it would be interesting to have the size driven by utilization—it
+> looks to be rather straightforward to use Queuing Theory in this case and
+> have each worker keep track of time-spent-servicing vs time-spent-waiting.
+>
+> On Sun, Mar 29, 2020 at 11:40 PM Carl M via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>> Hi,
+>>
+>> I have a ThreadPoolExecutor that showed some surprising behavior.   It is
+>> configured to have a core pool size of 10, max size of 400, and a keep
+>> alive time of 1 minute.  When the code runs, short lived tasks are executed
+>> on the executor at a high rate, about 300 per second.  These tasks only
+>> take about 10ms each, so there isn't much work to do.
+>>
+>> What I noticed is that spikes in load cause the pool size to go up, but
+>> it never goes back down.  This makes sense, but it isn't a desired
+>> behavior.   When the rate of tasks submitted goes beyond the queue size,
+>> more threads are brought in, take the work, and then contend on the queue.
+>>   The queue uses a AbstractQueuedSynchronizer, which enqueues threads to
+>> accept more work.
+>>
+>> The problem here is that thread are effectively round-robin as work comes
+>> in (even in unfair mode).  Each time a 10ms task comes  in, it's enough
+>> time for the other threads to move up in line.   In effect, despite there
+>> being hardly enough work to for hundreds of threads, because the load is
+>> spread so evenly among them, they never reach the keep alive timeout.
+>>
+>> What I think the solution to this should be is a BlockingQueue that has
+>> an unfair Lock.  The least-fair lock that can be made, where threads always
+>> cut in line to be at the front.  I believe using a stack instead of a queue
+>> in AQS would lower the thread pool size much more aggressively.
+>>  Considering how little work is actually coming in, I don't think
+>> contention between the threads would be a serious issue.
+>>
+>> Does something like this exist?
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>>
+>
+> --
+> Cheers,
+> √
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200330/550f3ba7/attachment.htm>
+

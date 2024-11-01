@@ -1,0 +1,912 @@
+Subject: [concurrency-interest] About the volatile and MESI Protocal
+From: 马里奥 via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-17, 13:27
+To: "Concurrency-interest" <Concurrency-interest@cs.oswego.edu>
+Reply-To: 马里奥 <184480602@qq.com>
+
+hello concurrency-interest:
+
+       My quest about the volatile,According to the MESI Protocol "bChanged" in second thread modified in STOREBUFFER,then the first thread can not get the newest
+
+       "bChanged",why add the sleep method ,this thread can get the newest bChanged?
+
+
+        public class NoVolatile {
+	//no volatile
+	private static boolean bChanged;
+
+	public static void main(String[] args) throws InterruptedException {
+		new Thread(() -> {
+			for (; ; ) {
+				if (bChanged == !bChanged) {
+					System.out.println("!=");
+					break;
+				}
+				
+				//why add the sleep method ,this thread can get the newest bChanged?
+//				try {
+//					Thread.sleep(1);
+//				} catch (InterruptedException e) {
+//					e.printStackTrace();
+//				}
+			}
+			System.exit(0);
+		}).start();
+
+		Thread.sleep(1000);
+		
+		new Thread(() -> {
+			for (; ; ) {
+				bChanged = !bChanged;
+			}
+		}).start();
+	}
+}
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Alex Otenko via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-17, 13:45
+To: 马里奥 <184480602@qq.com>
+CC: Concurrency-interest <Concurrency-interest@cs.oswego.edu>
+Reply-To: Alex Otenko <oleksandr.otenko@gmail.com>
+
+It's not clear where you reckon MESI is at play here. Rather, MESI acts in such a way that you don't notice functional difference with direct access to memory.
+
+Engineers forget that volatile is not only about memory barriers, it is also about compiler barriers. In this particular example the changes done by the second thread are not necessarily visible to the first thread, sleep or no sleep. This has nothing to do with MESI cache coherence prorocol.
+
+Alex
+
+On Thu, 17 Feb 2022, 11:31 马里奥 via Concurrency-interest, <concurrency-interest@cs.oswego.edu> wrote:
+
+    hello concurrency-interest:
+
+           My quest about the volatile,According to the MESI Protocol "bChanged" in second thread modified in STOREBUFFER,then the first thread can not get the newest
+
+           "bChanged",why add the sleep method ,this thread can get the newest bChanged?
+
+
+            public class NoVolatile {
+    	//no volatile
+    	private static boolean bChanged;
+
+    	public static void main(String[] args) throws InterruptedException {
+    		new Thread(() -> {
+    			for (; ; ) {
+    				if (bChanged == !bChanged) {
+    					System.out.println("!=");
+    					break;
+    				}
+    				
+    				//why add the sleep method ,this thread can get the newest bChanged?
+    //				try {
+    //					Thread.sleep(1);
+    //				} catch (InterruptedException e) {
+    //					e.printStackTrace();
+    //				}
+    			}
+    			System.exit(0);
+    		}).start();
+
+    		Thread.sleep(1000);
+    		
+    		new Thread(() -> {
+    			for (; ; ) {
+    				bChanged = !bChanged;
+    			}
+    		}).start();
+    	}
+    }
+
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest@cs.oswego.edu
+    http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Nathan Reynolds via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-17, 18:33
+To: Alex Otenko <oleksandr.otenko@gmail.com>
+CC: Concurrency-interest <Concurrency-interest@cs.oswego.edu>
+Reply-To: Nathan Reynolds <numeralnathan@gmail.com>
+
+Without volatile or fences, JIT is free to hoist the "if (bChanged == !bChanged)" out of the for loop.  If for some reason JIT decides to not hoist, JIT could also load bChanged into a single register each iteration and then execute "if (bChanged == !bChanged)" using the value in the single register.  On the other hand, if JIT is smart enough, it can get rid of the if statement and block altogether since it can never be true according to the Java Memory Model.  Since this is very unlike a real code scenario, I doubt JIT has been enhanced for this last case.
+
+Without Thread.sleep(1), the loop will execute 10,000 iterations very quickly.  JIT can then do its work and have plenty of wiggle room before the Thread.sleep(1000) finishes.  Hence, JIT probably hoisted the if statement and block out of the for loop.
+
+With Thread.sleep(1), it will take at least 10 seconds for the loop to iterate 10,000 times.  The Thread.sleep(1000) finishes much sooner than that.  So, the second thread executes bChanged = !bChanged rapidly.  Since this loop is interpreted for the first 10,000 iterations, the interpreter is going to load and store the value to/from cache.  On x86, this will cause cache line invalidation so that other threads/cores will see the change.  The first thread is still executing an interpreted for loop.  The interpreter will load from cache bChanged onto the stack twice.  On x86 with cache line invalidation, the first thread could load two different values onto the stack.  Hence, you see the first thread print.  On a different processor with more relaxed memory constraints, the first thread may not ever see bChanged change since the interpreter may not emit the appropriate cache invalidating instructions.
+
+If you let the program run long enough for JIT to kick in, it still may not hoist the if statement because the branch is taken.  Taking the branch might convince JIT to leave the if statement in place.  I don't know JIT well enough to know for sure.  If JIT leaves the if statement in the for loop, JIT might load bChanged a single time into a single register each loop.  However, these hypotheses would have to be validated with testing and assembly output.
+
+If you changed Thread.sleep(1000) to Thread.sleep(20 * 1000), then JIT has a chance to optimize the for loop and hoist the if statement.  I would suspect you would never see a print statement.
+
+On Thu, Feb 17, 2022 at 4:45 AM Alex Otenko via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+
+    It's not clear where you reckon MESI is at play here. Rather, MESI acts in such a way that you don't notice functional difference with direct access to memory.
+
+    Engineers forget that volatile is not only about memory barriers, it is also about compiler barriers. In this particular example the changes done by the second thread are not necessarily visible to the first thread, sleep or no sleep. This has nothing to do with MESI cache coherence prorocol.
+
+    Alex
+
+    On Thu, 17 Feb 2022, 11:31 马里奥 via Concurrency-interest, <concurrency-interest@cs.oswego.edu> wrote:
+
+        hello concurrency-interest:
+
+               My quest about the volatile,According to the MESI Protocol "bChanged" in second thread modified in STOREBUFFER,then the first thread can not get the newest
+
+               "bChanged",why add the sleep method ,this thread can get the newest bChanged?
+
+
+                public class NoVolatile {
+        	//no volatile
+        	private static boolean bChanged;
+
+        	public static void main(String[] args) throws InterruptedException {
+        		new Thread(() -> {
+        			for (; ; ) {
+        				if (bChanged == !bChanged) {
+        					System.out.println("!=");
+        					break;
+        				}
+        				
+        				//why add the sleep method ,this thread can get the newest bChanged?
+        //				try {
+        //					Thread.sleep(1);
+        //				} catch (InterruptedException e) {
+        //					e.printStackTrace();
+        //				}
+        			}
+        			System.exit(0);
+        		}).start();
+
+        		Thread.sleep(1000);
+        		
+        		new Thread(() -> {
+        			for (; ; ) {
+        				bChanged = !bChanged;
+        			}
+        		}).start();
+        	}
+        }
+
+        _______________________________________________
+        Concurrency-interest mailing list
+        Concurrency-interest@cs.oswego.edu
+        http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest@cs.oswego.edu
+    http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Florian Weimer via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-19, 12:30
+To: Nathan Reynolds via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Florian Weimer <fw@deneb.enyo.de>
+
+* Nathan Reynolds via Concurrency-interest:
+
+> > Without volatile or fences, JIT is free to hoist the "if (bChanged ==
+> > !bChanged)" out of the for loop.  If for some reason JIT decides to not
+> > hoist, JIT could also load bChanged into a single register each iteration
+> > and then execute "if (bChanged == !bChanged)" using the value in the single
+> > register.  On the other hand, if JIT is smart enough, it can get rid of the
+> > if statement and block altogether since it can never be true according to
+> > the Java Memory Model.  Since this is very unlike a real code scenario, I
+> > doubt JIT has been enhanced for this last case.
+
+I don't think this is a property of the memory model, it merely
+follows from choices Java implementation have made regarding compiler
+barriers for volatile field access.
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+.
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Alex Otenko via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-19, 12:46
+To: Florian Weimer <fw@deneb.enyo.de>
+CC: Nathan Reynolds via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Alex Otenko <oleksandr.otenko@gmail.com>
+
+The placement of memory and compiler barriers by a conforming implementation of the JVM is driven by memory model.
+
+There are things you can choose, but there are mathematical properties that the choices must satisfy.
+
+In this case no visibility of mutation is required by the memory model, so it is allowed to reduce the code to the form that behaves like such that only sees the changes done by the same thread. Which means bChanged can be kept in a register, and even the condition check is allowed to be eliminated like dead code. But you have to keep the loop, as the progress or lack thereof is a sideeffect that we must heed.
+
+Alex
+
+On Sat, 19 Feb 2022, 10:30 Florian Weimer, <fw@deneb.enyo.de> wrote:
+
+    * Nathan Reynolds via Concurrency-interest:
+
+    > Without volatile or fences, JIT is free to hoist the "if (bChanged ==
+    > !bChanged)" out of the for loop.  If for some reason JIT decides to not
+    > hoist, JIT could also load bChanged into a single register each iteration
+    > and then execute "if (bChanged == !bChanged)" using the value in the single
+    > register.  On the other hand, if JIT is smart enough, it can get rid of the
+    > if statement and block altogether since it can never be true according to
+    > the Java Memory Model.  Since this is very unlike a real code scenario, I
+    > doubt JIT has been enhanced for this last case.
+
+    I don't think this is a property of the memory model, it merely
+    follows from choices Java implementation have made regarding compiler
+    barriers for volatile field access.
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Gregg Wonderly via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-20, 01:21
+To: Florian Weimer <fw@deneb.enyo.de>
+CC: Nathan Reynolds via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Gregg Wonderly <gergg@cox.net>
+
+This is what compiler writers believe to be awesome optimization. It can invalidate software systems randomly, because the compiler can rewrite the generated instruction stream in one branch of code when you’ve made changes in another branch.
+
+There’s been all kinds of fucysion about this on this list snd elsewhere.  Realistically, this is why you will find most Java developers with any real amount of experience with this problem now declare all class s ops variables as either final or obliterated so that the compiler will stop generating surprise rewrites of your logic into something that does not represent the readable software written.
+
+Gregg Wonderly
+
+Sent from my iPhone
+
+> > On Feb 19, 2022, at 4:31 AM, Florian Weimer via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+> > 
+> > ﻿* Nathan Reynolds via Concurrency-interest:
+> > 
+>> >> Without volatile or fences, JIT is free to hoist the "if (bChanged ==
+>> >> !bChanged)" out of the for loop.  If for some reason JIT decides to not
+>> >> hoist, JIT could also load bChanged into a single register each iteration
+>> >> and then execute "if (bChanged == !bChanged)" using the value in the single
+>> >> register.  On the other hand, if JIT is smart enough, it can get rid of the
+>> >> if statement and block altogether since it can never be true according to
+>> >> the Java Memory Model.  Since this is very unlike a real code scenario, I
+>> >> doubt JIT has been enhanced for this last case.
+> > 
+> > I don't think this is a property of the memory model, it merely
+> > follows from choices Java implementation have made regarding compiler
+> > barriers for volatile field access.
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest@cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Alex Otenko via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-20, 01:34
+To: Gregg Wonderly <gergg@cox.net>
+CC: Nathan Reynolds via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Alex Otenko <oleksandr.otenko@gmail.com>
+
+Likewise it has been discussed multiple times that this is not just an optimisation of some obscure case.
+
+The alternative to JMM is to have total order for all memory accesses. This obviously does not scale with the number of CPUs. You have to define some small number of accesses that have to be ordered totally, so that the majority of accesses don't have total order.
+
+
+Alex
+
+On Sat, 19 Feb 2022, 23:24 Gregg Wonderly via Concurrency-interest, <concurrency-interest@cs.oswego.edu> wrote:
+
+    This is what compiler writers believe to be awesome optimization. It can invalidate software systems randomly, because the compiler can rewrite the generated instruction stream in one branch of code when you’ve made changes in another branch.
+
+    There’s been all kinds of fucysion about this on this list snd elsewhere.  Realistically, this is why you will find most Java developers with any real amount of experience with this problem now declare all class s ops variables as either final or obliterated so that the compiler will stop generating surprise rewrites of your logic into something that does not represent the readable software written.
+
+    Gregg Wonderly
+
+    Sent from my iPhone
+
+    > On Feb 19, 2022, at 4:31 AM, Florian Weimer via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+    >
+    > ﻿* Nathan Reynolds via Concurrency-interest:
+    >
+    >> Without volatile or fences, JIT is free to hoist the "if (bChanged ==
+    >> !bChanged)" out of the for loop.  If for some reason JIT decides to not
+    >> hoist, JIT could also load bChanged into a single register each iteration
+    >> and then execute "if (bChanged == !bChanged)" using the value in the single
+    >> register.  On the other hand, if JIT is smart enough, it can get rid of the
+    >> if statement and block altogether since it can never be true according to
+    >> the Java Memory Model.  Since this is very unlike a real code scenario, I
+    >> doubt JIT has been enhanced for this last case.
+    >
+    > I don't think this is a property of the memory model, it merely
+    > follows from choices Java implementation have made regarding compiler
+    > barriers for volatile field access.
+    > _______________________________________________
+    > Concurrency-interest mailing list
+    > Concurrency-interest@cs.oswego.edu
+    > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest@cs.oswego.edu
+    http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Gregg Wonderly via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-20, 03:59
+To: Alex Otenko <oleksandr.otenko@gmail.com>
+CC: Nathan Reynolds via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Gregg Wonderly <gergg@cox.net>
+
+Total order is how the software reads.  The total order problem for the hardware is a deficiency in how we’ve designed hardware systems.  Ideally we’d have data flow compilers and FPGAs that could execute much faster with all the performance possible.  As AI and NN research continues to put pressure on hardware performance we will move past these horrible hardware designs!
+
+Gregg 
+
+Sent from my iPhone
+
+> On Feb 19, 2022, at 5:34 PM, Alex Otenko via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+>
+> ﻿
+> Likewise it has been discussed multiple times that this is not just an optimisation of some obscure case.
+>
+> The alternative to JMM is to have total order for all memory accesses. This obviously does not scale with the number of CPUs. You have to define some small number of accesses that have to be ordered totally, so that the majority of accesses don't have total order.
+>
+>
+> Alex
+>
+> On Sat, 19 Feb 2022, 23:24 Gregg Wonderly via Concurrency-interest, <concurrency-interest@cs.oswego.edu> wrote:
+>
+>     This is what compiler writers believe to be awesome optimization. It can invalidate software systems randomly, because the compiler can rewrite the generated instruction stream in one branch of code when you’ve made changes in another branch.
+>
+>     There’s been all kinds of fucysion about this on this list snd elsewhere.  Realistically, this is why you will find most Java developers with any real amount of experience with this problem now declare all class s ops variables as either final or obliterated so that the compiler will stop generating surprise rewrites of your logic into something that does not represent the readable software written.
+>
+>     Gregg Wonderly
+>
+>     Sent from my iPhone
+>
+>     > On Feb 19, 2022, at 4:31 AM, Florian Weimer via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+>     >
+>     > ﻿* Nathan Reynolds via Concurrency-interest:
+>     >
+>     >> Without volatile or fences, JIT is free to hoist the "if (bChanged ==
+>     >> !bChanged)" out of the for loop.  If for some reason JIT decides to not
+>     >> hoist, JIT could also load bChanged into a single register each iteration
+>     >> and then execute "if (bChanged == !bChanged)" using the value in the single
+>     >> register.  On the other hand, if JIT is smart enough, it can get rid of the
+>     >> if statement and block altogether since it can never be true according to
+>     >> the Java Memory Model.  Since this is very unlike a real code scenario, I
+>     >> doubt JIT has been enhanced for this last case.
+>     >
+>     > I don't think this is a property of the memory model, it merely
+>     > follows from choices Java implementation have made regarding compiler
+>     > barriers for volatile field access.
+>     > _______________________________________________
+>     > Concurrency-interest mailing list
+>     > Concurrency-interest@cs.oswego.edu
+>     > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>     _______________________________________________
+>     Concurrency-interest mailing list
+>     Concurrency-interest@cs.oswego.edu
+>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Nathan Reynolds via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-20, 04:32
+To: Gregg Wonderly <gergg@cox.net>
+CC: Nathan Reynolds via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Nathan Reynolds <numeralnathan@gmail.com>
+
+Yes, we could change the JMM so that all programs were total order.  We will then cause everyone to do some heavy optimization work on their code to get back to the desired performance.
+
+Some of the optimizations will be trivial things such as changing the ordering of two lines because the timings of the memory accesses will be better.  Then a newer processor comes out and the two lines may need to be changed back.  People will spend a lot of time twiddling lines trying to hide memory access stalls.
+
+People will spend a lot of time trying to determine which values can be kept in registers and when those registers need to get a new value.  I remember doing this in C++.  It was time consuming.
+
+Some of the optimizations will be more difficult things such as hoisting code from a loop after verifying that it is safe to move the method calls out of the loop.  Whenever anyone changes those methods, they are going to have to look at all the callers and several more ancestors and make sure to undo optimizations that can no longer be done.
+
+There are many more optimizations that would be removed from JIT and forced onto the programmers to do.  The code will become very difficult to read because of all the optimizations required to get decent performance.  A simple one line code change will require profiling and optimization effort.
+
+Programmers are going to have to become expert optimizers and learn all the tricks of today's JIT.  Computer science degrees will have to include several classes on how to optimize code.  Stack Overflow will have a whole section on how to optimize code for a particular processor.  The hard part will be finding the right optimization for your code.
+
+Each year with a new processor, programmers will have to make many tweaks across the code base to get back the performance simply because the hardware timings are different.  For example, if a new processor comes out with a faster implementation of the divide instruction, everyone will have to scan their code for divides and change the ordering of the lines to take advantage of the result from the divide instruction sooner and gain a performance boost.
+
+The above would be very expensive and diminish the value of writing software and make it much more expensive.  Instead of paying $60 for a video game, it will be hundreds of dollars.
+
+Instead, the most cost effective solution is to tell programmers to add synchronized whenever two threads will access mutable state.  This is a super simple solution.  Leave the heavy optimization effort to JIT and performance engineers since most of the time the synchronized statement is not a bottleneck.
+
+On Sat, Feb 19, 2022 at 7:00 PM Gregg Wonderly via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+
+    Total order is how the software reads.  The total order problem for the hardware is a deficiency in how we’ve designed hardware systems.  Ideally we’d have data flow compilers and FPGAs that could execute much faster with all the performance possible.  As AI and NN research continues to put pressure on hardware performance we will move past these horrible hardware designs!
+
+    Gregg 
+
+    Sent from my iPhone
+
+>     On Feb 19, 2022, at 5:34 PM, Alex Otenko via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+>
+>     ﻿
+>     Likewise it has been discussed multiple times that this is not just an optimisation of some obscure case.
+>
+>     The alternative to JMM is to have total order for all memory accesses. This obviously does not scale with the number of CPUs. You have to define some small number of accesses that have to be ordered totally, so that the majority of accesses don't have total order.
+>
+>
+>     Alex
+>
+>     On Sat, 19 Feb 2022, 23:24 Gregg Wonderly via Concurrency-interest, <concurrency-interest@cs.oswego.edu> wrote:
+>
+>         This is what compiler writers believe to be awesome optimization. It can invalidate software systems randomly, because the compiler can rewrite the generated instruction stream in one branch of code when you’ve made changes in another branch.
+>
+>         There’s been all kinds of fucysion about this on this list snd elsewhere.  Realistically, this is why you will find most Java developers with any real amount of experience with this problem now declare all class s ops variables as either final or obliterated so that the compiler will stop generating surprise rewrites of your logic into something that does not represent the readable software written.
+>
+>         Gregg Wonderly
+>
+>         Sent from my iPhone
+>
+>         > On Feb 19, 2022, at 4:31 AM, Florian Weimer via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+>         >
+>         > ﻿* Nathan Reynolds via Concurrency-interest:
+>         >
+>         >> Without volatile or fences, JIT is free to hoist the "if (bChanged ==
+>         >> !bChanged)" out of the for loop.  If for some reason JIT decides to not
+>         >> hoist, JIT could also load bChanged into a single register each iteration
+>         >> and then execute "if (bChanged == !bChanged)" using the value in the single
+>         >> register.  On the other hand, if JIT is smart enough, it can get rid of the
+>         >> if statement and block altogether since it can never be true according to
+>         >> the Java Memory Model.  Since this is very unlike a real code scenario, I
+>         >> doubt JIT has been enhanced for this last case.
+>         >
+>         > I don't think this is a property of the memory model, it merely
+>         > follows from choices Java implementation have made regarding compiler
+>         > barriers for volatile field access.
+>         > _______________________________________________
+>         > Concurrency-interest mailing list
+>         > Concurrency-interest@cs.oswego.edu
+>         > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>         _______________________________________________
+>         Concurrency-interest mailing list
+>         Concurrency-interest@cs.oswego.edu
+>         http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>     _______________________________________________
+>     Concurrency-interest mailing list
+>     Concurrency-interest@cs.oswego.edu
+>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest@cs.oswego.edu
+    http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Andrew Haley via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-20, 12:16
+To: concurrency-interest@cs.oswego.edu
+Reply-To: Andrew Haley <aph@redhat.com>
+
+On 2/19/22 23:21, Gregg Wonderly via Concurrency-interest wrote:
+> There’s been all kinds of fucysion about this on this list snd elsewhere.
+
+confusion?
+
+There has, but by and large, once it's been explained to them,
+Java programmers become enlightened and then write better
+software.
+
+I rather like "volatile" because it's a way to tell the reader
+which locations in memory are communication channels between
+threads. I think you want such channels to be limited in number,
+well defined, and planned rather than all over the place. Being
+able to express volatility makes programming languages more
+expressive.
+
+-- 
+Andrew Haley  (he/him)
+Java Platform Lead Engineer
+Red Hat UK Ltd. <https://www.redhat.com>
+https://keybase.io/andrewhaley
+EAC8 43EB D3EF DB98 CC77 2FAD A5CD 6035 332F A671
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Aleksey Shipilev via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-20, 14:25
+To: Florian Weimer <fw@deneb.enyo.de>, Nathan Reynolds via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Aleksey Shipilev <shade@redhat.com>
+
+On 2/19/22 13:30, Florian Weimer via Concurrency-interest wrote:
+> * Nathan Reynolds via Concurrency-interest:
+>
+>> Without volatile or fences, JIT is free to hoist the "if (bChanged ==
+>> !bChanged)" out of the for loop.  If for some reason JIT decides to not
+>> hoist, JIT could also load bChanged into a single register each iteration
+>> and then execute "if (bChanged == !bChanged)" using the value in the single
+>> register.  On the other hand, if JIT is smart enough, it can get rid of the
+>> if statement and block altogether since it can never be true according to
+>> the Java Memory Model.  Since this is very unlike a real code scenario, I
+>> doubt JIT has been enhanced for this last case.
+>
+> I don't think this is a property of the memory model, it merely
+> follows from choices Java implementation have made regarding compiler
+> barriers for volatile field access.
+
+AFAIU, progress guarantee is where the current memory models, as stated in JLS, is quite murky. This one of those abyss-mal places where the longer you look, the creepier it gets. The major problem there is tying up both writer and loop-reader into the behavior we intuitively want. It is a real hard thing to specify without losing sanity.
+
+You can show the lack of progress guarantees for "while (field) {}" loop executing alone, by the virtue of saying "there is an JMM execution that never observes the store to `field`". Note it ties up the notion that there is a write to "field", and it is ordered "after" all reads.
+
+AFAICS, the same thing could be said when "field" is volatile: a Sufficiently Smart^W Evil Optimizer (tm) can say, "Yes, volatile actions are in total order, and I decide that the order we are dealing with in this particular micro-test is where the write to field at the end of that total order; thus no reads observe it, and I can yank the field load out of the loop". The totality of synchronization order really buys us nothing in this example, except for scaring the less smart/evil optimizers into not doing anything that touches synchronization actions.
+
+C/C++ spec talks about progress guarantees, where "Implementations should ensure that all unblocked threads eventually make forward progress" and "An implementation should ensure that the last value (in modification order) assigned by an atomic or synchronization operation will become visible to all other threads in a finite period of time". But AFAIU, "should" = "recommended" in that text. Hans Boehm et al. wrote why it is not a hard requirement here:
+  http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2010/n3152.html
+
+Java makes a significant step towards that by saying that "Opaque" and stronger modes guarantee progress, but that again is not part of the formal JLS. See "Opaque mode" properties here:
+  http://gee.cs.oswego.edu/dl/html/j9mm.html
+
+-- 
+Thanks,
+-Aleksey
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Gregg Wonderly via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-21, 16:04
+To: Aleksey Shipilev <shade@redhat.com>
+CC: Nathan Reynolds via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Gregg Wonderly <gergg@cox.net>
+
+The problem is that Java and many other languages are not safe in a multithreaded environment to start with.  The memory model is safe for a single thread.  This all goes back to the attempts by Sun and other members of the Java EE landscape trying to make that platform the most performant environment to sell more hardware.  Sun had the weakest memory model that could only be able to actually be faster if all of these JMM designs were available.
+
+Again, the problem is the hardwares poor performance in sharing data safely between cores. Because the software systems do not do full data flow analysis and instead do micro analysis, the visibility of all references and all writes is not understood and so we have these guessing based optimizations.
+
+There is always a total order to any software system.  Those with external inputs make it even harder to know what the total order might be.  My standing example of where hoisting doesn’t work is a perfect example of how micro analysis just doesn’t work.
+
+The document I linked to showing many examples of why final or volatile are needed on class local declarations illustrates how prevalent software broken by the non-volatile default definition in Java has created large amounts of time wasting architecture and the exact hand optimization and manipulation you say should not be necessary.
+
+ Speed is rarely the first choice of software engineering.  Profiling can provide great insight into hotspots in software systems.  Letting the developer solve only the problems that are important to them, and not providing them additional problems to solve seems like the better choice!
+
+Gregg Wonderly
+
+Sent from my iPhone
+
+> > On Feb 20, 2022, at 6:26 AM, Aleksey Shipilev via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+> > 
+> > ﻿On 2/19/22 13:30, Florian Weimer via Concurrency-interest wrote:
+>> >> * Nathan Reynolds via Concurrency-interest:
+>>> >>> Without volatile or fences, JIT is free to hoist the "if (bChanged ==
+>>> >>> !bChanged)" out of the for loop.  If for some reason JIT decides to not
+>>> >>> hoist, JIT could also load bChanged into a single register each iteration
+>>> >>> and then execute "if (bChanged == !bChanged)" using the value in the single
+>>> >>> register.  On the other hand, if JIT is smart enough, it can get rid of the
+>>> >>> if statement and block altogether since it can never be true according to
+>>> >>> the Java Memory Model.  Since this is very unlike a real code scenario, I
+>>> >>> doubt JIT has been enhanced for this last case.
+>> >> I don't think this is a property of the memory model, it merely
+>> >> follows from choices Java implementation have made regarding compiler
+>> >> barriers for volatile field access.
+> > 
+> > AFAIU, progress guarantee is where the current memory models, as stated in JLS, is quite murky. This one of those abyss-mal places where the longer you look, the creepier it gets. The major problem there is tying up both writer and loop-reader into the behavior we intuitively want. It is a real hard thing to specify without losing sanity.
+> > 
+> > You can show the lack of progress guarantees for "while (field) {}" loop executing alone, by the virtue of saying "there is an JMM execution that never observes the store to `field`". Note it ties up the notion that there is a write to "field", and it is ordered "after" all reads.
+> > 
+> > AFAICS, the same thing could be said when "field" is volatile: a Sufficiently Smart^W Evil Optimizer (tm) can say, "Yes, volatile actions are in total order, and I decide that the order we are dealing with in this particular micro-test is where the write to field at the end of that total order; thus no reads observe it, and I can yank the field load out of the loop". The totality of synchronization order really buys us nothing in this example, except for scaring the less smart/evil optimizers into not doing anything that touches synchronization actions.
+> > 
+> > C/C++ spec talks about progress guarantees, where "Implementations should ensure that all unblocked threads eventually make forward progress" and "An implementation should ensure that the last value (in modification order) assigned by an atomic or synchronization operation will become visible to all other threads in a finite period of time". But AFAIU, "should" = "recommended" in that text. Hans Boehm et al. wrote why it is not a hard requirement here:
+> >  http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2010/n3152.html
+> > 
+> > Java makes a significant step towards that by saying that "Opaque" and stronger modes guarantee progress, but that again is not part of the formal JLS. See "Opaque mode" properties here:
+> >  http://gee.cs.oswego.edu/dl/html/j9mm.html
+> > 
+> > -- 
+> > Thanks,
+> > -Aleksey
+> > 
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest@cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Alex Otenko via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-21, 17:41
+To: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Alex Otenko <oleksandr.otenko@gmail.com>
+
+This lengthy argument falls apart, once you realize that its premise is false. That is, the premise that every software system has a total order.
+
+
+Alex
+
+
+On Mon, 21 Feb 2022, 14:06 Gregg Wonderly via Concurrency-interest, <concurrency-interest@cs.oswego.edu> wrote:
+
+    The problem is that Java and many other languages are not safe in a multithreaded environment to start with.  The memory model is safe for a single thread.  This all goes back to the attempts by Sun and other members of the Java EE landscape trying to make that platform the most performant environment to sell more hardware.  Sun had the weakest memory model that could only be able to actually be faster if all of these JMM designs were available.
+
+    Again, the problem is the hardwares poor performance in sharing data safely between cores. Because the software systems do not do full data flow analysis and instead do micro analysis, the visibility of all references and all writes is not understood and so we have these guessing based optimizations.
+
+    There is always a total order to any software system.  Those with external inputs make it even harder to know what the total order might be.  My standing example of where hoisting doesn’t work is a perfect example of how micro analysis just doesn’t work.
+
+    The document I linked to showing many examples of why final or volatile are needed on class local declarations illustrates how prevalent software broken by the non-volatile default definition in Java has created large amounts of time wasting architecture and the exact hand optimization and manipulation you say should not be necessary.
+
+     Speed is rarely the first choice of software engineering.  Profiling can provide great insight into hotspots in software systems.  Letting the developer solve only the problems that are important to them, and not providing them additional problems to solve seems like the better choice!
+
+    Gregg Wonderly
+
+    Sent from my iPhone
+
+    > On Feb 20, 2022, at 6:26 AM, Aleksey Shipilev via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+    >
+    > ﻿On 2/19/22 13:30, Florian Weimer via Concurrency-interest wrote:
+    >> * Nathan Reynolds via Concurrency-interest:
+    >>> Without volatile or fences, JIT is free to hoist the "if (bChanged ==
+    >>> !bChanged)" out of the for loop.  If for some reason JIT decides to not
+    >>> hoist, JIT could also load bChanged into a single register each iteration
+    >>> and then execute "if (bChanged == !bChanged)" using the value in the single
+    >>> register.  On the other hand, if JIT is smart enough, it can get rid of the
+    >>> if statement and block altogether since it can never be true according to
+    >>> the Java Memory Model.  Since this is very unlike a real code scenario, I
+    >>> doubt JIT has been enhanced for this last case.
+    >> I don't think this is a property of the memory model, it merely
+    >> follows from choices Java implementation have made regarding compiler
+    >> barriers for volatile field access.
+    >
+    > AFAIU, progress guarantee is where the current memory models, as stated in JLS, is quite murky. This one of those abyss-mal places where the longer you look, the creepier it gets. The major problem there is tying up both writer and loop-reader into the behavior we intuitively want. It is a real hard thing to specify without losing sanity.
+    >
+    > You can show the lack of progress guarantees for "while (field) {}" loop executing alone, by the virtue of saying "there is an JMM execution that never observes the store to `field`". Note it ties up the notion that there is a write to "field", and it is ordered "after" all reads.
+    >
+    > AFAICS, the same thing could be said when "field" is volatile: a Sufficiently Smart^W Evil Optimizer (tm) can say, "Yes, volatile actions are in total order, and I decide that the order we are dealing with in this particular micro-test is where the write to field at the end of that total order; thus no reads observe it, and I can yank the field load out of the loop". The totality of synchronization order really buys us nothing in this example, except for scaring the less smart/evil optimizers into not doing anything that touches synchronization actions.
+    >
+    > C/C++ spec talks about progress guarantees, where "Implementations should ensure that all unblocked threads eventually make forward progress" and "An implementation should ensure that the last value (in modification order) assigned by an atomic or synchronization operation will become visible to all other threads in a finite period of time". But AFAIU, "should" = "recommended" in that text. Hans Boehm et al. wrote why it is not a hard requirement here:
+    >  http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2010/n3152.html
+    >
+    > Java makes a significant step towards that by saying that "Opaque" and stronger modes guarantee progress, but that again is not part of the formal JLS. See "Opaque mode" properties here:
+    >  http://gee.cs.oswego.edu/dl/html/j9mm.html
+    >
+    > --
+    > Thanks,
+    > -Aleksey
+    >
+    > _______________________________________________
+    > Concurrency-interest mailing list
+    > Concurrency-interest@cs.oswego.edu
+    > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest@cs.oswego.edu
+    http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Andrew Dinn via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-21, 18:18
+To: Alex Otenko <oleksandr.otenko@gmail.com>, concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Andrew Dinn <adinn@redhat.com>
+
+On 21/02/2022 15:41, Alex Otenko via Concurrency-interest wrote:
+> This lengthy argument falls apart, once you realize that its premise is false. That is, the premise that every software system has a total order.
+
+But wait ... there's more ... !!!
+
+We also have in the background another premise (underpinning that standing example): that the semantics of Java can be defined and understood with respect only to single threaded operation. This may be an assumption made by many Java programmers but it is most definitely /not/ an assumption made by those who defined or those who implement the language because it is also false.
+
+regards,
+
+
+Andrew Dinn
+-----------
+Red Hat Distinguished Engineer
+Red Hat UK Ltd
+Registered in England and Wales under Company Registration No. 03798903
+Directors: Michael Cunningham, Michael ("Mike") O'Neill
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] About the volatile and MESI Protocal
+From: Doug Lea via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-21, 23:10
+To: concurrency-interest@cs.oswego.edu
+Reply-To: Doug Lea <dl@cs.oswego.edu>
+
+On 2/20/22 07:25, Aleksey Shipilev via Concurrency-interest wrote:
+>
+>> I don't think this is a property of the memory model, it merely
+>> follows from choices Java implementation have made regarding compiler
+>> barriers for volatile field access.
+>
+> AFAIU, progress guarantee is where the current memory models, as stated in JLS, is quite murky.
+
+This is an area that seems basically settled in research papers, but hasn't made it into specs. See "Making Weak Memory Models Fair" by Ori Lahav et al OOPLSA 2021: https://people.mpi-sws.org/~viktor/papers/oopsla2021-fairness.pdf
+
+Why not in specs? People seem hesitant to piecewise fix parts of specs. At this point there seem to be only a few formal/technical obstacles to revising JLS. Any decade now...
+
+-Doug
+
+
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+-------------------------
+
+Subject: [concurrency-interest] hb: potential causality; causal order: explicit causality?
+From: Peter Veentjer via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-02-26, 15:36
+To: "concurrency-interest@cs.oswego.edu" <concurrency-interest@cs.oswego.edu>
+Reply-To: Peter Veentjer <alarmnummer@gmail.com>
+
+Hi,
+
+I'm trying to get a better understanding of the causal order. So I'm posting my understanding of the topic and would like to get feedback if I'm on the right track.
+
+There are 2 flavors of causality in the space of memory models and distributed systems:
+- potential causality
+- explicit causality
+
+In the "Time, clocks, and the ordering of events in a distributed system", where the happens-before relation is introduced, Leslie Lamport is talking about potential causality.
+
+So if a->b then a might have affected b.
+
+The happens-before relation from the JMM is about potential causality as well. E.g.
+
+thread1:
+  r1=a (1)
+  a=1  (2)
+
+They are ordered by the happens-before relation due to the program order rule. The happens-before has no clue if (1) and (2) are causally related or not;  so it just assumes that (1) might have affected (2).
+
+Every execution that is allowed by the JMM has the following 2 constraints:
+- (happens before) consistency.
+- causality
+The primary purpose of causality is to exclude executions with causal loops.
+
+AFAIK this causal order is explicit causality. E.g.
+
+thread1:
+  r1=a   (1)
+  a=1     (2)
+
+The read (1) doesn't influence the value written at (2), so they are not ordered by the causal order.
+
+But the following example is one with explicit causality:
+
+thread1:
+  r1=a      (1)
+  a=r1+1  (2)
+
+The value written is influenced by the value read, so (1) is ordered before (2) in the causal order.
+
+Is my understanding correct?
+
+PS: One of the papers I'm studying is the "JSR-133 Java Memory Model and Thread Specification".
+
+Regards,
+
+Peter.
+
+
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest

@@ -1,0 +1,3451 @@
+From andrew_certain_concurrency at thecertains.com  Thu Jan  4 17:14:26 2007
+From: andrew_certain_concurrency at thecertains.com (Andrew Certain)
+Date: Thu, 4 Jan 2007 14:14:26 -0800 (PST)
+Subject: [concurrency-interest] Unexpected bevahiour in ThreadPoolExecutor
+Message-ID: <Pine.LNX.4.44.0701041404400.15958-100000@localhost.localdomain>
+
+
+I've been using a ThreadPoolExecutor with corePoolSize == maxPoolSize,
+expecting that I'd always have a fixed number of threads to operate on
+tasks in the queue.  However, if a thread throws an exception and
+terminates unexpectedly, no thread is spawned to replace it unless it's
+the last thread in the pool, even if the task queue is full.  Looking at
+the code, it seems that new threads are only spawned when execute is
+called.  However, this behavior is at best unexpected (and I would
+consider it a bug), especially in the following scenario:
+
+You create a ThreadPoolExecutor (TPE) with corePoolSize = maxPoolSize = n.  
+You then submit N >> n long-running tasks to the TPE at the start and 
+never submit another task.  If one of those long-running tasks throws an 
+exception and terminates, a new thread is not respawned, leaving you with 
+n-1 threads to service the large number of tasks left in the queue.  If 
+this happens frequently enough, you're left with only one thread in the 
+pool (since workerDone will spawn a new thread if there is something in 
+the queue and there are no more threads).
+
+Am I doing something wrong with my usage of the TPE?  Surely the behavior 
+I'm expecting (submit a bunch of tasks to a thread pool with a fixed 
+number of threads at startup time and wait until they terminate) isn't 
+unique.  Are there any good solutions?  Why wouldn't workerDone spawn
+new threads if there are less than corePoolSize threads running and there 
+is work in the queue?
+
+Thanks.
+
+Andrew
+
+
+---------------------------------------------------------------------------
+Please include this line when replying.
+--
+Clunk enough people on the head and we'll have a nation of lunkheads.
+		-- Foghorn Leghorn
+
+
+
+From studdugie at gmail.com  Thu Jan  4 18:17:01 2007
+From: studdugie at gmail.com (studdugie)
+Date: Thu, 4 Jan 2007 18:17:01 -0500
+Subject: [concurrency-interest] Closing a socket from another thread
+In-Reply-To: <303629700276DF4D9ED7D011221B8FAA08681349@scidubmsg03.sci.local>
+References: <b6e8f2e80612190529s78f0158ayc60aafd85a3c9d4d@mail.gmail.com>
+	<303629700276DF4D9ED7D011221B8FAA08681349@scidubmsg03.sci.local>
+Message-ID: <5a59ce530701041517m44f09bbeu46563d6278eac9c7@mail.gmail.com>
+
+Closing a socket from another thread works flawlessly in Sun JVM 1.5.x
+and 1.6.x. I've been exercising this functionaly in the 1.5.x revisons
+for at least 3 months. I just swithced to 1.6 and so far no problems.
+
+On 12/19/06, Shaffer, Darron <Darron_Shaffer at stercomm.com> wrote:
+>
+>
+> This is a pain before JDK 1.4, because every JVM has its own little quirks.
+> In fact, for at least one 1.3 JVM closing a ServerSocket from a different
+> thread would trigger a bug causing some future accepted sockets to be handed
+> to the wrong ServerSocket!
+>
+> However, in 1.4 with the arrival of NIO the SocketChannel versions of
+> sockets have much better specifications of thread behavior.  Its now
+> supposed to just work, causing any threads blocked on the closed sockets to
+> receive an exception.  However, I haven't tested this extensively because
+> with NIO I avoid all blocking operations and don't have to do this sort of
+> thing.
+>
+>  ________________________________
+>  From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu] On
+> Behalf Of Peter Kovacs
+> Sent: Tuesday, December 19, 2006 7:30 AM
+> To: Concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] Closing a socket from another thread
+>
+>
+> Hi,
+>
+> Anyone has an idea/experience how safe it is to close a socket from another
+> thread. Are there any utility classes which help me close a socket safely?
+>
+> Thanks
+>
+> Peter
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+
+From dcholmes at optusnet.com.au  Thu Jan  4 18:20:50 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Fri, 5 Jan 2007 09:20:50 +1000
+Subject: [concurrency-interest] Unexpected bevahiour in
+	ThreadPoolExecutor
+In-Reply-To: <Pine.LNX.4.44.0701041404400.15958-100000@localhost.localdomain>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIENIHEAA.dcholmes@optusnet.com.au>
+
+Andrew,
+
+You are right. This is a known "quality-of-implementation" issue with TPE
+and is being addressed for Java 7. Meanwhile if you wrap your tasks so that
+no exceptions can be thrown, then the worker threads won't terminate.
+
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Andrew
+> Certain
+> Sent: Friday, 5 January 2007 8:14 AM
+> To: concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] Unexpected bevahiour in
+> ThreadPoolExecutor
+>
+>
+>
+> I've been using a ThreadPoolExecutor with corePoolSize == maxPoolSize,
+> expecting that I'd always have a fixed number of threads to operate on
+> tasks in the queue.  However, if a thread throws an exception and
+> terminates unexpectedly, no thread is spawned to replace it unless it's
+> the last thread in the pool, even if the task queue is full.  Looking at
+> the code, it seems that new threads are only spawned when execute is
+> called.  However, this behavior is at best unexpected (and I would
+> consider it a bug), especially in the following scenario:
+>
+> You create a ThreadPoolExecutor (TPE) with corePoolSize =
+> maxPoolSize = n.
+> You then submit N >> n long-running tasks to the TPE at the start and
+> never submit another task.  If one of those long-running tasks throws an
+> exception and terminates, a new thread is not respawned, leaving you with
+> n-1 threads to service the large number of tasks left in the queue.  If
+> this happens frequently enough, you're left with only one thread in the
+> pool (since workerDone will spawn a new thread if there is something in
+> the queue and there are no more threads).
+>
+> Am I doing something wrong with my usage of the TPE?  Surely the behavior
+> I'm expecting (submit a bunch of tasks to a thread pool with a fixed
+> number of threads at startup time and wait until they terminate) isn't
+> unique.  Are there any good solutions?  Why wouldn't workerDone spawn
+> new threads if there are less than corePoolSize threads running and there
+> is work in the queue?
+>
+> Thanks.
+>
+> Andrew
+>
+>
+> ------------------------------------------------------------------
+> ---------
+> Please include this line when replying.
+> --
+> Clunk enough people on the head and we'll have a nation of lunkheads.
+> 		-- Foghorn Leghorn
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From peter.kovacs.1.0rc at gmail.com  Sun Jan  7 17:16:05 2007
+From: peter.kovacs.1.0rc at gmail.com (Peter Kovacs)
+Date: Sun, 7 Jan 2007 23:16:05 +0100
+Subject: [concurrency-interest] ExecutorCompletionService
+Message-ID: <b6e8f2e80701071416n65f3891cyf12fedbc65dfeff4@mail.gmail.com>
+
+Hi,
+
+I am looking at using the class ExecutorCompletionService (
+http://dcl.mathcs.emory.edu/util/backport-util-concurrent/doc/api/edu/emory/mathcs/backport/java/util/concurrent/ExecutorCompletionService.html
+). I would like to use some kind of ThreadPool executor for execution
+which blocks when the maximum number of threads in the pool is reached
+and all threads are utilized.
+
+My motivation in looking for this kind of behavior is that I have a
+large number of calculations to be concurrently done. The number of
+calculations is defined by an external input source which potentially
+far exceeds the system memory available. So waiting calculation tasks
+cannot indefinitely be "buffered" in the system -- wherever they're
+waiting: either in client queue(s) or in the threadpool (waiting for
+CPU).
+
+1.) Is there such a ThreadPool executor implementation already
+existing out there?
+
+2.) I assume that --when used whith such a ThreadPool-- the
+ExecutorCompletionService.submit method
+(http://dcl.mathcs.emory.edu/util/backport-util-concurrent/doc/api/edu/emory/mathcs/backport/java/util/concurrent/ExecutorCompletionService.html#submit(edu.emory.mathcs.backport.java.util.concurrent.Callable)
+will block when there are no more threads available in the pool. Is
+this correct?
+
+3.) Is having calls to ExecutorCompletionService.submit wait for free
+worker threads a good practice at all? (It is definitely easy to use
+on the client side, but who knows...there may be considerations
+against it)
+
+Thanks
+Peter
+
+From joe.bowbeer at gmail.com  Sun Jan  7 22:23:21 2007
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Sun, 7 Jan 2007 19:23:21 -0800
+Subject: [concurrency-interest] ExecutorCompletionService
+In-Reply-To: <b6e8f2e80701071416n65f3891cyf12fedbc65dfeff4@mail.gmail.com>
+References: <b6e8f2e80701071416n65f3891cyf12fedbc65dfeff4@mail.gmail.com>
+Message-ID: <31f2a7bd0701071923i456f8e15rfc65bdc16a22f9b8@mail.gmail.com>
+
+On 1/7/07, Peter Kovacs <peter.kovacs.1.0rc at gmail.com> wrote:
+>
+>
+> I would like to use some kind of ThreadPool executor for execution
+> which blocks when the maximum number of threads in the pool is reached
+> and all threads are utilized.
+>
+> 1.) Is there such a ThreadPool executor implementation already
+> existing out there?
+>
+>
+CallerRunsPolicy is a close approximation.  Would that suffice?
+
+http://java.sun.com/javase/6/docs/api/java/util/concurrent/ThreadPoolExecutor.CallerRunsPolicy.html
+
+
+Doug Lea provided a WaitWhenBlocked handler in his original thread pool:
+
+http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/PooledExecutor.java
+
+You can try porting that if all else fails.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070107/7176d269/attachment.html 
+
+From holger at wizards.de  Mon Jan  8 03:32:15 2007
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Mon, 08 Jan 2007 09:32:15 +0100
+Subject: [concurrency-interest] ExecutorCompletionService
+In-Reply-To: <b6e8f2e80701071416n65f3891cyf12fedbc65dfeff4@mail.gmail.com>
+References: <b6e8f2e80701071416n65f3891cyf12fedbc65dfeff4@mail.gmail.com>
+Message-ID: <45A2018F.1060207@wizards.de>
+
+Peter Kovacs wrote:
+> I would like to use some kind of ThreadPool executor for execution
+> which blocks when the maximum number of threads in the pool is reached
+> and all threads are utilized.
+
+As Joe pointed out this existed in the Doug Lea's original concurrent
+library, and since I needed it for backwards compatbility I "ported" it
+(accidentally for use with the backport lib too):
+
+source:
+http://fisheye.codehaus.org/browse/mule/trunk/mule/core/src/main/java/org/mule/util/concurrent/WaitPolicy.java?r=trunk
+
+test case:
+http://fisheye.codehaus.org/browse/mule/trunk/mule/tests/core/src/test/java/org/mule/test/util/concurrent/WaitPolicyTestCase.java?r=trunk
+
+Feel free to use it any way you want; if you have questions drop me a line.
+
+That being said, waiting for the pool/queue only works for certain amounts
+of work and producer/consumer ratios: if you produce work more quickly
+than you consume it over an extended period of time, you will eventually
+run out of something, somewhere, unless you throttle.
+
+cheers
+Holger
+
+From peter.kovacs.1.0rc at gmail.com  Mon Jan  8 07:18:39 2007
+From: peter.kovacs.1.0rc at gmail.com (Peter Kovacs)
+Date: Mon, 8 Jan 2007 13:18:39 +0100
+Subject: [concurrency-interest] ExecutorCompletionService
+In-Reply-To: <31f2a7bd0701071923i456f8e15rfc65bdc16a22f9b8@mail.gmail.com>
+References: <b6e8f2e80701071416n65f3891cyf12fedbc65dfeff4@mail.gmail.com>
+	<31f2a7bd0701071923i456f8e15rfc65bdc16a22f9b8@mail.gmail.com>
+Message-ID: <b6e8f2e80701080418j5e6efaf8ga87783775542f5a1@mail.gmail.com>
+
+Hi Joe,
+
+Thank you for your reply.
+
+I have considered using CallerRunsPolicy. If it is the "caller" who is
+submitting tasks to the ExecutorCompletionService, "keeping it busy"
+with actual work (when there are no more free threads left in the
+pool) has indeed a similar effect to what I am after. I fear however
+that the "caller" thread would then be too long busy with the actual
+work leaving worker threads idly waiting for input.
+
+Thank you for your tip about WaitWhenBlocked. I wonder why it is not
+included in the "official" package. This behaviour appears to me so
+widely useful. This is why I suspect that the reason for not including
+this class may be that, after all, there are some conceptual problems
+with it.
+
+Thanks
+Peter
+
+
+On 1/8/07, Joe Bowbeer <joe.bowbeer at gmail.com> wrote:
+> On 1/7/07, Peter Kovacs <peter.kovacs.1.0rc at gmail.com> wrote:
+>
+> >
+> > I would like to use some kind of ThreadPool executor for execution
+> > which blocks when the maximum number of threads in the pool is reached
+> > and all threads are utilized.
+> >
+> > 1.) Is there such a ThreadPool executor implementation already
+> > existing out there?
+> >
+> >
+>
+> CallerRunsPolicy is a close approximation.  Would that suffice?
+>
+> http://java.sun.com/javase/6/docs/api/java/util/concurrent/ThreadPoolExecutor.CallerRunsPolicy.html
+>
+> Doug Lea provided a WaitWhenBlocked handler in his original thread pool:
+>
+> http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/PooledExecutor.java
+>
+>  You can try porting that if all else fails.
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+
+From peter.kovacs.1.0rc at gmail.com  Mon Jan  8 08:04:35 2007
+From: peter.kovacs.1.0rc at gmail.com (Peter Kovacs)
+Date: Mon, 8 Jan 2007 14:04:35 +0100
+Subject: [concurrency-interest] ExecutorCompletionService
+In-Reply-To: <45A2018F.1060207@wizards.de>
+References: <b6e8f2e80701071416n65f3891cyf12fedbc65dfeff4@mail.gmail.com>
+	<45A2018F.1060207@wizards.de>
+Message-ID: <b6e8f2e80701080504n472c7425me9bddc484ec56948@mail.gmail.com>
+
+Hi Holger,
+
+Thank you for your reply and pointing me to your "port". Wow...I am
+surprised to see how elegantly this behavior can be achieved. (Being a
+newbie to util.concurrent, I am often amazed how well this package is
+designed; how elegantly one can use it.) I would definitely consider
+replacing my tentative counter-based hacking with this one.
+
+I am intrigued by your final remark, however. You say: "if you produce
+work more quickly than you consume it over an extended period of time,
+you will eventually run out of something, somewhere, unless you
+throttle." My purpose with having the producer block when a limited
+number of threads are fully utilized is just to suspend producing. Oh
+I guess I see: do you mean by "throttling" that there is an (not
+necessarily justified) overhead with handling rejected tasks (and task
+rejection itself)?
+
+Thanks a lot
+Peter
+
+On 1/8/07, Holger Hoffst?tte <holger at wizards.de> wrote:
+> Peter Kovacs wrote:
+> > I would like to use some kind of ThreadPool executor for execution
+> > which blocks when the maximum number of threads in the pool is reached
+> > and all threads are utilized.
+>
+> As Joe pointed out this existed in the Doug Lea's original concurrent
+> library, and since I needed it for backwards compatbility I "ported" it
+> (accidentally for use with the backport lib too):
+>
+> source:
+> http://fisheye.codehaus.org/browse/mule/trunk/mule/core/src/main/java/org/mule/util/concurrent/WaitPolicy.java?r=trunk
+>
+> test case:
+> http://fisheye.codehaus.org/browse/mule/trunk/mule/tests/core/src/test/java/org/mule/test/util/concurrent/WaitPolicyTestCase.java?r=trunk
+>
+> Feel free to use it any way you want; if you have questions drop me a line.
+>
+> That being said, waiting for the pool/queue only works for certain amounts
+> of work and producer/consumer ratios: if you produce work more quickly
+> than you consume it over an extended period of time, you will eventually
+> run out of something, somewhere, unless you throttle.
+>
+> cheers
+> Holger
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From holger at wizards.de  Mon Jan  8 08:48:44 2007
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Mon, 08 Jan 2007 14:48:44 +0100
+Subject: [concurrency-interest] ExecutorCompletionService
+In-Reply-To: <b6e8f2e80701080504n472c7425me9bddc484ec56948@mail.gmail.com>
+References: <b6e8f2e80701071416n65f3891cyf12fedbc65dfeff4@mail.gmail.com>	
+	<45A2018F.1060207@wizards.de>
+	<b6e8f2e80701080504n472c7425me9bddc484ec56948@mail.gmail.com>
+Message-ID: <45A24BBC.9010902@wizards.de>
+
+Peter Kovacs wrote:
+> I am intrigued by your final remark, however. You say: "if you produce
+> work more quickly than you consume it over an extended period of time,
+> you will eventually run out of something, somewhere, unless you
+> throttle." My purpose with having the producer block when a limited
+> number of threads are fully utilized is just to suspend producing. Oh
+
+Ah, OK - sorry for the confusion. In that case you do throttle so it
+should work. However you probably still don't really know how long to wait
+up front, unless the calculations have an at least somewhat predictable
+time to run.
+
+> I guess I see: do you mean by "throttling" that there is an (not
+> necessarily justified) overhead with handling rejected tasks (and task
+> rejection itself)?
+
+No, that is probably insignificant.
+
+best
+Holger
+
+From holger at wizards.de  Mon Jan  8 22:02:44 2007
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Tue, 09 Jan 2007 04:02:44 +0100
+Subject: [concurrency-interest] Attempt at yet another mostly-concurrent
+	result cache
+Message-ID: <45A305D4.3000906@wizards.de>
+
+
+I'd like to ask for some ideas about how to make a previously completely
+locked method as concurrent as possible. I've made great headway but a
+final bit has thrown me off. I've read JCIP and the chapter on the
+Memoizer but it didn't seem to apply here; if some variation of using
+FutureTask can help here too I'd love to hear about it.
+
+The single method basically receives an incoming message, looks up a
+corrsponding result batch and when the batch is ready, a result is
+returned. There are many batches and evaluation/result creation might take
+a while, in which I don't want to lock out other threads happily doing
+their thing.
+
+Here is what I did so far:
+
+// used to be a synchronizedMap()
+private final ConcurrentMap cache = new ConcurrentHashMap();
+
+// now unsynchronized
+BatchResult process(Message msg)
+{
+    String batchKey = msg.getBatchId();
+
+    // get-or-create with the (very rare) unnecessary new object
+    Batch batch = cache.get(batchKey);
+    if (batch == null)
+    {
+        batch = new Batch();
+        Batch prev = cache.putIfAbsent(batchKey, batch);
+        if (prev != null) batch = prev; // flip refs
+    }
+
+    // regardlesss of thread we now have a valid batch;
+    // add a message and evaluate it
+
+    // PROBLEM: we only want one thread to update the batch at a time;
+    // Batches are threadsafe but we want atomic update/evaluation,
+    // sync on the batch, so threads for other batches are not blocked
+    synchronized (batch)
+    {
+        batch.add(msg);
+        if (batch.isReady())
+        {
+            // BUG1
+            cache.remove(batchKey);
+            return batch.toResult();
+        }
+    }
+
+    // no result yet
+    return null;
+}
+
+
+So far so good, though the astute reader will immediately spot the obvious
+bug: BUG1 marks a lost update when two threads synchronize on the same
+batch, one wins and removes the batch, the second thread adds to a removed
+batch which disappears in GC land.
+
+So we try harder:
+
+    // SYNC1
+    synchronized (batch)
+    {
+        // check whether the batch reference is still valid,
+        // update if necessary (same as above)
+        batch = cache.get(batchKey);
+        if (batch == null)
+        {
+            batch = new Batch();
+            Batch prev = cache.putIfAbsent(batchKey, batch);
+            if (prev != null) batch = prev; // flip refs
+        }
+
+        // BUG2
+        batch.add(msg);
+        if (batch.isReady())
+        {
+            cache.remove(batchKey);
+            return batch.toResult();
+        }
+    }
+
+Now a thread that was blocked at SYNC1 does the get-or-create thing and
+even plays nice with another thread coming in from above. but wait..if the
+thread entering the method at the top synchronizes on the batch created
+inside SYNC1 (which it got hold of via the cache), it will not block at
+SYNC1, possibly overtaking us and we no longer have per-batch atomic
+update/evaluation at BUG2. right?
+
+So, we try even harder..
+
+    // SYNC1
+    synchronized (batch)
+    {
+        // check whether thee batch reference is still valid,
+        // update if necessary (same as above)
+        batch = cache.get(batchKey);
+        if (batch == null)
+        {
+            batch = new Batch();
+            Batch prev = cache.putIfAbsent(batchKey, batch);
+            if (prev != null) batch = prev; // flip refs
+        }
+
+        // acquire either the already held batch lock again or
+        // a new one created either by the toplevel get-or-create
+        // or the one we just did
+        synchronized (batch)
+        {
+            batch.add(msg);
+            if (batch.isReady())
+            {
+                cache.remove(batchKey);
+                return batch.toResult();
+            }
+        }
+    }
+
+In case you made it until here, here's my question: is this sort of
+"double-checked get-or-create" really enough or did I miss something?
+My gut feeling teels me that the second synchronize block is somehow just
+a nested repetition of the first (requiring a third one ad.inf.) and that
+I need to unravel this in some entirely different way. It seems to me that
+the batch itself is the only available object available to synchronize on.
+
+I did several multi-threaded state transition diagrams and all conditions
+I've played through so far seem to resolve, so I would really like someone
+else to think this through. Of course all other funky tricks using
+AtomicReference/CAS loops or RWLocks are welcome too. :)
+
+thanks!
+Holger
+
+From brian at quiotix.com  Mon Jan  8 22:47:18 2007
+From: brian at quiotix.com (Brian Goetz)
+Date: Mon, 08 Jan 2007 22:47:18 -0500
+Subject: [concurrency-interest] Attempt at yet another mostly-concurrent
+ result cache
+In-Reply-To: <45A305D4.3000906@wizards.de>
+References: <45A305D4.3000906@wizards.de>
+Message-ID: <45A31046.40500@quiotix.com>
+
+>     // SYNC1
+>     synchronized (batch)
+
+At this point, isn't batch still null?  You can't sync on a null object...
+
+I think the third example has the same problem.
+
+From peter.kovacs.1.0rc at gmail.com  Tue Jan  9 04:57:18 2007
+From: peter.kovacs.1.0rc at gmail.com (Peter Kovacs)
+Date: Tue, 9 Jan 2007 10:57:18 +0100
+Subject: [concurrency-interest] Attempt at yet another mostly-concurrent
+	result cache
+In-Reply-To: <45A31046.40500@quiotix.com>
+References: <45A305D4.3000906@wizards.de> <45A31046.40500@quiotix.com>
+Message-ID: <b6e8f2e80701090157w4ad83a83o2b400ac2c1ae5c8f@mail.gmail.com>
+
+The code immediately preceding the synchronization on "batch" appears
+to make sure "batch" is not null. And since "batch" is a stack
+variable who else could alter it?
+
+Regards,
+Peter
+
+On 1/9/07, Brian Goetz <brian at quiotix.com> wrote:
+> >     // SYNC1
+> >     synchronized (batch)
+>
+> At this point, isn't batch still null?  You can't sync on a null object...
+>
+> I think the third example has the same problem.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From holger at wizards.de  Tue Jan  9 05:51:27 2007
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Tue, 09 Jan 2007 11:51:27 +0100
+Subject: [concurrency-interest] Attempt at yet another mostly-concurrent
+ result cache
+In-Reply-To: <45A31046.40500@quiotix.com>
+References: <45A305D4.3000906@wizards.de> <45A31046.40500@quiotix.com>
+Message-ID: <45A373AF.7070608@wizards.de>
+
+Brian Goetz wrote:
+>>     // SYNC1
+>>     synchronized (batch)
+> 
+> At this point, isn't batch still null?  You can't sync on a null object...
+
+Nope, that's what putIfAbsent + flipping the method-local takes care of in
+both places. At least that's the intention :)
+
+thanks
+Holger
+
+From joe.bowbeer at gmail.com  Tue Jan  9 07:47:59 2007
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Tue, 9 Jan 2007 04:47:59 -0800
+Subject: [concurrency-interest] Attempt at yet another mostly-concurrent
+	result cache
+In-Reply-To: <45A305D4.3000906@wizards.de>
+References: <45A305D4.3000906@wizards.de>
+Message-ID: <31f2a7bd0701090447i12c718c7sb2685ed29948999b@mail.gmail.com>
+
+I think a batch can always be lost between the time it is cached and
+the time it is synchronized:
+
+  Batch prev = cache.putIfAbsent(batchKey, batch);
+  if (prev != null) batch = prev; // flip refs
+  // LOST HERE
+  synchronized (batch) { ... }
+
+You can plug the hole by retesting inside a loop:
+
+BatchResult process(Message msg) {
+  String batchKey = msg.getBatchId();
+  while (true) {
+    Batch batch = cache.get(batchKey);
+    if (batch == null) {
+      batch = new Batch();
+      Batch prev = cache.putIfAbsent(batchKey, batch);
+      if (prev != null) batch = prev; // flip refs
+    }
+    // we have a batch that was cached at one time
+    synchronize (batch) {
+      if (batch != cache.get(batchKey))
+        continue;
+      batch.add(msg);
+      if (!batch.isReady())
+        return null;
+      cache.remove(batchKey);
+      return batch.toResult();
+    }
+  }
+}
+
+If you added a Lock to Batch then you might be able to improve
+efficiency by locking the newly constructed Batch before adding it to
+the cache.  Then you'd be sure no other thread could steal your new
+batch before you got a chance to use it.
+
+Note that adding a loop raises the possibility of starvation (live-lock).
+
+(What's the best way to plug that hole?)
+
+--Joe
+
+From holger at wizards.de  Tue Jan  9 07:54:57 2007
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Tue, 09 Jan 2007 13:54:57 +0100
+Subject: [concurrency-interest] Attempt at yet another mostly-concurrent
+ result cache
+In-Reply-To: <b6e8f2e80701090147j2e9daab1u9e3963f877ff87fc@mail.gmail.com>
+References: <45A305D4.3000906@wizards.de>
+	<b6e8f2e80701090147j2e9daab1u9e3963f877ff87fc@mail.gmail.com>
+Message-ID: <45A390A1.4090708@wizards.de>
+
+Peter Kovacs wrote:
+> Taking BUG1 in your first example (full method listing): what about an
+> additional check on batch readiness before adding the message:
+> 
+> ...
+> synchronized (batch)
+> {
+>    if (batch.isReady())
+>    {
+>        return null;
+>    }
+> 
+>    batch.add(msg);
+> 
+>    if (batch.isReady())
+>    {
+> ...
+
+Then finished batches are never removed, which they should. If more
+messages with that batch key arrive, they are supposed to replace the
+previous batch; it's not a final result.
+The whole problem revolves around the fact that I want to prevent batches
+that contain one message too many at evaluation time.
+
+Hm..that got me thinking: since there's no problem that cannot be solved
+with another indirection - instead of syncing directly on the batch
+reference I could add a per-batch wrapper (like AtomicRef) and sync on that:
+
+    AtomicReference wrapper = cache.get(batchKey);
+    if (wrapper == null)
+    {
+        wrapper = new AtomicReference(new Batch());
+        wrapper prev = cache.putIfAbsent(batchKey, wrapper);
+        if (prev != null) wrapper = prev; // flip method-local refs
+    }
+
+    synchronized (wrapper)
+    {
+        Batch batch = wrapper.get();
+
+        // the only way for wrapper to exist but to be empty is
+        // a parallel batch completion, so use a new batch
+        // but retain our stale wrapper if possible
+        if (batch == null)
+        {
+            batch = new Batch();
+            wrapper.set(batch);
+            prev = cache.putIfAbsent(batchKey, wrapper);
+            // someone might have overtaken us again
+            if (prev != null)
+            {
+                wrapper = prev;
+            	batch = wrapper.get();
+            }
+        }
+
+        // since we might have had a stale wrapper
+        // AND possibly had to take care of a cache race
+        // (flipping the reference) we need to sync again
+        // on the new wrapper
+        synchronized (wrapper)
+        {
+            batch.add(msg);
+            if (batch.isReady())
+            {
+                wrapper.set(null);
+                cache.remove(batchKey);
+                return batch.toResult();
+            }
+        }
+    }
+
+Kind of like using a WeakReference, only that I'm not checking for GC. I'm
+still not too keen on the nested sync block though I don't see how this
+could deadlock (acquire order is always A-A or A-B). But then again I
+probably messed up somewhere else..
+
+Holger
+
+From peter.kovacs.1.0rc at gmail.com  Tue Jan  9 08:21:35 2007
+From: peter.kovacs.1.0rc at gmail.com (Peter Kovacs)
+Date: Tue, 9 Jan 2007 14:21:35 +0100
+Subject: [concurrency-interest] Attempt at yet another mostly-concurrent
+	result cache
+In-Reply-To: <45A305D4.3000906@wizards.de>
+References: <45A305D4.3000906@wizards.de>
+Message-ID: <b6e8f2e80701090521x47f29167u6742f826f0d450c7@mail.gmail.com>
+
+Does the "Batch" class in this example bear some well-known semantics?
+(E.g. does it come from JCIP, which I haven't read.)
+
+Thanks
+Peter
+
+On 1/9/07, Holger Hoffst?tte <holger at wizards.de> wrote:
+>
+> I'd like to ask for some ideas about how to make a previously completely
+> locked method as concurrent as possible. I've made great headway but a
+> final bit has thrown me off. I've read JCIP and the chapter on the
+> Memoizer but it didn't seem to apply here; if some variation of using
+> FutureTask can help here too I'd love to hear about it.
+>
+> The single method basically receives an incoming message, looks up a
+> corrsponding result batch and when the batch is ready, a result is
+> returned. There are many batches and evaluation/result creation might take
+> a while, in which I don't want to lock out other threads happily doing
+> their thing.
+>
+> Here is what I did so far:
+>
+> // used to be a synchronizedMap()
+> private final ConcurrentMap cache = new ConcurrentHashMap();
+>
+> // now unsynchronized
+> BatchResult process(Message msg)
+> {
+>     String batchKey = msg.getBatchId();
+>
+>     // get-or-create with the (very rare) unnecessary new object
+>     Batch batch = cache.get(batchKey);
+>     if (batch == null)
+>     {
+>         batch = new Batch();
+>         Batch prev = cache.putIfAbsent(batchKey, batch);
+>         if (prev != null) batch = prev; // flip refs
+>     }
+>
+>     // regardlesss of thread we now have a valid batch;
+>     // add a message and evaluate it
+>
+>     // PROBLEM: we only want one thread to update the batch at a time;
+>     // Batches are threadsafe but we want atomic update/evaluation,
+>     // sync on the batch, so threads for other batches are not blocked
+>     synchronized (batch)
+>     {
+>         batch.add(msg);
+>         if (batch.isReady())
+>         {
+>             // BUG1
+>             cache.remove(batchKey);
+>             return batch.toResult();
+>         }
+>     }
+>
+>     // no result yet
+>     return null;
+> }
+>
+>
+> So far so good, though the astute reader will immediately spot the obvious
+> bug: BUG1 marks a lost update when two threads synchronize on the same
+> batch, one wins and removes the batch, the second thread adds to a removed
+> batch which disappears in GC land.
+>
+> So we try harder:
+>
+>     // SYNC1
+>     synchronized (batch)
+>     {
+>         // check whether the batch reference is still valid,
+>         // update if necessary (same as above)
+>         batch = cache.get(batchKey);
+>         if (batch == null)
+>         {
+>             batch = new Batch();
+>             Batch prev = cache.putIfAbsent(batchKey, batch);
+>             if (prev != null) batch = prev; // flip refs
+>         }
+>
+>         // BUG2
+>         batch.add(msg);
+>         if (batch.isReady())
+>         {
+>             cache.remove(batchKey);
+>             return batch.toResult();
+>         }
+>     }
+>
+> Now a thread that was blocked at SYNC1 does the get-or-create thing and
+> even plays nice with another thread coming in from above. but wait..if the
+> thread entering the method at the top synchronizes on the batch created
+> inside SYNC1 (which it got hold of via the cache), it will not block at
+> SYNC1, possibly overtaking us and we no longer have per-batch atomic
+> update/evaluation at BUG2. right?
+>
+> So, we try even harder..
+>
+>     // SYNC1
+>     synchronized (batch)
+>     {
+>         // check whether thee batch reference is still valid,
+>         // update if necessary (same as above)
+>         batch = cache.get(batchKey);
+>         if (batch == null)
+>         {
+>             batch = new Batch();
+>             Batch prev = cache.putIfAbsent(batchKey, batch);
+>             if (prev != null) batch = prev; // flip refs
+>         }
+>
+>         // acquire either the already held batch lock again or
+>         // a new one created either by the toplevel get-or-create
+>         // or the one we just did
+>         synchronized (batch)
+>         {
+>             batch.add(msg);
+>             if (batch.isReady())
+>             {
+>                 cache.remove(batchKey);
+>                 return batch.toResult();
+>             }
+>         }
+>     }
+>
+> In case you made it until here, here's my question: is this sort of
+> "double-checked get-or-create" really enough or did I miss something?
+> My gut feeling teels me that the second synchronize block is somehow just
+> a nested repetition of the first (requiring a third one ad.inf.) and that
+> I need to unravel this in some entirely different way. It seems to me that
+> the batch itself is the only available object available to synchronize on.
+>
+> I did several multi-threaded state transition diagrams and all conditions
+> I've played through so far seem to resolve, so I would really like someone
+> else to think this through. Of course all other funky tricks using
+> AtomicReference/CAS loops or RWLocks are welcome too. :)
+>
+> thanks!
+> Holger
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From holger at wizards.de  Tue Jan  9 08:28:01 2007
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Tue, 09 Jan 2007 14:28:01 +0100
+Subject: [concurrency-interest] Attempt at yet another mostly-concurrent
+ result cache
+In-Reply-To: <b6e8f2e80701090521x47f29167u6742f826f0d450c7@mail.gmail.com>
+References: <45A305D4.3000906@wizards.de>
+	<b6e8f2e80701090521x47f29167u6742f826f0d450c7@mail.gmail.com>
+Message-ID: <45A39861.7030900@wizards.de>
+
+Peter Kovacs wrote:
+> Does the "Batch" class in this example bear some well-known semantics?
+
+No, in my case it is just a simply (but itself threadsafe) container with
+a customizable "is this batch complete" method or callback.
+
+> (E.g. does it come from JCIP, which I haven't read.)
+
+Buy it ASAP :)
+
+Holger
+
+From holger at wizards.de  Tue Jan  9 08:38:25 2007
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Tue, 09 Jan 2007 14:38:25 +0100
+Subject: [concurrency-interest] Attempt at yet another mostly-concurrent
+ result cache
+In-Reply-To: <31f2a7bd0701090447i12c718c7sb2685ed29948999b@mail.gmail.com>
+References: <45A305D4.3000906@wizards.de>
+	<31f2a7bd0701090447i12c718c7sb2685ed29948999b@mail.gmail.com>
+Message-ID: <45A39AD1.8030603@wizards.de>
+
+Joe Bowbeer wrote:
+> If you added a Lock to Batch then you might be able to improve
+> efficiency by locking the newly constructed Batch before adding it to
+> the cache.  Then you'd be sure no other thread could steal your new
+> batch before you got a chance to use it.
+
+After sleeping over it I just posted a similar (simpler) approach using a
+wrapper, and I guess instead of using the wrapper for locking I could just
+as well add a RWLock to the wrapper and use that for read/write lock
+acquiry. Will think about it.
+
+The loop also crossed my mind but then I had exactly this thought:
+
+> Note that adding a loop raises the possibility of starvation (live-lock).
+> 
+> (What's the best way to plug that hole?)
+
+..and I didn't really want to add that and backoff and *more* stuff yet.
+
+The thing is that I could probably get by with a single big lock, but I'm
+a bit annoyed that such a semingly trivial and obviously concurrent use
+case is *so* hard to get right. There really should be a pattern language
+for stepwise concurrentizing of sequential code, similar to Fowler's
+refactorings.
+
+Thanks for the comment!
+Holger
+
+From joe.bowbeer at gmail.com  Tue Jan  9 09:28:29 2007
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Tue, 9 Jan 2007 06:28:29 -0800
+Subject: [concurrency-interest] Attempt at yet another mostly-concurrent
+	result cache
+In-Reply-To: <45A390A1.4090708@wizards.de>
+References: <45A305D4.3000906@wizards.de>
+	<b6e8f2e80701090147j2e9daab1u9e3963f877ff87fc@mail.gmail.com>
+	<45A390A1.4090708@wizards.de>
+Message-ID: <31f2a7bd0701090628l1df4a2b1ic6f580c9e7ac2819@mail.gmail.com>
+
+I think the same hole still exists, only better camouflaged.
+
+On 1/9/07, Holger Hoffst?tte <holger at wizards.de> wrote:
+>
+> Peter Kovacs wrote:
+> > Taking BUG1 in your first example (full method listing): what about an
+> > additional check on batch readiness before adding the message:
+> >
+> > ...
+> > synchronized (batch)
+> > {
+> >    if (batch.isReady())
+> >    {
+> >        return null;
+> >    }
+> >
+> >    batch.add(msg);
+> >
+> >    if (batch.isReady())
+> >    {
+> > ...
+>
+> Then finished batches are never removed, which they should. If more
+> messages with that batch key arrive, they are supposed to replace the
+> previous batch; it's not a final result.
+> The whole problem revolves around the fact that I want to prevent batches
+> that contain one message too many at evaluation time.
+>
+> Hm..that got me thinking: since there's no problem that cannot be solved
+> with another indirection - instead of syncing directly on the batch
+> reference I could add a per-batch wrapper (like AtomicRef) and sync on
+> that:
+>
+>     AtomicReference wrapper = cache.get(batchKey);
+>     if (wrapper == null)
+>     {
+>         wrapper = new AtomicReference(new Batch());
+>         wrapper prev = cache.putIfAbsent(batchKey, wrapper);
+>         if (prev != null) wrapper = prev; // flip method-local refs
+>     }
+>
+>     synchronized (wrapper)
+>     {
+>         Batch batch = wrapper.get();
+>
+>         // the only way for wrapper to exist but to be empty is
+>         // a parallel batch completion, so use a new batch
+>         // but retain our stale wrapper if possible
+>         if (batch == null)
+>         {
+>             batch = new Batch();
+>             wrapper.set(batch);
+>             prev = cache.putIfAbsent(batchKey, wrapper);
+>             // someone might have overtaken us again
+>             if (prev != null)
+>             {
+>                 wrapper = prev;
+>                 batch = wrapper.get();
+>             }
+>         }
+
+
+*HERE*
+
+        // since we might have had a stale wrapper
+>         // AND possibly had to take care of a cache race
+>         // (flipping the reference) we need to sync again
+>         // on the new wrapper
+>         synchronized (wrapper)
+>         {
+>             batch.add(msg);
+>             if (batch.isReady())
+>             {
+>                 wrapper.set(null);
+>                 cache.remove(batchKey);
+>                 return batch.toResult();
+>             }
+>         }
+>     }
+>
+> Kind of like using a WeakReference, only that I'm not checking for GC. I'm
+> still not too keen on the nested sync block though I don't see how this
+> could deadlock (acquire order is always A-A or A-B). But then again I
+> probably messed up somewhere else..
+>
+> Holger
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070109/dd1e25e1/attachment.html 
+
+From holger at wizards.de  Tue Jan  9 12:43:18 2007
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Tue, 09 Jan 2007 18:43:18 +0100
+Subject: [concurrency-interest] Attempt at yet another mostly-concurrent
+ result cache
+In-Reply-To: <31f2a7bd0701090447i12c718c7sb2685ed29948999b@mail.gmail.com>
+References: <45A305D4.3000906@wizards.de>
+	<31f2a7bd0701090447i12c718c7sb2685ed29948999b@mail.gmail.com>
+Message-ID: <45A3D436.4090605@wizards.de>
+
+One last time..
+
+Joe Bowbeer wrote:
+> I think a batch can always be lost between the time it is cached and
+> the time it is synchronized:
+> 
+>   Batch prev = cache.putIfAbsent(batchKey, batch);
+>   if (prev != null) batch = prev; // flip refs
+>   // LOST HERE
+>   synchronized (batch) { ... }
+
+OK, I now understand why both of my versions can be affected by this. The
+batch holder does not really solve the underlying problem; thanks. Seems
+the loop is really the best way to go.
+
+> You can plug the hole by retesting inside a loop:
+> 
+> BatchResult process(Message msg) {
+>   String batchKey = msg.getBatchId();
+>   while (true) {
+>     Batch batch = cache.get(batchKey);
+>     if (batch == null) {
+>       batch = new Batch();
+>       Batch prev = cache.putIfAbsent(batchKey, batch);
+>       if (prev != null) batch = prev; // flip refs
+>     }
+>     // we have a batch that was cached at one time
+>     synchronize (batch) {
+>       if (batch != cache.get(batchKey))
+>         continue;
+>       batch.add(msg);
+>       if (!batch.isReady())
+>         return null;
+>       cache.remove(batchKey);
+>       return batch.toResult();
+>     }
+>   }
+> }
+> 
+> If you added a Lock to Batch then you might be able to improve
+> efficiency by locking the newly constructed Batch before adding it to
+> the cache.  Then you'd be sure no other thread could steal your new
+> batch before you got a chance to use it.
+> 
+> Note that adding a loop raises the possibility of starvation (live-lock).
+> 
+> (What's the best way to plug that hole?)
+
+Assuming you mean the case where one thread hogs the Map by continuously
+hitting the same Map segment:
+
+  if (batch != cache.get(batchKey)) {
+    Thread.sleep(1); // since yield can be a nop
+    continue;
+  }
+
+but that seems counterproductive since the monitor won't be released for
+the duration of the sleep, so more like this:
+
+  boolean cachemiss = false;
+  while (true)
+  {
+    if (cachemiss) {
+      Thread.sleep(1);
+    }
+  ...
+  if (batch != cache.get(batchKey)) {
+    cachemiss = true;
+    continue;
+  }
+
+If that was not what you meant re: starvation then this young Jedi could
+need a hint. :)
+
+Thanks much
+Holger
+
+
+From joe.bowbeer at gmail.com  Tue Jan  9 18:00:53 2007
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Tue, 9 Jan 2007 15:00:53 -0800
+Subject: [concurrency-interest] Attempt at yet another mostly-concurrent
+	result cache
+In-Reply-To: <45A3D436.4090605@wizards.de>
+References: <45A305D4.3000906@wizards.de>
+	<31f2a7bd0701090447i12c718c7sb2685ed29948999b@mail.gmail.com>
+	<45A3D436.4090605@wizards.de>
+Message-ID: <31f2a7bd0701091500g255b0371wb8aee3ebae9123d3@mail.gmail.com>
+
+Note that it's a tiny timing window that would need to be exploited in
+order to mess things up.  A compareAndSet loop is at the foundation of
+java.util.concurrent.locks, hence, ConcurrentHashMap, etc., so tiny
+timing windows are not taboo.  I don't know how to estimate the risk
+in this case.  Perhaps someone else on this list can provide more
+insight.
+
+One way to avoid some of the complexity (and uncertainty) would be to
+strip or segment the locking by using multiple caches.  Preload the
+ConcurrentHashMap with the cache segments -- or initialize the
+segments on demand using putIfAbsent.  You can use HashMap for the
+cache segments.  Once you've acquired the cache associated with a
+particular batch, synchronize on the cache during access.  This gives
+you n-way concurrency where as before you only had 1-way.
+(ConcurrentHashMap uses segments internally...)
+
+--Joe
+
+On 1/9/07, Holger Hoffst?tte <holger at wizards.de> wrote:
+> One last time..
+>
+> Joe Bowbeer wrote:
+> > I think a batch can always be lost between the time it is cached and
+> > the time it is synchronized:
+> >
+> >   Batch prev = cache.putIfAbsent(batchKey, batch);
+> >   if (prev != null) batch = prev; // flip refs
+> >   // LOST HERE
+> >   synchronized (batch) { ... }
+>
+> OK, I now understand why both of my versions can be affected by this. The
+> batch holder does not really solve the underlying problem; thanks. Seems
+> the loop is really the best way to go.
+>
+> > You can plug the hole by retesting inside a loop:
+> >
+> > BatchResult process(Message msg) {
+> >   String batchKey = msg.getBatchId();
+> >   while (true) {
+> >     Batch batch = cache.get(batchKey);
+> >     if (batch == null) {
+> >       batch = new Batch();
+> >       Batch prev = cache.putIfAbsent(batchKey, batch);
+> >       if (prev != null) batch = prev; // flip refs
+> >     }
+> >     // we have a batch that was cached at one time
+> >     synchronize (batch) {
+> >       if (batch != cache.get(batchKey))
+> >         continue;
+> >       batch.add(msg);
+> >       if (!batch.isReady())
+> >         return null;
+> >       cache.remove(batchKey);
+> >       return batch.toResult();
+> >     }
+> >   }
+> > }
+> >
+> > If you added a Lock to Batch then you might be able to improve
+> > efficiency by locking the newly constructed Batch before adding it to
+> > the cache.  Then you'd be sure no other thread could steal your new
+> > batch before you got a chance to use it.
+> >
+> > Note that adding a loop raises the possibility of starvation (live-lock).
+> >
+> > (What's the best way to plug that hole?)
+>
+> Assuming you mean the case where one thread hogs the Map by continuously
+> hitting the same Map segment:
+>
+>   if (batch != cache.get(batchKey)) {
+>     Thread.sleep(1); // since yield can be a nop
+>     continue;
+>   }
+>
+> but that seems counterproductive since the monitor won't be released for
+> the duration of the sleep, so more like this:
+>
+>   boolean cachemiss = false;
+>   while (true)
+>   {
+>     if (cachemiss) {
+>       Thread.sleep(1);
+>     }
+>   ...
+>   if (batch != cache.get(batchKey)) {
+>     cachemiss = true;
+>     continue;
+>   }
+>
+> If that was not what you meant re: starvation then this young Jedi could
+> need a hint. :)
+>
+> Thanks much
+> Holger
+>
+
+
+From programm_r at yahoo.com  Wed Jan 10 12:36:28 2007
+From: programm_r at yahoo.com (Rachel Suddeth)
+Date: Wed, 10 Jan 2007 09:36:28 -0800 (PST)
+Subject: [concurrency-interest] ConcurrentHashMap use of MAXIMUM_CAPACITY in
+	Segment.rehash()
+Message-ID: <79553.73008.qm@web56007.mail.re3.yahoo.com>
+
+I am looking at the rehash() method in the Segment
+inner class of ConcurrentHashMap. First thing it does
+is test for maximum size:
+---
+   void rehash() {
+       HashEntry<K,V>[] oldTable = table;
+       int oldCapacity = oldTable.length;
+       if (oldCapacity >= MAXIMUM_CAPACITY)
+            return;
+       ...
+---
+
+It seems odd to me that it's testing against the max
+number of bins for the whole ConcurrentHashMap when
+deciding to resize the segment table. (Is that not
+what MAXIMUM_CAPACITY represents?) Initial size for
+the segment table is (essentially)
+initialCapacity/concurrencyLevel. I would have
+expected the max for the segment to be calculated in a
+similar way. I thought (maybe this is wrong?) that
+certain bits of the Key's hash code were used to
+determine the segment, and the others would determine
+the bin within the segment, so that the full value of
+an int would not be usable as an index into the
+segment's table?
+
+Am I missing something?
+
+
+ 
+____________________________________________________________________________________
+Any questions? Get answers on any topic at www.Answers.yahoo.com.  Try it now.
+
+From dl at cs.oswego.edu  Wed Jan 10 13:19:11 2007
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 10 Jan 2007 13:19:11 -0500
+Subject: [concurrency-interest] ConcurrentHashMap use of
+ MAXIMUM_CAPACITY in	Segment.rehash()
+In-Reply-To: <79553.73008.qm@web56007.mail.re3.yahoo.com>
+References: <79553.73008.qm@web56007.mail.re3.yahoo.com>
+Message-ID: <45A52E1F.3020402@cs.oswego.edu>
+
+Rachel Suddeth wrote:
+> I am looking at the rehash() method in the Segment
+> inner class of ConcurrentHashMap. First thing it does
+> is test for maximum size:
+> ---
+>    void rehash() {
+>        HashEntry<K,V>[] oldTable = table;
+>        int oldCapacity = oldTable.length;
+>        if (oldCapacity >= MAXIMUM_CAPACITY)
+>             return;
+>        ...
+> ---
+> 
+> It seems odd to me that it's testing against the max
+> number of bins for the whole ConcurrentHashMap when
+> deciding to resize the segment table. (Is that not
+> what MAXIMUM_CAPACITY represents?) Initial size for
+> the segment table is (essentially)
+> initialCapacity/concurrencyLevel. I would have
+> expected the max for the segment to be calculated in a
+> similar way. I thought (maybe this is wrong?) that
+> certain bits of the Key's hash code were used to
+> determine the segment, and the others would determine
+> the bin within the segment, so that the full value of
+> an int would not be usable as an index into the
+> segment's table?
+> 
+> Am I missing something?
+> 
+
+MAXIMUM_CAPACITY is used just to avoid integer overflow
+for index calculations. But you are right that a tighter
+bound could be used here to also avoid unproductive growth of
+segments. Thanks for the suggestion! We'll probably adjust
+accordingly.
+
+-Doug
+
+From programm_r at yahoo.com  Thu Jan 11 08:19:43 2007
+From: programm_r at yahoo.com (Rachel Suddeth)
+Date: Thu, 11 Jan 2007 05:19:43 -0800 (PST)
+Subject: [concurrency-interest] ConcurrentHashMap use of
+	MAXIMUM_CAPACITY in Segment.rehash()
+In-Reply-To: <45A52E1F.3020402@cs.oswego.edu>
+Message-ID: <20070111131943.80201.qmail@web56010.mail.re3.yahoo.com>
+
+
+--- Doug Lea <dl at cs.oswego.edu> wrote:
+> ...
+> 
+> MAXIMUM_CAPACITY is used just to avoid integer
+overflow
+> for index calculations. But you are right that a
+tighter
+> bound could be used here to also avoid unproductive
+growth of
+> segments. Thanks for the suggestion! We'll probably
+adjust
+> accordingly.
+> 
+
+Thanks :)
+In practice it probably doesn't matter (at least to
+me) -- we will need to archive or consolidate before
+getting that many entries anyway if we don't want to
+run out of memory. I was just afraid I misunderstood
+something else when the number wasn't what I expected...
+
+
+ 
+____________________________________________________________________________________
+Cheap talk?
+Check out Yahoo! Messenger's low PC-to-Phone call rates.
+http://voice.yahoo.com
+
+From chancer357 at hotmail.com  Sat Jan 13 17:11:48 2007
+From: chancer357 at hotmail.com (First Last)
+Date: Sat, 13 Jan 2007 22:11:48 +0000
+Subject: [concurrency-interest] sharing a collection
+In-Reply-To: <45A31046.40500@quiotix.com>
+Message-ID: <BAY103-F355D8F20CF3C1102CDCBF68EB70@phx.gbl>
+
+I have a Runnable that has a bunch of un-synchronized state, and I place 
+that into an Executor
+The task will do some calculations and update the state, this should be ok 
+because only 1 thread has it.
+Then the task will go and resubmit itself to the executor
+
+
+
+class State {
+  int x = ..;
+  List<?> y = ...;
+}
+
+final ExecutorService executor = ...;
+
+Runnable r = new Runnable() {
+  State s = new State();
+  public void run() {
+
+    // add things to s.y
+    // change s.x
+
+    executor.execute(this);
+
+  }
+
+Since it now may get picked up by another thread, will the other thread 
+correctly see changes to that state?
+
+_________________________________________________________________
+Communicate instantly! Use your Hotmail address to sign into Windows Live 
+Messenger now. http://get.live.com/messenger/overview
+
+
+From tim at peierls.net  Sat Jan 13 17:32:01 2007
+From: tim at peierls.net (Tim Peierls)
+Date: Sat, 13 Jan 2007 17:32:01 -0500
+Subject: [concurrency-interest] sharing a collection
+In-Reply-To: <BAY103-F355D8F20CF3C1102CDCBF68EB70@phx.gbl>
+References: <45A31046.40500@quiotix.com>
+	<BAY103-F355D8F20CF3C1102CDCBF68EB70@phx.gbl>
+Message-ID: <63b4e4050701131432k4b017bd4nf25d7ca75cb5101f@mail.gmail.com>
+
+On 1/13/07, First Last <chancer357 at hotmail.com> wrote:
+>
+> I have a Runnable that has a bunch of un-synchronized state, and I place
+> that into an Executor
+> The task will do some calculations and update the state, this should be ok
+> because only 1 thread has it.
+> Then the task will go and resubmit itself to the executor
+>
+>
+>
+> class State {
+>   int x = ..;
+>   List<?> y = ...;
+> }
+>
+> final ExecutorService executor = ...;
+>
+> Runnable r = new Runnable() {
+>   State s = new State();
+>   public void run() {
+>
+>     // add things to s.y
+>     // change s.x
+>
+>     executor.execute(this);
+>
+>   }
+>
+> Since it now may get picked up by another thread, will the other thread
+> correctly see changes to that state?
+>
+
+Yes, it will. From
+http://java.sun.com/javase/6/docs/api/java/util/concurrent/package-summary.html:
+
+"Actions in a thread prior to the submission of a Runnable to an Executor *
+happen-before* its execution begins."
+
+(The word "its" refers to the Runnable, not the Thread, though this isn't
+clear out of context.)
+
+--tim
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070113/d40ebf72/attachment.html 
+
+From peter.kovacs.1.0rc at gmail.com  Sat Jan 13 19:59:29 2007
+From: peter.kovacs.1.0rc at gmail.com (Peter Kovacs)
+Date: Sun, 14 Jan 2007 01:59:29 +0100
+Subject: [concurrency-interest] sharing a collection
+In-Reply-To: <63b4e4050701131432k4b017bd4nf25d7ca75cb5101f@mail.gmail.com>
+References: <45A31046.40500@quiotix.com>
+	<BAY103-F355D8F20CF3C1102CDCBF68EB70@phx.gbl>
+	<63b4e4050701131432k4b017bd4nf25d7ca75cb5101f@mail.gmail.com>
+Message-ID: <b6e8f2e80701131659m3994bcaev472e49533eaf4c5d@mail.gmail.com>
+
+On 1/13/07, Tim Peierls <tim at peierls.net> wrote:
+> On 1/13/07, First Last <chancer357 at hotmail.com> wrote:
+> > I have a Runnable that has a bunch of un-synchronized state, and I place
+> > that into an Executor
+> > The task will do some calculations and update the state, this should be ok
+> > because only 1 thread has it.
+> > Then the task will go and resubmit itself to the executor
+> >
+> >
+> >
+> > class State {
+> >   int x = ..;
+> >   List<?> y = ...;
+> > }
+> >
+> > final ExecutorService executor = ...;
+> >
+> > Runnable r = new Runnable() {
+> >   State s = new State();
+> >   public void run() {
+> >
+> >     // add things to s.y
+> >     // change s.x
+> >
+> >     executor.execute(this);
+> >
+> >   }
+> >
+> > Since it now may get picked up by another thread, will the other thread
+> > correctly see changes to that state?
+> >
+>
+> Yes, it will. From
+> http://java.sun.com/javase/6/docs/api/java/util/concurrent/package-summary.html
+> :
+>
+> "Actions in a thread prior to the submission of a Runnable to an Executor
+> happen-before its execution begins."
+
+I wonder if the quoted guarantee really applies to the case described
+by the original poster without further qualification. For example, I
+see no "guarantees" in that particular Runnable implementation as to
+the actual place of the submission itself in the order of events. The
+time at which the submission itself actually happens is crucial in the
+context of this guarantee. If the repeated submission happens before
+changes to "s" or between two distinct changes to "s", the quoted
+guarantee will result in changes not being seen by the new thread or
+not in the order as they appear in the code.
+
+BTW, abstracting away from the example discussed: how an Executor
+knows that a Runnable submitted to it has been running in another
+thread? That knowledge would be a precondition for the enforceability
+of this guarantee.
+
+Peter
+
+>
+> (The word "its" refers to the Runnable, not the Thread, though this isn't
+> clear out of context.)
+>
+> --tim
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+
+From kasper at kav.dk  Mon Jan 15 04:28:16 2007
+From: kasper at kav.dk (Kasper Nielsen)
+Date: Mon, 15 Jan 2007 10:28:16 +0100
+Subject: [concurrency-interest] Small request regarding TimeUnit
+Message-ID: <45AB4930.5020209@kav.dk>
+
+Hi,
+
+Whenever I use TimeUnit and need to do any reporting in regards to that. 
+I often prefer outputting the actual unit in a short notation, for 
+example, ns instead of nanoseconds, ?s instead of microseconds, ...
+I think it would a small but usefull addition (for some) to add some 
+kind of
+String getShortForm() method to TimeUnit.
+
+cheers
+ Kasper
+
+
+From hanson.char at gmail.com  Tue Jan 16 12:14:26 2007
+From: hanson.char at gmail.com (Hanson Char)
+Date: Tue, 16 Jan 2007 09:14:26 -0800
+Subject: [concurrency-interest] Small request regarding TimeUnit
+In-Reply-To: <45AB4930.5020209@kav.dk>
+References: <45AB4930.5020209@kav.dk>
+Message-ID: <ca53c8f80701160914r4715d986l52f36d969288bacf@mail.gmail.com>
+
+If only enum can be subclassed ... :)
+
+Hanson
+
+On 1/15/07, Kasper Nielsen <kasper at kav.dk> wrote:
+>
+> Hi,
+>
+> Whenever I use TimeUnit and need to do any reporting in regards to that.
+> I often prefer outputting the actual unit in a short notation, for
+> example, ns instead of nanoseconds, ?s instead of microseconds, ...
+> I think it would a small but usefull addition (for some) to add some
+> kind of
+> String getShortForm() method to TimeUnit.
+>
+> cheers
+> Kasper
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070116/336e4771/attachment.html 
+
+From dawidk at mathcs.emory.edu  Tue Jan 16 12:48:37 2007
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Tue, 16 Jan 2007 12:48:37 -0500
+Subject: [concurrency-interest] Small request regarding TimeUnit
+In-Reply-To: <45AB4930.5020209@kav.dk>
+References: <45AB4930.5020209@kav.dk>
+Message-ID: <45AD0FF5.5030905@mathcs.emory.edu>
+
+Kasper Nielsen wrote:
+> Hi,
+>
+> Whenever I use TimeUnit and need to do any reporting in regards to that. 
+> I often prefer outputting the actual unit in a short notation, for 
+> example, ns instead of nanoseconds, ?s instead of microseconds, ...
+> I think it would a small but usefull addition (for some) to add some 
+> kind of
+> String getShortForm() method to TimeUnit.
+>   
+
+I think MICROSECONDS might be problematic. Should it print u, or ? ?... 
+I guess, depending on the context, people might want to have it either way.
+
+D
+
+
+
+From kasper at kav.dk  Tue Jan 16 15:07:19 2007
+From: kasper at kav.dk (Kasper Nielsen)
+Date: Tue, 16 Jan 2007 21:07:19 +0100
+Subject: [concurrency-interest] Small request regarding TimeUnit
+In-Reply-To: <45AD0FF5.5030905@mathcs.emory.edu>
+References: <45AB4930.5020209@kav.dk> <45AD0FF5.5030905@mathcs.emory.edu>
+Message-ID: <45AD3077.2020800@kav.dk>
+
+Dawid Kurzyniec wrote:
+> Kasper Nielsen wrote:
+>> Hi,
+>>
+>> Whenever I use TimeUnit and need to do any reporting in regards to 
+>> that. I often prefer outputting the actual unit in a short notation, 
+>> for example, ns instead of nanoseconds, ?s instead of microseconds, ...
+>> I think it would a small but usefull addition (for some) to add some 
+>> kind of
+>> String getShortForm() method to TimeUnit.
+>>   
+>
+> I think MICROSECONDS might be problematic. Should it print u, or ? 
+> ?... I guess, depending on the context, people might want to have it 
+> either way.
+>
+> D
+I would vote for ?, anyway should be a matter of a simple 
+.replace('?','u') if people wants u instead
+
+- Kasper
+
+
+From dawidk at mathcs.emory.edu  Tue Jan 16 17:07:52 2007
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Tue, 16 Jan 2007 17:07:52 -0500
+Subject: [concurrency-interest] Small request regarding TimeUnit
+In-Reply-To: <45AD3077.2020800@kav.dk>
+References: <45AB4930.5020209@kav.dk> <45AD0FF5.5030905@mathcs.emory.edu>
+	<45AD3077.2020800@kav.dk>
+Message-ID: <45AD4CB8.60908@mathcs.emory.edu>
+
+Kasper Nielsen wrote:
+> Dawid Kurzyniec wrote:
+>   
+>> Kasper Nielsen wrote:
+>>     
+>>> Hi,
+>>>
+>>> Whenever I use TimeUnit and need to do any reporting in regards to 
+>>> that. I often prefer outputting the actual unit in a short notation, 
+>>> for example, ns instead of nanoseconds, ?s instead of microseconds, ...
+>>> I think it would a small but usefull addition (for some) to add some 
+>>> kind of
+>>> String getShortForm() method to TimeUnit.
+>>>   
+>>>       
+>> I think MICROSECONDS might be problematic. Should it print u, or ? 
+>> ?... I guess, depending on the context, people might want to have it 
+>> either way.
+>>
+>> D
+>>     
+> I would vote for ?, anyway should be a matter of a simple 
+> .replace('?','u') if people wants u instead
+>   
+
+Actually, there is more questions. hours vs hrs, min vs mins vs m, etc. 
+Personally, I think that this belongs to presentation layer, and should 
+not be mixed with the concurrency API. Especially that the following is 
+simple and efficient (version for the 1.4 backport):
+
+private static ORDINAL_NSEC = TimeUnit.NANOSECONDS.ordinal();
+private static ORDINAL_USEC = TimeUnit.MICROSECONDS.ordinal();
+...
+
+public static String unit2string(TimeUnit unit) {
+   switch (unit.ordinal()) {
+      case ORDINAL_NSEC: return "ns";
+      case ORDINAL_USEC: return "us";
+      ...
+   }
+}
+
+Regards,
+Dawid
+
+
+
+From dhanji at gmail.com  Tue Jan 16 18:55:38 2007
+From: dhanji at gmail.com (Dhanji R. Prasanna)
+Date: Wed, 17 Jan 2007 09:55:38 +1000
+Subject: [concurrency-interest] Small request regarding TimeUnit
+In-Reply-To: <45AD4CB8.60908@mathcs.emory.edu>
+References: <45AB4930.5020209@kav.dk> <45AD0FF5.5030905@mathcs.emory.edu>
+	<45AD3077.2020800@kav.dk> <45AD4CB8.60908@mathcs.emory.edu>
+Message-ID: <aa067ea10701161555k7788061aw4f722fbd67469e50@mail.gmail.com>
+
+On 1/17/07, Dawid Kurzyniec <dawidk at mathcs.emory.edu> wrote:
+>
+> Kasper Nielsen wrote:
+> > Dawid Kurzyniec wrote:
+> >
+> >> Kasper Nielsen wrote:
+> >>
+> >>> Hi,
+> >>>
+> >>> Whenever I use TimeUnit and need to do any reporting in regards to
+> >>> that. I often prefer outputting the actual unit in a short notation,
+> >>> for example, ns instead of nanoseconds, ?s instead of microseconds,
+> ...
+> >>> I think it would a small but usefull addition (for some) to add some
+> >>> kind of
+> >>> String getShortForm() method to TimeUnit.
+> >>>
+>
+> Actually, there is more questions. hours vs hrs, min vs mins vs m, etc.
+> Personally, I think that this belongs to presentation layer, and should
+> not be mixed with the concurrency API.
+
+
+Yea I agree strongly. Also isnt a lot of this locale-specific? what is the
+point of resolving SECONDS to a string "seconds" when it might be "sekunden"
+or something else that is desired by the client code? I am not sure what the
+semantics of short-hand notation are, but I would guess they are similar.
+Some organizations like to write "secs" as shorthand for seconds, some use
+"s", others, capital "S"
+
+The conversion is best done with a class provided by the presentation/client
+code layer.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070117/eb4189cd/attachment.html 
+
+From kasper at kav.dk  Wed Jan 17 04:10:26 2007
+From: kasper at kav.dk (Kasper Nielsen)
+Date: Wed, 17 Jan 2007 10:10:26 +0100
+Subject: [concurrency-interest] Small request regarding TimeUnit
+In-Reply-To: <45AD4CB8.60908@mathcs.emory.edu>
+References: <45AB4930.5020209@kav.dk> <45AD0FF5.5030905@mathcs.emory.edu>
+	<45AD3077.2020800@kav.dk> <45AD4CB8.60908@mathcs.emory.edu>
+Message-ID: <45ADE802.7050009@kav.dk>
+
+Dawid Kurzyniec wrote:
+> Kasper Nielsen wrote:
+>> Dawid Kurzyniec wrote:
+>>  
+>>> Kasper Nielsen wrote:
+>>>    
+>>>> Hi,
+>>>>
+>>>> Whenever I use TimeUnit and need to do any reporting in regards to 
+>>>> that. I often prefer outputting the actual unit in a short 
+>>>> notation, for example, ns instead of nanoseconds, ?s instead of 
+>>>> microseconds, ...
+>>>> I think it would a small but usefull addition (for some) to add 
+>>>> some kind of
+>>>> String getShortForm() method to TimeUnit.
+>>>>         
+>>> I think MICROSECONDS might be problematic. Should it print u, or ? 
+>>> ?... I guess, depending on the context, people might want to have it 
+>>> either way.
+>>>
+>>> D
+>>>     
+>> I would vote for ?, anyway should be a matter of a simple 
+>> .replace('?','u') if people wants u instead
+>>   
+>
+> Actually, there is more questions. hours vs hrs, min vs mins vs m, etc. 
+
+Dawid, all the different units in TimeUnit have a well established 
+symbols within the SI system.
+ns = nanoseconds
+?s = microseconds
+ms = milliseconds
+s = seconds
+min = minutes
+h = hours
+d = days
+
+Take a look at http://physics.nist.gov/cuu/Units/prefixes.html and 
+http://physics.nist.gov/cuu/Units/outside.html
+
+- Kasper
+
+
+From dhanji at gmail.com  Wed Jan 17 04:55:31 2007
+From: dhanji at gmail.com (Dhanji R. Prasanna)
+Date: Wed, 17 Jan 2007 19:55:31 +1000
+Subject: [concurrency-interest] Small request regarding TimeUnit
+In-Reply-To: <45ADE802.7050009@kav.dk>
+References: <45AB4930.5020209@kav.dk> <45AD0FF5.5030905@mathcs.emory.edu>
+	<45AD3077.2020800@kav.dk> <45AD4CB8.60908@mathcs.emory.edu>
+	<45ADE802.7050009@kav.dk>
+Message-ID: <aa067ea10701170155u7e7c770g113279ab0ac6b56@mail.gmail.com>
+
+I was not aware that java was standardized on SI?
+
+in fact there is a whole jsr devoted to expression and calculation of units:
+http://jcp.org/en/jsr/detail?id=275
+
+Even this JSR supports non-SI systems. It seems presumptuous to bind service
+code to a presentation paradigm based on SI if there is an effort to
+standardize (and abstract) the expression of units.
+
+On 1/17/07, Kasper Nielsen <kasper at kav.dk> wrote:
+>
+> Dawid Kurzyniec wrote:
+> > Kasper Nielsen wrote:
+> >> Dawid Kurzyniec wrote:
+> >>
+> >>> Kasper Nielsen wrote:
+> >>>
+> >>>> Hi,
+> >>>>
+> >>>> Whenever I use TimeUnit and need to do any reporting in regards to
+> >>>> that. I often prefer outputting the actual unit in a short
+> >>>> notation, for example, ns instead of nanoseconds, ?s instead of
+> >>>> microseconds, ...
+> >>>> I think it would a small but usefull addition (for some) to add
+> >>>> some kind of
+> >>>> String getShortForm() method to TimeUnit.
+> >>>>
+> >>> I think MICROSECONDS might be problematic. Should it print u, or ?
+> >>> ?... I guess, depending on the context, people might want to have it
+> >>> either way.
+> >>>
+> >>> D
+> >>>
+> >> I would vote for ?, anyway should be a matter of a simple
+> >> .replace('?','u') if people wants u instead
+> >>
+> >
+> > Actually, there is more questions. hours vs hrs, min vs mins vs m, etc.
+>
+> Dawid, all the different units in TimeUnit have a well established
+> symbols within the SI system.
+> ns = nanoseconds
+> ?s = microseconds
+> ms = milliseconds
+> s = seconds
+> min = minutes
+> h = hours
+> d = days
+>
+> Take a look at http://physics.nist.gov/cuu/Units/prefixes.html and
+> http://physics.nist.gov/cuu/Units/outside.html
+>
+> - Kasper
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070117/72e786e5/attachment.html 
+
+From Robert.Saylor at bnsf.com  Wed Jan 17 12:13:21 2007
+From: Robert.Saylor at bnsf.com (Saylor, Robert J)
+Date: Wed, 17 Jan 2007 11:13:21 -0600
+Subject: [concurrency-interest] help
+Message-ID: <F9FDB88AEE98BC4A807F5D06937744A8047126EB@ftww2exsp001.rails.rwy.bnsf.com>
+
+Please remove me from the mailing list. I have tried several times to
+unsubscribe using your website.
+
+
+ -----Original Message-----
+From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of
+concurrency-interest-request at cs.oswego.edu
+Sent: Wednesday, January 17, 2007 11:00 AM
+To: concurrency-interest at cs.oswego.edu
+Subject: Concurrency-interest Digest, Vol 24, Issue 9
+
+Send Concurrency-interest mailing list submissions to
+	concurrency-interest at altair.cs.oswego.edu
+
+To subscribe or unsubscribe via the World Wide Web, visit
+	
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+or, via email, send a message with subject or body 'help' to
+	concurrency-interest-request at altair.cs.oswego.edu
+
+You can reach the person managing the list at
+	concurrency-interest-owner at altair.cs.oswego.edu
+
+When replying, please edit your Subject line so it is more specific
+than "Re: Contents of Concurrency-interest digest..."
+
+
+Today's Topics:
+
+   1. Re: Small request regarding TimeUnit (Hanson Char)
+   2. Re: Small request regarding TimeUnit (Dawid Kurzyniec)
+   3. Re: Small request regarding TimeUnit (Kasper Nielsen)
+   4. Re: Small request regarding TimeUnit (Dawid Kurzyniec)
+   5. Re: Small request regarding TimeUnit (Dhanji R. Prasanna)
+   6. Re: Small request regarding TimeUnit (Kasper Nielsen)
+   7. Re: Small request regarding TimeUnit (Dhanji R. Prasanna)
+
+
+----------------------------------------------------------------------
+
+Message: 1
+Date: Tue, 16 Jan 2007 09:14:26 -0800
+From: "Hanson Char" <hanson.char at gmail.com>
+Subject: Re: [concurrency-interest] Small request regarding TimeUnit
+To: "Kasper Nielsen" <kasper at kav.dk>
+Cc: concurrency-interest at cs.oswego.edu
+Message-ID:
+	<ca53c8f80701160914r4715d986l52f36d969288bacf at mail.gmail.com>
+Content-Type: text/plain; charset="iso-8859-1"
+
+If only enum can be subclassed ... :)
+
+Hanson
+
+On 1/15/07, Kasper Nielsen <kasper at kav.dk> wrote:
+>
+> Hi,
+>
+> Whenever I use TimeUnit and need to do any reporting in regards to
+that.
+> I often prefer outputting the actual unit in a short notation, for
+> example, ns instead of nanoseconds, ?s instead of microseconds, ...
+> I think it would a small but usefull addition (for some) to add some
+> kind of
+> String getShortForm() method to TimeUnit.
+>
+> cheers
+> Kasper
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070116/336e4771/attachment-0001.html 
+
+------------------------------
+
+Message: 2
+Date: Tue, 16 Jan 2007 12:48:37 -0500
+From: Dawid Kurzyniec <dawidk at mathcs.emory.edu>
+Subject: Re: [concurrency-interest] Small request regarding TimeUnit
+To: Kasper Nielsen <kasper at kav.dk>
+Cc: concurrency-interest at cs.oswego.edu
+Message-ID: <45AD0FF5.5030905 at mathcs.emory.edu>
+Content-Type: text/plain; charset=ISO-8859-1; format=flowed
+
+Kasper Nielsen wrote:
+> Hi,
+>
+> Whenever I use TimeUnit and need to do any reporting in regards to
+that. 
+> I often prefer outputting the actual unit in a short notation, for 
+> example, ns instead of nanoseconds, ?s instead of microseconds, ...
+> I think it would a small but usefull addition (for some) to add some 
+> kind of
+> String getShortForm() method to TimeUnit.
+>   
+
+I think MICROSECONDS might be problematic. Should it print u, or ? ?... 
+I guess, depending on the context, people might want to have it either
+way.
+
+D
+
+
+
+
+------------------------------
+
+Message: 3
+Date: Tue, 16 Jan 2007 21:07:19 +0100
+From: Kasper Nielsen <kasper at kav.dk>
+Subject: Re: [concurrency-interest] Small request regarding TimeUnit
+To: Dawid Kurzyniec <dawidk at mathcs.emory.edu>
+Cc: concurrency-interest at cs.oswego.edu
+Message-ID: <45AD3077.2020800 at kav.dk>
+Content-Type: text/plain; charset=ISO-8859-1; format=flowed
+
+Dawid Kurzyniec wrote:
+> Kasper Nielsen wrote:
+>> Hi,
+>>
+>> Whenever I use TimeUnit and need to do any reporting in regards to 
+>> that. I often prefer outputting the actual unit in a short notation, 
+>> for example, ns instead of nanoseconds, ?s instead of microseconds,
+...
+>> I think it would a small but usefull addition (for some) to add some 
+>> kind of
+>> String getShortForm() method to TimeUnit.
+>>   
+>
+> I think MICROSECONDS might be problematic. Should it print u, or ? 
+> ?... I guess, depending on the context, people might want to have it 
+> either way.
+>
+> D
+I would vote for ?, anyway should be a matter of a simple 
+.replace('?','u') if people wants u instead
+
+- Kasper
+
+
+
+------------------------------
+
+Message: 4
+Date: Tue, 16 Jan 2007 17:07:52 -0500
+From: Dawid Kurzyniec <dawidk at mathcs.emory.edu>
+Subject: Re: [concurrency-interest] Small request regarding TimeUnit
+To: Kasper Nielsen <kasper at kav.dk>
+Cc: concurrency-interest at cs.oswego.edu
+Message-ID: <45AD4CB8.60908 at mathcs.emory.edu>
+Content-Type: text/plain; charset=ISO-8859-1; format=flowed
+
+Kasper Nielsen wrote:
+> Dawid Kurzyniec wrote:
+>   
+>> Kasper Nielsen wrote:
+>>     
+>>> Hi,
+>>>
+>>> Whenever I use TimeUnit and need to do any reporting in regards to 
+>>> that. I often prefer outputting the actual unit in a short notation,
+
+>>> for example, ns instead of nanoseconds, ?s instead of microseconds,
+...
+>>> I think it would a small but usefull addition (for some) to add some
+
+>>> kind of
+>>> String getShortForm() method to TimeUnit.
+>>>   
+>>>       
+>> I think MICROSECONDS might be problematic. Should it print u, or ? 
+>> ?... I guess, depending on the context, people might want to have it 
+>> either way.
+>>
+>> D
+>>     
+> I would vote for ?, anyway should be a matter of a simple 
+> .replace('?','u') if people wants u instead
+>   
+
+Actually, there is more questions. hours vs hrs, min vs mins vs m, etc. 
+Personally, I think that this belongs to presentation layer, and should 
+not be mixed with the concurrency API. Especially that the following is 
+simple and efficient (version for the 1.4 backport):
+
+private static ORDINAL_NSEC = TimeUnit.NANOSECONDS.ordinal();
+private static ORDINAL_USEC = TimeUnit.MICROSECONDS.ordinal();
+...
+
+public static String unit2string(TimeUnit unit) {
+   switch (unit.ordinal()) {
+      case ORDINAL_NSEC: return "ns";
+      case ORDINAL_USEC: return "us";
+      ...
+   }
+}
+
+Regards,
+Dawid
+
+
+
+
+------------------------------
+
+Message: 5
+Date: Wed, 17 Jan 2007 09:55:38 +1000
+From: "Dhanji R. Prasanna" <dhanji at gmail.com>
+Subject: Re: [concurrency-interest] Small request regarding TimeUnit
+To: "Dawid Kurzyniec" <dawidk at mathcs.emory.edu>
+Cc: concurrency-interest at cs.oswego.edu
+Message-ID:
+	<aa067ea10701161555k7788061aw4f722fbd67469e50 at mail.gmail.com>
+Content-Type: text/plain; charset="iso-8859-1"
+
+On 1/17/07, Dawid Kurzyniec <dawidk at mathcs.emory.edu> wrote:
+>
+> Kasper Nielsen wrote:
+> > Dawid Kurzyniec wrote:
+> >
+> >> Kasper Nielsen wrote:
+> >>
+> >>> Hi,
+> >>>
+> >>> Whenever I use TimeUnit and need to do any reporting in regards to
+> >>> that. I often prefer outputting the actual unit in a short
+notation,
+> >>> for example, ns instead of nanoseconds, ?s instead of
+microseconds,
+> ...
+> >>> I think it would a small but usefull addition (for some) to add
+some
+> >>> kind of
+> >>> String getShortForm() method to TimeUnit.
+> >>>
+>
+> Actually, there is more questions. hours vs hrs, min vs mins vs m,
+etc.
+> Personally, I think that this belongs to presentation layer, and
+should
+> not be mixed with the concurrency API.
+
+
+Yea I agree strongly. Also isnt a lot of this locale-specific? what is
+the
+point of resolving SECONDS to a string "seconds" when it might be
+"sekunden"
+or something else that is desired by the client code? I am not sure what
+the
+semantics of short-hand notation are, but I would guess they are
+similar.
+Some organizations like to write "secs" as shorthand for seconds, some
+use
+"s", others, capital "S"
+
+The conversion is best done with a class provided by the
+presentation/client
+code layer.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070117/eb4189cd/attachment-0001.html 
+
+------------------------------
+
+Message: 6
+Date: Wed, 17 Jan 2007 10:10:26 +0100
+From: Kasper Nielsen <kasper at kav.dk>
+Subject: Re: [concurrency-interest] Small request regarding TimeUnit
+To: Dawid Kurzyniec <dawidk at mathcs.emory.edu>
+Cc: concurrency-interest at cs.oswego.edu
+Message-ID: <45ADE802.7050009 at kav.dk>
+Content-Type: text/plain; charset=ISO-8859-1; format=flowed
+
+Dawid Kurzyniec wrote:
+> Kasper Nielsen wrote:
+>> Dawid Kurzyniec wrote:
+>>  
+>>> Kasper Nielsen wrote:
+>>>    
+>>>> Hi,
+>>>>
+>>>> Whenever I use TimeUnit and need to do any reporting in regards to 
+>>>> that. I often prefer outputting the actual unit in a short 
+>>>> notation, for example, ns instead of nanoseconds, ?s instead of 
+>>>> microseconds, ...
+>>>> I think it would a small but usefull addition (for some) to add 
+>>>> some kind of
+>>>> String getShortForm() method to TimeUnit.
+>>>>         
+>>> I think MICROSECONDS might be problematic. Should it print u, or ? 
+>>> ?... I guess, depending on the context, people might want to have it
+
+>>> either way.
+>>>
+>>> D
+>>>     
+>> I would vote for ?, anyway should be a matter of a simple 
+>> .replace('?','u') if people wants u instead
+>>   
+>
+> Actually, there is more questions. hours vs hrs, min vs mins vs m,
+etc. 
+
+Dawid, all the different units in TimeUnit have a well established 
+symbols within the SI system.
+ns = nanoseconds
+?s = microseconds
+ms = milliseconds
+s = seconds
+min = minutes
+h = hours
+d = days
+
+Take a look at http://physics.nist.gov/cuu/Units/prefixes.html and 
+http://physics.nist.gov/cuu/Units/outside.html
+
+- Kasper
+
+
+
+------------------------------
+
+Message: 7
+Date: Wed, 17 Jan 2007 19:55:31 +1000
+From: "Dhanji R. Prasanna" <dhanji at gmail.com>
+Subject: Re: [concurrency-interest] Small request regarding TimeUnit
+To: "Kasper Nielsen" <kasper at kav.dk>
+Cc: concurrency-interest at cs.oswego.edu,	Dawid Kurzyniec
+	<dawidk at mathcs.emory.edu>
+Message-ID:
+	<aa067ea10701170155u7e7c770g113279ab0ac6b56 at mail.gmail.com>
+Content-Type: text/plain; charset="iso-8859-1"
+
+I was not aware that java was standardized on SI?
+
+in fact there is a whole jsr devoted to expression and calculation of
+units:
+http://jcp.org/en/jsr/detail?id=275
+
+Even this JSR supports non-SI systems. It seems presumptuous to bind
+service
+code to a presentation paradigm based on SI if there is an effort to
+standardize (and abstract) the expression of units.
+
+On 1/17/07, Kasper Nielsen <kasper at kav.dk> wrote:
+>
+> Dawid Kurzyniec wrote:
+> > Kasper Nielsen wrote:
+> >> Dawid Kurzyniec wrote:
+> >>
+> >>> Kasper Nielsen wrote:
+> >>>
+> >>>> Hi,
+> >>>>
+> >>>> Whenever I use TimeUnit and need to do any reporting in regards
+to
+> >>>> that. I often prefer outputting the actual unit in a short
+> >>>> notation, for example, ns instead of nanoseconds, ?s instead of
+> >>>> microseconds, ...
+> >>>> I think it would a small but usefull addition (for some) to add
+> >>>> some kind of
+> >>>> String getShortForm() method to TimeUnit.
+> >>>>
+> >>> I think MICROSECONDS might be problematic. Should it print u, or ?
+> >>> ?... I guess, depending on the context, people might want to have
+it
+> >>> either way.
+> >>>
+> >>> D
+> >>>
+> >> I would vote for ?, anyway should be a matter of a simple
+> >> .replace('?','u') if people wants u instead
+> >>
+> >
+> > Actually, there is more questions. hours vs hrs, min vs mins vs m,
+etc.
+>
+> Dawid, all the different units in TimeUnit have a well established
+> symbols within the SI system.
+> ns = nanoseconds
+> ?s = microseconds
+> ms = milliseconds
+> s = seconds
+> min = minutes
+> h = hours
+> d = days
+>
+> Take a look at http://physics.nist.gov/cuu/Units/prefixes.html and
+> http://physics.nist.gov/cuu/Units/outside.html
+>
+> - Kasper
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070117/72e786e5/attachment-0001.html 
+
+------------------------------
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+End of Concurrency-interest Digest, Vol 24, Issue 9
+***************************************************
+
+
+
+
+From belaban at yahoo.com  Thu Jan 18 10:12:09 2007
+From: belaban at yahoo.com (Bela Ban)
+Date: Thu, 18 Jan 2007 16:12:09 +0100
+Subject: [concurrency-interest] ScheduledThreadPoolExecutor woes
+Message-ID: <45AF8E49.4080600@yahoo.com>
+
+I'm trying to use ScheduledThreadPoolExecutor (as suggested by Brian in 
+his book) as a replacement for java.util.Timer.
+
+Turns out this class is more or less sealed (cannot be extended because 
+almost all interesting methods are final or private). I assume that this 
+was done by intention, if so what was the rationale ? That stupid users 
+like me don't mess around with it ? :-)
+
+I want to implement 2 things extending ScheduledThreadPoolExecutor:
+
+#1 No thread should be running when no tasks are in the queue. I did 
+this using the following kludge in my subclass:
+
+|public ScheduledFuture<?> scheduleWithFixedDelay(Runnable command, long 
+initialDelay, long delay, TimeUnit unit) {
+     startCoreThread();
+     return super.scheduleWithFixedDelay(command, initialDelay, delay, 
+unit);
+ }
+
+private void startCoreThread() {
+   if(getPoolSize() <= 0) {
+       setCorePoolSize(1);
+       prestartCoreThread();
+       setCorePoolSize(0);
+   }
+}|
+
+Not very nice, plus not thread safe, but here I don't care if I 
+accidentally start more than 1 core thread (I might protect this with a 
+lock).
+
+
+#2 I want to run tasks with flexible (=computed) versus fixed intervals
+
+For example, for message retransmission a la TCP, I'd like to use 
+exponential backoff, so my intervals would increase *every time the task 
+is executed*.  In another case, I use a random interval with a min/max 
+time range.
+I was thinking of subclassing ScheduledFutureTask.runPeriodic() and - 
+before resubmitting the task - compute the new interval, but this method 
+is private too arghh !
+
+Do I have to write my own timer then (e.g. off of AbstractExecutorService)?
+Cheers,
+
+-- 
+Bela Ban
+Lead JGroups / JBoss Clustering team
+JBoss - a division of Red Hat
+
+
+From matthias.ernst at coremedia.com  Thu Jan 18 10:42:10 2007
+From: matthias.ernst at coremedia.com (Ernst, Matthias)
+Date: Thu, 18 Jan 2007 16:42:10 +0100
+Subject: [concurrency-interest] ScheduledThreadPoolExecutor woes
+Message-ID: <AE2A8E488D9B26438919DF3C9C95528D4170D1@hermes.coremedia.com>
+
+Bela,
+
+#1: this is addressed in Java 6 with a short timeout +
+http://java.sun.com/javase/6/docs/api/java/util/concurrent/ThreadPoolExe
+cutor.html#allowCoreThreadTimeOut(boolean)
+
+I'm only assuming that it applies to ScheduledTPE as well.
+
+
+#2: In that case I'll have the tasks reschedule themselves:
+
+run() {
+
+  ... pool.schedule(this, remaining);
+}
+
+HTH
+Matthias
+
+-- 
+matthias.ernst at coremedia.com
+software architect
++49.40.32 55 87.503
+ 
+
+
+From belaban at yahoo.com  Thu Jan 18 11:20:04 2007
+From: belaban at yahoo.com (Bela Ban)
+Date: Thu, 18 Jan 2007 17:20:04 +0100
+Subject: [concurrency-interest] ScheduledThreadPoolExecutor woes
+In-Reply-To: <AE2A8E488D9B26438919DF3C9C95528D4170D1@hermes.coremedia.com>
+References: <AE2A8E488D9B26438919DF3C9C95528D4170D1@hermes.coremedia.com>
+Message-ID: <45AF9E34.3070707@yahoo.com>
+
+
+
+Ernst, Matthias wrote:
+> Bela,
+>
+> #1: this is addressed in Java 6 with a short timeout +
+> http://java.sun.com/javase/6/docs/api/java/util/concurrent/ThreadPoolExe
+> cutor.html#allowCoreThreadTimeOut(boolean)
+>
+> I'm only assuming that it applies to ScheduledTPE as well.
+
+Excellent, good to know !
+
+> #2: In that case I'll have the tasks reschedule themselves:
+>
+> run() {
+>
+> ... pool.schedule(this, remaining);
+> }
+
+This is something I thought of too, but it is somewhat kludgy for a task 
+to have knowledge of the pool and to reschedule itself. Although this is 
+done in ScheduledThreadPoolExecutor.ScheduledFutureTask.runPeriodic() too:
+
+|private void runPeriodic() {
+            boolean ok = ScheduledFutureTask.super.runAndReset();
+            boolean down = isShutdown();
+            // Reschedule if not cancelled and not shutdown or policy allows
+            if (ok && (!down ||
+                       
+(getContinueExistingPeriodicTasksAfterShutdownPolicy() &&
+                        !isTerminating()))) {
+                long p = period;
+                if (p > 0)
+                    time += p;
+                else
+                    time = now() - p;
+                *ScheduledThreadPoolExecutor.super.getQueue().add(this); 
+// <<<<<==== here*
+            }
+            // This might have been the final executed delayed
+            // task.  Wake up threads to check.
+            else if (down)
+                interruptIdleWorkers();
+        }|
+
+It would be great if there was a scheduleXXX() method which took an 
+Period parameter:
+
+|scheduleAtFixedRate(Runnable command, long initialDelay,  Period 
+period, TimeUnit unit)|
+
+with Period being
+
+|public interface Period {
+   long get();
+}|
+
+Then the code above would simple call:
+
+|long p = period.get();
+
+|rather than|
+
+||long p = period;|
+
+-- 
+Bela Ban
+Lead JGroups / JBoss Clustering team
+JBoss - a division of Red Hat
+
+From gregg at cytetech.com  Fri Jan 19 16:30:26 2007
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Fri, 19 Jan 2007 15:30:26 -0600
+Subject: [concurrency-interest] Queue.add() vs Executor.exec()
+Message-ID: <45B13872.5000708@cytetech.com>
+
+A couple of different times now, I've found myself coding queue.add() for a 
+queue owned by a ThreadPoolExecutor() instead of invoking an appropriate 
+ThreadPoolExecutor.exec(), etc. method.  This causes nothing to run, and it is a 
+bit frustrating to track down.  Historically, I guess part of the problem is 
+that the pooled executors I've used/written have only had one object and for 
+some reason by brain is making be consider the queue the similar object.
+
+It seems that if the core thread pool size is non-zero that the associated 
+number of threads would be running and prepared to take whatever was put onto 
+the queue.
+
+Is there a good reason why it doesn't work in this way?
+
+Gregg Wonderly
+
+From tim at peierls.net  Sat Jan 20 11:39:41 2007
+From: tim at peierls.net (Tim Peierls)
+Date: Sat, 20 Jan 2007 11:39:41 -0500
+Subject: [concurrency-interest] ScheduledThreadPoolExecutor woes
+In-Reply-To: <45AF9E34.3070707@yahoo.com>
+References: <AE2A8E488D9B26438919DF3C9C95528D4170D1@hermes.coremedia.com>
+	<45AF9E34.3070707@yahoo.com>
+Message-ID: <63b4e4050701200839s33d5eb9al5f41342041bb49d6@mail.gmail.com>
+
+Last spring Josh Bloch proposed an interface and some standard
+implementations to capture something like what Bela described.
+
+public interface RetryPolicy {
+    boolean isFailureRecoverable(Exception e);
+    long nextDelay(long startTime, int retries);
+}
+
+The implementations included exponential backoff, truncated exponential
+backoff, and fixed delay.
+
+There was also a factory method for an ExecutorService wrapper to wrap
+Runnables and Callables with the machinery needed to implement a given
+RetryPolicy.
+
+The idea is that a task signals that it may be retried by throwing an
+exception e for which RetryPolicy.isFailureRecoverable(e) is true, and the
+nextDelay method decides, based on the start time of the initial attempt and
+the number of retries that have occurred, how long to wait before trying
+again. A negative return from nextDelay means not to try again, in which
+case the most recent failure exception is rethrown.
+
+For example, a policy of incessant retrying would be expressed by:
+
+class IncessantRetrying implements RetryPolicy {
+    public boolean isFailureRecoverable(Exception e) { return true; }
+    long nextDelay(long startTime, int retries) { return 0; }
+}
+
+Josh told me he'd be willing to distribute this more widely if there was
+sufficient interest.
+
+I've placed an incomplete draft of this code in a public area of the Java
+Concurrency in Practice source repository:
+
+https://dev.priorartisans.com/repos/jcip/trunk/src/main/jcip/retry/
+
+It's incomplete because it doesn't define AbstractRetryPolicy.
+
+What Bela describes is slightly different: each task can be submitted with
+its own "RetryPolicy". That could be achieved within Josh's framework, for
+example, by extending ScheduledThreadPoolExecutor and overriding
+decorateTask to do the requisite wrapping for tasks that implement
+RetryPolicy.
+
+--tim
+
+On 1/18/07, Bela Ban <belaban at yahoo.com> wrote:
+>
+>
+>
+> Ernst, Matthias wrote:
+> > #2: In that case I'll have the tasks reschedule themselves:
+> >
+> > run() {
+> >
+> > ... pool.schedule(this, remaining);
+> > }
+>
+> This is something I thought of too, but it is somewhat kludgy for a task
+> to have knowledge of the pool and to reschedule itself. Although this is
+> done in ScheduledThreadPoolExecutor.ScheduledFutureTask.runPeriodic() too:
+>
+> private void runPeriodic() {
+>             boolean ok = ScheduledFutureTask.super.runAndReset();
+>             boolean down = isShutdown();
+>             // Reschedule if not cancelled and not shutdown or policy
+> allows
+>             if (ok && (!down ||
+> (getContinueExistingPeriodicTasksAfterShutdownPolicy() &&
+>                         !isTerminating()))) {
+>                 long p = period;
+>                 if (p > 0)
+>                     time += p;
+>                 else
+>                     time = now() - p;
+>                 *ScheduledThreadPoolExecutor.super.getQueue().add(this);
+> // <<<<<==== here*
+>             }
+>             // This might have been the final executed delayed
+>             // task.  Wake up threads to check.
+>             else if (down)
+>                 interruptIdleWorkers();
+>         }
+>
+> It would be great if there was a scheduleXXX() method which took a Period
+> parameter:
+>
+>     scheduleAtFixedRate(Runnable command, long initialDelay,  Period
+> period, TimeUnit unit)
+>
+> with Period being
+>
+>     public interface Period {
+>         long get();
+>     }
+>
+> Then the code above would simple call:
+>
+>     long p = period.get();
+>
+>  rather than
+>
+>     long p = period;
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070120/e5a7973e/attachment.html 
+
+From Martin.Buchholz at Sun.COM  Sat Jan 20 13:15:35 2007
+From: Martin.Buchholz at Sun.COM (Martin Buchholz)
+Date: Sat, 20 Jan 2007 10:15:35 -0800
+Subject: [concurrency-interest]  Queue.add() vs Executor.exec()
+In-Reply-To: <mailman.1.1169312400.12142.concurrency-interest@altair.cs.oswego.edu>
+References: <mailman.1.1169312400.12142.concurrency-interest@altair.cs.oswego.edu>
+Message-ID: <45B25C47.4030500@sun.com>
+
+> Date: Fri, 19 Jan 2007 15:30:26 -0600
+> From: Gregg Wonderly <gregg at cytetech.com>
+> Subject: [concurrency-interest] Queue.add() vs Executor.exec()
+> To: concurrency-interest <concurrency-interest at cs.oswego.edu>
+> Message-ID: <45B13872.5000708 at cytetech.com>
+> Content-Type: text/plain; charset=ISO-8859-1; format=flowed
+> 
+> A couple of different times now, I've found myself coding queue.add() for a 
+> queue owned by a ThreadPoolExecutor() instead of invoking an appropriate 
+> ThreadPoolExecutor.exec(), etc. method.  This causes nothing to run, and it is a 
+> bit frustrating to track down.  Historically, I guess part of the problem is 
+> that the pooled executors I've used/written have only had one object and for 
+> some reason by brain is making be consider the queue the similar object.
+> 
+> It seems that if the core thread pool size is non-zero that the associated 
+> number of threads would be running and prepared to take whatever was put onto 
+> the queue.
+
+The number of threads might be zero even if core pool size is non-zero.
+Did you call prestartAllCoreThreads() ?
+
+STPE in fact uses
+
+super.getQueue().add(task);
+
+but it has control over the queue involved, unlike the more general TPE.
+
+In general, adding directly to the queue is asking for trouble.
+I dream of writing my own thread pool where the queue would not be
+user-accessible.
+
+A number of issues with TPE/STPE are being worked on for jdk7,
+including some that leave the pool with less than the
+desired number of threads.
+
+6450200: ThreadPoolExecutor idling core threads don't terminate when
+core pool size reduced
+6450205: ThreadPoolExecutor does not replace throwing threads
+6450207: ThreadPoolExecutor doesn't count throwing tasks as "completed"
+6450211: ThreadPoolExecutor.afterExecute sees RuntimeExceptions, but not
+Errors
+6452337: ThreadPoolExecutor should prefer reusing idle threads
+6454289: ScheduledThreadPoolExecutor spins while waiting for delayed
+tasks after shutdown
+6458339: ThreadPoolExecutor very slow to shut down for large poolSize
+6458662: ThreadPoolExecutor poolSize might shrink below corePoolSize
+after timeout
+
+Martin
+
+> Is there a good reason why it doesn't work in this way?
+> 
+> Gregg Wonderly
+
+From gregg at cytetech.com  Sat Jan 20 17:00:21 2007
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Sat, 20 Jan 2007 16:00:21 -0600
+Subject: [concurrency-interest] Queue.add() vs Executor.exec()
+In-Reply-To: <45B25C47.4030500@sun.com>
+References: <mailman.1.1169312400.12142.concurrency-interest@altair.cs.oswego.edu>
+	<45B25C47.4030500@sun.com>
+Message-ID: <45B290F5.6080301@cytetech.com>
+
+
+
+Martin Buchholz wrote:
+>From: Gregg Wonderly <gregg at cytetech.com>
+>>It seems that if the core thread pool size is non-zero that the associated 
+>>number of threads would be running and prepared to take whatever was put onto 
+>>the queue.
+>
+> The number of threads might be zero even if core pool size is non-zero.
+> Did you call prestartAllCoreThreads() ?
+
+No, I didn't do that.  I generally seem to code the use of these things 
+correctly, and am able to type "executor.exec" correctly.  It's just those times 
+when I don't which have caused me to ask this question.  The fact that Queue and 
+ThreadPoolExecutor work together causes be to think about this a little harder. 
+  It seems counter intuitive that you can't talk to the Queue directly.  As an 
+example, imagine an API which passes around a Queue for code to add elements 
+too.  You don't want to expose the TPE because that allows users to stop it, 
+peek into it and otherwise futz with things that you might not intend them to 
+have access to.  The Queue, while allowing certain types of modifications, is a 
+different beast.  I guess, in the end, creating a wrapper object to hide them 
+both and expose the minimal API would work fine.
+
+I'm just trying to get some thoughts from others on whether this issue seems 
+important.  The more I think about it, the more I think that these two objects 
+don't work together quite as well as they could/should.
+
+It seems that prestartAllCoreThreads() should be the default with a constructor 
+that could say otherwise.
+
+> In general, adding directly to the queue is asking for trouble.
+> I dream of writing my own thread pool where the queue would not be
+> user-accessible.
+
+Adding to the queue, somehow floats into by typing patterns from using queues 
+and other collections in other places so frequently.  So, occasionally, I seem 
+to be good at typing queue.add instead of exec.execute, and that's the issue 
+that I'm trying to bring to light.  The software fails to work, and it takes 
+considerable investigation in some cases to see that the wrong object is being 
+used in that way.
+
+> A number of issues with TPE/STPE are being worked on for jdk7,
+> including some that leave the pool with less than the
+> desired number of threads.
+
+It will be great to get these issues addressed.  I'm just wondering if there 
+shouldn't be some investigation and thought into a mechanism which could keep 
+one from manipulating (in terms of mutations) the queue object once the TPE is 
+using it.
+
+In particular, I'm thinking about something like a 
+CollectionModificationListener that might be a more general concept usable in 
+other cases that could be used by the TPE to know that the user is adding 
+objects directly, and either throw an exception, or allow it to happen taking 
+the appropriate actions.
+
+Gregg Wonderly
+
+From matthias.ernst at coremedia.com  Sun Jan 21 04:20:18 2007
+From: matthias.ernst at coremedia.com (Ernst, Matthias)
+Date: Sun, 21 Jan 2007 10:20:18 +0100
+Subject: [concurrency-interest] ScheduledThreadPoolExecutor woes
+References: <AE2A8E488D9B26438919DF3C9C95528D4170D1@hermes.coremedia.com>
+	<45AF9E34.3070707@yahoo.com>
+Message-ID: <AE2A8E488D9B26438919DF3C9C95528D168E60@hermes.coremedia.com>
+
+> This is something I thought of too, but it is somewhat kludgy for a task 
+> to have knowledge of the pool and to reschedule itself. Although this is 
+> done in ScheduledThreadPoolExecutor.ScheduledFutureTask.runPeriodic() too:
+
+>It would be great if there was a scheduleXXX() method which took an 
+> Period parameter:
+
+> |scheduleAtFixedRate(Runnable command, long initialDelay,  Period 
+> period, TimeUnit unit)|
+
+You could write it yourself along the lines of:
+
+public static <R extends Runnable&Delayed> void schedule(ScheduledExecutorService ex, R command) {
+  long delay = command.getDelay(TimeUnit.NANOS);
+  if(delay > 0) {
+    ex.schedule(new Runnable() {
+      public void run() {
+        command.run();
+        long delay = command.getDelay(TimeUnit.NANOS);
+        if(delay > 0)
+          ex.schedule(this, delay, TimeUnit.NANOS);
+      }
+    }, delay, TimeUnit.NANOS);
+  }
+}
+
+I've left cancellation open here (thus returns void), but it could be implemented. You could return a delegating ScheduledFuture that forwards to the result of the latest call to ex.schedule().
+
+Matthias
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20070121/1b6c03ba/attachment.html 
+
+From belaban at yahoo.com  Tue Jan 23 03:11:54 2007
+From: belaban at yahoo.com (Bela Ban)
+Date: Tue, 23 Jan 2007 09:11:54 +0100
+Subject: [concurrency-interest] ScheduledThreadPoolExecutor woes
+In-Reply-To: <63b4e4050701200839s33d5eb9al5f41342041bb49d6@mail.gmail.com>
+References: <AE2A8E488D9B26438919DF3C9C95528D4170D1@hermes.coremedia.com>	
+	<45AF9E34.3070707@yahoo.com>
+	<63b4e4050701200839s33d5eb9al5f41342041bb49d6@mail.gmail.com>
+Message-ID: <45B5C34A.7060403@yahoo.com>
+
+Thanks for the link Tim,
+
+I looked at it, and while this is close to what I want, it has slightly 
+different semantics:
+
+- The retry policy is only invoked when an exception is thrown in 
+run()/call(). I would like the retry policy to be invoked after *every* 
+run()/call()
+- The retry policy *waits* (nanoSleep()) for the next interval. I think 
+this is bad as it blocks 1 thread from the thread pool. I'd rather see 
+the task being rescheduled: removed from the DelayQueue and reinserted 
+into it. This way, we wouldn't need to block a thread
+
+I've tried to extend ScheduledThreadPoolExecutor to do what I want, but 
+it being full of private final methods/classes, this is almost 
+impossible. I might end up writing my own ScheduledThreadPoolExecutor on 
+top of ThreadPoolExecutor... Sigh...
+
+Tim Peierls wrote:
+> Last spring Josh Bloch proposed an interface and some standard 
+> implementations to capture something like what Bela described.
+>
+> public interface RetryPolicy {
+>     boolean isFailureRecoverable(Exception e);
+>     long nextDelay(long startTime, int retries);
+> }
+>
+> The implementations included exponential backoff, truncated 
+> exponential backoff, and fixed delay.
+>
+> There was also a factory method for an ExecutorService wrapper to wrap 
+> Runnables and Callables with the machinery needed to implement a given 
+> RetryPolicy.
+>
+> The idea is that a task signals that it may be retried by throwing an 
+> exception e for which RetryPolicy.isFailureRecoverable(e) is true, and 
+> the nextDelay method decides, based on the start time of the initial 
+> attempt and the number of retries that have occurred, how long to wait 
+> before trying again. A negative return from nextDelay means not to try 
+> again, in which case the most recent failure exception is rethrown.
+>
+> For example, a policy of incessant retrying would be expressed by:
+>
+> class IncessantRetrying implements RetryPolicy {
+>     public boolean isFailureRecoverable(Exception e) { return true; }
+>     long nextDelay(long startTime, int retries) { return 0; }
+> }
+>
+> Josh told me he'd be willing to distribute this more widely if there 
+> was sufficient interest.
+>
+> I've placed an incomplete draft of this code in a public area of the 
+> Java Concurrency in Practice source repository:
+>
+> https://dev.priorartisans.com/repos/jcip/trunk/src/main/jcip/retry/
+>
+> It's incomplete because it doesn't define AbstractRetryPolicy.
+>
+> What Bela describes is slightly different: each task can be submitted 
+> with its own "RetryPolicy". That could be achieved within Josh's 
+> framework, for example, by extending ScheduledThreadPoolExecutor and 
+> overriding decorateTask to do the requisite wrapping for tasks that 
+> implement RetryPolicy.
+>
+> --tim
+
+-- 
+Bela Ban
+Lead JGroups / JBoss Clustering team
+JBoss - a division of Red Hat
+
+
+From brian at quiotix.com  Fri Jan 26 11:35:16 2007
+From: brian at quiotix.com (Brian Goetz)
+Date: Fri, 26 Jan 2007 11:35:16 -0500
+Subject: [concurrency-interest] [Fwd: [EE CS Colloq] Computer Architecture
+ is Back * 4:15PM, Wed Jan 31, 2007 in Gates B01]
+Message-ID: <45BA2DC4.8060001@quiotix.com>
+
+In case anyone is in the Bay Area next week, this sounds like it should 
+be a fascinating talk.
+
+
+              Stanford EE Computer Systems Colloquium
+                  4:15PM, Wednesday, Jan 31, 2007
+         HP Auditorium, Gates Computer Science Building B01
+                    http://ee380.stanford.edu[1]
+
+Topic:    Computer Architecture is Back
+           The Berkeley View of the Parallel Computing Research Landscape
+
+Speaker:  Dave Patterson
+           EECS, UC Berkeley
+
+About the talk:
+
+The sequential processor era is now officially over, as the IT
+industry has bet its future on multiple processors per chip. The
+new trend is doubling the number of cores per chip every two
+years instead the regular doubling of uniprocessor performance.
+This shift toward increasing parallelism is not a triumphant
+stride forward based on breakthroughs in novel software and
+architectures for parallelism; instead, this plunge into
+parallelism is actually a retreat from even greater challenges
+that thwart efficient silicon implementation of traditional
+uniprocessor architectures.
+
+A diverse group of University of California at Berkeley
+researchers from many backgrounds -- circuit design, computer
+architecture, massively parallel computing, computer-aided
+design, embedded hardware and software, programming languages,
+compilers, scientific programming, and numerical analysis -- met
+for nearly two years to discuss parallelism from these many
+angles. This talk and a technical report are the result. (See
+view.eecs.berkeley.edu)
+
+We concluded that sneaking up on the problem of parallelism the
+way industry is planning is likely to fail, and we desperately
+need a new solution for parallel hardware and software. Here are
+some of our recommendations:
+
+   * The overarching goal should be to make it easy to write programs
+     that execute efficiently on highly parallel computing systems
+
+   * The target should be 1000s of cores per chip, as these chips are
+     built from processing elements that are the most efficient in
+     MIPS (Million Instructions per Second) per watt, MIPS per area of
+     silicon, and MIPS per development dollar.
+
+   * Instead of traditional benchmarks, use 13 Dwarfs to design and
+     evaluate parallel programming models and architectures. (A dwarf
+     is an algorithmic method that captures a pattern of computation
+     and communication.)
+
+   * Autotuners should play a larger role than conventional compilers
+     in translating parallel programs.
+
+   * To maximize programmer productivity, future programming models
+     must be more human-centric than the conventional focus on
+     hardware or applications or formalisms.
+
+   * Traditional operating systems will be deconstructed and operating
+     system functionality will be orchestrated using libraries and
+     virtual machines.
+
+   * To explore the design space rapidly, use system emulators based
+     on Field Programmable Gate Arrays that are highly scalable, low
+     cost, and flexible. (see ramp.eecs.berkeley.edu)
+
+Now that the IT industry is urgently facing perhaps its greatest
+challenge in 50 years, and computer architecture is a necessary
+but not sufficient component to any solution, this talk declares
+that computer architecture is interesting once again.
+
+About the speaker:
+
+David A. Patterson has been Professor of Computer Science at the
+University of California, Berkeley since 1977, after receiving
+his all his degrees from UCLA. He is one of the pioneers of both
+RISC and RAID. He co-authored five books, including two on
+computer architecture with John Hennessy; the fourth edition of
+their graduate book was released in September. Past chair of the
+Computer Science Department at U.C. Berkeley and the Computing
+Research Association (CRA), he was elected President of the
+Association for Computing Machinery (ACM) for 2004 to 2006 and
+served on the Information Technology Advisory Committee for the
+U.S. President (PITAC) from 2003 to 2005.
+
+His work was recognized by education and research awards from ACM
+(Karlstrom Educator Award, Fellow) and IEEE (Von Neumann Medal,
+Mulligan Educator Medal, Johnson Information Storage Award,
+Fellow) and by election to the National Academy of Engineering.
+In 2005 he shared Japan's Computer & Communication award with
+Hennessy and was named to the Silicon Valley Engineering Hall of
+Fame. In 2006 he received the Distinguished Service Award from
+CRA and was elected to both the American Academy of Arts and
+Sciences and to the National Academy of Sciences.
+
+
+
+From sberlin at gmail.com  Tue Jan 30 17:33:53 2007
+From: sberlin at gmail.com (Sam Berlin)
+Date: Tue, 30 Jan 2007 17:33:53 -0500
+Subject: [concurrency-interest] Future Get/Done Race Condition
+Message-ID: <19196d860701301433t456cb11age2792fc4af539dbe@mail.gmail.com>
+
+Hi Folks,
+
+We recently started running our tests on a faster multi-processor
+machine and ran into a few race conditions, one of which we're unsure
+of how to fix.  What we're experiencing is that a Thread that has
+created a future and calls 'get' on it can retrieve the result before
+the future has 'done' called on itself.  This leads to more code being
+able to act before the finished-state of the future has cleaned itself
+up.
+
+The reason this is a problem is that we want to limit the number of
+outgoing pings sent to a host.  When Manager.ping(Host) is called, it
+synchronizes on a map and checks to see if there's an outstanding
+future for that host, and if so, returns it.  Otherwise (if there's no
+outstanding future), it creates one, adds it to the map, submits it to
+an executor service, and returns it.  When the future is finished,
+it's overridden done method synchronizes on the map and removes
+itself.
+
+The end result is the following code sometimes works & sometimes doesn't:
+
+---
+  // Setup response scenario, send ping & assert response
+  Future<PingResult> future = pingManager.ping(host);
+  PingResult result = future.get();
+  // check response assertions
+  // Change scenario so no response is sent..
+  try {
+      pingManager.ping(host).get();
+      fail("shouldn't have gotten a response!");
+      // Note: this fails occasionally because the above
+      // future's done method isn't called yet (which removes
+      // the outstanding future), so the pingManager
+      // is returning the same Future as above.
+  } catch(ExcecutionException expected) {}
+---
+
+We can easily add a small sleep, or a Thread.yield() to make sure
+other threads process (and the done() is called), but I'm wondering if
+there's any better way.
+
+Thanks very much for any ideas.
+
+Sam
+
+From dcholmes at optusnet.com.au  Tue Jan 30 18:24:42 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed, 31 Jan 2007 09:24:42 +1000
+Subject: [concurrency-interest] Future Get/Done Race Condition
+In-Reply-To: <19196d860701301433t456cb11age2792fc4af539dbe@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEBBHFAA.dcholmes@optusnet.com.au>
+
+Sam,
+
+done() is called after the internal synchronization used to block get() is
+released, so yes the thread that was doing get() can proceed to execute code
+for a long time before done() actually gets to be executed.
+
+The timing of these hook methods is always somewhat subjective. In some ways
+it might have been better to invoke done() prior to the actual release - in
+the same way that a barrier action for a CyclicBarrier is executed prior to
+the release of the barrier.
+
+The only way I can think to achieve what you want is to override all the get
+methods to add a "waitForDone" call that blocks until your done() method
+unblocks it. This is a bit crude but can be easily done with a
+CountDownLatch:
+
+    class MyFutureTask extends FutureTask {
+
+       CountDownLatch done = new CountDownLatch(1);
+       public V get() throws ... {
+          try { return super.get(); }
+          finally {
+             done.await();
+          }
+        }
+
+       // timed get() is a bit trickier :)
+
+       protected void done() {
+          try {
+             // real stuff
+          }
+          finally {
+             done.countDown();
+          }
+      }
+  }
+
+Cheers,
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Sam
+> Berlin
+> Sent: Wednesday, 31 January 2007 8:34 AM
+> To: Concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] Future Get/Done Race Condition
+>
+>
+> Hi Folks,
+>
+> We recently started running our tests on a faster multi-processor
+> machine and ran into a few race conditions, one of which we're unsure
+> of how to fix.  What we're experiencing is that a Thread that has
+> created a future and calls 'get' on it can retrieve the result before
+> the future has 'done' called on itself.  This leads to more code being
+> able to act before the finished-state of the future has cleaned itself
+> up.
+>
+> The reason this is a problem is that we want to limit the number of
+> outgoing pings sent to a host.  When Manager.ping(Host) is called, it
+> synchronizes on a map and checks to see if there's an outstanding
+> future for that host, and if so, returns it.  Otherwise (if there's no
+> outstanding future), it creates one, adds it to the map, submits it to
+> an executor service, and returns it.  When the future is finished,
+> it's overridden done method synchronizes on the map and removes
+> itself.
+>
+> The end result is the following code sometimes works & sometimes doesn't:
+>
+> ---
+>   // Setup response scenario, send ping & assert response
+>   Future<PingResult> future = pingManager.ping(host);
+>   PingResult result = future.get();
+>   // check response assertions
+>   // Change scenario so no response is sent..
+>   try {
+>       pingManager.ping(host).get();
+>       fail("shouldn't have gotten a response!");
+>       // Note: this fails occasionally because the above
+>       // future's done method isn't called yet (which removes
+>       // the outstanding future), so the pingManager
+>       // is returning the same Future as above.
+>   } catch(ExcecutionException expected) {}
+> ---
+>
+> We can easily add a small sleep, or a Thread.yield() to make sure
+> other threads process (and the done() is called), but I'm wondering if
+> there's any better way.
+>
+> Thanks very much for any ideas.
+>
+> Sam
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From sberlin at gmail.com  Tue Jan 30 18:41:37 2007
+From: sberlin at gmail.com (Sam Berlin)
+Date: Tue, 30 Jan 2007 18:41:37 -0500
+Subject: [concurrency-interest] Future Get/Done Race Condition
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCEEBBHFAA.dcholmes@optusnet.com.au>
+References: <19196d860701301433t456cb11age2792fc4af539dbe@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCEEBBHFAA.dcholmes@optusnet.com.au>
+Message-ID: <19196d860701301541i1f068d7fu7695e9241e6083e8@mail.gmail.com>
+
+Thanks for the suggestion, David.  A CountDownLatch should do the trick nicely.
+
+Do you think the behavior could be classified as a bug, or subject to
+fixing/changing in the future?  You're right that it is subjective,
+but it does seem odd that the documentation suggests that 'done' can
+perform bookkeeping tasks, yet a get() call can return before the
+bookkeeping is performed.
+
+Sam
+
+On 1/30/07, David Holmes <dcholmes at optusnet.com.au> wrote:
+> Sam,
+>
+> done() is called after the internal synchronization used to block get() is
+> released, so yes the thread that was doing get() can proceed to execute code
+> for a long time before done() actually gets to be executed.
+>
+> The timing of these hook methods is always somewhat subjective. In some ways
+> it might have been better to invoke done() prior to the actual release - in
+> the same way that a barrier action for a CyclicBarrier is executed prior to
+> the release of the barrier.
+>
+> The only way I can think to achieve what you want is to override all the get
+> methods to add a "waitForDone" call that blocks until your done() method
+> unblocks it. This is a bit crude but can be easily done with a
+> CountDownLatch:
+>
+>    class MyFutureTask extends FutureTask {
+>
+>       CountDownLatch done = new CountDownLatch(1);
+>       public V get() throws ... {
+>          try { return super.get(); }
+>          finally {
+>             done.await();
+>          }
+>        }
+>
+>       // timed get() is a bit trickier :)
+>
+>       protected void done() {
+>          try {
+>             // real stuff
+>          }
+>          finally {
+>             done.countDown();
+>          }
+>      }
+>  }
+>
+> Cheers,
+> David Holmes
+>
+> > -----Original Message-----
+> > From: concurrency-interest-bounces at cs.oswego.edu
+> > [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Sam
+> > Berlin
+> > Sent: Wednesday, 31 January 2007 8:34 AM
+> > To: Concurrency-interest at cs.oswego.edu
+> > Subject: [concurrency-interest] Future Get/Done Race Condition
+> >
+> >
+> > Hi Folks,
+> >
+> > We recently started running our tests on a faster multi-processor
+> > machine and ran into a few race conditions, one of which we're unsure
+> > of how to fix.  What we're experiencing is that a Thread that has
+> > created a future and calls 'get' on it can retrieve the result before
+> > the future has 'done' called on itself.  This leads to more code being
+> > able to act before the finished-state of the future has cleaned itself
+> > up.
+> >
+> > The reason this is a problem is that we want to limit the number of
+> > outgoing pings sent to a host.  When Manager.ping(Host) is called, it
+> > synchronizes on a map and checks to see if there's an outstanding
+> > future for that host, and if so, returns it.  Otherwise (if there's no
+> > outstanding future), it creates one, adds it to the map, submits it to
+> > an executor service, and returns it.  When the future is finished,
+> > it's overridden done method synchronizes on the map and removes
+> > itself.
+> >
+> > The end result is the following code sometimes works & sometimes doesn't:
+> >
+> > ---
+> >   // Setup response scenario, send ping & assert response
+> >   Future<PingResult> future = pingManager.ping(host);
+> >   PingResult result = future.get();
+> >   // check response assertions
+> >   // Change scenario so no response is sent..
+> >   try {
+> >       pingManager.ping(host).get();
+> >       fail("shouldn't have gotten a response!");
+> >       // Note: this fails occasionally because the above
+> >       // future's done method isn't called yet (which removes
+> >       // the outstanding future), so the pingManager
+> >       // is returning the same Future as above.
+> >   } catch(ExcecutionException expected) {}
+> > ---
+> >
+> > We can easily add a small sleep, or a Thread.yield() to make sure
+> > other threads process (and the done() is called), but I'm wondering if
+> > there's any better way.
+> >
+> > Thanks very much for any ideas.
+> >
+> > Sam
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at altair.cs.oswego.edu
+> > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+From dcholmes at optusnet.com.au  Tue Jan 30 19:37:08 2007
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed, 31 Jan 2007 10:37:08 +1000
+Subject: [concurrency-interest] Future Get/Done Race Condition
+In-Reply-To: <19196d860701301541i1f068d7fu7695e9241e6083e8@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEBCHFAA.dcholmes@optusnet.com.au>
+
+Sam,
+
+> Do you think the behavior could be classified as a bug, or subject to
+> fixing/changing in the future?  You're right that it is subjective,
+> but it does seem odd that the documentation suggests that 'done' can
+> perform bookkeeping tasks, yet a get() call can return before the
+> bookkeeping is performed.
+
+The spec doesn't make it clear what order things happen so there is at least
+room for a clarification. Changing the current behaviour is not an option,
+but perhaps there could be some way to control it. It isn't uncommon for
+"bookkeeping" tasks to occur asynchronously with respect to the main
+behaviour - it all depends on whether that bookkeeping is independent of
+that main behaviour, which in your case it is not. Noone else has raised
+this issue to date so that says something :)
+
+Cheers,
+David Holmes
+
+
+From sberlin at gmail.com  Tue Jan 30 20:36:22 2007
+From: sberlin at gmail.com (Sam Berlin)
+Date: Tue, 30 Jan 2007 20:36:22 -0500
+Subject: [concurrency-interest] Future Get/Done Race Condition
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCCEBCHFAA.dcholmes@optusnet.com.au>
+References: <19196d860701301541i1f068d7fu7695e9241e6083e8@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCCEBCHFAA.dcholmes@optusnet.com.au>
+Message-ID: <19196d860701301736s55ad4f17g4a0207901c526ea0@mail.gmail.com>
+
+Fair enough.  :)
+
+The CountDownLatch option is probably the best way to go overall, as
+it lets the individual FutureTask subclasses control whether or not
+done() stalls a get().
+
+I do suggest documentating the asynchronous nature of get/done.  The
+current documentation leaves it untouched, which depending on the
+reader's viewpoint could mean many different things.  Clarifying that
+'done' may not be called prior to 'get' completing may lead more
+people to recognize the issue and take care of it before it bites.
+
+Sam
+
+On 1/30/07, David Holmes <dcholmes at optusnet.com.au> wrote:
+> Sam,
+>
+> > Do you think the behavior could be classified as a bug, or subject to
+> > fixing/changing in the future?  You're right that it is subjective,
+> > but it does seem odd that the documentation suggests that 'done' can
+> > perform bookkeeping tasks, yet a get() call can return before the
+> > bookkeeping is performed.
+>
+> The spec doesn't make it clear what order things happen so there is at least
+> room for a clarification. Changing the current behaviour is not an option,
+> but perhaps there could be some way to control it. It isn't uncommon for
+> "bookkeeping" tasks to occur asynchronously with respect to the main
+> behaviour - it all depends on whether that bookkeeping is independent of
+> that main behaviour, which in your case it is not. Noone else has raised
+> this issue to date so that says something :)
+>
+> Cheers,
+> David Holmes
+>
+>
+
+From Martin.Buchholz at Sun.COM  Wed Jan 31 14:01:36 2007
+From: Martin.Buchholz at Sun.COM (Martin Buchholz)
+Date: Wed, 31 Jan 2007 11:01:36 -0800
+Subject: [concurrency-interest] Future Get/Done Race Condition
+Message-ID: <45C0E790.7040106@sun.com>
+
+Whether done() should complete before releasing threads blocked
+in get() is tricky.  If we were to start from scratch, I would
+prefer to have the more predictable serialized behavior where
+returning from get() guarantees that done() has completed.
+But compatibility trumps possibly better design here.
+
+We have a very similar issue with ThreadPoolExecutor.terminated().
+There the historical behavior is the opposite.
+Threads returning from ThreadPoolExecutor.awaitTermination()
+have a guarantee that terminated() has completed,
+and we have been careful to preserve that behavior in
+in-progress changes to ThreadPoolExecutor.
+
+In neither case do we currently document the behavior.
+I think that's a bug.
+
+I filed Sun bug
+
+6519887: Document whether "done" methods execute before waiters are released
+
+Martin
+
+From sberlin at gmail.com  Wed Jan 31 14:45:53 2007
+From: sberlin at gmail.com (Sam Berlin)
+Date: Wed, 31 Jan 2007 14:45:53 -0500
+Subject: [concurrency-interest] Future Get/Done Race Condition
+In-Reply-To: <45C0E790.7040106@sun.com>
+References: <45C0E790.7040106@sun.com>
+Message-ID: <19196d860701311145u1c9fd979wd4a61dae6416030e@mail.gmail.com>
+
+As we investigated the CountDownLatch, we noticed that that allowing
+get() to complete prior to done() is a very useful feature.  Many
+done() implementations will want to query get() to perform the
+bookkeeping based on the result.  If get() required done() to
+complete, then there would be a deadlock whenever get() was called
+within done().  So, the current behavior does seem to be the best
+choice overall, though documenting it would be even better.
+
+Sam
+
+On 1/31/07, Martin Buchholz <Martin.Buchholz at sun.com> wrote:
+> Whether done() should complete before releasing threads blocked
+> in get() is tricky.  If we were to start from scratch, I would
+> prefer to have the more predictable serialized behavior where
+> returning from get() guarantees that done() has completed.
+> But compatibility trumps possibly better design here.
+>
+> We have a very similar issue with ThreadPoolExecutor.terminated().
+> There the historical behavior is the opposite.
+> Threads returning from ThreadPoolExecutor.awaitTermination()
+> have a guarantee that terminated() has completed,
+> and we have been careful to preserve that behavior in
+> in-progress changes to ThreadPoolExecutor.
+>
+> In neither case do we currently document the behavior.
+> I think that's a bug.
+>
+> I filed Sun bug
+>
+> 6519887: Document whether "done" methods execute before waiters are released
+>
+> Martin
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+

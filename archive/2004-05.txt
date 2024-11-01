@@ -1,0 +1,1397 @@
+From news@kav.dk  Sat May  1 12:11:38 2004
+From: news@kav.dk (Kasper Nielsen)
+Date: Sat, 01 May 2004 13:11:38 +0200
+Subject: [concurrency-interest] optimization waste of time?
+Message-ID: <409385EA.5070302@kav.dk>
+
+Im wondering if the following optimization is a waste of time?
+(setter does not occur very frequently)
+
+
+volatile int lock
+//perhaps just replace it with 'a' being volatile and
+//read it each time
+
+int a;
+int b;
+int c;
+
+public setA(int i) {
+a=i;
+lock=0;
+}
+
+public setB(int i) {
+b=i;
+lock=0;
+}
+
+public setC(int i) {
+b=i;
+lock=0;
+}
+
+public int doStuffReallyFrequent()
+{
+int _lock=lock;
+return a+b+c;
+}
+
+insteadof
+
+volatile int a;
+volatile int b;
+volatile int c;
+
+public setA(int i) {
+a=i;
+}
+
+public setB(int i) {
+b=i;
+}
+
+public setC(int i) {
+b=i;
+}
+
+- Kasper
+public int doStuffReallyFrequent()
+{
+return a+b+c;
+}
+
+From dl@cs.oswego.edu  Sun May  2 14:51:50 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sun, 2 May 2004 09:51:50 -0400
+Subject: [concurrency-interest] optimization waste of time?
+In-Reply-To: <409385EA.5070302@kav.dk>
+References: <409385EA.5070302@kav.dk>
+Message-ID: <16532.64758.566166.640276@altair.cs.oswego.edu>
+
+I don't quite understand your example, but I think I can answer your
+question by saying that if you would otherwise be accessing a volatile
+more than once inside a method, it is generally a good idea to read it
+once and hold as a local. But if accessing only once, it doesn't
+matter.
+
+-Doug
+
+
+From brian@quiotix.com  Sun May  2 19:04:40 2004
+From: brian@quiotix.com (Brian Goetz)
+Date: Sun, 2 May 2004 11:04:40 -0700
+Subject: [concurrency-interest] optimization waste of time?
+In-Reply-To: <409385EA.5070302@kav.dk>
+References: <409385EA.5070302@kav.dk>
+Message-ID: <20040502180440.GB20676@lx.quiotix.com>
+
+> Im wondering if the following optimization is a waste of time?
+
+In the absence of stated performance goals and performance measurement
+showing that your program's performance does not meet its goals, I
+think the above question is almost meaningless.
+
+Write code so that it is correct, readable, and maintainable, and
+then, only then, if the performance is less than needed, consider
+optimizations.  Most of the time the performance will be fine.  
+
+That said, I don't really follow your example very well -- what are you
+trying to optimize?
+
+From news@kav.dk  Sun May  2 21:21:06 2004
+From: news@kav.dk (Kasper Nielsen)
+Date: Sun, 02 May 2004 22:21:06 +0200
+Subject: [concurrency-interest] optimization waste of time?
+In-Reply-To: <409385EA.5070302@kav.dk>
+References: <409385EA.5070302@kav.dk>
+Message-ID: <40955832.5060403@kav.dk>
+
+Sorry for the bad example.
+
+Basicly I have a class with a large number of setters that are called 
+very infrequently.
+
+I also have a method that is called frequently, this method uses all the 
+values set by the setter-methods.
+
+volatile int a,b,c,..z
+public void setA(int value) {
+   a=value;
+}
+public void setB(int value) {
+   b=value;
+}
+....
+public int doStuffReallyFrequent(){
+   return a+b+c+..+z;
+}
+
+
+I was wondering if it would be a meaningful optimization instead to have 
+a "global" lock to avoid a lot of volatile reads in the 
+doStuffReallyFrequent() method (reads of a,b,..z)
+
+int a,b,c,..z
+volatile int visibility_lock;
+public void setX(int value) {
+   x=value;
+   visibility_lock=0;
+}
+
+public int doStuffReallyFrequent(){
+   int foo=visibility_lock;
+   return a+b+c+..+z;
+}
+
+Much like the count variable in ConcurrentHashMap.Segment. (in terms of 
+visibility)
+
+On my system (Pentium class, uniprocessor) there was only a small 
+performance difference between the two approaches (Warning! 
+microbenchmark), not anything that would matter in real case scenarious.
+
+However on some funky multi-cpu system there might be a real benefit by 
+using the later approach.
+
+I realize it is impossible to give a definitive answer, but does anybody 
+have som general guidelines?
+
+- Kasper
+
+
+Kasper Nielsen wrote:
+
+> Im wondering if the following optimization is a waste of time?
+> (setter does not occur very frequently)
+> 
+> 
+> volatile int lock
+> //perhaps just replace it with 'a' being volatile and
+> //read it each time
+> 
+> int a;
+> int b;
+> int c;
+> 
+> public setA(int i) {
+> a=i;
+> lock=0;
+> }
+> 
+> public setB(int i) {
+> b=i;
+> lock=0;
+> }
+> 
+> public setC(int i) {
+> b=i;
+> lock=0;
+> }
+> 
+> public int doStuffReallyFrequent()
+> {
+> int _lock=lock;
+> return a+b+c;
+> }
+> 
+> insteadof
+> 
+> volatile int a;
+> volatile int b;
+> volatile int c;
+> 
+> public setA(int i) {
+> a=i;
+> }
+> 
+> public setB(int i) {
+> b=i;
+> }
+> 
+> public setC(int i) {
+> b=i;
+> }
+> 
+> - Kasper
+> public int doStuffReallyFrequent()
+> {
+> return a+b+c;
+> }
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+
+From brian@quiotix.com  Sun May  2 23:21:18 2004
+From: brian@quiotix.com (Brian Goetz)
+Date: Sun, 2 May 2004 15:21:18 -0700
+Subject: [concurrency-interest] optimization waste of time?
+In-Reply-To: <40955832.5060403@kav.dk>
+References: <409385EA.5070302@kav.dk> <40955832.5060403@kav.dk>
+Message-ID: <20040502222118.GG20676@lx.quiotix.com>
+
+> Basicly I have a class with a large number of setters that are called 
+> very infrequently.
+
+Better might be to use Atomics to maintain A, B, and C.  Its certainly
+easier to see what's going on and the cost should be comparable.
+
+
+From news@kav.dk  Mon May  3 20:03:15 2004
+From: news@kav.dk (Kasper Nielsen)
+Date: Mon, 03 May 2004 21:03:15 +0200
+Subject: [concurrency-interest] optimization waste of time?
+In-Reply-To: <20040502222118.GG20676@lx.quiotix.com>
+References: <409385EA.5070302@kav.dk> <40955832.5060403@kav.dk> <20040502222118.GG20676@lx.quiotix.com>
+Message-ID: <40969773.10007@kav.dk>
+
+Thanks Brian,
+
+But I don't think there is any reason for using Atomics to maintain 
+anything since I don't use any atomic operations. Reads on atomics are 
+in most cases just volatile reads.
+
+What I was looking for was inputs on whether on not people used 
+optimizations such as
+
+visibility_lock acquire
+(non-volatile) read
+(non-volatile) read
+(non-volatile) read
+(non-volatile) read
+...
+instead of just doing
+
+(volatile) read
+(volatile) read
+(volatile) read
+(volatile) read
+...
+
+or if its a waste of time. As I mentioned previously - on the platform I 
+work on - I don't gain much by using this form of optimization, but 
+platforms differ.
+
+Of course the latter form is easier to understand but I was looking at 
+it from a performance perspective.
+
+- Kasper
+
+
+Brian Goetz wrote:
+
+>>Basicly I have a class with a large number of setters that are called 
+>>very infrequently.
+> 
+> 
+> Better might be to use Atomics to maintain A, B, and C.  Its certainly
+> easier to see what's going on and the cost should be comparable.
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+
+From brian@quiotix.com  Mon May  3 20:09:37 2004
+From: brian@quiotix.com (Brian Goetz)
+Date: Mon, 3 May 2004 12:09:37 -0700
+Subject: [concurrency-interest] optimization waste of time?
+In-Reply-To: <40969773.10007@kav.dk>
+References: <409385EA.5070302@kav.dk> <40955832.5060403@kav.dk> <20040502222118.GG20676@lx.quiotix.com> <40969773.10007@kav.dk>
+Message-ID: <20040503190937.GT20676@lx.quiotix.com>
+
+> But I don't think there is any reason for using Atomics to maintain 
+> anything since I don't use any atomic operations. Reads on atomics are 
+> in most cases just volatile reads.
+
+Volatile has additional guarantees (reordering restrictions) under the
+new JMM that may make it more expensive than the CAS used by atomics.
+
+> What I was looking for was inputs on whether on not people used 
+> optimizations such as
+
+Whether its a win depends on the number of reads.  I'm sure there's a
+breakeven point, somewhere between one an a million, where the
+acquire/read/read/read outperforms the multiple volatile reads.  That
+breakeven point will vary with the processor, the JVM, the number of
+processors, etc.  
+
+> Of course the latter form is easier to understand but I was looking at 
+> it from a performance perspective.
+
+In the absence of numbers, I think the answer is "there probably is a
+difference for some number of variables on some processors." Given how
+vague that is, its probably best to assume everything is fine now until
+you have more well-defined performance goals and then can measure the
+difference against your goals.
+
+If you're going to do something "tricky" like that, be sure and
+documente what you're doing very carefully.
+
+From news@kav.dk  Mon May  3 22:08:38 2004
+From: news@kav.dk (Kasper Nielsen)
+Date: Mon, 03 May 2004 23:08:38 +0200
+Subject: [concurrency-interest] optimization waste of time?
+In-Reply-To: <20040503190937.GT20676@lx.quiotix.com>
+References: <409385EA.5070302@kav.dk> <40955832.5060403@kav.dk> <20040502222118.GG20676@lx.quiotix.com> <40969773.10007@kav.dk> <20040503190937.GT20676@lx.quiotix.com>
+Message-ID: <4096B4D6.1040707@kav.dk>
+
+Brian Goetz wrote:
+>>But I don't think there is any reason for using Atomics to maintain 
+>>anything since I don't use any atomic operations. Reads on atomics are 
+>>in most cases just volatile reads.
+> 
+> 
+> Volatile has additional guarantees (reordering restrictions) under the
+> new JMM that may make it more expensive than the CAS used by atomics.
+> 
+
+Correct me if im wrong, but I was under the impression that get/set on 
+atomics had the same memory sematics as a volatile read/write?
+
+- Kasper
+
+From brian@quiotix.com  Mon May  3 22:13:29 2004
+From: brian@quiotix.com (Brian Goetz)
+Date: Mon, 3 May 2004 14:13:29 -0700
+Subject: [concurrency-interest] optimization waste of time?
+In-Reply-To: <4096B4D6.1040707@kav.dk>
+References: <409385EA.5070302@kav.dk> <40955832.5060403@kav.dk> <20040502222118.GG20676@lx.quiotix.com> <40969773.10007@kav.dk> <20040503190937.GT20676@lx.quiotix.com> <4096B4D6.1040707@kav.dk>
+Message-ID: <20040503211329.GF5056@lx.quiotix.com>
+
+> Correct me if im wrong, but I was under the impression that get/set on 
+> atomics had the same memory sematics as a volatile read/write?
+
+You are correct. 
+
+The JMM also imposes some reordering constraints on volatile
+reads/writes which may further affect performance.  
+
+
+From dnavas@borland.com  Thu May 13 19:32:49 2004
+From: dnavas@borland.com (Dave Navas)
+Date: Thu, 13 May 2004 11:32:49 -0700
+Subject: [concurrency-interest] System.nanoTime
+Message-ID: <40A3BF51.7060807@borland.com>
+
+I've been down this path with my own code, and while
+nanoTime() will nicely get you more precision, and
+may well do so more efficiently on some platforms,
+on Windows platforms, you're better off with:
+
+
+    startTick = asm(rdtsc)
+    .
+    tickDiff = (asm(rdtsc) - startTick)
+
+    .
+
+    nanoTime = tickDiff / frequency
+
+The division is costly (it's so costly, in fact, that
+you can gain time by checking if the tickDiff is a 32bit
+number and replacing the 64bit divide with a 32bit one),
+and if you are keeping a sum of tickDiffs, the divide can
+be put off semi-indefinitely.
+
+In many instances, my own use of a nanoTime() equivalent
+swamped the code being analyzed.
+
+There are, of course, some pitfalls:
+    1) processors that change their frequencies
+    2) decreases in time of overflow directly related to
+       increases in CPU processor frequencies
+    3) Keeping sum-of-squares for std.dev. purposes is
+       even worse (ie: overflows even faster).
+
+Of course, in those instances, you can fall-back to code that
+returns values in units of nanoseconds.
+
+I'd highly suggest, given that nanoTime() is already not related
+in time to anything else, that you create an API more like:
+
+    long getTick()
+    long getTickDiffNanos(long startTick);
+    long getTickDiffMicros(long startTick);
+    long convertTicksToNanos(long tickDiff);
+    long convertTicksToMicros(long tickDiff);
+
+The micro()-based calls will also allow you to do a more accurate
+division....
+
+David Navas
+-author ServerTrace
+
+PS: Not on the concurrency list, so CC: me with any feedback, thanks.
+
+
+
+From dl@cs.oswego.edu  Fri May 14 11:13:56 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 14 May 2004 06:13:56 -0400
+Subject: [concurrency-interest] System.nanoTime
+In-Reply-To: <40A3BF51.7060807@borland.com>
+References: <40A3BF51.7060807@borland.com>
+Message-ID: <16548.39908.3133.899426@altair.cs.oswego.edu>
+
+> The division is costly 
+
+Well, there was no temptation at all to poison this otherwise simple
+API just to save a divide instruction on one platform, especially
+considering that such an API would make no sense on multiprocessors
+and non Win32 systems.
+
+It is possible to internally do a bit better than you indicate by
+pre-wiring optimal divide sequences for common frequency values
+weighted by the scaling factor that gives you nanosecond units.
+
+-Doug
+
+From dnavas@borland.com  Fri May 14 19:32:04 2004
+From: dnavas@borland.com (Dave Navas)
+Date: Fri, 14 May 2004 11:32:04 -0700
+Subject: [concurrency-interest] System.nanoTime
+In-Reply-To: <16548.39908.3133.899426@altair.cs.oswego.edu>
+References: <40A3BF51.7060807@borland.com> <16548.39908.3133.899426@altair.cs.oswego.edu>
+Message-ID: <40A510A4.6080809@borland.com>
+
+Doug Lea wrote:
+> Well, there was no temptation at all to poison this otherwise simple
+> API just to save a divide instruction on one platform
+
+Well, it would be hard to make a compelling argument, considering
+that what we have in 1.5 is merely a beta.  After all, API cleanliness
+is definitely high on the list of items to maintain.  The problem
+is that, I had an API like this.  I moved away from it.  There was
+a reason....
+
+First, to dispel a couple of misconceptions:
+> considering that such an API would make no sense on multiprocessors
+
+False.  I'm writing this on an SMP box.  rdtsc works just fine.  The
+only small gotcha is that the tick counters are not guaranteed to start
+on the same value -- however, they do update at the same rate.  Other
+platforms differ (say, the Alpha with asynchronous clocks....)
+
+> and non Win32 systems.
+
+There is more than one operating system that runs on the x86 processor.
+
+Additionally, for nanoseconds, you are not just talking about a divide.
+Considering that clock speeds are very close to the nanosecond range,
+you actually need to convert into a non-integral format of some sort,
+otherwise you risk truly massive timing errors  [and, guess what...].
+
+> It is possible to internally do a bit better than you indicate by
+> pre-wiring optimal divide sequences for common frequency values
+> weighted by the scaling factor that gives you nanosecond units.
+
+Yes, it would be possible.  It would also be at least partially
+necessary considering the rounding errors mentioned above.  Too
+bad it isn't being done.  Some timings with the 1.5.0 beta I just
+downloaded (OITime is mine -- time0() is the 'native' call, while
+time() is a wrapper that takes care of differences between OSes.
+Considering the accuracy problems of nanoTime(), I am using my own
+time methods for benching purposes):
+
+
+     Benching OITime
+     FREQUENCY = 2392Mhz
+     Benched diff at: 224ns
+     Benched time at: 83ns
+     Benched time0 at: 36ns
+     Benched diff at: 117ns
+     Benched time at: 40ns
+     Benched time0 at: 37ns
+     Benched diff at: 116ns
+     Benched time at: 40ns
+     Benched time0 at: 35ns
+
+
+     Benching nanoTime
+     Benched nanoTime() diff-pair at: 1189ns
+     Benched nanoTime at: 594ns
+     Benched nanoTime() diff-pair at: 1063ns
+     Benched nanoTime at: 543ns
+     Benched nanoTime() diff-pair at: 1018ns
+     Benched nanoTime at: 500ns
+
+     Run arbitrary test-code:
+     millis = 8437ms
+     OITime nanos 8450289224ns
+     System.nanos = 10106557674
+     millis = 8610ms
+     OITime nanos 8601452025ns
+     System.nanos = 10287347348
+     millis = 8172ms
+     OITime nanos 8176867591ns
+     System.nanos = 9779538788
+
+As I said, it's hard to make a compelling argument based on beta
+code.  However, my code runs 9-14 times faster, and actually has
+some semblence of accuracy.
+
+(Hint: nanoTime * 2 / 2.392 ~= OITime.nanos)
+
+<shrug>
+
+Do what you feel is best -- after all, I already have code that
+works.  It just seems like a shame not to allow others the benefit
+of it.
+
+-Dave
+
+
+
+From dl@cs.oswego.edu  Sat May 15 11:50:17 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sat, 15 May 2004 06:50:17 -0400
+Subject: [concurrency-interest] System.nanoTime
+In-Reply-To: <40A510A4.6080809@borland.com>
+References: <40A3BF51.7060807@borland.com>
+ <16548.39908.3133.899426@altair.cs.oswego.edu>
+ <40A510A4.6080809@borland.com>
+Message-ID: <16549.62953.625443.814951@altair.cs.oswego.edu>
+
+Thanks for the prodding. We'll work on reducing overhead
+and improving accuracy of x86 nanoTime. 
+
+-Doug
+
+From dl@cs.oswego.edu  Thu May 20 12:56:57 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Thu, 20 May 2004 07:56:57 -0400
+Subject: [concurrency-interest] dl.util.concurrent 1.3.4
+Message-ID: <16556.40201.167510.323661@altair.cs.oswego.edu>
+
+A minor update of EDU.oswego.cs.dl.util.concurrent is available at
+http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/intro.html
+It corrects two problems: Inconsistent method overriding in WaitableX
+classes, and inability to shutdownAfterProcessingCurrentlyQueuedTasks
+in QueuedExecutor before running any tasks.
+
+Reminder: The dl.u.c package is going into maintenance mode. PLEASE
+plan to convert applications to use the JDK1.5 JSR166 versions so that
+dl.u.c can gracefully fade into oblivion.
+
+Also, a preview of an upcoming request: Tiger beta2 is finally
+scheduled to be released in a week or so. Compared to beta1, this will
+include all changes made since November 2003, with APIs matching the
+proposed final JSR166 specs at
+http://gee.cs.oswego.edu/dl/concurrency-interest/index.html .  Upon
+release, we will ask everyone to use/test as much as possible. The
+window for dealing with any problems between beta2 and FCS is
+projected to be very short, so we will need all of your help. (People
+using early-access/CAP builds can start on this now!)
+
+-Doug
+
+
+
+From aakriti.dharmani@iflexsolutions.com  Wed May 26 11:33:55 2004
+From: aakriti.dharmani@iflexsolutions.com (aakriti.dharmani@iflexsolutions.com)
+Date: Wed, 26 May 2004 16:03:55 +0530
+Subject: [concurrency-interest] Looking for pre-1.5 JVM version of util.concurrent
+Message-ID: <10898BE7CA96D611988B000802255AAF067172A9@fmgrt.rt.i-flex.com>
+
+This is a multi-part message in MIME format.
+
+------_=_NextPart_001_01C4430C.F268FF4A
+Content-Type: text/plain;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+Hi All,
+
+Am unable to join the concurrency mailing list for some reason, but I
+have a rather important issue to handle. Kindly do guide me with it if
+possible.
+
+=20
+
+We are looking at using util.concurrent for one of our modules requiring
+a multithreaded architecture. But we would be developing using 1.3/1.4
+JVM. Is there an emulated version of the JSR166 concurrent specification
+that we can use for now for pre 1.5 JVMs and then later on switch to 1.5
+JVM when we need to?
+
+=20
+
+Thanks and Regards,
+
+Aakriti
+
+=20
+
+
+------_=_NextPart_001_01C4430C.F268FF4A
+Content-Type: text/html;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+<html xmlns:o=3D"urn:schemas-microsoft-com:office:office" =
+xmlns:w=3D"urn:schemas-microsoft-com:office:word" =
+xmlns=3D"http://www.w3.org/TR/REC-html40">
+
+<head>
+<meta http-equiv=3DContent-Type content=3D"text/html; =
+charset=3Dus-ascii">
+<meta name=3DGenerator content=3D"Microsoft Word 11 (filtered medium)">
+<style>
+<!--
+ /* Style Definitions */
+ p.MsoNormal, li.MsoNormal, div.MsoNormal
+	{margin:0in;
+	margin-bottom:.0001pt;
+	font-size:12.0pt;
+	font-family:"Times New Roman";}
+a:link, span.MsoHyperlink
+	{color:blue;
+	text-decoration:underline;}
+a:visited, span.MsoHyperlinkFollowed
+	{color:purple;
+	text-decoration:underline;}
+span.EmailStyle17
+	{mso-style-type:personal-compose;
+	font-family:Arial;
+	color:windowtext;}
+@page Section1
+	{size:8.5in 11.0in;
+	margin:1.0in 1.25in 1.0in 1.25in;}
+div.Section1
+	{page:Section1;}
+-->
+</style>
+
+</head>
+
+<body lang=3DEN-US link=3Dblue vlink=3Dpurple>
+
+<div class=3DSection1>
+
+<p class=3DMsoNormal><font size=3D2 face=3D"Courier New"><span =
+style=3D'font-size:10.0pt;
+font-family:"Courier New"'>Hi All,<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 face=3D"Courier New"><span =
+style=3D'font-size:10.0pt;
+font-family:"Courier New"'>Am unable to join the concurrency mailing =
+list for
+some reason, but I have a rather important issue to handle. Kindly do =
+guide me
+with it if possible.<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal style=3D'text-autospace:none'><font size=3D2 =
+face=3D"Courier New"><span
+style=3D'font-size:10.0pt;font-family:"Courier =
+New"'><o:p>&nbsp;</o:p></span></font></p>
+
+<p class=3DMsoNormal style=3D'text-autospace:none'><font size=3D2 =
+face=3D"Courier New"><span
+style=3D'font-size:10.0pt;font-family:"Courier New"'>We are looking at =
+using
+util.concurrent for one of our modules requiring a multithreaded =
+architecture. But
+we would be developing using 1.3/1.4 JVM. Is there an emulated version =
+of the
+JSR166 concurrent specification that we can use for now for pre 1.5 JVMs =
+and
+then later on switch to 1.5 JVM when we need =
+to?<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal style=3D'text-autospace:none'><font size=3D2 =
+face=3D"Courier New"><span
+style=3D'font-size:10.0pt;font-family:"Courier =
+New"'><o:p>&nbsp;</o:p></span></font></p>
+
+<p class=3DMsoNormal style=3D'text-autospace:none'><font size=3D2 =
+face=3D"Courier New"><span
+style=3D'font-size:10.0pt;font-family:"Courier New"'>Thanks and =
+Regards,<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal style=3D'text-autospace:none'><font size=3D2 =
+face=3D"Courier New"><span
+style=3D'font-size:10.0pt;font-family:"Courier =
+New"'>Aakriti<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal style=3D'text-autospace:none'><font size=3D2 =
+face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial'><o:p>&nbsp;</o:p></span></fo=
+nt></p>
+
+</div>
+
+</body>
+
+</html>
+
+------_=_NextPart_001_01C4430C.F268FF4A--
+
+From ogg@valaran.com  Wed May 26 19:04:43 2004
+From: ogg@valaran.com (Michael Ogg)
+Date: Wed, 26 May 2004 14:04:43 -0400
+Subject: [concurrency-interest] Looking for pre-1.5 JVM version of util.concurrent
+In-Reply-To: <10898BE7CA96D611988B000802255AAF067172A9@fmgrt.rt.i-flex.com>
+References: <10898BE7CA96D611988B000802255AAF067172A9@fmgrt.rt.i-flex.com>
+Message-ID: <40B4DC3B.4020802@valaran.com>
+
+I won't tell you what to do - rather just say what we're doing faced 
+with this same situation.
+
+As has been discussed on this list, there are several issues involved 
+with using the JSR166 code on pre-1.5 JVMs. Since our code is 
+"production quality" (well you can argue about the quality, but it's 
+certainly in production use), we felt that it was not wise to use any 
+hacks (no offense to anyone) just to avoid engineering changes down the 
+road. Therefore, we're using the good ole dl.u.c classes in our 
+production code, and will continue to do so until Tiger is FCS, or 
+possibly into one or two dotted realeases (since we can't tell our 
+customers just to switch to Tiger right away to make our lives easier). 
+Which will mean of course that then we'll have to switch from dl.u.c to 
+j.u.c which won't be completely trivial, but we figure less painful than 
+going straight to JSR166 while living in a 1.4 world. The conflicts of 
+trying to do good computer science, with the constraints of software 
+engineering and business realities.
+
+Michael
+
+aakriti.dharmani@iflexsolutions.com wrote:
+> Hi All,
+> 
+> Am unable to join the concurrency mailing list for some reason, but I 
+> have a rather important issue to handle. Kindly do guide me with it if 
+> possible.
+> 
+>  
+> 
+> We are looking at using util.concurrent for one of our modules requiring 
+> a multithreaded architecture. But we would be developing using 1.3/1.4 
+> JVM. Is there an emulated version of the JSR166 concurrent specification 
+> that we can use for now for pre 1.5 JVMs and then later on switch to 1.5 
+> JVM when we need to?
+> 
+>  
+> 
+> Thanks and Regards,
+> 
+> Aakriti
+> 
+>  
+> 
+
+-- 
+   +-----------------------------------------------------------+
+   | Michael Ogg              | e-mail: ogg@valaran.com        |
+   | CTO, Valaran Corporation | URL:    http://www.valaran.com |
+   | 212 Carnegie Center #201 | voice:  +1-609-945-7259        |
+   | Princeton NJ 08540       | fax:    +1-609-716-8463        |
+   +-----------------------------------------------------------+
+
+
+From leou@us.ibm.com  Thu May 27 22:01:39 2004
+From: leou@us.ibm.com (Leo Uzcategui)
+Date: Thu, 27 May 2004 15:01:39 -0600
+Subject: [concurrency-interest] Leo Uzcategui/Austin/IBM is out of the office.
+Message-ID: <OF62428F09.EA989867-ON87256EA1.0073822A-87256EA1.0073822B@us.ibm.com>
+
+--0__=08BBE432DFE004BA8f9e8a93df938690918c08BBE432DFE004BA
+Content-type: text/plain; charset=US-ASCII
+
+
+
+
+
+I will be out of the office starting  05/27/2004 and will not return until
+06/03/2004.
+
+For assistance, please contact Robin Redden at (512) 838-1542.
+--0__=08BBE432DFE004BA8f9e8a93df938690918c08BBE432DFE004BA
+Content-type: text/html; charset=US-ASCII
+Content-Disposition: inline
+
+<html><body>
+<p>I will be out of the office starting  05/27/2004 and will not return until 06/03/2004.<br>
+<br>
+For assistance, please contact Robin Redden at (512) 838-1542.<br>
+</body></html>
+--0__=08BBE432DFE004BA8f9e8a93df938690918c08BBE432DFE004BA--
+
+
+From ian.griffiths@yellow-b.com  Fri May 28 08:18:04 2004
+From: ian.griffiths@yellow-b.com (Ian Griffiths)
+Date: Fri, 28 May 2004 09:18:04 +0200
+Subject: [concurrency-interest] Looking for pre-1.5 JVM version of
+ util.concurrent
+In-Reply-To: <40B4DC3B.4020802@valaran.com>
+References: <10898BE7CA96D611988B000802255AAF067172A9@fmgrt.rt.i-flex.com> <40B4DC3B.4020802@valaran.com>
+Message-ID: <WorldClient-F200405280918.AA18040058@yellow-b.com>
+
+We have taken a slightly different approach:
+
+We use an API that we developed a couple of years ago. We have now 
+written a set of wrappers for it to make its structure and method calls 
+similar to the new concurrent package.
+
+We will convert our existing programs to call the new "wrapper" API ver 
+the next year or so. All new development will call it.
+
+When our customers, JDK 1.5.X and we are ready for the change, we will 
+swith to a new version of the "wrapper" that calls the new concurrent 
+utilities in 1.5 (the old version will still be used on 1.4). 
+
+We will then progressively replace the calls to the wrappers by direct 
+calls to the concurrent utilities when we can be confident that 
+customers have all switched to 1.5.
+
+Hope this helps
+
+Ian
+
+-----Original Message-----
+From: Michael Ogg <ogg@valaran.com>
+To: aakriti.dharmani@iflexsolutions.com
+Cc: concurrency-interest@altair.cs.oswego.edu
+Date: Wed, 26 May 2004 14:04:43 -0400
+Subject: Re: [concurrency-interest] Looking for pre-1.5 JVM version of 
+util.concurrent
+
+> I won't tell you what to do - rather just say what we're doing faced 
+> with this same situation.
+> 
+> As has been discussed on this list, there are several issues involved
+> with using the JSR166 code on pre-1.5 JVMs. Since our code is 
+> "production quality" (well you can argue about the quality, but it's 
+> certainly in production use), we felt that it was not wise to use any
+> hacks (no offense to anyone) just to avoid engineering changes down
+> the 
+> road. Therefore, we're using the good ole dl.u.c classes in our 
+> production code, and will continue to do so until Tiger is FCS, or 
+> possibly into one or two dotted realeases (since we can't tell our 
+> customers just to switch to Tiger right away to make our lives
+> easier). 
+> Which will mean of course that then we'll have to switch from dl.u.c
+> to 
+> j.u.c which won't be completely trivial, but we figure less painful
+> than 
+> going straight to JSR166 while living in a 1.4 world. The conflicts
+> of 
+> trying to do good computer science, with the constraints of software 
+> engineering and business realities.
+> 
+> Michael
+> 
+> aakriti.dharmani@iflexsolutions.com wrote:
+> > Hi All,
+> > 
+> > Am unable to join the concurrency mailing list for some reason, but
+> I 
+> > have a rather important issue to handle. Kindly do guide me with it
+> if 
+> > possible.
+> > 
+> >  
+> > 
+> > We are looking at using util.concurrent for one of our modules
+> requiring 
+> > a multithreaded architecture. But we would be developing using
+> 1.3/1.4 
+> > JVM. Is there an emulated version of the JSR166 concurrent
+> specification 
+> > that we can use for now for pre 1.5 JVMs and then later on switch
+> to 1.5 
+> > JVM when we need to?
+> > 
+> >  
+> > 
+> > Thanks and Regards,
+> > 
+> > Aakriti
+> > 
+> >  
+> > 
+> 
+> -- 
+>    +-----------------------------------------------------------+
+>    | Michael Ogg              | e-mail: ogg@valaran.com        |
+>    | CTO, Valaran Corporation | URL:    http://www.valaran.com |
+>    | 212 Carnegie Center #201 | voice:  +1-609-945-7259        |
+>    | Princeton NJ 08540       | fax:    +1-609-716-8463        |
+>    +-----------------------------------------------------------+
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From aakriti.dharmani@iflexsolutions.com  Fri May 28 08:28:36 2004
+From: aakriti.dharmani@iflexsolutions.com (aakriti.dharmani@iflexsolutions.com)
+Date: Fri, 28 May 2004 12:58:36 +0530
+Subject: [concurrency-interest] RE: Looking for pre-1.5 JVM version of util.concurrent
+Message-ID: <10898BE7CA96D611988B000802255AAF067847EF@fmgrt.rt.i-flex.com>
+
+This is a multi-part message in MIME format.
+
+------_=_NextPart_001_01C44485.636331C8
+Content-Type: text/plain;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+Firstly, Thanks Doug, Micheal and Ian for your inputs.
+
+We too had initially thought of writing wrapper classes for the existing
+dl.concurrent package and then doing away with it when 1.5 VM is
+supported. But there would be a difference in the implementation from
+JSR166 spec (Am referring to the implementation of the two concurrent
+specifications)
+
+But then we came across the emulated version of JSR166 concurrency spec
+at the site http://gee.cs.oswego.edu/dl/concurrency-interest/jsr166/
+
+Accordingly we have created a build for the emulated version and it
+works fine with 1.3/1.4 VMs .
+
+As our product development will take about a year we thought it would be
+safe to use the emulated version until then for development purpose.
+
+Do correct me if there's something that I am missing out on this front.
+
+Thanks again,
+
+Aakriti.
+
+=20
+
+  _____ =20
+
+From: Aakriti Dharmani-RT=20
+Sent: Wednesday, May 26, 2004 4:04 PM
+To: 'concurrency-interest@altair.cs.oswego.edu'
+Subject: Looking for pre-1.5 JVM version of util.concurrent
+
+=20
+
+Hi All,
+
+Am unable to join the concurrency mailing list for some reason, but I
+have a rather important issue to handle. Kindly do guide me with it if
+possible.
+
+=20
+
+We are looking at using util.concurrent for one of our modules requiring
+a multithreaded architecture. But we would be developing using 1.3/1.4
+JVM. Is there an emulated version of the JSR166 concurrent specification
+that we can use for now for pre 1.5 JVMs and then later on switch to 1.5
+JVM when we need to?
+
+=20
+
+Thanks and Regards,
+
+Aakriti
+
+=20
+
+
+------_=_NextPart_001_01C44485.636331C8
+Content-Type: text/html;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+<html xmlns:v=3D"urn:schemas-microsoft-com:vml" =
+xmlns:o=3D"urn:schemas-microsoft-com:office:office" =
+xmlns:w=3D"urn:schemas-microsoft-com:office:word" =
+xmlns:st1=3D"urn:schemas-microsoft-com:office:smarttags" =
+xmlns=3D"http://www.w3.org/TR/REC-html40">
+
+<head>
+<meta http-equiv=3DContent-Type content=3D"text/html; =
+charset=3Dus-ascii">
+<meta name=3DGenerator content=3D"Microsoft Word 11 (filtered medium)">
+<!--[if !mso]>
+<style>
+v\:* {behavior:url(#default#VML);}
+o\:* {behavior:url(#default#VML);}
+w\:* {behavior:url(#default#VML);}
+.shape {behavior:url(#default#VML);}
+</style>
+<![endif]--><o:SmartTagType
+ namespaceuri=3D"urn:schemas-microsoft-com:office:smarttags" =
+name=3D"PersonName"/>
+<!--[if !mso]>
+<style>
+st1\:*{behavior:url(#default#ieooui) }
+</style>
+<![endif]-->
+<style>
+<!--
+ /* Font Definitions */
+ @font-face
+	{font-family:Tahoma;
+	panose-1:2 11 6 4 3 5 4 4 2 4;}
+ /* Style Definitions */
+ p.MsoNormal, li.MsoNormal, div.MsoNormal
+	{margin:0in;
+	margin-bottom:.0001pt;
+	font-size:12.0pt;
+	font-family:"Times New Roman";}
+a:link, span.MsoHyperlink
+	{color:blue;
+	text-decoration:underline;}
+a:visited, span.MsoHyperlinkFollowed
+	{color:purple;
+	text-decoration:underline;}
+span.EmailStyle17
+	{mso-style-type:personal;
+	font-family:Arial;
+	color:windowtext;}
+span.EmailStyle18
+	{mso-style-type:personal-reply;
+	font-family:Arial;
+	color:navy;}
+@page Section1
+	{size:8.5in 11.0in;
+	margin:1.0in 1.25in 1.0in 1.25in;}
+div.Section1
+	{page:Section1;}
+-->
+</style>
+
+</head>
+
+<body lang=3DEN-US link=3Dblue vlink=3Dpurple>
+
+<div class=3DSection1>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Firstly, Thanks Doug, Micheal and =
+Ian for
+your inputs.<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>We too had initially thought of =
+writing
+wrapper classes for the existing dl.concurrent package and then doing =
+away with
+it when 1.5 VM is supported. But there would be a difference in the
+implementation from JSR166 spec (Am referring to the implementation of =
+the two concurrent
+specifications)<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>But then we came across the =
+emulated
+version of JSR166 concurrency spec at the site <a
+href=3D"http://gee.cs.oswego.edu/dl/concurrency-interest/jsr166/">http://=
+gee.cs.oswego.edu/dl/concurrency-interest/jsr166/</a><o:p></o:p></span></=
+font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Accordingly we have created a build =
+for
+the emulated version and it works fine with 1.3/1.4 VMs =
+.<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>As our product development will =
+take about
+a year we thought it would be safe to use the emulated version until =
+then for
+development purpose.<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Do correct me if there&#8217;s =
+something that
+I am missing out on this front.<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Thanks =
+again,<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Aakriti.<o:p></o:p></span></font></p=
+>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'><o:p>&nbsp;</o:p></span></font></p>
+
+<div>
+
+<div class=3DMsoNormal align=3Dcenter style=3D'text-align:center'><font =
+size=3D3
+face=3D"Times New Roman"><span style=3D'font-size:12.0pt'>
+
+<hr size=3D2 width=3D"100%" align=3Dcenter tabindex=3D-1>
+
+</span></font></div>
+
+<p class=3DMsoNormal><b><font size=3D2 face=3DTahoma><span =
+style=3D'font-size:10.0pt;
+font-family:Tahoma;font-weight:bold'>From:</span></font></b><font =
+size=3D2
+face=3DTahoma><span style=3D'font-size:10.0pt;font-family:Tahoma'> =
+Aakriti
+Dharmani-RT <br>
+<b><span style=3D'font-weight:bold'>Sent:</span></b> Wednesday, May 26, =
+2004 4:04
+PM<br>
+<b><span style=3D'font-weight:bold'>To:</span></b> '<st1:PersonName =
+w:st=3D"on">concurrency-interest@altair.cs.oswego.edu</st1:PersonName>'<b=
+r>
+<b><span style=3D'font-weight:bold'>Subject:</span></b> Looking for =
+pre-1.5 JVM
+version of util.concurrent</span></font><o:p></o:p></p>
+
+</div>
+
+<p class=3DMsoNormal><font size=3D3 face=3D"Times New Roman"><span =
+style=3D'font-size:
+12.0pt'><o:p>&nbsp;</o:p></span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 face=3D"Courier New"><span =
+style=3D'font-size:10.0pt;
+font-family:"Courier New"'>Hi All,<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 face=3D"Courier New"><span =
+style=3D'font-size:10.0pt;
+font-family:"Courier New"'>Am unable to join the concurrency mailing =
+list for
+some reason, but I have a rather important issue to handle. Kindly do =
+guide me
+with it if possible.<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal style=3D'text-autospace:none'><font size=3D2 =
+face=3D"Courier New"><span
+style=3D'font-size:10.0pt;font-family:"Courier =
+New"'><o:p>&nbsp;</o:p></span></font></p>
+
+<p class=3DMsoNormal style=3D'text-autospace:none'><font size=3D2 =
+face=3D"Courier New"><span
+style=3D'font-size:10.0pt;font-family:"Courier New"'>We are looking at =
+using util.concurrent
+for one of our modules requiring a multithreaded architecture. But we =
+would be
+developing using 1.3/1.4 JVM. Is there an emulated version of the JSR166
+concurrent specification that we can use for now for pre 1.5 JVMs and =
+then
+later on switch to 1.5 JVM when we need to?<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal style=3D'text-autospace:none'><font size=3D2 =
+face=3D"Courier New"><span
+style=3D'font-size:10.0pt;font-family:"Courier =
+New"'><o:p>&nbsp;</o:p></span></font></p>
+
+<p class=3DMsoNormal style=3D'text-autospace:none'><font size=3D2 =
+face=3D"Courier New"><span
+style=3D'font-size:10.0pt;font-family:"Courier New"'>Thanks and =
+Regards,<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal style=3D'text-autospace:none'><font size=3D2 =
+face=3D"Courier New"><span
+style=3D'font-size:10.0pt;font-family:"Courier =
+New"'>Aakriti<o:p></o:p></span></font></p>
+
+<p class=3DMsoNormal style=3D'text-autospace:none'><font size=3D2 =
+face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial'><o:p>&nbsp;</o:p></span></fo=
+nt></p>
+
+</div>
+
+</body>
+
+</html>
+
+------_=_NextPart_001_01C44485.636331C8--
+
+From dl@cs.oswego.edu  Fri May 28 11:13:22 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 28 May 2004 06:13:22 -0400
+Subject: [concurrency-interest] Tiger Beta2 available
+Message-ID: <16567.4290.85495.516762@altair.cs.oswego.edu>
+
+In case you hadn't heard, Tiger (J2SE1.5) beta2 is now available at
+http://java.sun.com
+
+It includes the "final" versions of JSR166 APIs and implementations.
+We do not expect any further changes before FCS release beyond minor
+javadoc tweaks and the like.  As mentioned previously, the window for
+addressing any other problems will probably be short. So, the more
+usage and testing it gets soon by people like you, the happier we will
+all be. Attempts to use classes in odd ways that we never would have
+thought of would be especially welcome.
+
+-Doug
+
+
+From dl@cs.oswego.edu  Fri May 28 12:06:15 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 28 May 2004 07:06:15 -0400
+Subject: [concurrency-interest] RE: Looking for pre-1.5 JVM version of util.concurrent
+In-Reply-To: <10898BE7CA96D611988B000802255AAF067847EF@fmgrt.rt.i-flex.com>
+References: <10898BE7CA96D611988B000802255AAF067847EF@fmgrt.rt.i-flex.com>
+Message-ID: <16567.7463.220931.141328@altair.cs.oswego.edu>
+
+> But then we came across the emulated version of JSR166 concurrency spec
+> at the site http://gee.cs.oswego.edu/dl/concurrency-interest/jsr166/
+> 
+> Accordingly we have created a build for the emulated version and it
+> works fine with 1.3/1.4 VMs .
+
+I wouldn't do this. That version has two big problems:
+  1. The APIs were a momentary snapshot from about a year old, so
+     don't reflect all the changes made since JCP review started. It
+     also has some known misfeatures and bugs.
+  2. It is incredibly slow! The emulation causes basic sync operations 
+     to be up to a factor of 10 slower. 
+
+It would be possible to partially solve problem (1) by rewriting
+emulation to cover current versions of APIs. There would still be some
+semantics differences, and a few things that wouldn't work at all
+(e.g., uncaught exception handlers) because emulation is intrinsically
+imperfect.  Also, either all uses of generics, enums, etc., would have
+to be recoded, or it would need to be set up so people can compile
+applications using early-access releases of the generics
+compiler. These also differ from Tiger version, so would entail
+another layer of adaptation.
+
+Has anyone done anything like this?
+
+We originally planned to create such a emulated back-port, but
+especially considering all of the above problems, it seems like a
+disservice.  It is better to conspire with all of the other Tiger JSRs
+to include enough high-quality stable new features to make people want
+to upgrade to 1.5 sooner rather than later. And, sorry if this sounds
+cruel or arrogant, but for the JCP to be effective in evolving the
+Java platform, developers and users have to be driven to keep pace
+with changes. So as a JCP spec lead, I'm supposed to resist doing
+anything that causes people to avoid upgrading, and instead risk
+making them angry.
+
+-Doug
+
+From ccox@tripos.com  Fri May 28 15:52:49 2004
+From: ccox@tripos.com (Curt Cox)
+Date: Fri, 28 May 2004 09:52:49 -0500
+Subject: [concurrency-interest] RE: Looking for pre-1.5 JVM version of util.concurrent
+In-Reply-To: <16567.7463.220931.141328@altair.cs.oswego.edu>
+Message-ID: <MDEIJLCNINPJGNEJMGODCEGFCNAA.ccox@tripos.com>
+
+> It is better to conspire with all of the other Tiger JSRs
+> to include enough high-quality stable new features to make people want
+> to upgrade to 1.5 sooner rather than later. And, sorry if this sounds
+> cruel or arrogant, but for the JCP to be effective in evolving the
+> Java platform, developers and users have to be driven to keep pace
+> with changes. So as a JCP spec lead, I'm supposed to resist doing
+> anything that causes people to avoid upgrading, and instead risk
+> making them angry.
+
+That doesn't sound cruel or arrogant, but consider the following
+point, which is moot for JSR-166, now.  The impact on a
+backport of a given API with respect to choice of deployment
+JRE is somewhat murky.  We always develop with the latest
+JDK and try to target the JRE that will be the latest when
+our application is deployed.  We do quite a bit of testing
+during the release cycle, so it is always possible that we
+could be forced to ship with something other than the latest
+version, but so far bug-fixes have always trumped new bugs.
+
+If there had been an emulation layer for JSR-166, we would
+have used it.  Since there isn't one, it has delayed our
+adoption of the APIs, without having any effect on our
+adoption of the JRE. 
+
+I know that most shops will ship products that trail the current
+Java version by a much wider margin, so we are atypical.
+I also don't mean to suggest that building such bridges is
+the best use of Sun resources when there are so many vital
+features in-the-pipeline.
+
+But, all thing considered, the claim that the existence of
+backports hampers the adoption of newer JREs is dubious.
+
+Exposing as much of the intermediate work as possible,
+so that interested third parties can port the APIs,
+is the best policy.  So, I guess this has just been a
+long-winded way of saying you're doing exactly the right
+thing.
+
+
+
+From ccox@tripos.com  Fri May 28 16:15:31 2004
+From: ccox@tripos.com (Curt Cox)
+Date: Fri, 28 May 2004 10:15:31 -0500
+Subject: [concurrency-interest] concurrency-oriented languages on the JVM
+Message-ID: <MDEIJLCNINPJGNEJMGODAEGGCNAA.ccox@tripos.com>
+
+Hi,
+
+The most prominent concurrency-oriented languages
+haven't been ported to the JVM.  I've heard that
+this is because gaps in the JVM instruction set
+would make such ports dozens of times slower than
+their current native incarnations.
+
+So, my questions are:
+1) Is this true with pre 1.5 JVMs?
+2) Does JSR-166 change this?
+
+Erlang
+http://www.erlang.org/
+
+Mozart/Oz
+http://www.mozart-oz.org/
+
+- Curt
+
+
+
+From larryr@saturn.sdsu.edu  Sat May 29 01:54:54 2004
+From: larryr@saturn.sdsu.edu (Larry Riedel)
+Date: 29 May 2004 00:54:54 -0000
+Subject: [concurrency-interest] Re: Looking for pre-1.5 JVM version of util.concurrent
+In-Reply-To: <16567.7463.220931.141328@altair.cs.oswego.edu>
+Message-ID: <20040529005454.1117.qmail@home19.riedel.org>
+
+
+> for the JCP to be effective in evolving the Java platform, developers
+> and users have to be driven to keep pace with changes.
+
+If I build an application on top of the most uptodate APIs from the JCP,
+and run the application using an implementation of those APIs whose
+behavior is not inconsistent with the specification from the JCP, then I
+think I and the users of my application /are/ keeping pace with changes
+in the platform, regardless of whether or not the application is run on
+top of a previous JRE/JVM.
+
+JDK 1.5 brings some changes to the language itself, and I would expect
+subsequent API specifications (such as java.util.concurrent) to use the
+changed language, but I think that is a separate issue from whether or
+not an application running on top of an "emulated" API implementation
+(which may not implement all of the API, but what it does implement is
+functionally correct) is inhibiting the evolution of, or not keeping
+pace with changes in, the Java platform.
+
+I am inclined to think providing emulated implementations facilitates
+the evolution of the platform by encouraging developers to keep pace
+with its changes by building their applications on top of newer APIs.
+
+
+Larry
+
+

@@ -1,0 +1,1217 @@
+Subject: [concurrency-interest] Counter-intuitive behavior of CompleteableFuture
+From: Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-05-20, 15:28
+To: concurrency-interest@cs.oswego.edu
+Reply-To: Michał Górniewski <michal.gorniewski@gmail.com>
+
+With following code:
+
+------------------------------
+public static void main(String[] args) {
+    CompletableFuture<String> initial = new CompletableFuture<>();
+
+    CompletableFuture<String> withSteps = initial
+            .thenApply(s -> {
+                System.out.println("STEP1: " + s);
+                return s;
+            })
+            .thenApply(s -> {
+                System.out.println("STEP2: " + s);
+                return s;
+            });
+
+    CompletableFuture<String> timeout = withSteps;
+
+    timeout.whenComplete((s, throwable) ->
+System.out.println("TIMEOUT: " + throwable));
+
+    timeout.completeExceptionally(new RuntimeException("TIMEOUT"));
+    initial.complete("SUCCESS");
+}
+------------------------------
+
+I got output like this:
+
+------------------------------
+TIMEOUT: java.lang.RuntimeException: TIMEOUT
+STEP1: SUCCESS
+------------------------------
+
+I don't understand why "STEP2" is not executed in this case. Is this expected?
+For me this API is confusing and may create issues like this:
+https://github.com/resilience4j/resilience4j/issues/1427
+
+Thanks,
+Michał Górniewski
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Counter-intuitive behavior of CompleteableFuture
+From: Benjamin Manes via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-05-20, 15:40
+To: Michał Górniewski <michal.gorniewski@gmail.com>
+CC: concurrency-interest@cs.oswego.edu
+Reply-To: Benjamin Manes <ben.manes@gmail.com>
+
+The timeout is applied to the STEP2 future which completes it exceptionally. This causes it to not run the mapping function for a result, as it was completed prior to that being triggered. You can use copy() to decouple the source from the timeout if you want both to complete; e.g. cache a long running value but fail a consumer if taking to long.
+
+On Thu, May 20, 2021 at 5:31 AM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+
+    With following code:
+
+    ------------------------------
+    public static void main(String[] args) {
+        CompletableFuture<String> initial = new CompletableFuture<>();
+
+        CompletableFuture<String> withSteps = initial
+                .thenApply(s -> {
+                    System.out.println("STEP1: " + s);
+                    return s;
+                })
+                .thenApply(s -> {
+                    System.out.println("STEP2: " + s);
+                    return s;
+                });
+
+        CompletableFuture<String> timeout = withSteps;
+
+        timeout.whenComplete((s, throwable) ->
+    System.out.println("TIMEOUT: " + throwable));
+
+        timeout.completeExceptionally(new RuntimeException("TIMEOUT"));
+        initial.complete("SUCCESS");
+    }
+    ------------------------------
+
+    I got output like this:
+
+    ------------------------------
+    TIMEOUT: java.lang.RuntimeException: TIMEOUT
+    STEP1: SUCCESS
+    ------------------------------
+
+    I don't understand why "STEP2" is not executed in this case. Is this expected?
+    For me this API is confusing and may create issues like this:
+    https://github.com/resilience4j/resilience4j/issues/1427
+
+    Thanks,
+    Michał Górniewski
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest@cs.oswego.edu
+    http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Counter-intuitive behavior of CompleteableFuture
+From: Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-05-20, 15:49
+To: Benjamin Manes <ben.manes@gmail.com>
+CC: concurrency-interest@cs.oswego.edu
+Reply-To: Michał Górniewski <michal.gorniewski@gmail.com>
+
+What bothers me here is API of CompletableFuture itself, e.g:
+
+public CompletableFuture<ProcessingOutput>
+executeProcessing(Function<Path, ProcessingOutput> processor) {
+    Path data = prepareData();
+    return CompletableFuture.supplyAsync(() -> processor.apply(data),
+processingExecutor)
+            .whenComplete((o, ex) -> cleanup(data));
+}
+
+Callers of this method may just break cleanup, without even knowing
+about this, but simply calling complete() on returned CF. But it seems
+that nothing can be done about it.
+
+czw., 20 maj 2021 o 14:40 Benjamin Manes <ben.manes@gmail.com> napisał(a):
+> >
+> > The timeout is applied to the STEP2 future which completes it exceptionally. This causes it to not run the mapping function for a result, as it was completed prior to that being triggered. You can use copy() to decouple the source from the timeout if you want both to complete; e.g. cache a long running value but fail a consumer if taking to long.
+> >
+> > On Thu, May 20, 2021 at 5:31 AM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+>> >>
+>> >> With following code:
+>> >>
+>> >> ------------------------------
+>> >> public static void main(String[] args) {
+>> >>     CompletableFuture<String> initial = new CompletableFuture<>();
+>> >>
+>> >>     CompletableFuture<String> withSteps = initial
+>> >>             .thenApply(s -> {
+>> >>                 System.out.println("STEP1: " + s);
+>> >>                 return s;
+>> >>             })
+>> >>             .thenApply(s -> {
+>> >>                 System.out.println("STEP2: " + s);
+>> >>                 return s;
+>> >>             });
+>> >>
+>> >>     CompletableFuture<String> timeout = withSteps;
+>> >>
+>> >>     timeout.whenComplete((s, throwable) ->
+>> >> System.out.println("TIMEOUT: " + throwable));
+>> >>
+>> >>     timeout.completeExceptionally(new RuntimeException("TIMEOUT"));
+>> >>     initial.complete("SUCCESS");
+>> >> }
+>> >> ------------------------------
+>> >>
+>> >> I got output like this:
+>> >>
+>> >> ------------------------------
+>> >> TIMEOUT: java.lang.RuntimeException: TIMEOUT
+>> >> STEP1: SUCCESS
+>> >> ------------------------------
+>> >>
+>> >> I don't understand why "STEP2" is not executed in this case. Is this expected?
+>> >> For me this API is confusing and may create issues like this:
+>> >> https://github.com/resilience4j/resilience4j/issues/1427
+>> >>
+>> >> Thanks,
+>> >> Michał Górniewski
+>> >> _______________________________________________
+>> >> Concurrency-interest mailing list
+>> >> Concurrency-interest@cs.oswego.edu
+>> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Counter-intuitive behavior of CompleteableFuture
+From: Viktor Klang via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-05-20, 15:59
+To: Michał Górniewski <michal.gorniewski@gmail.com>
+CC: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Viktor Klang <viktor.klang@gmail.com>
+
+A solution which has been used very successfully in Scala is the distinction between Promise (write a single value 0..1 times) and Future (read a single value 0..N times), which means that only the thread who owns a reference to the Promise can write values, which means that Futures can be freely shared since consumers cannot manipulate the result "further up the chain".
+
+You can achieve something similar in Java by separating CompletableFuture from CompletionStage.
+
+public static void main(String[] args) {
+    CompletableFuture<String> initial = new CompletableFuture<>();
+
+    CompletionStage<String> withSteps = initial
+            .thenApply(s -> {
+                System.out.println("STEP1: " + s);
+                return s;
+            })
+            .thenApply(s -> {
+                System.out.println("STEP2: " + s);
+                return s;
+            });
+
+    CompletionStage<String> timeout = withSteps;
+
+    timeout.whenComplete((s, throwable) ->
+System.out.println("TIMEOUT: " + throwable));
+
+    timeout.completeExceptionally(new RuntimeException("TIMEOUT")); <--- now won't compile
+    initial.complete("SUCCESS");
+}
+
+
+On Thu, May 20, 2021 at 12:50 PM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+
+    What bothers me here is API of CompletableFuture itself, e.g:
+
+    public CompletableFuture<ProcessingOutput>
+    executeProcessing(Function<Path, ProcessingOutput> processor) {
+        Path data = prepareData();
+        return CompletableFuture.supplyAsync(() -> processor.apply(data),
+    processingExecutor)
+                .whenComplete((o, ex) -> cleanup(data));
+    }
+
+    Callers of this method may just break cleanup, without even knowing
+    about this, but simply calling complete() on returned CF. But it seems
+    that nothing can be done about it.
+
+    czw., 20 maj 2021 o 14:40 Benjamin Manes <ben.manes@gmail.com> napisał(a):
+    >
+    > The timeout is applied to the STEP2 future which completes it exceptionally. This causes it to not run the mapping function for a result, as it was completed prior to that being triggered. You can use copy() to decouple the source from the timeout if you want both to complete; e.g. cache a long running value but fail a consumer if taking to long.
+    >
+    > On Thu, May 20, 2021 at 5:31 AM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+    >>
+    >> With following code:
+    >>
+    >> ------------------------------
+    >> public static void main(String[] args) {
+    >>     CompletableFuture<String> initial = new CompletableFuture<>();
+    >>
+    >>     CompletableFuture<String> withSteps = initial
+    >>             .thenApply(s -> {
+    >>                 System.out.println("STEP1: " + s);
+    >>                 return s;
+    >>             })
+    >>             .thenApply(s -> {
+    >>                 System.out.println("STEP2: " + s);
+    >>                 return s;
+    >>             });
+    >>
+    >>     CompletableFuture<String> timeout = withSteps;
+    >>
+    >>     timeout.whenComplete((s, throwable) ->
+    >> System.out.println("TIMEOUT: " + throwable));
+    >>
+    >>     timeout.completeExceptionally(new RuntimeException("TIMEOUT"));
+    >>     initial.complete("SUCCESS");
+    >> }
+    >> ------------------------------
+    >>
+    >> I got output like this:
+    >>
+    >> ------------------------------
+    >> TIMEOUT: java.lang.RuntimeException: TIMEOUT
+    >> STEP1: SUCCESS
+    >> ------------------------------
+    >>
+    >> I don't understand why "STEP2" is not executed in this case. Is this expected?
+    >> For me this API is confusing and may create issues like this:
+    >> https://github.com/resilience4j/resilience4j/issues/1427
+    >>
+    >> Thanks,
+    >> Michał Górniewski
+    >> _______________________________________________
+    >> Concurrency-interest mailing list
+    >> Concurrency-interest@cs.oswego.edu
+    >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest@cs.oswego.edu
+    http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-- 
+Cheers,
+√
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Counter-intuitive behavior of CompleteableFuture
+From: Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-05-20, 16:14
+To: Viktor Klang <viktor.klang@gmail.com>
+CC: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Michał Górniewski <michal.gorniewski@gmail.com>
+
+This looks good from an API design perspective, since it clearly
+informs users that it really shouldn't call complete() on this Future
+🙂.
+
+But still, in Java you can do:
+
+timeout.toCompletableFuture().completeExceptionally(new
+RuntimeException("TIMEOUT"));
+
+So toCompletableFuture() would need to create new, depended,
+CompletableStage to be safe.
+
+Best regards,
+Michał
+
+czw., 20 maj 2021 o 14:59 Viktor Klang <viktor.klang@gmail.com> napisał(a):
+> >
+> > A solution which has been used very successfully in Scala is the distinction between Promise (write a single value 0..1 times) and Future (read a single value 0..N times), which means that only the thread who owns a reference to the Promise can write values, which means that Futures can be freely shared since consumers cannot manipulate the result "further up the chain".
+> >
+> > You can achieve something similar in Java by separating CompletableFuture from CompletionStage.
+> >
+> > public static void main(String[] args) {
+> >     CompletableFuture<String> initial = new CompletableFuture<>();
+> >
+> >     CompletionStage<String> withSteps = initial
+> >             .thenApply(s -> {
+> >                 System.out.println("STEP1: " + s);
+> >                 return s;
+> >             })
+> >             .thenApply(s -> {
+> >                 System.out.println("STEP2: " + s);
+> >                 return s;
+> >             });
+> >
+> >     CompletionStage<String> timeout = withSteps;
+> >
+> >     timeout.whenComplete((s, throwable) ->
+> > System.out.println("TIMEOUT: " + throwable));
+> >
+> >     timeout.completeExceptionally(new RuntimeException("TIMEOUT")); <--- now won't compile
+> >     initial.complete("SUCCESS");
+> > }
+> >
+> >
+> > On Thu, May 20, 2021 at 12:50 PM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+>> >>
+>> >> What bothers me here is API of CompletableFuture itself, e.g:
+>> >>
+>> >> public CompletableFuture<ProcessingOutput>
+>> >> executeProcessing(Function<Path, ProcessingOutput> processor) {
+>> >>     Path data = prepareData();
+>> >>     return CompletableFuture.supplyAsync(() -> processor.apply(data),
+>> >> processingExecutor)
+>> >>             .whenComplete((o, ex) -> cleanup(data));
+>> >> }
+>> >>
+>> >> Callers of this method may just break cleanup, without even knowing
+>> >> about this, but simply calling complete() on returned CF. But it seems
+>> >> that nothing can be done about it.
+>> >>
+>> >> czw., 20 maj 2021 o 14:40 Benjamin Manes <ben.manes@gmail.com> napisał(a):
+>>> >> >
+>>> >> > The timeout is applied to the STEP2 future which completes it exceptionally. This causes it to not run the mapping function for a result, as it was completed prior to that being triggered. You can use copy() to decouple the source from the timeout if you want both to complete; e.g. cache a long running value but fail a consumer if taking to long.
+>>> >> >
+>>> >> > On Thu, May 20, 2021 at 5:31 AM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+>>>> >> >>
+>>>> >> >> With following code:
+>>>> >> >>
+>>>> >> >> ------------------------------
+>>>> >> >> public static void main(String[] args) {
+>>>> >> >>     CompletableFuture<String> initial = new CompletableFuture<>();
+>>>> >> >>
+>>>> >> >>     CompletableFuture<String> withSteps = initial
+>>>> >> >>             .thenApply(s -> {
+>>>> >> >>                 System.out.println("STEP1: " + s);
+>>>> >> >>                 return s;
+>>>> >> >>             })
+>>>> >> >>             .thenApply(s -> {
+>>>> >> >>                 System.out.println("STEP2: " + s);
+>>>> >> >>                 return s;
+>>>> >> >>             });
+>>>> >> >>
+>>>> >> >>     CompletableFuture<String> timeout = withSteps;
+>>>> >> >>
+>>>> >> >>     timeout.whenComplete((s, throwable) ->
+>>>> >> >> System.out.println("TIMEOUT: " + throwable));
+>>>> >> >>
+>>>> >> >>     timeout.completeExceptionally(new RuntimeException("TIMEOUT"));
+>>>> >> >>     initial.complete("SUCCESS");
+>>>> >> >> }
+>>>> >> >> ------------------------------
+>>>> >> >>
+>>>> >> >> I got output like this:
+>>>> >> >>
+>>>> >> >> ------------------------------
+>>>> >> >> TIMEOUT: java.lang.RuntimeException: TIMEOUT
+>>>> >> >> STEP1: SUCCESS
+>>>> >> >> ------------------------------
+>>>> >> >>
+>>>> >> >> I don't understand why "STEP2" is not executed in this case. Is this expected?
+>>>> >> >> For me this API is confusing and may create issues like this:
+>>>> >> >> https://github.com/resilience4j/resilience4j/issues/1427
+>>>> >> >>
+>>>> >> >> Thanks,
+>>>> >> >> Michał Górniewski
+>>>> >> >> _______________________________________________
+>>>> >> >> Concurrency-interest mailing list
+>>>> >> >> Concurrency-interest@cs.oswego.edu
+>>>> >> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>> >> _______________________________________________
+>> >> Concurrency-interest mailing list
+>> >> Concurrency-interest@cs.oswego.edu
+>> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> >
+> >
+> > --
+> > Cheers,
+> > √
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Counter-intuitive behavior of CompleteableFuture
+From: Viktor Klang via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-05-20, 16:22
+To: Michał Górniewski <michal.gorniewski@gmail.com>
+CC: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Viktor Klang <viktor.klang@gmail.com>
+
+minimalCompletionStage to the rescue :)
+
+
+public static void main(String[] args) {
+    CompletableFuture<String> initial = new CompletableFuture<>();
+
+    CompletionStage<String> withSteps = initial
+            .minimalCompletionStage                                   <--- This will prevent consumers from having toCompletableFuture returning `this`
+            .thenApply(s -> {
+                System.out.println("STEP1: " + s);
+                return s;
+            })
+            .thenApply(s -> {
+                System.out.println("STEP2: " + s);
+                return s;
+            });
+
+    CompletionStage<String> timeout = withSteps;
+
+    timeout.whenComplete((s, throwable) ->
+System.out.println("TIMEOUT: " + throwable));
+
+    timeout.completeExceptionally(new RuntimeException("TIMEOUT")); <--- now won't compile
+    initial.complete("SUCCESS");
+}
+
+On Thu, May 20, 2021 at 1:14 PM Michał Górniewski <michal.gorniewski@gmail.com> wrote:
+
+    This looks good from an API design perspective, since it clearly
+    informs users that it really shouldn't call complete() on this Future
+    :).
+
+    But still, in Java you can do:
+
+    timeout.toCompletableFuture().completeExceptionally(new
+    RuntimeException("TIMEOUT"));
+
+    So toCompletableFuture() would need to create new, depended,
+    CompletableStage to be safe.
+
+    Best regards,
+    Michał
+
+    czw., 20 maj 2021 o 14:59 Viktor Klang <viktor.klang@gmail.com> napisał(a):
+    >
+    > A solution which has been used very successfully in Scala is the distinction between Promise (write a single value 0..1 times) and Future (read a single value 0..N times), which means that only the thread who owns a reference to the Promise can write values, which means that Futures can be freely shared since consumers cannot manipulate the result "further up the chain".
+    >
+    > You can achieve something similar in Java by separating CompletableFuture from CompletionStage.
+    >
+    > public static void main(String[] args) {
+    >     CompletableFuture<String> initial = new CompletableFuture<>();
+    >
+    >     CompletionStage<String> withSteps = initial
+    >             .thenApply(s -> {
+    >                 System.out.println("STEP1: " + s);
+    >                 return s;
+    >             })
+    >             .thenApply(s -> {
+    >                 System.out.println("STEP2: " + s);
+    >                 return s;
+    >             });
+    >
+    >     CompletionStage<String> timeout = withSteps;
+    >
+    >     timeout.whenComplete((s, throwable) ->
+    > System.out.println("TIMEOUT: " + throwable));
+    >
+    >     timeout.completeExceptionally(new RuntimeException("TIMEOUT")); <--- now won't compile
+    >     initial.complete("SUCCESS");
+    > }
+    >
+    >
+    > On Thu, May 20, 2021 at 12:50 PM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+    >>
+    >> What bothers me here is API of CompletableFuture itself, e.g:
+    >>
+    >> public CompletableFuture<ProcessingOutput>
+    >> executeProcessing(Function<Path, ProcessingOutput> processor) {
+    >>     Path data = prepareData();
+    >>     return CompletableFuture.supplyAsync(() -> processor.apply(data),
+    >> processingExecutor)
+    >>             .whenComplete((o, ex) -> cleanup(data));
+    >> }
+    >>
+    >> Callers of this method may just break cleanup, without even knowing
+    >> about this, but simply calling complete() on returned CF. But it seems
+    >> that nothing can be done about it.
+    >>
+    >> czw., 20 maj 2021 o 14:40 Benjamin Manes <ben.manes@gmail.com> napisał(a):
+    >> >
+    >> > The timeout is applied to the STEP2 future which completes it exceptionally. This causes it to not run the mapping function for a result, as it was completed prior to that being triggered. You can use copy() to decouple the source from the timeout if you want both to complete; e.g. cache a long running value but fail a consumer if taking to long.
+    >> >
+    >> > On Thu, May 20, 2021 at 5:31 AM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+    >> >>
+    >> >> With following code:
+    >> >>
+    >> >> ------------------------------
+    >> >> public static void main(String[] args) {
+    >> >>     CompletableFuture<String> initial = new CompletableFuture<>();
+    >> >>
+    >> >>     CompletableFuture<String> withSteps = initial
+    >> >>             .thenApply(s -> {
+    >> >>                 System.out.println("STEP1: " + s);
+    >> >>                 return s;
+    >> >>             })
+    >> >>             .thenApply(s -> {
+    >> >>                 System.out.println("STEP2: " + s);
+    >> >>                 return s;
+    >> >>             });
+    >> >>
+    >> >>     CompletableFuture<String> timeout = withSteps;
+    >> >>
+    >> >>     timeout.whenComplete((s, throwable) ->
+    >> >> System.out.println("TIMEOUT: " + throwable));
+    >> >>
+    >> >>     timeout.completeExceptionally(new RuntimeException("TIMEOUT"));
+    >> >>     initial.complete("SUCCESS");
+    >> >> }
+    >> >> ------------------------------
+    >> >>
+    >> >> I got output like this:
+    >> >>
+    >> >> ------------------------------
+    >> >> TIMEOUT: java.lang.RuntimeException: TIMEOUT
+    >> >> STEP1: SUCCESS
+    >> >> ------------------------------
+    >> >>
+    >> >> I don't understand why "STEP2" is not executed in this case. Is this expected?
+    >> >> For me this API is confusing and may create issues like this:
+    >> >> https://github.com/resilience4j/resilience4j/issues/1427
+    >> >>
+    >> >> Thanks,
+    >> >> Michał Górniewski
+    >> >> _______________________________________________
+    >> >> Concurrency-interest mailing list
+    >> >> Concurrency-interest@cs.oswego.edu
+    >> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+    >> _______________________________________________
+    >> Concurrency-interest mailing list
+    >> Concurrency-interest@cs.oswego.edu
+    >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+    >
+    >
+    >
+    > --
+    > Cheers,
+    > √
+
+
+
+-- 
+Cheers,
+√
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Counter-intuitive behavior of CompleteableFuture
+From: Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-05-20, 16:28
+To: Viktor Klang <viktor.klang@gmail.com>
+CC: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Michał Górniewski <michal.gorniewski@gmail.com>
+
+I'm still on Java 8, but this is a very good solution 🙂
+
+Thanks,
+Michał
+
+czw., 20 maj 2021 o 15:22 Viktor Klang <viktor.klang@gmail.com> napisał(a):
+> >
+> > minimalCompletionStage to the rescue 🙂
+> >
+> >
+> > public static void main(String[] args) {
+> >     CompletableFuture<String> initial = new CompletableFuture<>();
+> >
+> >     CompletionStage<String> withSteps = initial
+> >             .minimalCompletionStage                                   <--- This will prevent consumers from having toCompletableFuture returning `this`
+> >             .thenApply(s -> {
+> >                 System.out.println("STEP1: " + s);
+> >                 return s;
+> >             })
+> >             .thenApply(s -> {
+> >                 System.out.println("STEP2: " + s);
+> >                 return s;
+> >             });
+> >
+> >     CompletionStage<String> timeout = withSteps;
+> >
+> >     timeout.whenComplete((s, throwable) ->
+> > System.out.println("TIMEOUT: " + throwable));
+> >
+> >     timeout.completeExceptionally(new RuntimeException("TIMEOUT")); <--- now won't compile
+> >     initial.complete("SUCCESS");
+> > }
+> >
+> > On Thu, May 20, 2021 at 1:14 PM Michał Górniewski <michal.gorniewski@gmail.com> wrote:
+>> >>
+>> >> This looks good from an API design perspective, since it clearly
+>> >> informs users that it really shouldn't call complete() on this Future
+>> >> 🙂.
+>> >>
+>> >> But still, in Java you can do:
+>> >>
+>> >> timeout.toCompletableFuture().completeExceptionally(new
+>> >> RuntimeException("TIMEOUT"));
+>> >>
+>> >> So toCompletableFuture() would need to create new, depended,
+>> >> CompletableStage to be safe.
+>> >>
+>> >> Best regards,
+>> >> Michał
+>> >>
+>> >> czw., 20 maj 2021 o 14:59 Viktor Klang <viktor.klang@gmail.com> napisał(a):
+>>> >> >
+>>> >> > A solution which has been used very successfully in Scala is the distinction between Promise (write a single value 0..1 times) and Future (read a single value 0..N times), which means that only the thread who owns a reference to the Promise can write values, which means that Futures can be freely shared since consumers cannot manipulate the result "further up the chain".
+>>> >> >
+>>> >> > You can achieve something similar in Java by separating CompletableFuture from CompletionStage.
+>>> >> >
+>>> >> > public static void main(String[] args) {
+>>> >> >     CompletableFuture<String> initial = new CompletableFuture<>();
+>>> >> >
+>>> >> >     CompletionStage<String> withSteps = initial
+>>> >> >             .thenApply(s -> {
+>>> >> >                 System.out.println("STEP1: " + s);
+>>> >> >                 return s;
+>>> >> >             })
+>>> >> >             .thenApply(s -> {
+>>> >> >                 System.out.println("STEP2: " + s);
+>>> >> >                 return s;
+>>> >> >             });
+>>> >> >
+>>> >> >     CompletionStage<String> timeout = withSteps;
+>>> >> >
+>>> >> >     timeout.whenComplete((s, throwable) ->
+>>> >> > System.out.println("TIMEOUT: " + throwable));
+>>> >> >
+>>> >> >     timeout.completeExceptionally(new RuntimeException("TIMEOUT")); <--- now won't compile
+>>> >> >     initial.complete("SUCCESS");
+>>> >> > }
+>>> >> >
+>>> >> >
+>>> >> > On Thu, May 20, 2021 at 12:50 PM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+>>>> >> >>
+>>>> >> >> What bothers me here is API of CompletableFuture itself, e.g:
+>>>> >> >>
+>>>> >> >> public CompletableFuture<ProcessingOutput>
+>>>> >> >> executeProcessing(Function<Path, ProcessingOutput> processor) {
+>>>> >> >>     Path data = prepareData();
+>>>> >> >>     return CompletableFuture.supplyAsync(() -> processor.apply(data),
+>>>> >> >> processingExecutor)
+>>>> >> >>             .whenComplete((o, ex) -> cleanup(data));
+>>>> >> >> }
+>>>> >> >>
+>>>> >> >> Callers of this method may just break cleanup, without even knowing
+>>>> >> >> about this, but simply calling complete() on returned CF. But it seems
+>>>> >> >> that nothing can be done about it.
+>>>> >> >>
+>>>> >> >> czw., 20 maj 2021 o 14:40 Benjamin Manes <ben.manes@gmail.com> napisał(a):
+>>>>> >> >> >
+>>>>> >> >> > The timeout is applied to the STEP2 future which completes it exceptionally. This causes it to not run the mapping function for a result, as it was completed prior to that being triggered. You can use copy() to decouple the source from the timeout if you want both to complete; e.g. cache a long running value but fail a consumer if taking to long.
+>>>>> >> >> >
+>>>>> >> >> > On Thu, May 20, 2021 at 5:31 AM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+>>>>>> >> >> >>
+>>>>>> >> >> >> With following code:
+>>>>>> >> >> >>
+>>>>>> >> >> >> ------------------------------
+>>>>>> >> >> >> public static void main(String[] args) {
+>>>>>> >> >> >>     CompletableFuture<String> initial = new CompletableFuture<>();
+>>>>>> >> >> >>
+>>>>>> >> >> >>     CompletableFuture<String> withSteps = initial
+>>>>>> >> >> >>             .thenApply(s -> {
+>>>>>> >> >> >>                 System.out.println("STEP1: " + s);
+>>>>>> >> >> >>                 return s;
+>>>>>> >> >> >>             })
+>>>>>> >> >> >>             .thenApply(s -> {
+>>>>>> >> >> >>                 System.out.println("STEP2: " + s);
+>>>>>> >> >> >>                 return s;
+>>>>>> >> >> >>             });
+>>>>>> >> >> >>
+>>>>>> >> >> >>     CompletableFuture<String> timeout = withSteps;
+>>>>>> >> >> >>
+>>>>>> >> >> >>     timeout.whenComplete((s, throwable) ->
+>>>>>> >> >> >> System.out.println("TIMEOUT: " + throwable));
+>>>>>> >> >> >>
+>>>>>> >> >> >>     timeout.completeExceptionally(new RuntimeException("TIMEOUT"));
+>>>>>> >> >> >>     initial.complete("SUCCESS");
+>>>>>> >> >> >> }
+>>>>>> >> >> >> ------------------------------
+>>>>>> >> >> >>
+>>>>>> >> >> >> I got output like this:
+>>>>>> >> >> >>
+>>>>>> >> >> >> ------------------------------
+>>>>>> >> >> >> TIMEOUT: java.lang.RuntimeException: TIMEOUT
+>>>>>> >> >> >> STEP1: SUCCESS
+>>>>>> >> >> >> ------------------------------
+>>>>>> >> >> >>
+>>>>>> >> >> >> I don't understand why "STEP2" is not executed in this case. Is this expected?
+>>>>>> >> >> >> For me this API is confusing and may create issues like this:
+>>>>>> >> >> >> https://github.com/resilience4j/resilience4j/issues/1427
+>>>>>> >> >> >>
+>>>>>> >> >> >> Thanks,
+>>>>>> >> >> >> Michał Górniewski
+>>>>>> >> >> >> _______________________________________________
+>>>>>> >> >> >> Concurrency-interest mailing list
+>>>>>> >> >> >> Concurrency-interest@cs.oswego.edu
+>>>>>> >> >> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>> >> >> _______________________________________________
+>>>> >> >> Concurrency-interest mailing list
+>>>> >> >> Concurrency-interest@cs.oswego.edu
+>>>> >> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>> >> >
+>>> >> >
+>>> >> >
+>>> >> > --
+>>> >> > Cheers,
+>>> >> > √
+> >
+> >
+> >
+> > --
+> > Cheers,
+> > √
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Counter-intuitive behavior of CompleteableFuture
+From: Alex Otenko via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-05-20, 23:03
+To: Viktor Klang <viktor.klang@gmail.com>
+CC: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Alex Otenko <oleksandr.otenko@gmail.com>
+
+It is a little more nuanced than that. You may not know that the CF is being completed on your behalf.
+
+Enter orTimeout...
+
+Furthermore, try to devise a chain of CFs that borrow a pooled resource, then finally return it back to the pool. Now if this construct is wrapped in orTimeout, you can see the resource borrowed, but downstream stages don't release it, because they will be bypassed by exceptional completion by orTimeout.
+
+Alex
+
+On Thu, 20 May 2021, 13:59 Viktor Klang via Concurrency-interest, <concurrency-interest@cs.oswego.edu> wrote:
+
+    A solution which has been used very successfully in Scala is the distinction between Promise (write a single value 0..1 times) and Future (read a single value 0..N times), which means that only the thread who owns a reference to the Promise can write values, which means that Futures can be freely shared since consumers cannot manipulate the result "further up the chain".
+
+    You can achieve something similar in Java by separating CompletableFuture from CompletionStage.
+
+    public static void main(String[] args) {
+        CompletableFuture<String> initial = new CompletableFuture<>();
+
+        CompletionStage<String> withSteps = initial
+                .thenApply(s -> {
+                    System.out.println("STEP1: " + s);
+                    return s;
+                })
+                .thenApply(s -> {
+                    System.out.println("STEP2: " + s);
+                    return s;
+                });
+
+        CompletionStage<String> timeout = withSteps;
+
+        timeout.whenComplete((s, throwable) ->
+    System.out.println("TIMEOUT: " + throwable));
+
+        timeout.completeExceptionally(new RuntimeException("TIMEOUT")); <--- now won't compile
+        initial.complete("SUCCESS");
+    }
+
+
+    On Thu, May 20, 2021 at 12:50 PM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+
+        What bothers me here is API of CompletableFuture itself, e.g:
+
+        public CompletableFuture<ProcessingOutput>
+        executeProcessing(Function<Path, ProcessingOutput> processor) {
+            Path data = prepareData();
+            return CompletableFuture.supplyAsync(() -> processor.apply(data),
+        processingExecutor)
+                    .whenComplete((o, ex) -> cleanup(data));
+        }
+
+        Callers of this method may just break cleanup, without even knowing
+        about this, but simply calling complete() on returned CF. But it seems
+        that nothing can be done about it.
+
+        czw., 20 maj 2021 o 14:40 Benjamin Manes <ben.manes@gmail.com> napisał(a):
+        >
+        > The timeout is applied to the STEP2 future which completes it exceptionally. This causes it to not run the mapping function for a result, as it was completed prior to that being triggered. You can use copy() to decouple the source from the timeout if you want both to complete; e.g. cache a long running value but fail a consumer if taking to long.
+        >
+        > On Thu, May 20, 2021 at 5:31 AM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+        >>
+        >> With following code:
+        >>
+        >> ------------------------------
+        >> public static void main(String[] args) {
+        >>     CompletableFuture<String> initial = new CompletableFuture<>();
+        >>
+        >>     CompletableFuture<String> withSteps = initial
+        >>             .thenApply(s -> {
+        >>                 System.out.println("STEP1: " + s);
+        >>                 return s;
+        >>             })
+        >>             .thenApply(s -> {
+        >>                 System.out.println("STEP2: " + s);
+        >>                 return s;
+        >>             });
+        >>
+        >>     CompletableFuture<String> timeout = withSteps;
+        >>
+        >>     timeout.whenComplete((s, throwable) ->
+        >> System.out.println("TIMEOUT: " + throwable));
+        >>
+        >>     timeout.completeExceptionally(new RuntimeException("TIMEOUT"));
+        >>     initial.complete("SUCCESS");
+        >> }
+        >> ------------------------------
+        >>
+        >> I got output like this:
+        >>
+        >> ------------------------------
+        >> TIMEOUT: java.lang.RuntimeException: TIMEOUT
+        >> STEP1: SUCCESS
+        >> ------------------------------
+        >>
+        >> I don't understand why "STEP2" is not executed in this case. Is this expected?
+        >> For me this API is confusing and may create issues like this:
+        >> https://github.com/resilience4j/resilience4j/issues/1427
+        >>
+        >> Thanks,
+        >> Michał Górniewski
+        >> _______________________________________________
+        >> Concurrency-interest mailing list
+        >> Concurrency-interest@cs.oswego.edu
+        >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+        _______________________________________________
+        Concurrency-interest mailing list
+        Concurrency-interest@cs.oswego.edu
+        http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+    -- 
+    Cheers,
+    √
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest@cs.oswego.edu
+    http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Counter-intuitive behavior of CompleteableFuture
+From: Tim Peierls via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-05-20, 23:21
+To: Alex Otenko <oleksandr.otenko@gmail.com>
+CC: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Tim Peierls <tim@peierls.net>
+
+But orTimeout is also not available to Java 8 users.
+
+Here’s a gist that uses the Java 9 code to get the effect of orTimeout in Java 8. No guarantees…
+
+—tim
+
+On Thu, May 20, 2021 at 4:15 PM Alex Otenko via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+
+    It is a little more nuanced than that. You may not know that the CF is being completed on your behalf.
+
+    Enter orTimeout...
+
+    Furthermore, try to devise a chain of CFs that borrow a pooled resource, then finally return it back to the pool. Now if this construct is wrapped in orTimeout, you can see the resource borrowed, but downstream stages don't release it, because they will be bypassed by exceptional completion by orTimeout.
+
+    Alex
+
+    On Thu, 20 May 2021, 13:59 Viktor Klang via Concurrency-interest, <concurrency-interest@cs.oswego.edu> wrote:
+
+        A solution which has been used very successfully in Scala is the distinction between Promise (write a single value 0..1 times) and Future (read a single value 0..N times), which means that only the thread who owns a reference to the Promise can write values, which means that Futures can be freely shared since consumers cannot manipulate the result "further up the chain".
+
+        You can achieve something similar in Java by separating CompletableFuture from CompletionStage.
+
+        public static void main(String[] args) {
+            CompletableFuture<String> initial = new CompletableFuture<>();
+
+            CompletionStage<String> withSteps = initial
+                    .thenApply(s -> {
+                        System.out.println("STEP1: " + s);
+                        return s;
+                    })
+                    .thenApply(s -> {
+                        System.out.println("STEP2: " + s);
+                        return s;
+                    });
+
+            CompletionStage<String> timeout = withSteps;
+
+            timeout.whenComplete((s, throwable) ->
+        System.out.println("TIMEOUT: " + throwable));
+
+            timeout.completeExceptionally(new RuntimeException("TIMEOUT")); <--- now won't compile
+            initial.complete("SUCCESS");
+        }
+
+
+        On Thu, May 20, 2021 at 12:50 PM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+
+            What bothers me here is API of CompletableFuture itself, e.g:
+
+            public CompletableFuture<ProcessingOutput>
+            executeProcessing(Function<Path, ProcessingOutput> processor) {
+                Path data = prepareData();
+                return CompletableFuture.supplyAsync(() -> processor.apply(data),
+            processingExecutor)
+                        .whenComplete((o, ex) -> cleanup(data));
+            }
+
+            Callers of this method may just break cleanup, without even knowing
+            about this, but simply calling complete() on returned CF. But it seems
+            that nothing can be done about it.
+
+            czw., 20 maj 2021 o 14:40 Benjamin Manes <ben.manes@gmail.com> napisał(a):
+            >
+            > The timeout is applied to the STEP2 future which completes it exceptionally. This causes it to not run the mapping function for a result, as it was completed prior to that being triggered. You can use copy() to decouple the source from the timeout if you want both to complete; e.g. cache a long running value but fail a consumer if taking to long.
+            >
+            > On Thu, May 20, 2021 at 5:31 AM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+            >>
+            >> With following code:
+            >>
+            >> ------------------------------
+            >> public static void main(String[] args) {
+            >>     CompletableFuture<String> initial = new CompletableFuture<>();
+            >>
+            >>     CompletableFuture<String> withSteps = initial
+            >>             .thenApply(s -> {
+            >>                 System.out.println("STEP1: " + s);
+            >>                 return s;
+            >>             })
+            >>             .thenApply(s -> {
+            >>                 System.out.println("STEP2: " + s);
+            >>                 return s;
+            >>             });
+            >>
+            >>     CompletableFuture<String> timeout = withSteps;
+            >>
+            >>     timeout.whenComplete((s, throwable) ->
+            >> System.out.println("TIMEOUT: " + throwable));
+            >>
+            >>     timeout.completeExceptionally(new RuntimeException("TIMEOUT"));
+            >>     initial.complete("SUCCESS");
+            >> }
+            >> ------------------------------
+            >>
+            >> I got output like this:
+            >>
+            >> ------------------------------
+            >> TIMEOUT: java.lang.RuntimeException: TIMEOUT
+            >> STEP1: SUCCESS
+            >> ------------------------------
+            >>
+            >> I don't understand why "STEP2" is not executed in this case. Is this expected?
+            >> For me this API is confusing and may create issues like this:
+            >> https://github.com/resilience4j/resilience4j/issues/1427
+            >>
+            >> Thanks,
+            >> Michał Górniewski
+            >> _______________________________________________
+            >> Concurrency-interest mailing list
+            >> Concurrency-interest@cs.oswego.edu
+            >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+            _______________________________________________
+            Concurrency-interest mailing list
+            Concurrency-interest@cs.oswego.edu
+            http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+        -- 
+        Cheers,
+        √
+        _______________________________________________
+        Concurrency-interest mailing list
+        Concurrency-interest@cs.oswego.edu
+        http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest@cs.oswego.edu
+    http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Counter-intuitive behavior of CompleteableFuture
+From: Viktor Klang via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-05-21, 00:07
+To: Alex Otenko <oleksandr.otenko@gmail.com>
+CC: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Viktor Klang <viktor.klang@gmail.com>
+
+Borroing-and-returning-problems is "fun". As it requires knowledge of beginning and end, which means that the operations need to be made *around* some other logic—compare it with try-catch which needs to be *around* the logic. In my experience the distinction between Promise and Future (CompletableFuture & CompletionStage) has been extremely helpful for improving correctness of async code, but then again, Scala Promises do not support cancellation out-of-the-box, but can be added for the cases where you want it: https://viktorklang.com/blog/Futures-in-Scala-protips-6.html
+
+On Thu, May 20, 2021 at 8:04 PM Alex Otenko <oleksandr.otenko@gmail.com> wrote:
+
+    It is a little more nuanced than that. You may not know that the CF is being completed on your behalf.
+
+    Enter orTimeout...
+
+    Furthermore, try to devise a chain of CFs that borrow a pooled resource, then finally return it back to the pool. Now if this construct is wrapped in orTimeout, you can see the resource borrowed, but downstream stages don't release it, because they will be bypassed by exceptional completion by orTimeout.
+
+    Alex
+
+    On Thu, 20 May 2021, 13:59 Viktor Klang via Concurrency-interest, <concurrency-interest@cs.oswego.edu> wrote:
+
+        A solution which has been used very successfully in Scala is the distinction between Promise (write a single value 0..1 times) and Future (read a single value 0..N times), which means that only the thread who owns a reference to the Promise can write values, which means that Futures can be freely shared since consumers cannot manipulate the result "further up the chain".
+
+        You can achieve something similar in Java by separating CompletableFuture from CompletionStage.
+
+        public static void main(String[] args) {
+            CompletableFuture<String> initial = new CompletableFuture<>();
+
+            CompletionStage<String> withSteps = initial
+                    .thenApply(s -> {
+                        System.out.println("STEP1: " + s);
+                        return s;
+                    })
+                    .thenApply(s -> {
+                        System.out.println("STEP2: " + s);
+                        return s;
+                    });
+
+            CompletionStage<String> timeout = withSteps;
+
+            timeout.whenComplete((s, throwable) ->
+        System.out.println("TIMEOUT: " + throwable));
+
+            timeout.completeExceptionally(new RuntimeException("TIMEOUT")); <--- now won't compile
+            initial.complete("SUCCESS");
+        }
+
+
+        On Thu, May 20, 2021 at 12:50 PM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+
+            What bothers me here is API of CompletableFuture itself, e.g:
+
+            public CompletableFuture<ProcessingOutput>
+            executeProcessing(Function<Path, ProcessingOutput> processor) {
+                Path data = prepareData();
+                return CompletableFuture.supplyAsync(() -> processor.apply(data),
+            processingExecutor)
+                        .whenComplete((o, ex) -> cleanup(data));
+            }
+
+            Callers of this method may just break cleanup, without even knowing
+            about this, but simply calling complete() on returned CF. But it seems
+            that nothing can be done about it.
+
+            czw., 20 maj 2021 o 14:40 Benjamin Manes <ben.manes@gmail.com> napisał(a):
+            >
+            > The timeout is applied to the STEP2 future which completes it exceptionally. This causes it to not run the mapping function for a result, as it was completed prior to that being triggered. You can use copy() to decouple the source from the timeout if you want both to complete; e.g. cache a long running value but fail a consumer if taking to long.
+            >
+            > On Thu, May 20, 2021 at 5:31 AM Michał Górniewski via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+            >>
+            >> With following code:
+            >>
+            >> ------------------------------
+            >> public static void main(String[] args) {
+            >>     CompletableFuture<String> initial = new CompletableFuture<>();
+            >>
+            >>     CompletableFuture<String> withSteps = initial
+            >>             .thenApply(s -> {
+            >>                 System.out.println("STEP1: " + s);
+            >>                 return s;
+            >>             })
+            >>             .thenApply(s -> {
+            >>                 System.out.println("STEP2: " + s);
+            >>                 return s;
+            >>             });
+            >>
+            >>     CompletableFuture<String> timeout = withSteps;
+            >>
+            >>     timeout.whenComplete((s, throwable) ->
+            >> System.out.println("TIMEOUT: " + throwable));
+            >>
+            >>     timeout.completeExceptionally(new RuntimeException("TIMEOUT"));
+            >>     initial.complete("SUCCESS");
+            >> }
+            >> ------------------------------
+            >>
+            >> I got output like this:
+            >>
+            >> ------------------------------
+            >> TIMEOUT: java.lang.RuntimeException: TIMEOUT
+            >> STEP1: SUCCESS
+            >> ------------------------------
+            >>
+            >> I don't understand why "STEP2" is not executed in this case. Is this expected?
+            >> For me this API is confusing and may create issues like this:
+            >> https://github.com/resilience4j/resilience4j/issues/1427
+            >>
+            >> Thanks,
+            >> Michał Górniewski
+            >> _______________________________________________
+            >> Concurrency-interest mailing list
+            >> Concurrency-interest@cs.oswego.edu
+            >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+            _______________________________________________
+            Concurrency-interest mailing list
+            Concurrency-interest@cs.oswego.edu
+            http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+        -- 
+        Cheers,
+        √
+        _______________________________________________
+        Concurrency-interest mailing list
+        Concurrency-interest@cs.oswego.edu
+        http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-- 
+Cheers,
+√
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest

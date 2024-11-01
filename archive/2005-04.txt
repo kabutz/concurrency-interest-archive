@@ -1,0 +1,4027 @@
+From Sai.Kumar at ca.com  Fri Apr  1 09:26:33 2005
+From: Sai.Kumar at ca.com (Pollachi, Saikumar)
+Date: Fri Apr  1 09:26:52 2005
+Subject: [concurrency-interest] Tree{Map,Set}
+Message-ID: <B80488675062364A909EE60F4A666038068AE842@usilms23.ca.com>
+
+Hi!
+
+I missed the import statements in the code snippet. I am using LinkedQueue of Doug Lea's concurrent library.
+
+The class is  packaged in EDU.oswego.cs.dl.util.concurrent.
+
+In my persist() method I am synchronizing on 'head_' (a LinkedNode) instance variable in LinkedQueue class. Will this cause any dead locks when put(Object) and get() methods are being called in different threads?
+
+Thanks...
+
+-----Original Message-----
+From: David Holmes [mailto:dholmes@dltech.com.au]
+Sent: Thursday, March 31, 2005 6:48 PM
+To: Pollachi, Saikumar; concurrency-interest@altair.cs.oswego.edu
+Subject: RE: [concurrency-interest] Tree{Map,Set}
+
+
+I'm not at all clear on what you have done. What is a LinkedQueue? How does
+it perform synchronization?
+
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces@cs.oswego.edu
+> [mailto:concurrency-interest-bounces@cs.oswego.edu]On Behalf Of
+> Pollachi, Saikumar
+> Sent: Friday, 1 April 2005 4:58 AM
+> To: concurrency-interest@altair.cs.oswego.edu
+> Subject: RE: [concurrency-interest] Tree{Map,Set}
+>
+>
+>
+> Hi!
+>
+> I am a silent member of the group. I enjoy reading the mails from this
+> group. Can somebody tell me if there is any possibility of deadlocks in
+> this code. I extended LinkedQueue to create  a PersistentQueue. It works
+> fine most of the time. Some time I suspect there is a dead lock.
+>
+>
+> public class PersistentQueue
+>     extends LinkedQueue
+> {
+>     private void restoreQueue()
+>     {
+> 	...
+>     }
+>
+>     private void buildQueue() throws InterruptedException, IOException
+>     {
+> 		...
+>     }
+>
+>     public void put(Object item) throws InterruptedException
+>     {
+>         //Object[] items = getSnapshot(item);
+>         super.put(item);
+>         persist();
+>     }
+>
+>     public Object take() throws InterruptedException
+>     {
+>         Object obj = super.take();
+>         persist();
+>         return obj;
+>     }
+>
+>     private void persist(Object[] items)
+>     {
+>         if (items != null)
+>         {
+>             int size = items.length;
+>             ObjectOutputStream out = null;
+>
+>             try
+>             {
+>                 out = new ObjectOutputStream(new
+> FileOutputStream(queuePath, false));
+>
+>                 for (int i = 0; i < size; i++)
+>                 {
+>                     out.writeObject(items[i]);
+>                 }
+>
+>                 out.flush();
+>                 out.close();
+>             }
+>             catch (IOException ioe)
+>             {
+>                 logger.logp(Level.WARNING, "PersistentQueue",
+> "buildQueue()",
+>                             "Failed to persist the Queue..: " +
+> ioe.getMessage(), ioe);
+>             }
+>         }
+>     }
+>
+>     private void persist()
+>     {
+>         if (queuePath == null)
+>         {
+>             return;
+>         }
+>
+>         ObjectOutputStream out = null;
+>
+>         boolean retry = false;
+>         do
+>         {
+>             retry = false;
+>             try
+>             {
+>                 out = new ObjectOutputStream(new
+> FileOutputStream(queuePath, false));
+>                 synchronized (head_)
+>                 {
+>                     LinkedNode head = head_.next;
+>                     while (head != null)
+>                     {
+>                         if (head.value != null)
+>                         {
+>                             out.writeObject(head.value);
+>                         }
+>                         head = head.next;
+>                     }
+>                 }
+>             }
+>             catch (IOException ioe)
+>             {
+>                 //possible that the directory or file does not exist!
+>                 //try to create it and if it fails then throw an
+> exception
+>                 logger.logp(Level.WARNING, "PersistentQueue",
+> "persist()",
+>                             "Failed to persist the Queue..: " +
+> ioe.getMessage(), ioe);
+>                 logger.logp(Level.FINE, "PersistentQueue", "persist()",
+>                             "Attempting to create the directory and then
+> persist.");
+>                 createDir(queuePath);
+>                 retry = true;
+>             }
+>             finally
+>             {
+>                 try
+>                 {
+>                     if(out != null)
+>                     {
+>                         out.flush();
+>                         out.close();
+>                     }
+>                 }
+>                 catch (IOException ioe)
+>                 {
+>                     logger.logp(Level.FINE, "PersistentQueue",
+> "persist()",
+>                                 "Failed to close the file stream : " +
+> ioe.getMessage());
+>
+>                 }
+>             }
+>         }while(retry);
+>     }
+>
+> }
+>
+> Thanks
+>
+> Saikumar Pollachi
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+From hernan.otero at jpmchase.com  Fri Apr  1 17:55:47 2005
+From: hernan.otero at jpmchase.com (hernan.otero@jpmchase.com)
+Date: Fri Apr  1 18:42:13 2005
+Subject: [concurrency-interest] ThreadPoolExecutor customization
+	proposal/question
+Message-ID: <OFB3E70FFF.0F378A4E-ON85256FD6.007DF40E@jpmchase.com>
+
+I would like to use a ThreadPoolExecutor but would like to impose a couple
+of restrictions on how tasks (Runnables) are executed.  Basically, I would
+like to have each task execute on a specific "context" (each context having
+a unique String-typed id).  I would like my executor to guarantee
+serialization of the tasks at the context level (e.g. no two tasks for the
+same context should ever be executed in parallel).  So if two tasks are
+queued in order (e.g. by the same thread), then their execution should also
+be guaranteed to execute in the same order.
+
+If I were to implement this as a customization to the existing
+ThreadPoolExecutor, I would probably think of going the following route:
+
+interface RunnableContext
+{
+
+}
+
+interface ContextRunnable extends Runnable
+{
+
+RunnableContext getContext();
+
+}
+
+public class ThreadPoolContextExecutor extends ThreadPoolExecutor {
+
+Runnable getTask() {
+  // the code that looks for the next task would need to skip tasks for
+"currently busy" contexts
+}
+
+public void execute(Runnable task)
+{
+    // we want an exception if task is not a ContextRunnable
+    ContextRunnable contextTask = (ContextRunnable) task;
+    ...
+}
+
+protected void beforeExecute(Thread t, Runnable r) {
+    ContextRunnable contextTask = (ContextRunnable) r;
+    // assert that contextTask.getContext() context's not currently marked
+as busy
+    // somehow mark the fact that contextTask.getContext() is now busy
+}
+
+protected void afterExecute(Thread t, Runnable r) {
+    ContextRunnable contextTask = (ContextRunnable) r;
+    // assert that contextTask.getContext() context's currently marked as
+busy
+    // mark contextTask.getContext() as no longer busy
+}
+
+}
+
+Would the above be the recommended way to implement such functionality?  Or
+are there other hooks I missed which would make this easier to implement?
+
+Also, I'm thinking this may not be a very rare need and was wondering if
+there has been any thought given to something like this in the past.  It
+might be worth considering it as a potential future enhancement to the
+library.
+
+Thanks in advance,
+
+Hernan
+
+From jozart at blarg.net  Sat Apr  2 04:23:27 2005
+From: jozart at blarg.net (Joe Bowbeer)
+Date: Sat Apr  2 04:24:08 2005
+Subject: [concurrency-interest] ThreadPoolExecutor
+	customizationproposal/question
+References: <OFB3E70FFF.0F378A4E-ON85256FD6.007DF40E@jpmchase.com>
+Message-ID: <073001c53765$a08eb9e0$0200a8c0@REPLICANT2>
+
+Hernan,
+
+How many contexts are there?  Are they known before hand?
+
+I suggest you look at SerialExecutor in the Executor javadoc (if you haven't 
+already).  The idea being that you can use an instance of SerialExecutor per 
+context, all of them sharing a single ThreadPoolExecutor.
+
+If SerialExecutor isn't a good fit, I suggest you try a different composite 
+executor design, or create a specialized queue, leaving ThreadPoolExecutor 
+to do its thread pool thing unencumbered.
+
+
+----- Original Message ----- 
+From: <hernan.otero@jpmchase.com>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Friday, April 01, 2005 2:55 PM
+Subject: [concurrency-interest] ThreadPoolExecutor 
+customizationproposal/question
+
+
+I would like to use a ThreadPoolExecutor but would like to impose a couple
+of restrictions on how tasks (Runnables) are executed.  Basically, I would
+like to have each task execute on a specific "context" (each context having
+a unique String-typed id).  I would like my executor to guarantee
+serialization of the tasks at the context level (e.g. no two tasks for the
+same context should ever be executed in parallel).  So if two tasks are
+queued in order (e.g. by the same thread), then their execution should also
+be guaranteed to execute in the same order.
+
+If I were to implement this as a customization to the existing
+ThreadPoolExecutor, I would probably think of going the following route:
+
+interface RunnableContext
+{
+
+}
+
+interface ContextRunnable extends Runnable
+{
+
+RunnableContext getContext();
+
+}
+
+public class ThreadPoolContextExecutor extends ThreadPoolExecutor {
+
+Runnable getTask() {
+  // the code that looks for the next task would need to skip tasks for
+"currently busy" contexts
+}
+
+public void execute(Runnable task)
+{
+    // we want an exception if task is not a ContextRunnable
+    ContextRunnable contextTask = (ContextRunnable) task;
+    ...
+}
+
+protected void beforeExecute(Thread t, Runnable r) {
+    ContextRunnable contextTask = (ContextRunnable) r;
+    // assert that contextTask.getContext() context's not currently marked
+as busy
+    // somehow mark the fact that contextTask.getContext() is now busy
+}
+
+protected void afterExecute(Thread t, Runnable r) {
+    ContextRunnable contextTask = (ContextRunnable) r;
+    // assert that contextTask.getContext() context's currently marked as
+busy
+    // mark contextTask.getContext() as no longer busy
+}
+
+}
+
+Would the above be the recommended way to implement such functionality?  Or
+are there other hooks I missed which would make this easier to implement?
+
+Also, I'm thinking this may not be a very rare need and was wondering if
+there has been any thought given to something like this in the past.  It
+might be worth considering it as a potential future enhancement to the
+library.
+
+Thanks in advance,
+
+Hernan
+
+
+From hernan.otero at mac.com  Sat Apr  2 12:08:02 2005
+From: hernan.otero at mac.com (Hernan Otero)
+Date: Sat Apr  2 12:09:53 2005
+Subject: [concurrency-interest] ThreadPoolExecutor
+	customizationproposal/question
+In-Reply-To: <073001c53765$a08eb9e0$0200a8c0@REPLICANT2>
+References: <OFB3E70FFF.0F378A4E-ON85256FD6.007DF40E@jpmchase.com>
+	<073001c53765$a08eb9e0$0200a8c0@REPLICANT2>
+Message-ID: <2a7e4a4430885ebbeed85449b4262545@mac.com>
+
+The number of contexts is unknown before hand (and could significantly 
+go up/down at runtime).  A rough number would be 5,000.
+
+Will look into your proposed alternatives.
+
+Thanks,
+
+Hernan
+
+On Apr 2, 2005, at 4:23 AM, Joe Bowbeer wrote:
+
+> Hernan,
+>
+> How many contexts are there?  Are they known before hand?
+>
+> I suggest you look at SerialExecutor in the Executor javadoc (if you 
+> haven't
+> already).  The idea being that you can use an instance of 
+> SerialExecutor per
+> context, all of them sharing a single ThreadPoolExecutor.
+>
+> If SerialExecutor isn't a good fit, I suggest you try a different 
+> composite
+> executor design, or create a specialized queue, leaving 
+> ThreadPoolExecutor
+> to do its thread pool thing unencumbered.
+>
+>
+> ----- Original Message -----
+> From: <hernan.otero@jpmchase.com>
+> To: <concurrency-interest@altair.cs.oswego.edu>
+> Sent: Friday, April 01, 2005 2:55 PM
+> Subject: [concurrency-interest] ThreadPoolExecutor
+> customizationproposal/question
+>
+>
+> I would like to use a ThreadPoolExecutor but would like to impose a 
+> couple
+> of restrictions on how tasks (Runnables) are executed.  Basically, I 
+> would
+> like to have each task execute on a specific "context" (each context 
+> having
+> a unique String-typed id).  I would like my executor to guarantee
+> serialization of the tasks at the context level (e.g. no two tasks for 
+> the
+> same context should ever be executed in parallel).  So if two tasks are
+> queued in order (e.g. by the same thread), then their execution should 
+> also
+> be guaranteed to execute in the same order.
+>
+> If I were to implement this as a customization to the existing
+> ThreadPoolExecutor, I would probably think of going the following 
+> route:
+>
+> interface RunnableContext
+> {
+>
+> }
+>
+> interface ContextRunnable extends Runnable
+> {
+>
+> RunnableContext getContext();
+>
+> }
+>
+> public class ThreadPoolContextExecutor extends ThreadPoolExecutor {
+>
+> Runnable getTask() {
+>   // the code that looks for the next task would need to skip tasks for
+> "currently busy" contexts
+> }
+>
+> public void execute(Runnable task)
+> {
+>     // we want an exception if task is not a ContextRunnable
+>     ContextRunnable contextTask = (ContextRunnable) task;
+>     ...
+> }
+>
+> protected void beforeExecute(Thread t, Runnable r) {
+>     ContextRunnable contextTask = (ContextRunnable) r;
+>     // assert that contextTask.getContext() context's not currently 
+> marked
+> as busy
+>     // somehow mark the fact that contextTask.getContext() is now busy
+> }
+>
+> protected void afterExecute(Thread t, Runnable r) {
+>     ContextRunnable contextTask = (ContextRunnable) r;
+>     // assert that contextTask.getContext() context's currently marked 
+> as
+> busy
+>     // mark contextTask.getContext() as no longer busy
+> }
+>
+> }
+>
+> Would the above be the recommended way to implement such 
+> functionality?  Or
+> are there other hooks I missed which would make this easier to 
+> implement?
+>
+> Also, I'm thinking this may not be a very rare need and was wondering 
+> if
+> there has been any thought given to something like this in the past.  
+> It
+> might be worth considering it as a potential future enhancement to the
+> library.
+>
+> Thanks in advance,
+>
+> Hernan
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From jozart at blarg.net  Sat Apr  2 17:07:23 2005
+From: jozart at blarg.net (Joe Bowbeer)
+Date: Sat Apr  2 17:07:39 2005
+Subject: [concurrency-interest]
+	ThreadPoolExecutorcustomizationproposal/question
+References: <OFB3E70FFF.0F378A4E-ON85256FD6.007DF40E@jpmchase.com><073001c53765$a08eb9e0$0200a8c0@REPLICANT2>
+	<2a7e4a4430885ebbeed85449b4262545@mac.com>
+Message-ID: <075e01c537d0$590210c0$0200a8c0@REPLICANT2>
+
+Hernan Otero writes:
+
+> The number of contexts is unknown before hand
+> (and could significantly go up/down at runtime).
+> A rough number would be 5,000.
+
+One approach would be to add a map of execution contexts to SerialExecutor. 
+Note that unused contexts can be removed in the scheduleNext method.
+
+A crude implementation along these lines follows.
+
+ContextExecutor maps context keys to execution contexts, and serializes the 
+execution of tasks for each context.  An execution context in this case is 
+the active task and a queue of waiting tasks.  New contexts are created on 
+demand and removed when they are no longer used.
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Queue;
+import java.util.concurrent.Executor;
+import java.util.concurrent.LinkedBlockingQueue;
+
+class ContextExecutor implements Executor {
+
+    static class Context {
+        final Queue<Runnable> tasks =
+            new LinkedBlockingQueue<Runnable>();
+        final String key;
+        Runnable active;
+        Context(String key) {
+            this.key = key;
+        }
+    }
+
+    final Map<String, Context> map =
+        new HashMap<String, Context>();
+    final Executor executor;
+
+    ContextExecutor(Executor executor) {
+        this.executor = executor;
+    }
+
+    public synchronized void execute(final Runnable r) {
+        final Context c = getContext(r);
+        c.tasks.offer(new Runnable() {
+            public void run() {
+                try {
+                    r.run();
+                } finally {
+                    scheduleNext(c);
+                }
+            }
+        });
+        if (c.active == null) {
+            scheduleNext(c);
+        }
+    }
+
+    protected synchronized void scheduleNext(Context c) {
+        if ((c.active = c.tasks.poll()) != null) {
+            executor.execute(c.active);
+        } else {
+            map.remove(c.key);
+        }
+    }
+
+    private Context getContext(Runnable r) {
+        String key = r.toString(); // FIXME
+        Context context = map.get(key);
+        if (context == null) {
+            context = new Context(key);
+            map.put(key, context);
+        }
+        return context;
+    }
+}
+
+
+
+----- Original Message ----- 
+From: "Hernan Otero" <hernan.otero@mac.com>
+To: "Joe Bowbeer" <jozart@blarg.net>
+Cc: <hernan.otero@jpmchase.com>; <concurrency-interest@altair.cs.oswego.edu>
+Sent: Saturday, April 02, 2005 9:08 AM
+Subject: Re: [concurrency-interest] 
+ThreadPoolExecutorcustomizationproposal/question
+
+
+The number of contexts is unknown before hand (and could significantly
+go up/down at runtime).  A rough number would be 5,000.
+
+Will look into your proposed alternatives.
+
+Thanks,
+
+Hernan
+
+On Apr 2, 2005, at 4:23 AM, Joe Bowbeer wrote:
+
+> Hernan,
+>
+> How many contexts are there?  Are they known before hand?
+>
+> I suggest you look at SerialExecutor in the Executor javadoc (if you
+> haven't
+> already).  The idea being that you can use an instance of
+> SerialExecutor per
+> context, all of them sharing a single ThreadPoolExecutor.
+>
+> If SerialExecutor isn't a good fit, I suggest you try a different
+> composite
+> executor design, or create a specialized queue, leaving
+> ThreadPoolExecutor
+> to do its thread pool thing unencumbered.
+>
+>
+> ----- Original Message -----
+> From: <hernan.otero@jpmchase.com>
+> To: <concurrency-interest@altair.cs.oswego.edu>
+> Sent: Friday, April 01, 2005 2:55 PM
+> Subject: [concurrency-interest] ThreadPoolExecutor
+> customizationproposal/question
+>
+>
+> I would like to use a ThreadPoolExecutor but would like to impose a
+> couple
+> of restrictions on how tasks (Runnables) are executed.  Basically, I
+> would
+> like to have each task execute on a specific "context" (each context
+> having
+> a unique String-typed id).  I would like my executor to guarantee
+> serialization of the tasks at the context level (e.g. no two tasks for
+> the
+> same context should ever be executed in parallel).  So if two tasks are
+> queued in order (e.g. by the same thread), then their execution should
+> also
+> be guaranteed to execute in the same order.
+>
+> If I were to implement this as a customization to the existing
+> ThreadPoolExecutor, I would probably think of going the following
+> route:
+>
+> interface RunnableContext
+> {
+>
+> }
+>
+> interface ContextRunnable extends Runnable
+> {
+>
+> RunnableContext getContext();
+>
+> }
+>
+> public class ThreadPoolContextExecutor extends ThreadPoolExecutor {
+>
+> Runnable getTask() {
+>   // the code that looks for the next task would need to skip tasks for
+> "currently busy" contexts
+> }
+>
+> public void execute(Runnable task)
+> {
+>     // we want an exception if task is not a ContextRunnable
+>     ContextRunnable contextTask = (ContextRunnable) task;
+>     ...
+> }
+>
+> protected void beforeExecute(Thread t, Runnable r) {
+>     ContextRunnable contextTask = (ContextRunnable) r;
+>     // assert that contextTask.getContext() context's not currently
+> marked
+> as busy
+>     // somehow mark the fact that contextTask.getContext() is now busy
+> }
+>
+> protected void afterExecute(Thread t, Runnable r) {
+>     ContextRunnable contextTask = (ContextRunnable) r;
+>     // assert that contextTask.getContext() context's currently marked
+> as
+> busy
+>     // mark contextTask.getContext() as no longer busy
+> }
+>
+> }
+>
+> Would the above be the recommended way to implement such
+> functionality?  Or
+> are there other hooks I missed which would make this easier to
+> implement?
+>
+> Also, I'm thinking this may not be a very rare need and was wondering
+> if
+> there has been any thought given to something like this in the past.
+> It
+> might be worth considering it as a potential future enhancement to the
+> library.
+>
+> Thanks in advance,
+>
+> Hernan
+>
+
+From jozart at blarg.net  Sat Apr  2 19:19:05 2005
+From: jozart at blarg.net (Joe Bowbeer)
+Date: Sat Apr  2 19:19:16 2005
+Subject: [concurrency-interest]ThreadPoolExecutorcustomizationproposal/question
+References: <OFB3E70FFF.0F378A4E-ON85256FD6.007DF40E@jpmchase.com><073001c53765$a08eb9e0$0200a8c0@REPLICANT2><2a7e4a4430885ebbeed85449b4262545@mac.com>
+	<075e01c537d0$590210c0$0200a8c0@REPLICANT2>
+Message-ID: <07a401c537e2$bf083590$0200a8c0@REPLICANT2>
+
+By the way,
+
+I want to point out that there's no need for this code to use a concurrent 
+map or a concurrent queue implementation because this executor's state is 
+synchronized at execute and scheduleNext.
+
+Any Queue will do, such as a LinkedList.  I'd recommend switching to 
+LinkedList to reduce the overhead per context.
+
+  final Queue<Runnable> tasks = new LinkedList<Runnable>();
+
+
+----- Original Message ----- 
+From: "Joe Bowbeer" <jozart@blarg.net>
+To: <concurrency-interest@altair.cs.oswego.edu>; "Hernan Otero" 
+<hernan.otero@mac.com>
+Sent: Saturday, April 02, 2005 2:07 PM
+Subject: Re: 
+[concurrency-interest]ThreadPoolExecutorcustomizationproposal/question
+
+
+Hernan Otero writes:
+
+> The number of contexts is unknown before hand
+> (and could significantly go up/down at runtime).
+> A rough number would be 5,000.
+
+One approach would be to add a map of execution contexts to SerialExecutor.
+Note that unused contexts can be removed in the scheduleNext method.
+
+A crude implementation along these lines follows.
+
+ContextExecutor maps context keys to execution contexts, and serializes the
+execution of tasks for each context.  An execution context in this case is
+the active task and a queue of waiting tasks.  New contexts are created on
+demand and removed when they are no longer used.
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Queue;
+import java.util.concurrent.Executor;
+import java.util.concurrent.LinkedBlockingQueue;
+
+class ContextExecutor implements Executor {
+
+    static class Context {
+        final Queue<Runnable> tasks =
+            new LinkedBlockingQueue<Runnable>();
+        final String key;
+        Runnable active;
+        Context(String key) {
+            this.key = key;
+        }
+    }
+
+    final Map<String, Context> map =
+        new HashMap<String, Context>();
+    final Executor executor;
+
+    ContextExecutor(Executor executor) {
+        this.executor = executor;
+    }
+
+    public synchronized void execute(final Runnable r) {
+        final Context c = getContext(r);
+        c.tasks.offer(new Runnable() {
+            public void run() {
+                try {
+                    r.run();
+                } finally {
+                    scheduleNext(c);
+                }
+            }
+        });
+        if (c.active == null) {
+            scheduleNext(c);
+        }
+    }
+
+    protected synchronized void scheduleNext(Context c) {
+        if ((c.active = c.tasks.poll()) != null) {
+            executor.execute(c.active);
+        } else {
+            map.remove(c.key);
+        }
+    }
+
+    private Context getContext(Runnable r) {
+        String key = r.toString(); // FIXME
+        Context context = map.get(key);
+        if (context == null) {
+            context = new Context(key);
+            map.put(key, context);
+        }
+        return context;
+    }
+}
+
+
+
+----- Original Message ----- 
+From: "Hernan Otero" <hernan.otero@mac.com>
+To: "Joe Bowbeer" <jozart@blarg.net>
+Cc: <hernan.otero@jpmchase.com>; <concurrency-interest@altair.cs.oswego.edu>
+Sent: Saturday, April 02, 2005 9:08 AM
+Subject: Re: [concurrency-interest]
+ThreadPoolExecutorcustomizationproposal/question
+
+
+The number of contexts is unknown before hand (and could significantly
+go up/down at runtime).  A rough number would be 5,000.
+
+Will look into your proposed alternatives.
+
+Thanks,
+
+Hernan
+
+On Apr 2, 2005, at 4:23 AM, Joe Bowbeer wrote:
+
+> Hernan,
+>
+> How many contexts are there?  Are they known before hand?
+>
+> I suggest you look at SerialExecutor in the Executor javadoc (if you
+> haven't
+> already).  The idea being that you can use an instance of
+> SerialExecutor per
+> context, all of them sharing a single ThreadPoolExecutor.
+>
+> If SerialExecutor isn't a good fit, I suggest you try a different
+> composite
+> executor design, or create a specialized queue, leaving
+> ThreadPoolExecutor
+> to do its thread pool thing unencumbered.
+>
+>
+> ----- Original Message -----
+> From: <hernan.otero@jpmchase.com>
+> To: <concurrency-interest@altair.cs.oswego.edu>
+> Sent: Friday, April 01, 2005 2:55 PM
+> Subject: [concurrency-interest] ThreadPoolExecutor
+> customizationproposal/question
+>
+>
+> I would like to use a ThreadPoolExecutor but would like to impose a
+> couple
+> of restrictions on how tasks (Runnables) are executed.  Basically, I
+> would
+> like to have each task execute on a specific "context" (each context
+> having
+> a unique String-typed id).  I would like my executor to guarantee
+> serialization of the tasks at the context level (e.g. no two tasks for
+> the
+> same context should ever be executed in parallel).  So if two tasks are
+> queued in order (e.g. by the same thread), then their execution should
+> also
+> be guaranteed to execute in the same order.
+>
+> If I were to implement this as a customization to the existing
+> ThreadPoolExecutor, I would probably think of going the following
+> route:
+>
+> interface RunnableContext
+> {
+>
+> }
+>
+> interface ContextRunnable extends Runnable
+> {
+>
+> RunnableContext getContext();
+>
+> }
+>
+> public class ThreadPoolContextExecutor extends ThreadPoolExecutor {
+>
+> Runnable getTask() {
+>   // the code that looks for the next task would need to skip tasks for
+> "currently busy" contexts
+> }
+>
+> public void execute(Runnable task)
+> {
+>     // we want an exception if task is not a ContextRunnable
+>     ContextRunnable contextTask = (ContextRunnable) task;
+>     ...
+> }
+>
+> protected void beforeExecute(Thread t, Runnable r) {
+>     ContextRunnable contextTask = (ContextRunnable) r;
+>     // assert that contextTask.getContext() context's not currently
+> marked
+> as busy
+>     // somehow mark the fact that contextTask.getContext() is now busy
+> }
+>
+> protected void afterExecute(Thread t, Runnable r) {
+>     ContextRunnable contextTask = (ContextRunnable) r;
+>     // assert that contextTask.getContext() context's currently marked
+> as
+> busy
+>     // mark contextTask.getContext() as no longer busy
+> }
+>
+> }
+>
+> Would the above be the recommended way to implement such
+> functionality?  Or
+> are there other hooks I missed which would make this easier to
+> implement?
+>
+> Also, I'm thinking this may not be a very rare need and was wondering
+> if
+> there has been any thought given to something like this in the past.
+> It
+> might be worth considering it as a potential future enhancement to the
+> library.
+>
+> Thanks in advance,
+>
+> Hernan
+>
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From minnieh at corp.earthlink.net  Mon Apr  4 00:51:26 2005
+From: minnieh at corp.earthlink.net (Minnie Haridasa)
+Date: Mon Apr  4 00:52:36 2005
+Subject: [concurrency-interest] Cancelling Tasks returning immediately..
+Message-ID: <000001c538d1$fc0e40c0$6701a8c0@sjclap022925>
+
+Hello,
+
+ 
+
+We have unique situation where I thought I may seek you help for some useful
+hints.
+
+My thread pool has an unbounded queue associated to it. However, while a
+task is waiting on the queue to be
+
+Processed, it cannot wait indefinitely, after a certain period of time, it
+needs to cancel out and return a different result.
+
+ 
+
+Is it possible to achieve this using the concurrent utilities of JDK1.5.
+
+ 
+
+My queue has to be unbounded, and the task (callable) that gets put on the
+queue needs to be time bound. How can I make the cancelled task return
+immediately as opposed to the result that can only be retrieved using method
+get when the computation has completed or the task gets its turn to be
+executed by the pool.
+
+ 
+
+Appreciate your help.
+
+Thanks
+
+MH
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20050403/c81a13bb/attachment.htm
+From jozart at blarg.net  Mon Apr  4 01:45:31 2005
+From: jozart at blarg.net (Joe Bowbeer)
+Date: Mon Apr  4 01:45:43 2005
+Subject: [concurrency-interest] Cancelling Tasks returning immediately..
+References: <000001c538d1$fc0e40c0$6701a8c0@sjclap022925>
+Message-ID: <089a01c538d9$83907bb0$0200a8c0@REPLICANT2>
+
+Here's a simple approach:
+
+When you submit your FutureTask to the executor service, also schedule a 
+TimerTask to cancel that task.
+
+If your FutureTask needs to act at the moment it is cancelled, override the 
+"done" method and perform the desired action if isCancelled returns true.
+
+
+----- Original Message ----- 
+From: "Minnie Haridasa" <minnieh@corp.earthlink.net>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Sunday, April 03, 2005 9:51 PM
+Subject: [concurrency-interest] Cancelling Tasks returning immediately..
+
+
+Hello,
+
+We have unique situation where I thought I may seek you help for some useful
+hints.
+
+My thread pool has an unbounded queue associated to it. However, while a
+task is waiting on the queue to be
+
+Processed, it cannot wait indefinitely, after a certain period of time, it
+needs to cancel out and return a different result.
+
+Is it possible to achieve this using the concurrent utilities of JDK1.5.
+
+My queue has to be unbounded, and the task (callable) that gets put on the
+queue needs to be time bound. How can I make the cancelled task return
+immediately as opposed to the result that can only be retrieved using method
+get when the computation has completed or the task gets its turn to be
+executed by the pool.
+
+Appreciate your help.
+
+Thanks
+
+MH
+
+
+
+From minnieh at corp.earthlink.net  Mon Apr  4 20:12:27 2005
+From: minnieh at corp.earthlink.net (Minnie Haridasa)
+Date: Mon Apr  4 20:13:18 2005
+Subject: [concurrency-interest] Pausing the idle threads in a pool for
+	small time.
+In-Reply-To: <089a01c538d9$83907bb0$0200a8c0@REPLICANT2>
+Message-ID: <000901c53974$268f6b10$3124500a@sjclap022925>
+
+Thank you Joe!! However I had another question to the group.
+
+Is it possible to pause/resume the idle threads in the pool? I am trying to
+implement request throttling.  In the process of doing so, I would like to
+pause all the idle threads in the pool once the request counter reaches its
+maximum to up until the request rate counter is reset. The request rate
+counter is gets reset every 1 second and is supposed to allow only 4
+requests to pass through. 
+
+Regards,
+Minnie
+
+
+-----Original Message-----
+From: Joe Bowbeer [mailto:jozart@blarg.net] 
+Sent: Sunday, April 03, 2005 10:46 PM
+To: Minnie Haridasa; concurrency-interest@altair.cs.oswego.edu
+Subject: Re: [concurrency-interest] Cancelling Tasks returning immediately..
+
+Here's a simple approach:
+
+When you submit your FutureTask to the executor service, also schedule a 
+TimerTask to cancel that task.
+
+If your FutureTask needs to act at the moment it is cancelled, override the 
+"done" method and perform the desired action if isCancelled returns true.
+
+
+----- Original Message ----- 
+From: "Minnie Haridasa" <minnieh@corp.earthlink.net>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Sunday, April 03, 2005 9:51 PM
+Subject: [concurrency-interest] Cancelling Tasks returning immediately..
+
+
+Hello,
+
+We have unique situation where I thought I may seek you help for some useful
+hints.
+
+My thread pool has an unbounded queue associated to it. However, while a
+task is waiting on the queue to be
+
+Processed, it cannot wait indefinitely, after a certain period of time, it
+needs to cancel out and return a different result.
+
+Is it possible to achieve this using the concurrent utilities of JDK1.5.
+
+My queue has to be unbounded, and the task (callable) that gets put on the
+queue needs to be time bound. How can I make the cancelled task return
+immediately as opposed to the result that can only be retrieved using method
+get when the computation has completed or the task gets its turn to be
+executed by the pool.
+
+Appreciate your help.
+
+Thanks
+
+MH
+
+
+
+
+
+From jozart at blarg.net  Mon Apr  4 20:27:44 2005
+From: jozart at blarg.net (Joe Bowbeer)
+Date: Mon Apr  4 20:27:53 2005
+Subject: [concurrency-interest] Pausing the idle threads in a pool
+	for	small time.
+Message-ID: <d10a57c5ea538dd4707a92a68efd0099@www.blargmail.com>
+
+Minnie Haridasa <minnieh@corp.earthlink.net> wrote:
+> 
+> Is it possible to pause/resume the idle threads in the pool?
+> I am trying to implement request throttling.  In the process
+> of doing so, I would like to pause all the idle threads in
+> the pool once the request counter reaches its maximum to up
+> until the request rate counter is reset. The request rate
+> counter is gets reset every 1 second and is supposed to allow
+> only 4 requests to pass through. 
+> 
+
+See PausableThreadPoolExecutor example in ThreadPoolExecutor javadoc.
+
+
+From dholmes at dltech.com.au  Mon Apr  4 21:34:06 2005
+From: dholmes at dltech.com.au (David Holmes)
+Date: Mon Apr  4 21:34:13 2005
+Subject: [concurrency-interest] Tree{Map,Set}
+In-Reply-To: <B80488675062364A909EE60F4A666038068AE842@usilms23.ca.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCENOFIAA.dholmes@dltech.com.au>
+
+> In my persist() method I am synchronizing on 'head_' (a
+> LinkedNode) instance variable in LinkedQueue class. Will this
+> cause any dead locks when put(Object) and get() methods are being
+> called in different threads?
+>
+
+You won't "deadlock" because you only acquire a single lock and a deadlock
+requires at least two locks to be involved.
+
+But your synchronization in persist is not correct. You are attempting to
+use synchronization on head_ to gain consistent access to the queue.
+Synchronizing on head_ prevents anything from being removed from the queue
+while you traverse it, but it doesn't stop something from being added to the
+end. When your traversal gets to the tail there is a theoretical possibility
+of something going wrong because you don't sync on the same object used for
+insertions. Strictly speaking, under the memory model rules you are not
+guaranteed to see an inserted node - but worse you may see the node but see
+a null value in that node. In practice this is unlikely to occur.
+
+Further, your persist operation is not atomic with respect to the
+accompanying put() or take(), so the queue that gets persisted may be
+different from what you expect. If you are going to persist the queue after
+every modification and lock out all removals during the persist, then you
+may as well just synchronized your put() and take() (and offer and poll)
+methods and prevent concurrent access in the first placed.
+
+If you think your program is deadlocking then forcing the VM to dump its
+internal thread state should show that. (ctrl-\ ?).
+
+Hope this helps.
+
+David Holmes
+
+From yechielf at gigaspaces.com  Tue Apr  5 05:46:48 2005
+From: yechielf at gigaspaces.com (Yechiel Feffer)
+Date: Tue Apr  5 04:45:04 2005
+Subject: [concurrency-interest] Tree{Map,Set}
+Message-ID: <D166C96F43D1D611B8E3000255A0C48C6063E9@OFFICESRV>
+
+Hi
+As I understand, jsr166x is an extention of jsr166. Where can I find jsr166x
+docs ? 
+
+Regrds,
+Yechiel 
+
+-----Original Message-----
+From: concurrency-interest-bounces@cs.oswego.edu
+[mailto:concurrency-interest-bounces@cs.oswego.edu]On Behalf Of Doug Lea
+Sent: Thursday, March 31, 2005 19:40
+To: Kevin Bourrillion
+Cc: concurrency-interest@altair.cs.oswego.edu
+Subject: Re: [concurrency-interest] Tree{Map,Set}
+
+
+Kevin Bourrillion wrote:
+> Hi,
+> 
+> I heard a rumor that in Mustang, TreeMap and TreeSet will be
+> retrofitted to implement the fabulous new Navigable interfaces.
+
+Yes. These should appear in Mustang builds reasonably soon for
+those of you getting the early access snapshots. 
+(https://mustang.dev.java.net/)
+
+> 
+> If so, is it possible to include jsr166x.TreeMap/Set in jsr166x.jar so
+> that we might start using them?
+
+
+Probably. I'll check. (The integrated versions of our updated
+java.util.Tree*, have Sun headers. It ought to be possible to get
+Sun permission to distribute in jsr166x, although those of you
+concerned about purity might not like the re-introduction of
+mixed-license jars for jsr166x.)
+
+> 
+> On the other hand: for a caller who needs just a general-purpose,
+> non-concurrent, sorted set or map, would it be a bad idea for them to
+> use ConcurrentSkipList*?  If it's not appreciably slower in this case,
+> perhaps for our purposes we can just forget about Tree*?
+> 
+
+It depends on what you mean by "appreciably".
+
+If most of your uses are methods put() and get() and their variants,
+and map sizes are not huge, you might not notice any difference.
+In many these cases, ConcurrentSkipLists are often even slightly faster.
+
+If you do a lot of deletions, Trees will be noticeably faster because
+the deletion algorithm in concurrent skip lists has much more overhead
+than redblack tree deletion.
+
+If you mostly have very large maps (say, 100K+ elements), Trees will
+be noticeably faster because of the algorithmic asymptotics -- as n
+increases, redblack trees perform around log2(n) comparisons per get()
+vs around 2*log2(n) for skip lists.
+
+
+
+-Doug
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20050405/76d7902e/attachment.htm
+From jmanson at cs.purdue.edu  Tue Apr  5 11:10:56 2005
+From: jmanson at cs.purdue.edu (Jeremy Manson)
+Date: Tue Apr  5 11:11:13 2005
+Subject: [concurrency-interest] Tree{Map,Set}
+In-Reply-To: <D166C96F43D1D611B8E3000255A0C48C6063E9@OFFICESRV>
+References: <D166C96F43D1D611B8E3000255A0C48C6063E9@OFFICESRV>
+Message-ID: <4252AA80.4040705@cs.purdue.edu>
+
+Yechiel Feffer wrote:
+> Hi
+> As I understand, jsr166x is an extention of jsr166. Where can I find jsr166x
+> docs ? 
+> 
+> Regrds,
+> Yechiel 
+> 
+
+Here:
+
+http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166xdocs/index.html?jsr166x/package-summary.html
+
+					Jeremy Manson
+From hanson.char at gmail.com  Thu Apr  7 01:00:50 2005
+From: hanson.char at gmail.com (Hanson Char)
+Date: Thu Apr  7 01:00:58 2005
+Subject: [concurrency-interest] Executors.newSingleThreadScheduledExecutor()
+Message-ID: <ca53c8f80504062200521f08fc@mail.gmail.com>
+
+The javadoc of Executors.newSingleThreadScheduledExecutor():
+
+"Creates a single-threaded executor that can schedule commands to run
+after a given delay, or to execute periodically. (Note however that if
+this single thread terminates due to a failure during execution prior
+to shutdown, a new one will take its place if needed to execute
+subsequent tasks.) Tasks are guaranteed to execute sequentially, and
+no more than one task will be active at any given time. Unlike the
+otherwise equivalent newScheduledThreadPool(1) the returned executor
+is guaranteed not to be reconfigurable to use additional threads."
+
+My question is if the single thread terminates due to a failure, do we expect 
+
+1) a new one to take its place so the periodic command will still be
+re-scheduled and get executed ?   Or
+2) the failure to cause a termination of the periodic execution so the
+command will not be re-scheduled ?
+
+I expect (1) but the behave of both JDK1.5_02 and the latest backport
+version is (2).  Is this a bug in the code, the javadoc, or my
+understanding ?
+
+Please find below some sample test code.
+
+Hanson
+
+=========
+Daemon.java
+=========
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+
+public class Daemon {
+    private final ScheduledExecutorService scheduler =
+        Executors.newSingleThreadScheduledExecutor();
+    
+    public Daemon(Runnable command, long period, TimeUnit timeUnit) {
+        scheduler.scheduleAtFixedRate(command, 0, period, timeUnit);
+    }
+    
+    public void shutdown() {
+        scheduler.shutdown();
+    }
+}
+
+============
+DaemonTest.java
+============
+import java.util.Date;
+import junit.framework.*;
+import java.util.concurrent.TimeUnit;
+
+public class DaemonTest extends TestCase {
+	private int count;
+    // if error is true, executes only once.
+    // if error is false, executes every 1 sec.
+    boolean error = true;
+
+	public void test() throws InterruptedException {
+		final Runnable beeper = new Runnable() {
+			public void run() {
+				System.out.println("run at " + new Date());
+				if (error)
+					throw new RuntimeException("test");
+				count++;
+			}
+		};
+		Daemon s = new Daemon(beeper, 1, TimeUnit.SECONDS);
+		Thread.sleep(10 * 1000);
+		s.shutdown();
+	}
+}
+From dholmes at dltech.com.au  Thu Apr  7 01:31:55 2005
+From: dholmes at dltech.com.au (David Holmes)
+Date: Thu Apr  7 01:32:10 2005
+Subject: [concurrency-interest]
+	Executors.newSingleThreadScheduledExecutor()
+In-Reply-To: <ca53c8f80504062200521f08fc@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMEAGFJAA.dholmes@dltech.com.au>
+
+Hanson,
+
+> My question is if the single thread terminates due to a failure,
+> do we expect
+>
+> 1) a new one to take its place so the periodic command will still be
+> re-scheduled and get executed ?   Or
+> 2) the failure to cause a termination of the periodic execution so the
+> command will not be re-scheduled ?
+
+2) As per the docs for ScheduledThreadPoolExecutor - see scheduleAtFixedRate
+and scheduledWithFixedDelay:
+
+"If any execution of the task encounters an exception, subsequent executions
+are suppressed."
+
+The presumption is that an exception from one run of the task is likely to
+preclude it being able to run in the future, so it is dropped. If a task
+thinks it can tolerate exceptions then it should not let them propagate.
+
+Cheers,
+David Holmes
+
+
+From hanson.char at gmail.com  Thu Apr  7 01:53:12 2005
+From: hanson.char at gmail.com (Hanson Char)
+Date: Thu Apr  7 01:53:20 2005
+Subject: [concurrency-interest] TimeUnit
+Message-ID: <ca53c8f805040622535c27848a@mail.gmail.com>
+
+Is there a good reason of why the TimeUnit constants supported in
+JDK1.5_02 is different from the backport 1.1_01 ?  In particular, the
+DAYS, HOURS and MINUTES in the backport are dropped in JDK1.5_02.
+
+Hanson
+
+JDK1.5_02:
+
+MICROSECONDS
+MILLISECONDS
+NANOSECONDS
+SECONDS
+           
+Backport 1.1_01:
+
+DAYS
+HOURS
+MICROSECONDS
+MILLISECONDS
+MINUTES
+NANOSECONDS
+SECONDS
+From dholmes at dltech.com.au  Thu Apr  7 02:07:01 2005
+From: dholmes at dltech.com.au (David Holmes)
+Date: Thu Apr  7 02:07:08 2005
+Subject: [concurrency-interest] TimeUnit
+In-Reply-To: <ca53c8f805040622535c27848a@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCGEAHFJAA.dholmes@dltech.com.au>
+
+> Is there a good reason of why the TimeUnit constants supported in
+> JDK1.5_02 is different from the backport 1.1_01 ?  In particular, the
+> DAYS, HOURS and MINUTES in the backport are dropped in JDK1.5_02.
+
+It appears the backport is incorporating the jsr166x additions for mustang.
+
+Perhaps the maintainers of the backport could provide a strict 1.5 backport
+seperate from the 1.6 backport.
+
+David Holmes
+
+From hanson.char at gmail.com  Thu Apr  7 02:10:31 2005
+From: hanson.char at gmail.com (Hanson Char)
+Date: Thu Apr  7 02:10:38 2005
+Subject: Fwd: [concurrency-interest] TimeUnit
+In-Reply-To: <ca53c8f8050406230938b47ab2@mail.gmail.com>
+References: <ca53c8f805040622535c27848a@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCGEAHFJAA.dholmes@dltech.com.au>
+	<ca53c8f8050406230938b47ab2@mail.gmail.com>
+Message-ID: <ca53c8f8050406231057ff7375@mail.gmail.com>
+
+It would be nice if there exists both a strict 1.5 backport and a 1.6
+(mustang/jsr166x) backport.
+
+Thansk, David.
+
+Hanson
+
+On Apr 7, 2005 4:07 PM, David Holmes <dholmes@dltech.com.au> wrote:
+> > Is there a good reason of why the TimeUnit constants supported in
+> > JDK1.5_02 is different from the backport 1.1_01 ?  In particular, the
+> > DAYS, HOURS and MINUTES in the backport are dropped in JDK1.5_02.
+>
+> It appears the backport is incorporating the jsr166x additions for mustang.
+>
+> Perhaps the maintainers of the backport could provide a strict 1.5 backport
+> seperate from the 1.6 backport.
+>
+> David Holmes
+>
+>
+From mclain at halcyon.com  Thu Apr  7 19:36:25 2005
+From: mclain at halcyon.com (Fred McLain)
+Date: Thu Apr  7 19:36:37 2005
+Subject: [concurrency-interest] Thread dump
+Message-ID: <1112916985.17971.95.camel@fmclain-suse92.Softek.Loc>
+
+Hello all,
+
+We're running into a thread deadlocking issue and I was hoping people
+here could give me ideas on how to debug it.  The application is running
+in an "installed" environment under Windows, not from the command line.
+Fortunately we do log stdout and stderr to files.  I'd like to get a
+thread dump but no longer remember the name of the tool I saw for
+injecting the ctrl+break signal for this under windows.  A reminder sure
+would help.  Also, what other techniques do you use for resolving
+deadlocks?  A code review isn't a real option since there's about 1 MLOC
+of code.
+
+Thanks,
+
+	-Fred-
+
+
+From jean.morissette666 at videotron.ca  Fri Apr  8 21:42:46 2005
+From: jean.morissette666 at videotron.ca (jean.morissette666@videotron.ca)
+Date: Fri Apr  8 21:42:42 2005
+Subject: [concurrency-interest] Weird behavior
+Message-ID: <200504082142.46953.jean.morissette666@videotron.ca>
+
+Hi all,
+I have written a very simple test (see below) that consists of one stage 
+connected by one input queue and one output queue.  The stage mainly forwards 
+elements from its input queue to its output queue.  Elements are time stamped 
+and enqueued in ascending order.  Note that the stage is single threaded.  
+
+Here is the output:
+
+Element timestamp = 0
+Element timestamp = 1
+Element timestamp = 2
+Element timestamp = 3
+Element timestamp = 4
+Element timestamp = 5
+Element timestamp = 9
+Element timestamp = 6
+Exception in thread "Thread-2" java.lang.AssertionError: Ouput elements not 
+ordered
+	at execution.operator.Test$3.run(Test.java:99)
+
+
+More weird, the test will pass without error if you (un)comment the two 
+indicated lines XXX.
+
+
+My config: 
+- Linux 2.6 
+- Sun jdk1.5.0_01
+- Javac
+
+
+Am I missing something?
+Thanks,
+-Jean
+
+
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ArrayBlockingQueue;
+
+public class Test {
+
+	BlockingQueue outputQueue;
+	BlockingQueue inputQueue;
+
+	// Size of the window
+	int windowSize;
+
+	// Timestamp of the last output tuple
+	long lastOutputTs = 0;
+
+	// MIN (Number of tuples processed so far, windowSize)
+	int numProcessed;
+
+	public void process(int numElements) {
+
+		Element inElement;
+
+		// XXX : test will work if you comment this line
+		Element outElement = new Element();
+
+		for (int e = 0 ; e < numElements; e++) {
+			inElement = (Element) inputQueue.poll();
+			if (inElement == null) break;
+
+			assert (inElement.timestamp >= lastOutputTs);
+			outputQueue.offer(inElement);
+			lastOutputTs = inElement.timestamp;
+
+			assert (numProcessed <= windowSize);
+			if (numProcessed == windowSize) {
+
+				// XXX : the test will work if you uncomment this line
+//				Element outElement = new Element();
+				outElement.timestamp = inElement.timestamp;
+
+				assert (outElement.timestamp >= lastOutputTs);
+				outputQueue.offer(outElement);
+			}
+			else {
+				numProcessed++;
+			}
+		}
+	}
+
+	public static class Element {
+
+		public long timestamp;
+
+		public String toString() {
+			return "Element timestamp = " + timestamp;
+		}
+
+	}
+
+
+	public static void main(String[] args) throws InterruptedException {
+		final Test stage = new Test();
+		final BlockingQueue inputQ = new ArrayBlockingQueue(1000);
+		final BlockingQueue outputQ = new ArrayBlockingQueue(1000);
+
+		stage.windowSize = 5;
+		stage.inputQueue = inputQ;
+		stage.outputQueue = outputQ;
+
+		// start producer
+		new Thread() {
+			public void run() {
+				for (int i = 0; i < 100; i++) {
+					Element el = new Element();
+					el.timestamp = i;
+					inputQ.offer(el);
+					if (1 % 10 == 0) yield();
+				}
+			}
+		}.start();
+
+		// start stage
+		new Thread() {
+			public void run() {
+				while (true) {
+					stage.process(10);
+				}
+			}
+		}.start();
+
+		// start consumer
+		new Thread() {
+			public void run() {
+				long lastTs = 0;
+				while (true) {
+					Element el = null;
+					try {
+						el = (Element) outputQ.take();
+						System.out.println(el);
+						assert (el.timestamp >= lastTs) : "Ouput elements not ordered";
+						lastTs = el.timestamp;
+					} catch (InterruptedException e) {
+						e.printStackTrace();
+					}
+				}
+			}
+		}.start();
+
+	}
+
+}
+From tim at peierls.net  Fri Apr  8 22:28:53 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Fri Apr  8 22:29:04 2005
+Subject: [concurrency-interest] Weird behavior
+In-Reply-To: <200504082142.46953.jean.morissette666@videotron.ca>
+References: <200504082142.46953.jean.morissette666@videotron.ca>
+Message-ID: <42573DE5.9000906@peierls.net>
+
+jean.morissette666@videotron.ca wrote:
+> Exception in thread "Thread-2" java.lang.AssertionError: Ouput elements not 
+> ordered at execution.operator.Test$3.run(Test.java:99)
+> 
+> Element outElement = new Element();
+> for (int e = 0 ; e < numElements; e++) {
+>     inElement = (Element) inputQueue.poll();
+>     if (inElement == null) break;
+>     outputQueue.offer(inElement);
+>     lastOutputTs = inElement.timestamp;
+>     if (numProcessed == windowSize) {
+>         outElement.timestamp = inElement.timestamp;
+>         outputQueue.offer(outElement);
+>     } else {
+>         numProcessed++;
+>     }
+> }
+
+Nothing to do with queues or concurrency. You are modifying the timestamp 
+of an already enqueued element. The sequence is:
+
+   inElementA(ts=0)
+   inElementB(ts=1)
+   inElementC(ts=2)
+   inElementD(ts=3)
+   inElementE(ts=4)
+   inElementF(ts=5)
+   outElementZ(ts=5) ---+
+   inElementG(ts=6)     |
+   outElementZ(ts=6) ---+
+   inElementH(ts=7)     |
+   outElementZ(ts=7) ---+ same Element instance, multiply enqueued
+   inElementI(ts=8)     |
+   outElementZ(ts=8) ---+
+   inElementJ(ts=9)     |
+   outElementZ(ts=9) ---+
+
+When windowSize is reached, the timestamp on outElementZ is 9, and the 
+order of timestamps in queue is 0, 1, 2, 3, 4, 5, 9, 6, 9, 7, 9, 8, 9, 9.
+
+
+Probably a typo, but I noticed:
+
+> if (1 % 10 == 0) yield();
+
+This will never call yield(), since 1 % 10 is always 1.
+
+--tim
+
+From jean.morissette666 at videotron.ca  Fri Apr  8 22:55:20 2005
+From: jean.morissette666 at videotron.ca (jean.morissette666@videotron.ca)
+Date: Fri Apr  8 22:55:10 2005
+Subject: [concurrency-interest] Weird behavior
+In-Reply-To: <42573DE5.9000906@peierls.net>
+References: <200504082142.46953.jean.morissette666@videotron.ca>
+	<42573DE5.9000906@peierls.net>
+Message-ID: <200504082255.20167.jean.morissette666@videotron.ca>
+
+Thanks Tim,
+The bug was in my brain.
+I think that I'm a little bit too tired.
+Sorry, for the inconvenience.
+
+From dawidk at mathcs.emory.edu  Sat Apr  9 14:50:07 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Sat Apr  9 14:50:48 2005
+Subject: [concurrency-interest] TimeUnit
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCGEAHFJAA.dholmes@dltech.com.au>
+References: <NFBBKALFDCPFIDBNKAPCGEAHFJAA.dholmes@dltech.com.au>
+Message-ID: <425823DF.6090600@mathcs.emory.edu>
+
+David Holmes wrote:
+
+>>Is there a good reason of why the TimeUnit constants supported in
+>>JDK1.5_02 is different from the backport 1.1_01 ?  In particular, the
+>>DAYS, HOURS and MINUTES in the backport are dropped in JDK1.5_02.
+>>    
+>>
+>
+>It appears the backport is incorporating the jsr166x additions for mustang.
+>
+>  
+>
+Correct.
+
+>Perhaps the maintainers of the backport could provide a strict 1.5 backport
+>seperate from the 1.6 backport.
+>  
+>
+I am rather hesitant to do this, as I would rather avoid maintaining 
+multiple distributions. (Also, these extensions are after all available 
+for 1.5 as a separate download.) Instead, I am planning to tag offending 
+constants with "@since 1.6". Other backported classes from jsr166x, like 
+Deque, are already tagged.
+
+Regards,
+Dawid Kurzyniec
+
+
+From minnieh at corp.earthlink.net  Mon Apr 11 21:15:26 2005
+From: minnieh at corp.earthlink.net (Minnie Haridasa)
+Date: Mon Apr 11 21:16:19 2005
+Subject: [concurrency-interest] Unbounded queue and Max thread pool size.
+Message-ID: <003001c53efd$1c6423e0$6601a8c0@sjclap022925>
+
+ 
+
+Hi,
+
+ 
+
+I just wanted to clarify a question I had.
+
+Is it true that if a thread pool executor is created to use an unbounded
+queue with a core pool size and a max pool size, the core pool will never
+grow to the max pool size? The code does not indicate that, so I am hoping
+that irrespective of the queue associated with the executor, the core pool
+will grow to the max if need be.
+
+ 
+
+Thanks,
+
+MH
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20050411/01495960/attachment.htm
+From jmanson at cs.purdue.edu  Mon Apr 11 23:14:37 2005
+From: jmanson at cs.purdue.edu (Jeremy Manson)
+Date: Mon Apr 11 23:14:49 2005
+Subject: [concurrency-interest] Unbounded queue and Max thread pool size.
+In-Reply-To: <003001c53efd$1c6423e0$6601a8c0@sjclap022925>
+References: <003001c53efd$1c6423e0$6601a8c0@sjclap022925>
+Message-ID: <425B3D1D.2060603@cs.purdue.edu>
+
+Hi Minnie,
+
+The API says:
+
+> Using an unbounded queue (for example a LinkedBlockingQueue without a
+> predefined capacity) will cause new tasks to be queued in cases where
+> all corePoolSize threads are busy. Thus, no more than corePoolSize
+> threads will ever be created. (And the value of the maximumPoolSize
+> therefore doesn't have any effect.)
+
+The implementation reflects this in a pretty straightforward way.
+
+					Jeremy
+
+Minnie Haridasa wrote:
+> 
+> 
+> Hi,
+> 
+> 
+> 
+> I just wanted to clarify a question I had.
+> 
+> Is it true that if a thread pool executor is created to use an
+> unbounded queue with a core pool size and a max pool size, the core
+> pool will never grow to the max pool size? The code does not indicate
+> that, so I am hoping that irrespective of the queue associated with
+> the executor, the core pool will grow to the max if need be.
+> 
+> 
+> 
+> Thanks,
+> 
+> MH
+> 
+> 
+> 
+> 
+> 
+> 
+> ------------------------------------------------------------------------
+> 
+> 
+> _______________________________________________ Concurrency-interest
+> mailing list Concurrency-interest@altair.cs.oswego.edu 
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From nchawla at bea.com  Wed Apr 13 15:51:22 2005
+From: nchawla at bea.com (Naren Chawla)
+Date: Wed Apr 13 15:51:27 2005
+Subject: [concurrency-interest] HTTP client libraries using NIO
+Message-ID: <8E1B805138A73F45967FE749D07D904F0F0383AA@ussjex02.amer.bea.com>
+
+
+Anybody aware of java open-source HTTP client libraries built on top of
+NIO (non-blocking IO)?
+
+--naren
+
+
+-----Original Message-----
+From: concurrency-interest-bounces@cs.oswego.edu
+[mailto:concurrency-interest-bounces@cs.oswego.edu] On Behalf Of Hanson
+Char
+Sent: Wednesday, April 06, 2005 10:01 PM
+To: concurrency-interest@altair.cs.oswego.edu
+Subject: [concurrency-interest]
+Executors.newSingleThreadScheduledExecutor()
+
+The javadoc of Executors.newSingleThreadScheduledExecutor():
+
+"Creates a single-threaded executor that can schedule commands to run
+after a given delay, or to execute periodically. (Note however that if
+this single thread terminates due to a failure during execution prior
+to shutdown, a new one will take its place if needed to execute
+subsequent tasks.) Tasks are guaranteed to execute sequentially, and
+no more than one task will be active at any given time. Unlike the
+otherwise equivalent newScheduledThreadPool(1) the returned executor
+is guaranteed not to be reconfigurable to use additional threads."
+
+My question is if the single thread terminates due to a failure, do we
+expect 
+
+1) a new one to take its place so the periodic command will still be
+re-scheduled and get executed ?   Or
+2) the failure to cause a termination of the periodic execution so the
+command will not be re-scheduled ?
+
+I expect (1) but the behave of both JDK1.5_02 and the latest backport
+version is (2).  Is this a bug in the code, the javadoc, or my
+understanding ?
+
+Please find below some sample test code.
+
+Hanson
+
+=========
+Daemon.java
+=========
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+
+public class Daemon {
+    private final ScheduledExecutorService scheduler =
+        Executors.newSingleThreadScheduledExecutor();
+    
+    public Daemon(Runnable command, long period, TimeUnit timeUnit) {
+        scheduler.scheduleAtFixedRate(command, 0, period, timeUnit);
+    }
+    
+    public void shutdown() {
+        scheduler.shutdown();
+    }
+}
+
+============
+DaemonTest.java
+============
+import java.util.Date;
+import junit.framework.*;
+import java.util.concurrent.TimeUnit;
+
+public class DaemonTest extends TestCase {
+	private int count;
+    // if error is true, executes only once.
+    // if error is false, executes every 1 sec.
+    boolean error = true;
+
+	public void test() throws InterruptedException {
+		final Runnable beeper = new Runnable() {
+			public void run() {
+				System.out.println("run at " + new
+Date());
+				if (error)
+					throw new
+RuntimeException("test");
+				count++;
+			}
+		};
+		Daemon s = new Daemon(beeper, 1, TimeUnit.SECONDS);
+		Thread.sleep(10 * 1000);
+		s.shutdown();
+	}
+}
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+From jean.morissette666 at videotron.ca  Wed Apr 13 21:08:44 2005
+From: jean.morissette666 at videotron.ca (Jean Morissette)
+Date: Wed Apr 13 21:08:58 2005
+Subject: [concurrency-interest] HTTP client libraries using NIO
+In-Reply-To: <8E1B805138A73F45967FE749D07D904F0F0383AA@ussjex02.amer.bea.com>
+References: <8E1B805138A73F45967FE749D07D904F0F0383AA@ussjex02.amer.bea.com>
+Message-ID: <200504132108.44677.jean.morissette666@videotron.ca>
+
+Le 13 Avril 2005 15:51, Naren Chawla a ?crit?:
+> Anybody aware of java open-source HTTP client libraries built on top of
+> NIO (non-blocking IO)?
+
+You can see JCyclone at http://www.jcyclone.org/
+
+JCyclone is a new SEDA-based platform that is designed for performance.  It 
+provide many extentions like 'asocket' and 'http' that sit on top of NIO.  
+You can have other informations at the site of Matt Welsh, the founder of 
+NIO.  Please, let me know if you have question.
+
+Hope this help,
+-Jean
+
+
+
+From larryr at saturn.sdsu.edu  Wed Apr 13 22:16:17 2005
+From: larryr at saturn.sdsu.edu (Larry Riedel)
+Date: Wed Apr 13 22:16:26 2005
+Subject: [concurrency-interest] HTTP client libraries using NIO
+In-Reply-To: <200504132108.44677.jean.morissette666@videotron.ca>
+Message-ID: <20050414021617.23974.qmail@home19.riedel.org>
+
+
+> You can have other informations at the site of Matt Welsh,
+> the founder of NIO.
+
+Of SEDA...  http://www.eecs.harvard.edu/~mdw/proj/seda/
+
+
+Larry
+
+From leou at us.ibm.com  Thu Apr 14 13:15:34 2005
+From: leou at us.ibm.com (Leo Uzcategui)
+Date: Thu Apr 14 13:15:48 2005
+Subject: [concurrency-interest] Leo Uzcategui/Austin/IBM is out of the
+	office.
+Message-ID: <OF5272147B.D5311A90-ON87256FE3.005ECF6B-87256FE3.005ECF6B@us.ibm.com>
+
+
+
+
+
+I will be out of the office starting  04/12/2005 and will not return until
+04/18/2005.
+
+For assistance, please contact Carlton Mason at (512) 838-4537
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20050414/bcda1dae/attachment.htm
+From yechielf at gigaspaces.com  Mon Apr 18 08:48:09 2005
+From: yechielf at gigaspaces.com (Yechiel Feffer)
+Date: Mon Apr 18 07:46:04 2005
+Subject: [concurrency-interest] sources of ConcurrentSkipList ?
+Message-ID: <D166C96F43D1D611B8E3000255A0C48C6065A6@OFFICESRV>
+
+Hi
+Where can I find the source code of ConcurrentSkipList classes ? I have
+downloaded JDK 6.0 Source 
+ from http://www.java.net/download/jdk6/  but the sources dont contain
+ConcurrentSkipList (seems they are the sources of 1.5)
+
+Regrds,
+Yechiel Fefer 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20050418/bfb6f817/attachment.htm
+From dl at cs.oswego.edu  Mon Apr 18 07:52:29 2005
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon Apr 18 07:52:31 2005
+Subject: [concurrency-interest] sources of ConcurrentSkipList ?
+In-Reply-To: <D166C96F43D1D611B8E3000255A0C48C6065A6@OFFICESRV>
+References: <D166C96F43D1D611B8E3000255A0C48C6065A6@OFFICESRV>
+Message-ID: <42639F7D.3000504@cs.oswego.edu>
+
+Yechiel Feffer wrote:
+> Hi
+> Where can I find the source code of ConcurrentSkipList classes ? I have 
+> downloaded JDK 6.0 Source
+>  from http://www.java.net/download/jdk6/  but the sources dont contain 
+> ConcurrentSkipList (seems they are the sources of 1.5)
+> 
+> Regrds,
+> Yechiel Fefer
+> 
+
+These haven't been integrated into Mustang yet. (For a nice
+reason: Sun Engineer Martin Buchholz is taking this opportinitu
+to ensure consistency of javadocs across all java.util and
+java.util.concurrent collection classes. Which is taking a while)
+
+In the mean time, you can find current soon-to-be-6.0 sources at:
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/
+or the versions packaged as jsr166x at:
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/jsr166x/
+
+-Doug
+From Martin.Buchholz at Sun.COM  Fri Apr 22 01:33:09 2005
+From: Martin.Buchholz at Sun.COM (Martin Buchholz)
+Date: Fri Apr 22 01:33:13 2005
+Subject: [concurrency-interest] New Java Tutorial Threads chapter
+Message-ID: <42688C95.30407@Sun.COM>
+
+The Java Tutorial (i.e. the book and its public web site)
+are being updated.  The new and hopefully improved beta Threads chapter
+can be found here:
+
+http://java.sun.com/docs/books/tutorial/essential/threads/
+
+Martin
+
+From dawidk at mathcs.emory.edu  Sat Apr 23 20:37:53 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Sat Apr 23 20:38:11 2005
+Subject: [concurrency-interest] New Java Tutorial Threads chapter
+In-Reply-To: <42688C95.30407@Sun.COM>
+References: <42688C95.30407@Sun.COM>
+Message-ID: <426AEA61.5010104@mathcs.emory.edu>
+
+Martin Buchholz wrote:
+
+>The Java Tutorial (i.e. the book and its public web site)
+>are being updated.  The new and hopefully improved beta Threads chapter
+>can be found here:
+>
+>http://java.sun.com/docs/books/tutorial/essential/threads/
+>
+>  
+>
+Couple of quick comments:
+
+In code examples at:
+http://java.sun.com/docs/books/tutorial/essential/threads/explicitlocks.html
+
+1) There is a typo in the table with Condition methods; should be 
+awaitUninterruptibly (is: Interruptibly)
+
+2) instead of catching/ignoring InterrputedException, I think it is much 
+safer/elegant to use awaitUninterruptibly(), or declare that put can 
+throw InterruptedException.
+
+3) Placing return statement in the finally clause is a bit dangerous 
+practice; I would suggest putting it after the try/finally block.
+
+4) "Race" pluglet does not load, at:
+http://java.sun.com/docs/books/tutorial/essential/threads/priority.html
+
+Regards,
+Dawid Kurzyniec
+
+
+From yechielf at gigaspaces.com  Mon Apr 25 08:31:36 2005
+From: yechielf at gigaspaces.com (Yechiel Feffer)
+Date: Mon Apr 25 07:29:25 2005
+Subject: [concurrency-interest] ConcurrentSkipList  issues:
+Message-ID: <D166C96F43D1D611B8E3000255A0C48C606651@OFFICESRV>
+
+Hi
+I am considering the usage of ConcurrentSkipList (here CSL) - it will be
+(once mustang is released) the only "ordered" concurrent set.
+I have some questions/wishes regarding it
+#1) Iterators: they are weakly consistent, which is fine. But the point I
+want to clarify is: When I create an iterator, am I guaranteed to get all
+the elements which were part of the iteration set when the iterator was
+created and are still valid (- not deleted) when I exhaust the iteration set
+? i.e. I want to make sure that an element will not disappear from the
+iteration set as a result of deletions/additions of other elements to the
+CSL
+#2) null values- why cant they be used ? I know that null is used inside the
+CSL as a logical indication of a deleted node but this can be changed by
+using a boolean as a deleted-indicator or, (if boolean is not relevant for
+CSL cas operations) a null value can be substituted inside the CSL by a
+null-representative special object which will participate in the comparisons
+using the null terminology defined (nulls-first or nulls-last will do)
+#3) wishful performance optimization- is it possible to create an additional
+set of apis to the CSL which will return a "handle" from the put api . The
+handle will be a direct "pointer" to the CSL so when I want to remove a key
+from the CSL (assuming I keep the handles) I can render this handle and
+spare the need for a redundant search . Same is true for replace. 
+
+Doug- your input will be highly appreciated
+
+Regrds,
+Yechiel Fefer        
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20050425/6ec73fac/attachment.htm
+From dl at cs.oswego.edu  Mon Apr 25 07:36:03 2005
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon Apr 25 07:36:05 2005
+Subject: [concurrency-interest] new monitoring and manaement support for
+	custom synchronizers
+Message-ID: <426CD623.20507@cs.oswego.edu>
+
+
+For Mustang, we are putting in better support for integrating custom
+locks and synchronizers with the Java monitoring and management
+(M&M) framework. This entails a few changes to the classes underlying
+ReentrantLock etc. We'd like to know if any of you have any comments
+or suggestions.
+
+The basic idea is that you'd like to have M&M tools
+to have access to two kinds of information:
+
+1. For any blocked thread, the synchronization object
+responsible for it blocking.
+
+2. For any lock/synchronizer, the thread that is impeding
+other threads from acquiring it -- normally the "owner"
+of a lock.
+
+So, there are two sides of added support:
+
+1. There are now overloaded forms of park, parkNanos, and
+    parkUntil in LockSupport that take an "Object blocker"
+    argument and record this as a per-thread attribute
+    as long as the calling thread is blocked in park.
+    Plus a new method getBlocker(Thread t) to access this
+    object. The blocker argument can be anything at all
+    (normally "this" of a synchronization object). M&M
+    tools may then include specialized support for certain
+    kinds of blocker objects (like the ones used in JSR166
+    locks), and maybe customizable support for others defined
+    by users.
+
+2. Classes AbstractQueuedSynchronizer and the new
+    Mustang addition AbstractQueuedLongSynchronizer are
+    now subclasses of the simple class AbstractOwnableSynchronizer.
+    AbstractOwnableSynchronizer contains only two methods
+    getExclusiveOwnerThread and setExclusiveOwnerThread that
+    get/set an internal "owner" field. This raises up
+    similar fields that were in subclasses for JSR166 locks
+    so that they can be uniformly accessed by tools -- this
+    way tools don't need to know about the details of
+    internal inner helper classes within locks in order to
+    find the threads that are causing others to block.
+    Synchronizers that do not have any notion of exclusive
+    ownership don't have to use this field at all (in which
+    case ownership-tracing tools cannot help diagnose
+    blockages anyway).
+
+So far, it looks like these changes don't noticeably
+affect performance of synchronizers.
+
+Note that this support only enables new monitoring and diagnostics;
+they don't yet exist. But I believe that people will be working on
+extensions to M&M tools soon to exploit these capabilities.
+
+-Doug
+
+
+
+From dl at cs.oswego.edu  Mon Apr 25 08:11:17 2005
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon Apr 25 08:11:19 2005
+Subject: [concurrency-interest] Re: ConcurrentSkipList  issues:
+In-Reply-To: <D166C96F43D1D611B8E3000255A0C48C606651@OFFICESRV>
+References: <D166C96F43D1D611B8E3000255A0C48C606651@OFFICESRV>
+Message-ID: <426CDE65.5020301@cs.oswego.edu>
+
+Yechiel Feffer wrote:
+> Hi
+> I am considering the usage of ConcurrentSkipList (here CSL) - it will be 
+> (once mustang is released) the only "ordered" concurrent set.
+
+(You can also put read/write locks around a TreeMap, which
+is sometimes a good alternative, depending on usage patterns.)
+
+> 
+> I have some questions/wishes regarding it
+> #1) Iterators: they are weakly consistent, which is fine. But the point 
+> I want to clarify is: When I create an iterator, am I guaranteed to get 
+> all the elements which were part of the iteration set when the iterator 
+> was created and are still valid (- not deleted) when I exhaust the 
+> iteration set ? 
+
+Yes, this is exactly what weakly consistent iterators (of
+all kinds) guarantee.
+
+
+> 
+> #2) null values- why cant they be used ? 
+
+Because I refuse to support the use of nulls in sorted maps/sets!
+Allowing nulls makes no conceptual sense and makes things slower.
+
+(Digressing: The dubious virtue of allowing nulls in some other
+collections like HashMap makes all users pay (a little, but still
+noticeable) for a "feature" that I think does more harm than good,
+by masking what are almost always usage errors. Allowing nulls was also
+the source of bugs and anomolies in TreeMap and TreeSet, which
+do allow them, over my objections. All this reinforces my belief
+that only those users who want special handling for nulls should
+have to pay for it, by wrapping nulls themselves, which is one
+form of the Null Object Pattern, which you might consider using.)
+
+
+> 
+> #3) wishful performance optimization- is it possible to create an 
+> additional set of apis to the CSL which will return a "handle" from the 
+> put api . The handle will be a direct "pointer" to the CSL so when I 
+> want to remove a key from the CSL (assuming I keep the handles) I can 
+> render this handle and  spare the need for a redundant search . Same is 
+> true for replace.
+> 
+
+I/We thought about this. But there's not a good plan of attack
+for supporting it. In a concurrent class, any such handles
+would need to be consistency-checked to deal with asynchronous
+updates and deletions. And all approaches I know for doing
+this in ConcurrentSkipLists would require at least as much time
+as just retraversing. (Skip lists are not special about this. The
+same issue arises in most concurrent data structures.)
+
+-Doug
+
+
+
+From yechielf at gigaspaces.com  Mon Apr 25 09:37:19 2005
+From: yechielf at gigaspaces.com (Yechiel Feffer)
+Date: Mon Apr 25 08:34:56 2005
+Subject: [concurrency-interest] RE: ConcurrentSkipList  issues:
+Message-ID: <D166C96F43D1D611B8E3000255A0C48C606659@OFFICESRV>
+
+"All this reinforces my belief
+that only those users who want special handling for nulls should
+have to pay for it, by wrapping nulls themselves, which is one
+form of the Null Object Pattern, which you might consider using.)
+"
+Yes, I can wrap nulls, but surly you agree that the more "natural" (and
+nice) way of doing it is in the CSL and not in every calling app' 
+
+
+"
+I/We thought about this. But there's not a good plan of attack
+for supporting it. In a concurrent class, any such handles
+would need to be consistency-checked to deal with asynchronous
+updates and deletions. And all approaches I know for doing
+this in ConcurrentSkipLists would require at least as much time
+as just retraversing. (Skip lists are not special about this. The
+same issue arises in most concurrent data structures.)"
+
+Hmmm...
+I cant see the real diff' between a user traversing an iterator when the
+iteration set is subject to concurrent moditications ( deletions etc -like
+the case in CSL), and between supplying a handle. A handle (which can be
+node(s) information of the element) is just a way of saving an index scan,
+and in terms of consistency seems to me quite equivalent to "Next" operation
+on a concurrent iterator where the "current" position might have been
+deleted between the prev' "next" call to the next "next" call.
+but if its impossible to implement in CSL- we will have to do without it 
+
+Yechiel   
+
+-----Original Message-----
+From: Doug Lea [mailto:dl@cs.oswego.edu]
+Sent: Monday, April 25, 2005 14:11
+To: Yechiel Feffer
+Cc: concurrency-interest@altair.cs.oswego.edu
+Subject: Re: ConcurrentSkipList issues:
+
+
+Yechiel Feffer wrote:
+> Hi
+> I am considering the usage of ConcurrentSkipList (here CSL) - it will be 
+> (once mustang is released) the only "ordered" concurrent set.
+
+(You can also put read/write locks around a TreeMap, which
+is sometimes a good alternative, depending on usage patterns.)
+
+> 
+> I have some questions/wishes regarding it
+> #1) Iterators: they are weakly consistent, which is fine. But the point 
+> I want to clarify is: When I create an iterator, am I guaranteed to get 
+> all the elements which were part of the iteration set when the iterator 
+> was created and are still valid (- not deleted) when I exhaust the 
+> iteration set ? 
+
+Yes, this is exactly what weakly consistent iterators (of
+all kinds) guarantee.
+
+
+> 
+> #2) null values- why cant they be used ? 
+
+Because I refuse to support the use of nulls in sorted maps/sets!
+Allowing nulls makes no conceptual sense and makes things slower.
+
+(Digressing: The dubious virtue of allowing nulls in some other
+collections like HashMap makes all users pay (a little, but still
+noticeable) for a "feature" that I think does more harm than good,
+by masking what are almost always usage errors. Allowing nulls was also
+the source of bugs and anomolies in TreeMap and TreeSet, which
+do allow them, over my objections. All this reinforces my belief
+that only those users who want special handling for nulls should
+have to pay for it, by wrapping nulls themselves, which is one
+form of the Null Object Pattern, which you might consider using.)
+
+
+> 
+> #3) wishful performance optimization- is it possible to create an 
+> additional set of apis to the CSL which will return a "handle" from the 
+> put api . The handle will be a direct "pointer" to the CSL so when I 
+> want to remove a key from the CSL (assuming I keep the handles) I can 
+> render this handle and  spare the need for a redundant search . Same is 
+> true for replace.
+> 
+
+I/We thought about this. But there's not a good plan of attack
+for supporting it. In a concurrent class, any such handles
+would need to be consistency-checked to deal with asynchronous
+updates and deletions. And all approaches I know for doing
+this in ConcurrentSkipLists would require at least as much time
+as just retraversing. (Skip lists are not special about this. The
+same issue arises in most concurrent data structures.)
+
+-Doug
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20050425/5477c93d/attachment.htm
+From dl at cs.oswego.edu  Mon Apr 25 11:12:40 2005
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon Apr 25 11:12:43 2005
+Subject: [concurrency-interest]  CyclicBarrier.reset broken, fixed
+In-Reply-To: <426AEA61.5010104@mathcs.emory.edu>
+References: <42688C95.30407@Sun.COM> <426AEA61.5010104@mathcs.emory.edu>
+Message-ID: <426D08E8.2070905@cs.oswego.edu>
+
+
+Method CyclicBarrier.reset didn't do what it said it would do, and what
+it said it would do was not very clear. Fixes for the code,
+clarifications of the spec, and new tests are now available at the usual
+places:
+  http://gee.cs.oswego.edu/dl/jsr166/dist/docs/
+  http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/
+  http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/tests/tck/
+
+Thanks especially to Stefan.Skoglund for bringing this to our attention.
+
+Sorry for the problems. Hopefully the code fixes will make a Tiger
+update.
+
+-Doug
+From bnewport at us.ibm.com  Mon Apr 25 14:23:29 2005
+From: bnewport at us.ibm.com (Billy Newport)
+Date: Mon Apr 25 14:23:45 2005
+Subject: [concurrency-interest] Billy Newport/Rochester/IBM is out of the
+	office.
+Message-ID: <OFA0EA27EF.F7CE2C0E-ON86256FEE.0065070C-86256FEE.0065070F@us.ibm.com>
+
+I will be out of the office starting  04/25/2005 and will not return until
+04/28/2005.
+
+I'm in europe with customers. I'll have intermittent access to email during
+this time. My cell is working for urgent issues
+
+From jnielsen at sungardsct.com  Tue Apr 26 19:11:55 2005
+From: jnielsen at sungardsct.com (Jan Nielsen)
+Date: Tue Apr 26 19:15:09 2005
+Subject: [concurrency-interest] Advice for execute( Runnable task,
+	long timeout )
+In-Reply-To: <089a01c538d9$83907bb0$0200a8c0@REPLICANT2>
+References: <000001c538d1$fc0e40c0$6701a8c0@sjclap022925>
+	<089a01c538d9$83907bb0$0200a8c0@REPLICANT2>
+Message-ID: <426ECABB.6050600@sungardsct.com>
+
+Hello all:
+
+I have a need in JVM 1.3 and above (Solaris, Windows, RedHat, and HPUX) 
+for the following API in dl.util.concurrent.PooledExecutor.execute( 
+Runnable command, long msecs) which interrupts a job if it's not 
+complete after msecs. Snippits are shown below and a modified version 
+PooledExecutor is attached. The implementation seems work but it feels 
+like a hack, in particular the Worker, Work, and Interrupt class 
+interaction seems less than ideal. Is there a better way to implement 
+this in dl.util.concurrent? Any thoughts, suggestions, insights and/or 
+critique are greatly appreciated.
+
+Many thanks!
+
+-Jan
+
+    /**
+     * Complete the given command within the specified time. If the
+     * command cannot be completed within the specified time, the thread
+     * executing the command is interrupted. If the command has not yet
+     * been assigned a thread the command will be marked as interrupted
+     * and will not be assigned a thread of execution.
+     *
+     * @param command work to execute
+     *
+     * @param msecs milliseconds in future when work should complete
+     **/
+    public void execute(
+        Runnable command,
+        long msecs
+        )
+        throws InterruptedException
+    {
+        for (;;) {
+            synchronized(this) {
+                if (!shutdown_) {
+                    int size = poolSize_;
+
+                    Work work = new Work(command);
+
+                    // Ensure minimum number of threads
+                    if (size < minimumPoolSize_) {
+                        if( 0 < msecs )
+                        {
+                            Interrupt interrupt = new Interrupt( work );
+                            interrupter_.executeAfterDelay( msecs, 
+interrupt );
+                        }
+                        addThread(work);
+                        return;
+                    }
+         
+                    // Try to give to existing thread
+                    if (handOff_.offer(work, 0)) {
+                        if( 0 < msecs )
+                        {
+                            Interrupt interrupt = new Interrupt( work );
+                            interrupter_.executeAfterDelay( msecs, 
+interrupt );
+                        }             
+                        return;
+                    }
+         
+                    // If cannot handoff and still under maximum, create 
+new thread
+                    if (size < maximumPoolSize_) {
+                        if( 0 < msecs )
+                        {
+                            Interrupt interrupt = new Interrupt( work );
+                            interrupter_.executeAfterDelay( msecs, 
+interrupt );
+                        }
+                        addThread(work);
+                        return;
+                    }
+                }
+            }
+
+            // Cannot hand off and cannot create -- ask for help
+            if (getBlockedExecutionHandler().blockedAction(command)) {
+                return;
+            }
+        }
+    }
+
+    /**
+     * Class defining the basic element of work for worker threads.
+     **/
+    protected class Work implements Runnable {
+        protected Runnable command_;
+        protected Thread thread_;
+        protected boolean threadInterrupted_;
+     
+        /**
+         * Constructs a element of work which should be complete by a
+         * certain time, otherwise the work should be interrupted.
+         *
+         * @param command work to be executed
+         **/
+        protected Work(Runnable command)
+        {
+            command_ = command;
+        }
+
+        /**
+         * Sets the thread assigned from the executor, and unsets it
+         * when complete.
+         *
+         * @param thread executor's thread assigned to this work
+         **/
+        public synchronized void setThread(
+            Thread thread
+            )
+        {
+            thread_ = thread;
+        }
+
+        public void run()
+        {
+            if( !threadInterrupted_ )
+            {
+                command_.run();
+            }
+            else
+            {
+                thread_.interrupt();
+            }
+        }
+
+        /**
+         * Interrupts the scheduled work. If the
+         **/
+        public synchronized void interrupt()
+        {
+            if( null != thread_ )
+                thread_.interrupt();
+            else
+                threadInterrupted_ = true;
+        }
+    }
+
+    /**
+     * Class to hold the work which should be interrupted if the
+     * submitted work is not completed in time.
+     **/
+    protected class Interrupt
+        implements Runnable
+    {
+        /** Work to interrupt. */
+        private Work work_;
+       
+        protected Interrupt( Work work )
+        {
+            work_ = work;
+        }
+
+        public void run()
+        {
+            work_.interrupt();
+
+            work_ = null;
+        }       
+    }
+
+    /**
+     * Class defining the basic run loop for pooled threads.
+     **/
+    protected class Worker implements Runnable {
+        protected Work firstTask_;
+
+        protected Worker(Work firstTask) { firstTask_ = firstTask; }
+
+        public void run() {
+            try {
+                Work task = firstTask_;
+                firstTask_ = null; // enable GC
+
+                if (task != null) {
+                    task.setThread( Thread.currentThread() );
+                    task.run();
+                    task.setThread( null );
+                    task = null;
+                }
+       
+                while ( (task = getTask()) != null) {
+                    task.setThread( Thread.currentThread() );
+                    task.run();
+                    task.setThread( null );
+                    task = null;
+                }
+            }
+            catch (InterruptedException ex) { } // fall through
+            finally {
+                workerDone(this);
+            }
+        }
+    }
+
+    /**
+     * Single thread of execution which interrupts jobs submitted to the
+     * executor which do not complete in time.
+     **/
+    private ClockDaemon interrupter_ = new ClockDaemon(); 
+
+
+To implement this API I followed a suggestion by Joe Bowbeer to a 
+similar question for JDK 5. In my case
+
+
+
+Joe Bowbeer wrote:
+
+>Here's a simple approach:
+>
+>When you submit your FutureTask to the executor service, also schedule a 
+>TimerTask to cancel that task.
+>
+>If your FutureTask needs to act at the moment it is cancelled, override the 
+>"done" method and perform the desired action if isCancelled returns true.
+>
+>
+>----- Original Message ----- 
+>From: "Minnie Haridasa" <minnieh@corp.earthlink.net>
+>To: <concurrency-interest@altair.cs.oswego.edu>
+>Sent: Sunday, April 03, 2005 9:51 PM
+>Subject: [concurrency-interest] Cancelling Tasks returning immediately..
+>
+>
+>Hello,
+>
+>We have unique situation where I thought I may seek you help for some useful
+>hints.
+>
+>My thread pool has an unbounded queue associated to it. However, while a
+>task is waiting on the queue to be
+>
+>Processed, it cannot wait indefinitely, after a certain period of time, it
+>needs to cancel out and return a different result.
+>
+>Is it possible to achieve this using the concurrent utilities of JDK1.5.
+>
+>My queue has to be unbounded, and the task (callable) that gets put on the
+>queue needs to be time bound. How can I make the cancelled task return
+>immediately as opposed to the result that can only be retrieved using method
+>get when the computation has completed or the task gets its turn to be
+>executed by the pool.
+>
+>Appreciate your help.
+>
+>Thanks
+>
+>MH
+>
+>
+>
+>_______________________________________________
+>Concurrency-interest mailing list
+>Concurrency-interest@altair.cs.oswego.edu
+>http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>  
+>
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: PooledExecutor.java
+Type: java/*
+Size: 38302 bytes
+Desc: not available
+Url : /pipermail/attachments/20050426/17b6cb04/PooledExecutor-0001.bin
+From dholmes at dltech.com.au  Tue Apr 26 19:39:23 2005
+From: dholmes at dltech.com.au (David Holmes)
+Date: Tue Apr 26 19:39:41 2005
+Subject: [concurrency-interest] Advice for execute( Runnable task,
+	long timeout )
+In-Reply-To: <426ECABB.6050600@sungardsct.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMECJFKAA.dholmes@dltech.com.au>
+
+Given the scheduling guarantees you don't have in the JVM you have very
+little chance of this working anywhere close to what you hope. You are
+relying on your interrupter executing in preference to the workers to be
+interrupted. This presumes that you can even come up with sensible numbers
+for the allowed execution time, given you don't even know when each worker
+will be able to run.
+
+The basic structure is about the best you can do - from a cursory
+examination. But without scheduling guarantees I'd be very surprised if you
+actually get a satisfactory result.
+
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces@cs.oswego.edu
+> [mailto:concurrency-interest-bounces@cs.oswego.edu]On Behalf Of Jan
+> Nielsen
+> Sent: Wednesday, 27 April 2005 9:12 AM
+> To: concurrency-interest@altair.cs.oswego.edu
+> Subject: [concurrency-interest] Advice for execute( Runnable task,long
+> timeout )
+>
+>
+> Hello all:
+>
+> I have a need in JVM 1.3 and above (Solaris, Windows, RedHat, and HPUX)
+> for the following API in dl.util.concurrent.PooledExecutor.execute(
+> Runnable command, long msecs) which interrupts a job if it's not
+> complete after msecs. Snippits are shown below and a modified version
+> PooledExecutor is attached. The implementation seems work but it feels
+> like a hack, in particular the Worker, Work, and Interrupt class
+> interaction seems less than ideal. Is there a better way to implement
+> this in dl.util.concurrent? Any thoughts, suggestions, insights and/or
+> critique are greatly appreciated.
+>
+> Many thanks!
+>
+> -Jan
+>
+>     /**
+>      * Complete the given command within the specified time. If the
+>      * command cannot be completed within the specified time, the thread
+>      * executing the command is interrupted. If the command has not yet
+>      * been assigned a thread the command will be marked as interrupted
+>      * and will not be assigned a thread of execution.
+>      *
+>      * @param command work to execute
+>      *
+>      * @param msecs milliseconds in future when work should complete
+>      **/
+>     public void execute(
+>         Runnable command,
+>         long msecs
+>         )
+>         throws InterruptedException
+>     {
+>         for (;;) {
+>             synchronized(this) {
+>                 if (!shutdown_) {
+>                     int size = poolSize_;
+>
+>                     Work work = new Work(command);
+>
+>                     // Ensure minimum number of threads
+>                     if (size < minimumPoolSize_) {
+>                         if( 0 < msecs )
+>                         {
+>                             Interrupt interrupt = new Interrupt( work );
+>                             interrupter_.executeAfterDelay( msecs,
+> interrupt );
+>                         }
+>                         addThread(work);
+>                         return;
+>                     }
+>
+>                     // Try to give to existing thread
+>                     if (handOff_.offer(work, 0)) {
+>                         if( 0 < msecs )
+>                         {
+>                             Interrupt interrupt = new Interrupt( work );
+>                             interrupter_.executeAfterDelay( msecs,
+> interrupt );
+>                         }
+>                         return;
+>                     }
+>
+>                     // If cannot handoff and still under maximum, create
+> new thread
+>                     if (size < maximumPoolSize_) {
+>                         if( 0 < msecs )
+>                         {
+>                             Interrupt interrupt = new Interrupt( work );
+>                             interrupter_.executeAfterDelay( msecs,
+> interrupt );
+>                         }
+>                         addThread(work);
+>                         return;
+>                     }
+>                 }
+>             }
+>
+>             // Cannot hand off and cannot create -- ask for help
+>             if (getBlockedExecutionHandler().blockedAction(command)) {
+>                 return;
+>             }
+>         }
+>     }
+>
+>     /**
+>      * Class defining the basic element of work for worker threads.
+>      **/
+>     protected class Work implements Runnable {
+>         protected Runnable command_;
+>         protected Thread thread_;
+>         protected boolean threadInterrupted_;
+>
+>         /**
+>          * Constructs a element of work which should be complete by a
+>          * certain time, otherwise the work should be interrupted.
+>          *
+>          * @param command work to be executed
+>          **/
+>         protected Work(Runnable command)
+>         {
+>             command_ = command;
+>         }
+>
+>         /**
+>          * Sets the thread assigned from the executor, and unsets it
+>          * when complete.
+>          *
+>          * @param thread executor's thread assigned to this work
+>          **/
+>         public synchronized void setThread(
+>             Thread thread
+>             )
+>         {
+>             thread_ = thread;
+>         }
+>
+>         public void run()
+>         {
+>             if( !threadInterrupted_ )
+>             {
+>                 command_.run();
+>             }
+>             else
+>             {
+>                 thread_.interrupt();
+>             }
+>         }
+>
+>         /**
+>          * Interrupts the scheduled work. If the
+>          **/
+>         public synchronized void interrupt()
+>         {
+>             if( null != thread_ )
+>                 thread_.interrupt();
+>             else
+>                 threadInterrupted_ = true;
+>         }
+>     }
+>
+>     /**
+>      * Class to hold the work which should be interrupted if the
+>      * submitted work is not completed in time.
+>      **/
+>     protected class Interrupt
+>         implements Runnable
+>     {
+>         /** Work to interrupt. */
+>         private Work work_;
+>
+>         protected Interrupt( Work work )
+>         {
+>             work_ = work;
+>         }
+>
+>         public void run()
+>         {
+>             work_.interrupt();
+>
+>             work_ = null;
+>         }
+>     }
+>
+>     /**
+>      * Class defining the basic run loop for pooled threads.
+>      **/
+>     protected class Worker implements Runnable {
+>         protected Work firstTask_;
+>
+>         protected Worker(Work firstTask) { firstTask_ = firstTask; }
+>
+>         public void run() {
+>             try {
+>                 Work task = firstTask_;
+>                 firstTask_ = null; // enable GC
+>
+>                 if (task != null) {
+>                     task.setThread( Thread.currentThread() );
+>                     task.run();
+>                     task.setThread( null );
+>                     task = null;
+>                 }
+>
+>                 while ( (task = getTask()) != null) {
+>                     task.setThread( Thread.currentThread() );
+>                     task.run();
+>                     task.setThread( null );
+>                     task = null;
+>                 }
+>             }
+>             catch (InterruptedException ex) { } // fall through
+>             finally {
+>                 workerDone(this);
+>             }
+>         }
+>     }
+>
+>     /**
+>      * Single thread of execution which interrupts jobs submitted to the
+>      * executor which do not complete in time.
+>      **/
+>     private ClockDaemon interrupter_ = new ClockDaemon();
+>
+>
+> To implement this API I followed a suggestion by Joe Bowbeer to a
+> similar question for JDK 5. In my case
+>
+>
+>
+> Joe Bowbeer wrote:
+>
+> >Here's a simple approach:
+> >
+> >When you submit your FutureTask to the executor service, also schedule a
+> >TimerTask to cancel that task.
+> >
+> >If your FutureTask needs to act at the moment it is cancelled,
+> override the
+> >"done" method and perform the desired action if isCancelled returns true.
+> >
+> >
+> >----- Original Message -----
+> >From: "Minnie Haridasa" <minnieh@corp.earthlink.net>
+> >To: <concurrency-interest@altair.cs.oswego.edu>
+> >Sent: Sunday, April 03, 2005 9:51 PM
+> >Subject: [concurrency-interest] Cancelling Tasks returning immediately..
+> >
+> >
+> >Hello,
+> >
+> >We have unique situation where I thought I may seek you help for
+> some useful
+> >hints.
+> >
+> >My thread pool has an unbounded queue associated to it. However, while a
+> >task is waiting on the queue to be
+> >
+> >Processed, it cannot wait indefinitely, after a certain period
+> of time, it
+> >needs to cancel out and return a different result.
+> >
+> >Is it possible to achieve this using the concurrent utilities of JDK1.5.
+> >
+> >My queue has to be unbounded, and the task (callable) that gets
+> put on the
+> >queue needs to be time bound. How can I make the cancelled task return
+> >immediately as opposed to the result that can only be retrieved
+> using method
+> >get when the computation has completed or the task gets its turn to be
+> >executed by the pool.
+> >
+> >Appreciate your help.
+> >
+> >Thanks
+> >
+> >MH
+> >
+> >
+> >
+> >_______________________________________________
+> >Concurrency-interest mailing list
+> >Concurrency-interest@altair.cs.oswego.edu
+> >http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> >
+> >
+>
+>
+
+From jozart at blarg.net  Tue Apr 26 19:56:12 2005
+From: jozart at blarg.net (Joe Bowbeer)
+Date: Tue Apr 26 19:56:23 2005
+Subject: [concurrency-interest] Advice for execute( Runnable task,
+	long timeout )
+Message-ID: <f15d8f21c3763cf9936baf1f4e95e992@www.blargmail.com>
+
+Jan Nielsen <jnielsen@sungardsct.com> wrote:
+> 
+> I have a need in JVM 1.3 and above (Solaris, Windows, RedHat, and HPUX) 
+> for the following API in dl.util.concurrent.PooledExecutor.execute( 
+> Runnable command, long msecs) which interrupts a job if it's not 
+> complete after msecs. Snippits are shown below and a modified version 
+> PooledExecutor is attached. The implementation seems work but it feels 
+> like a hack, in particular the Worker, Work, and Interrupt class 
+> interaction seems less than ideal. Is there a better way to implement 
+> this in dl.util.concurrent? Any thoughts, suggestions, insights and/or 
+> critique are greatly appreciated.
+> 
+
+Check out dl.util.concurrent.TimedCallable if you haven't already.
+
+This uses a dedicated thread per Callable, which may be too heavyweight for you, but at least you can execute it on a standard PooledExecutor.
+
+Callable callable = new Callable() {
+  public Object call() {
+    runnable.run();
+    return Boolean.TRUE;
+  }
+}
+
+callable = new TimedCallable(callable, msecs);
+
+FutureResult future = new FutureResult();
+Runnable setter = future.setter(callable);
+
+executor.execute(setter);
+
+
+I would think something along these lines would also work:
+
+Callable callable = new Callable() {
+  public Object call() {
+    runnable.run();
+    return Boolean.TRUE;
+  }
+}
+
+FutureResult future = new FutureResult();
+Runnable setter = future.setter(callable);
+
+executor.execute(setter);
+
+TimerTask tt = new TimerTask() {
+  public void run() {
+    future.cancel();
+  }
+}
+
+timer.schedule(tt, msecs);
+
+Joe.
+
+From jozart at blarg.net  Tue Apr 26 20:11:16 2005
+From: jozart at blarg.net (Joe Bowbeer)
+Date: Tue Apr 26 20:11:24 2005
+Subject: [concurrency-interest] Advice for execute( Runnable task,
+	long timeout )
+Message-ID: <03ae0ee4350731d605f4f924074f00ab@www.blargmail.com>
+
+One thing I forget to point out:
+
+In a TimedCallable, the timer thread starts when the runnable *starts* to execute, while the TimerTask starts at the moment the runnable is *submitted* for execution.
+
+Another approach would be to have the runnable task schedule its own timer task when it is started..
+
+All of these approaches have worked reasonably well for timeouts within the range of human response times, i.e., none of these solutions are suitable for precision work.
+
+
+Joe Bowbeer <jozart@blarg.net> wrote:
+> Jan Nielsen <jnielsen@sungardsct.com> wrote:
+> > 
+> > I have a need in JVM 1.3 and above (Solaris, Windows, RedHat, and HPUX) 
+> > for the following API in dl.util.concurrent.PooledExecutor.execute( 
+> > Runnable command, long msecs) which interrupts a job if it's not 
+> > complete after msecs. Snippits are shown below and a modified version 
+> > PooledExecutor is attached. The implementation seems work but it feels 
+> > like a hack, in particular the Worker, Work, and Interrupt class 
+> > interaction seems less than ideal. Is there a better way to implement 
+> > this in dl.util.concurrent? Any thoughts, suggestions, insights and/or 
+> > critique are greatly appreciated.
+> > 
+> 
+> Check out dl.util.concurrent.TimedCallable if you haven't already.
+> 
+> This uses a dedicated thread per Callable, which may be too heavyweight for you, but at least you can execute it on a standard PooledExecutor.
+> 
+> Callable callable = new Callable() {
+>   public Object call() {
+>     runnable.run();
+>     return Boolean.TRUE;
+>   }
+> }
+> 
+> callable = new TimedCallable(callable, msecs);
+> 
+> FutureResult future = new FutureResult();
+> Runnable setter = future.setter(callable);
+> 
+> executor.execute(setter);
+> 
+> 
+> I would think something along these lines would also work:
+> 
+> Callable callable = new Callable() {
+>   public Object call() {
+>     runnable.run();
+>     return Boolean.TRUE;
+>   }
+> }
+> 
+> FutureResult future = new FutureResult();
+> Runnable setter = future.setter(callable);
+> 
+> executor.execute(setter);
+> 
+> TimerTask tt = new TimerTask() {
+>   public void run() {
+>     future.cancel();
+>   }
+> }
+> 
+> timer.schedule(tt, msecs);
+> 
+> Joe.
+> 
+
+From jnielsen at sungardsct.com  Wed Apr 27 11:23:04 2005
+From: jnielsen at sungardsct.com (Jan Nielsen)
+Date: Wed Apr 27 11:26:55 2005
+Subject: [concurrency-interest] Advice for execute( Runnable task,	long
+	timeout )
+In-Reply-To: <03ae0ee4350731d605f4f924074f00ab@www.blargmail.com>
+References: <03ae0ee4350731d605f4f924074f00ab@www.blargmail.com>
+Message-ID: <426FAE58.2040306@sungardsct.com>
+
+Many thanks for the insights and suggestions, Joe and David.
+
+I should have provided a little more context. My timeout values are 
+typically 5+/-2 seconds so the interruption sensitivity can be on the 
+order of a second without causing issues. The crux of the problem 
+motivating this request is limiting thread resources, which is why I did 
+not  use the TimedCallable though I considered changing TimedCallable to 
+use a ClockDaemon instead of the current thread-per-call approach. I 
+pursued the PooledExecutor implementation instead primarily because I 
+have an even-less-elegant version of it working (quite well) in 
+production and I, therefore, have confidence that it should work for 
+this particular problem.
+
+Joe, it looks to me like your idea behind the TimerTask approach is 
+similar to my approach except you have separated the concerns nicely 
+whereas I folded the two together - is that correct? (Though, it appears 
+that a few modifications/extensions would also be required to implement 
+this using your FutureResult and TimerTask, e.g., cancellation of the 
+future result.)
+
+It appears to me that the fundamental difference between the two 
+approaches is the number of cancel threads: one-per-request, or one. I 
+chose the latter for throughput though the former may be a more 
+conservative approach.
+
+-Jan
+
+Joe Bowbeer wrote:
+
+>One thing I forget to point out:
+>
+>In a TimedCallable, the timer thread starts when the runnable *starts* to execute, while the TimerTask starts at the moment the runnable is *submitted* for execution.
+>
+>Another approach would be to have the runnable task schedule its own timer task when it is started..
+>
+>All of these approaches have worked reasonably well for timeouts within the range of human response times, i.e., none of these solutions are suitable for precision work.
+>
+>
+>Joe Bowbeer <jozart@blarg.net> wrote:
+>  
+>
+>>Jan Nielsen <jnielsen@sungardsct.com> wrote:
+>>    
+>>
+>>>I have a need in JVM 1.3 and above (Solaris, Windows, RedHat, and HPUX) 
+>>>for the following API in dl.util.concurrent.PooledExecutor.execute( 
+>>>Runnable command, long msecs) which interrupts a job if it's not 
+>>>complete after msecs. Snippits are shown below and a modified version 
+>>>PooledExecutor is attached. The implementation seems work but it feels 
+>>>like a hack, in particular the Worker, Work, and Interrupt class 
+>>>interaction seems less than ideal. Is there a better way to implement 
+>>>this in dl.util.concurrent? Any thoughts, suggestions, insights and/or 
+>>>critique are greatly appreciated.
+>>>
+>>>      
+>>>
+>>Check out dl.util.concurrent.TimedCallable if you haven't already.
+>>
+>>This uses a dedicated thread per Callable, which may be too heavyweight for you, but at least you can execute it on a standard PooledExecutor.
+>>
+>>Callable callable = new Callable() {
+>>  public Object call() {
+>>    runnable.run();
+>>    return Boolean.TRUE;
+>>  }
+>>}
+>>
+>>callable = new TimedCallable(callable, msecs);
+>>
+>>FutureResult future = new FutureResult();
+>>Runnable setter = future.setter(callable);
+>>
+>>executor.execute(setter);
+>>
+>>
+>>I would think something along these lines would also work:
+>>
+>>Callable callable = new Callable() {
+>>  public Object call() {
+>>    runnable.run();
+>>    return Boolean.TRUE;
+>>  }
+>>}
+>>
+>>FutureResult future = new FutureResult();
+>>Runnable setter = future.setter(callable);
+>>
+>>executor.execute(setter);
+>>
+>>TimerTask tt = new TimerTask() {
+>>  public void run() {
+>>    future.cancel();
+>>  }
+>>}
+>>
+>>timer.schedule(tt, msecs);
+>>
+>>Joe.
+>>
+>>    
+>>
+>
+>_______________________________________________
+>Concurrency-interest mailing list
+>Concurrency-interest@altair.cs.oswego.edu
+>http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>  
+>
+
+
+-- 
+Jan Nielsen
+System Architect
+Luminis Solutions
+SunGard SCT
+
+jnielsen@sungardsct.com
+http://www.sungardsct.com
+
++1 801 257 4155 (voice)
++1 801 485 6606 (facsimile)
+
+90 South 400 West
+Salt Lake City, UT 84101
+
+From jozart at blarg.net  Wed Apr 27 11:54:33 2005
+From: jozart at blarg.net (Joe Bowbeer)
+Date: Wed Apr 27 11:54:26 2005
+Subject: [concurrency-interest] Advice for execute( Runnable task,
+	longtimeout )
+References: <03ae0ee4350731d605f4f924074f00ab@www.blargmail.com>
+	<426FAE58.2040306@sungardsct.com>
+Message-ID: <051001c54b41$68051c50$0200a8c0@REPLICANT2>
+
+Jan Nielsen writes:
+
+> Joe, it looks to me like your idea behind the TimerTask approach is
+> similar to my approach except you have separated the concerns nicely
+> whereas I folded the two together - is that correct? (Though, it appears
+> that a few modifications/extensions would also be required to implement
+> this using your FutureResult and TimerTask, e.g., cancellation of the
+> future result.)
+
+I didn't study the details of your implementation, but I'll take your word 
+for it :-)
+
+I forgot that FutureResult didn't have cancel.  We used to work around this 
+by calling setException.
+
+  synchronized (future) {
+    if (!future.isReady())
+      future.setException(new InterruptedException());
+  }
+
+
+> I chose the latter for throughput though the former may be a more
+> conservative approach.
+
+The former provides an encapsulation at the Callable layer, which can be 
+nice, but you pay a price in thread count.
+
+
+Btw, I wrote:
+
+>>All of these approaches have worked reasonably well for timeouts
+>>within the range of human response times, i.e., none of these
+>>solutions are suitable for precision work.
+
+I should clarify that they work reasonably well on JVMs that are capable of 
+running responsive GUIs.  That is, JVMs designed for use on the desktop.  As 
+David points out, there are no fairness guarantees so none of these 
+approaches (or thread.join or timer.schedule for that matter) may work well 
+in other contexts (server, embedded).
+
+
+
+----- Original Message ----- 
+From: "Jan Nielsen" <jnielsen@sungardsct.com>
+To: "Joe Bowbeer" <jozart@blarg.net>
+Cc: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Wednesday, April 27, 2005 8:23 AM
+Subject: Re: [concurrency-interest] Advice for execute( Runnable task, 
+longtimeout )
+
+
+Many thanks for the insights and suggestions, Joe and David.
+
+I should have provided a little more context. My timeout values are
+typically 5+/-2 seconds so the interruption sensitivity can be on the
+order of a second without causing issues. The crux of the problem
+motivating this request is limiting thread resources, which is why I did
+not  use the TimedCallable though I considered changing TimedCallable to
+use a ClockDaemon instead of the current thread-per-call approach. I
+pursued the PooledExecutor implementation instead primarily because I
+have an even-less-elegant version of it working (quite well) in
+production and I, therefore, have confidence that it should work for
+this particular problem.
+
+Joe, it looks to me like your idea behind the TimerTask approach is
+similar to my approach except you have separated the concerns nicely
+whereas I folded the two together - is that correct? (Though, it appears
+that a few modifications/extensions would also be required to implement
+this using your FutureResult and TimerTask, e.g., cancellation of the
+future result.)
+
+It appears to me that the fundamental difference between the two
+approaches is the number of cancel threads: one-per-request, or one. I
+chose the latter for throughput though the former may be a more
+conservative approach.
+
+-Jan
+
+Joe Bowbeer wrote:
+
+>One thing I forget to point out:
+>
+>In a TimedCallable, the timer thread starts when the runnable *starts* to 
+>execute, while the TimerTask starts at the moment the runnable is 
+>*submitted* for execution.
+>
+>Another approach would be to have the runnable task schedule its own timer 
+>task when it is started..
+>
+>All of these approaches have worked reasonably well for timeouts within the 
+>range of human response times, i.e., none of these solutions are suitable 
+>for precision work.
+>
+>
+>Joe Bowbeer <jozart@blarg.net> wrote:
+>
+>
+>>Jan Nielsen <jnielsen@sungardsct.com> wrote:
+>>
+>>
+>>>I have a need in JVM 1.3 and above (Solaris, Windows, RedHat, and HPUX)
+>>>for the following API in dl.util.concurrent.PooledExecutor.execute(
+>>>Runnable command, long msecs) which interrupts a job if it's not
+>>>complete after msecs. Snippits are shown below and a modified version
+>>>PooledExecutor is attached. The implementation seems work but it feels
+>>>like a hack, in particular the Worker, Work, and Interrupt class
+>>>interaction seems less than ideal. Is there a better way to implement
+>>>this in dl.util.concurrent? Any thoughts, suggestions, insights and/or
+>>>critique are greatly appreciated.
+>>>
+>>>
+>>>
+>>Check out dl.util.concurrent.TimedCallable if you haven't already.
+>>
+>>This uses a dedicated thread per Callable, which may be too heavyweight 
+>>for you, but at least you can execute it on a standard PooledExecutor.
+>>
+>>Callable callable = new Callable() {
+>>  public Object call() {
+>>    runnable.run();
+>>    return Boolean.TRUE;
+>>  }
+>>}
+>>
+>>callable = new TimedCallable(callable, msecs);
+>>
+>>FutureResult future = new FutureResult();
+>>Runnable setter = future.setter(callable);
+>>
+>>executor.execute(setter);
+>>
+>>
+>>I would think something along these lines would also work:
+>>
+>>Callable callable = new Callable() {
+>>  public Object call() {
+>>    runnable.run();
+>>    return Boolean.TRUE;
+>>  }
+>>}
+>>
+>>FutureResult future = new FutureResult();
+>>Runnable setter = future.setter(callable);
+>>
+>>executor.execute(setter);
+>>
+>>TimerTask tt = new TimerTask() {
+>>  public void run() {
+>>    future.cancel();
+>>  }
+>>}
+>>
+>>timer.schedule(tt, msecs);
+>>
+>>Joe.
+>>
+>>
+>>
+>
+
+From Pete.Soper at Sun.COM  Fri Apr 29 17:39:43 2005
+From: Pete.Soper at Sun.COM (Pete Soper)
+Date: Fri Apr 29 17:39:47 2005
+Subject: [concurrency-interest] reusing threads and thread local state
+Message-ID: <4272A99F.3060207@Sun.COM>
+
+Hi,
+
+An RFE was recently submitted to Sun with this description:
+
+"Threads are often reused rather than destroyed and recreated, e.g. in a
+Thread pooled server. In that case, it would be nice, even necessary, to
+be able to clear out all ThreadLocalS that were set during the previous
+use of the Thread so that the Thread is reset to its first-created
+state. This could be a clearThreadLocals() method on a Thread instance
+or a static clearAll() method on ThreadLocal class.
+
+JUSTIFICATION :
+When a Thread is reused by a framework the intent is for it to be as if 
+the Thread were just created. ThreadLocalS should not be left over from 
+the previous use of the Thread.
+Whether or not this type of Thread reuse is a good idea or not, it is in 
+wide use and Java should provide a way to accommodate this usage.
+
+
+CUSTOMER SUBMITTED WORKAROUND :
+The only partial workaround is to manually keep track of all 
+ThreadLocals used and set them to null or remove them at the end of the 
+Thread use. This is obviously not optimal, and in many cases, not 
+possible. "
+
+I'd like to poll this list with the following questions to start some 
+informal discussion:
+
+   - Is this as attractive as it seems? That is, isn't it just a recipe 
+for memory leaks? Or perhaps I'm too cautious to think user's might tend 
+to overlook persistent references to local objects being part of their 
+responsibilty? Tracking references would seem to make tracking the 
+locals themselves the easy part in some cases. Or perhaps I'm 
+misinterpreting the behavior expected. Perhaps others read this as "go 
+find the references and null them out too"?
+   - Are Java implementations obligated to accurately track locals 
+associated with a given thread?  I haven't read the specs carefully to 
+look for this detail but nothing related to this has jumped out at me. 
+It looks like this could be painful for an implementation taking a 
+completely different approach to implementing ThreadLocal vs 
+InheritedThreadLocal.Or maybe that's bogus thinking. Maybe the 
+requirements implicit with InheritedThreadLocal make the ability to 
+track the general population of per-thread locals. Thoughts?
+   - Why not Thread.firstCreatedState()? That is, is a focus on local 
+state too narrow? I can't think of much state beyond the locals that 
+would be relevant (but I've only been thinking about threads for two 
+weeks and most of that has been silly stuff like "I need *what* to build 
+  J2SE on Windows??" Apologies in advance for the ignorance I will 
+surely betray).
+   - The suggested static method seems problematic. For example, it 
+would be frustrating when you'd like it to operate on almost all the 
+threads, or more likely, the threads you are aware of but no others. Is 
+there some reason why it shouldn't be rejected out of hand?
+
+-Pete
+
+From jbloch at gmail.com  Fri Apr 29 17:55:11 2005
+From: jbloch at gmail.com (Joshua Bloch)
+Date: Fri Apr 29 17:55:14 2005
+Subject: [concurrency-interest] reusing threads and thread local state
+In-Reply-To: <4272A99F.3060207@Sun.COM>
+References: <4272A99F.3060207@Sun.COM>
+Message-ID: <b097ac5105042914557f83ae9@mail.gmail.com>
+
+Pete,
+
+Oh no, not again. I fought this so many times over the years.  It's
+one of those ideas that seems good on the surface but isn't.  My
+analogy is used cars vs. new cars.  If you want a new car / thread,
+you have have to pay a bit more for it.  If you go to a used car lot /
+thread pool, the car may have a few dings on it / thread may have a
+bit of state associated with it.  If you can live with this, buy a
+used car / use a thread pool.  If not, buy a new car / create a
+thread.
+
+Also, resetting ThreadLocal state does not produce a virgin thread. 
+There is other hidden state associated with a thread.  Some of it can
+be external to the thread (e.g., it can be registered in a static data
+structure). With threads as with people, you can only be a virgin
+once.  Yow, are we mixing meaphors yet?
+
+Java has a powerful access control model.  It lets you write provably
+correct programs.  Letting one thread muck with another's ThreadLocal
+variables eats into this access model.  Just say no.
+
+       My 2 cents,
+
+       Josh
+
+On 4/29/05, Pete Soper <Pete.Soper@sun.com> wrote:
+> Hi,
+> 
+> An RFE was recently submitted to Sun with this description:
+> 
+> "Threads are often reused rather than destroyed and recreated, e.g. in a
+> Thread pooled server. In that case, it would be nice, even necessary, to
+> be able to clear out all ThreadLocalS that were set during the previous
+> use of the Thread so that the Thread is reset to its first-created
+> state. This could be a clearThreadLocals() method on a Thread instance
+> or a static clearAll() method on ThreadLocal class.
+> 
+> JUSTIFICATION :
+> When a Thread is reused by a framework the intent is for it to be as if
+> the Thread were just created. ThreadLocalS should not be left over from
+> the previous use of the Thread.
+> Whether or not this type of Thread reuse is a good idea or not, it is in
+> wide use and Java should provide a way to accommodate this usage.
+> 
+> CUSTOMER SUBMITTED WORKAROUND :
+> The only partial workaround is to manually keep track of all
+> ThreadLocals used and set them to null or remove them at the end of the
+> Thread use. This is obviously not optimal, and in many cases, not
+> possible. "
+> 
+> I'd like to poll this list with the following questions to start some
+> informal discussion:
+> 
+>    - Is this as attractive as it seems? That is, isn't it just a recipe
+> for memory leaks? Or perhaps I'm too cautious to think user's might tend
+> to overlook persistent references to local objects being part of their
+> responsibilty? Tracking references would seem to make tracking the
+> locals themselves the easy part in some cases. Or perhaps I'm
+> misinterpreting the behavior expected. Perhaps others read this as "go
+> find the references and null them out too"?
+>    - Are Java implementations obligated to accurately track locals
+> associated with a given thread?  I haven't read the specs carefully to
+> look for this detail but nothing related to this has jumped out at me.
+> It looks like this could be painful for an implementation taking a
+> completely different approach to implementing ThreadLocal vs
+> InheritedThreadLocal.Or maybe that's bogus thinking. Maybe the
+> requirements implicit with InheritedThreadLocal make the ability to
+> track the general population of per-thread locals. Thoughts?
+>    - Why not Thread.firstCreatedState()? That is, is a focus on local
+> state too narrow? I can't think of much state beyond the locals that
+> would be relevant (but I've only been thinking about threads for two
+> weeks and most of that has been silly stuff like "I need *what* to build
+>   J2SE on Windows??" Apologies in advance for the ignorance I will
+> surely betray).
+>    - The suggested static method seems problematic. For example, it
+> would be frustrating when you'd like it to operate on almost all the
+> threads, or more likely, the threads you are aware of but no others. Is
+> there some reason why it shouldn't be rejected out of hand?
+> 
+> -Pete
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From jmanson at cs.purdue.edu  Fri Apr 29 18:25:12 2005
+From: jmanson at cs.purdue.edu (Jeremy Manson)
+Date: Fri Apr 29 18:25:29 2005
+Subject: [concurrency-interest] reusing threads and thread local state
+In-Reply-To: <b097ac5105042914557f83ae9@mail.gmail.com>
+References: <4272A99F.3060207@Sun.COM>
+	<b097ac5105042914557f83ae9@mail.gmail.com>
+Message-ID: <4272B448.3080308@cs.purdue.edu>
+
+Josh,
+
+When we were doing the memory model, we came across the need for a 
+"final field safe context".  One of the guarantees it provides is that 
+if you are in a thread that read an improperly published version of the 
+object, and you enter a final field safe context, and you only see 
+properly published versions of the object within that context, you will 
+get your final field guarantees back.
+
+(For those not in the know: if Thread A is constructing an object and 
+places a reference to it where another thread can see it (or "publishes" 
+the reference) before the constructor finishes, and then Thread B reads 
+that reference, Thread B isn't guaranteed to see the correct values for 
+the final fields of that object.  If Thread A waits until the object is 
+done constructing before publishing the reference, then Thread B is 
+guaranteed to see the correct values for the final fields of that object.)
+
+I have often thought that some interface to final field contexts that 
+also covers ThreadLocals should exist.  In effect, create a 
+"runInLogicalThread" method that takes a Runnable, executes it in a 
+final field safe context, and provides a "fresh slate" for the 
+ThreadLocals.  When you return, the ThreadLocals are reset to their 
+original values, and final fields are (potentially) no longer safe.
+
+I posted this idea to this list a year or two back, but it sort of 
+fizzled.  I can't remember why now, though.  Now that people are 
+thinking about final fields (a little), maybe it is time to think about 
+it again?
+
+Or do you think this solution is as problematic as the idea of having a 
+clear() method?
+
+					Jeremy
+
+Joshua Bloch wrote:
+> Pete,
+> 
+> Oh no, not again. I fought this so many times over the years.  It's
+> one of those ideas that seems good on the surface but isn't.  My
+> analogy is used cars vs. new cars.  If you want a new car / thread,
+> you have have to pay a bit more for it.  If you go to a used car lot /
+> thread pool, the car may have a few dings on it / thread may have a
+> bit of state associated with it.  If you can live with this, buy a
+> used car / use a thread pool.  If not, buy a new car / create a
+> thread.
+> 
+> Also, resetting ThreadLocal state does not produce a virgin thread. 
+> There is other hidden state associated with a thread.  Some of it can
+> be external to the thread (e.g., it can be registered in a static data
+> structure). With threads as with people, you can only be a virgin
+> once.  Yow, are we mixing meaphors yet?
+> 
+> Java has a powerful access control model.  It lets you write provably
+> correct programs.  Letting one thread muck with another's ThreadLocal
+> variables eats into this access model.  Just say no.
+> 
+>        My 2 cents,
+> 
+>        Josh
+From Pete at Soper.US  Fri Apr 29 20:06:09 2005
+From: Pete at Soper.US (Pete Soper)
+Date: Fri Apr 29 20:06:38 2005
+Subject: [concurrency-interest] reusing threads and thread local state
+In-Reply-To: <4272B448.3080308@cs.purdue.edu>
+References: <4272A99F.3060207@Sun.COM>
+	<b097ac5105042914557f83ae9@mail.gmail.com>
+	<4272B448.3080308@cs.purdue.edu>
+Message-ID: <bfa66b227f77936722dc03f20edb671a@Soper.US>
+
+That was enlightening. Thanks all.
+
+-Pete
+
+From dholmes at dltech.com.au  Fri Apr 29 21:40:45 2005
+From: dholmes at dltech.com.au (David Holmes)
+Date: Fri Apr 29 21:40:55 2005
+Subject: [concurrency-interest] reusing threads and thread local state
+In-Reply-To: <4272A99F.3060207@Sun.COM>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEGDFKAA.dholmes@dltech.com.au>
+
+Pete,
+
+Just adding my 2c.
+
+I agree with Josh, clearing threadlocals only gives you a partial
+clean-slate. I'd prefer that people see that a used thread is a used thread,
+not pretend that it can be restored to a pristine state.
+
+Really the libraries that make use of Threadlocals in a way that leads to
+these problems, should provide a way to clean the slate for a given thread.
+But you really need to know exactly how thread locals are being used.
+
+Alternatively thread creation should be so cheap that you don't care. If the
+native threads underlying the Java threads were pooled and re-used at the VM
+level that might make fresh creation more attractive - pure speculation on
+my part.
+
+There is a problem here and it is probably a misuse of thread-locals to
+represent an "identity" that is only loosely tied to thread-identity. The
+fix really needs to be applied by the libraries and the applications, with
+the VM providing a "safety net" to deal with errant libraries. But it isn't
+clear what the VM needs to, or can do.
+
+>    - Are Java implementations obligated to accurately track locals
+> associated with a given thread?  I haven't read the specs carefully to
+> look for this detail but nothing related to this has jumped out at me.
+> It looks like this could be painful for an implementation taking a
+> completely different approach to implementing ThreadLocal vs
+> InheritedThreadLocal.Or maybe that's bogus thinking. Maybe the
+> requirements implicit with InheritedThreadLocal make the ability to
+> track the general population of per-thread locals. Thoughts?
+
+There is no requirement for the implementation to track thread locals. A few
+implementations ago each ThreadLocal tracked per-thread values. While such a
+scheme is much less efficient than having each thread maintain
+per-ThreadLocal values, it is none-the-less a legitimate implementation
+scheme. Trying to find all the ThreadLocals used by a given thread, with
+such a scheme, would require some kind of registry be maintained.
+
+I'd certainly like to hear about specific cases where this problem arises.
+Perhaps you could point the original requestor to this interest list :)
+
+Cheers,
+David Holmes
+
+From larryr at saturn.sdsu.edu  Sat Apr 30 13:25:52 2005
+From: larryr at saturn.sdsu.edu (Larry Riedel)
+Date: Sat Apr 30 13:26:00 2005
+Subject: [concurrency-interest] reusing threads and thread local state
+In-Reply-To: <4272A99F.3060207@Sun.COM>
+Message-ID: <20050430172552.19217.qmail@home19.riedel.org>
+
+
+It seems to me plainly reasonable to ask to be able
+to iterate through all the ThreadLocals associated
+with a particular Thread, as well as to be able to
+clear each one found via iteration, regardless of
+whether there is a provided method which promises
+to clear all the ThreadLocals, or whether clearing
+them would (not) put the Thread in a pristine state.
+
+
+Larry
+
+From jbloch at gmail.com  Sat Apr 30 13:33:17 2005
+From: jbloch at gmail.com (Joshua Bloch)
+Date: Sat Apr 30 13:33:20 2005
+Subject: [concurrency-interest] reusing threads and thread local state
+In-Reply-To: <20050430172552.19217.qmail@home19.riedel.org>
+References: <4272A99F.3060207@Sun.COM>
+	<20050430172552.19217.qmail@home19.riedel.org>
+Message-ID: <b097ac5105043010335d1837c2@mail.gmail.com>
+
+Larry,
+
+I couldn't disagree more strongly.  It's equally reasonable to ask to
+iterate through all of the fields contained in an instance (whatever
+their access level).  Both are blatant violations of the access
+guarantees offered by the language.  People have been writing classes
+using ThreadLocal for years under the impression that a private
+ThreadLocal really is private.  To change the rules at this late date
+would be unthinkable.
+
+       Regards,
+
+       Josh
+
+On 30 Apr 2005 17:25:52 -0000, Larry Riedel <larryr@saturn.sdsu.edu> wrote:
+> 
+> It seems to me plainly reasonable to ask to be able
+> to iterate through all the ThreadLocals associated
+> with a particular Thread, as well as to be able to
+> clear each one found via iteration, regardless of
+> whether there is a provided method which promises
+> to clear all the ThreadLocals, or whether clearing
+> them would (not) put the Thread in a pristine state.
+> 
+> 
+> Larry
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From jbloch at gmail.com  Sat Apr 30 13:40:22 2005
+From: jbloch at gmail.com (Joshua Bloch)
+Date: Sat Apr 30 13:40:25 2005
+Subject: [concurrency-interest] reusing threads and thread local state
+In-Reply-To: <4272B448.3080308@cs.purdue.edu>
+References: <4272A99F.3060207@Sun.COM>
+	<b097ac5105042914557f83ae9@mail.gmail.com>
+	<4272B448.3080308@cs.purdue.edu>
+Message-ID: <b097ac510504301040dad6e2b@mail.gmail.com>
+
+Jeremy,
+
+Honestly, my complexity meter is buried deep in the red.  Anything
+that complex can't be good.  Regardless of whether it's sound, the
+average bear coudln't make use of such a facility.
+
+         Sorry to be so blunt,
+
+         Josh
+
+On 4/29/05, Jeremy Manson <jmanson@cs.purdue.edu> wrote:
+> Josh,
+> 
+> When we were doing the memory model, we came across the need for a
+> "final field safe context".  One of the guarantees it provides is that
+> if you are in a thread that read an improperly published version of the
+> object, and you enter a final field safe context, and you only see
+> properly published versions of the object within that context, you will
+> get your final field guarantees back.
+> 
+> (For those not in the know: if Thread A is constructing an object and
+> places a reference to it where another thread can see it (or "publishes"
+> the reference) before the constructor finishes, and then Thread B reads
+> that reference, Thread B isn't guaranteed to see the correct values for
+> the final fields of that object.  If Thread A waits until the object is
+> done constructing before publishing the reference, then Thread B is
+> guaranteed to see the correct values for the final fields of that object.)
+> 
+> I have often thought that some interface to final field contexts that
+> also covers ThreadLocals should exist.  In effect, create a
+> "runInLogicalThread" method that takes a Runnable, executes it in a
+> final field safe context, and provides a "fresh slate" for the
+> ThreadLocals.  When you return, the ThreadLocals are reset to their
+> original values, and final fields are (potentially) no longer safe.
+> 
+> I posted this idea to this list a year or two back, but it sort of
+> fizzled.  I can't remember why now, though.  Now that people are
+> thinking about final fields (a little), maybe it is time to think about
+> it again?
+> 
+> Or do you think this solution is as problematic as the idea of having a
+> clear() method?
+> 
+>                                         Jeremy
+> 
+> Joshua Bloch wrote:
+> > Pete,
+> >
+> > Oh no, not again. I fought this so many times over the years.  It's
+> > one of those ideas that seems good on the surface but isn't.  My
+> > analogy is used cars vs. new cars.  If you want a new car / thread,
+> > you have have to pay a bit more for it.  If you go to a used car lot /
+> > thread pool, the car may have a few dings on it / thread may have a
+> > bit of state associated with it.  If you can live with this, buy a
+> > used car / use a thread pool.  If not, buy a new car / create a
+> > thread.
+> >
+> > Also, resetting ThreadLocal state does not produce a virgin thread.
+> > There is other hidden state associated with a thread.  Some of it can
+> > be external to the thread (e.g., it can be registered in a static data
+> > structure). With threads as with people, you can only be a virgin
+> > once.  Yow, are we mixing meaphors yet?
+> >
+> > Java has a powerful access control model.  It lets you write provably
+> > correct programs.  Letting one thread muck with another's ThreadLocal
+> > variables eats into this access model.  Just say no.
+> >
+> >        My 2 cents,
+> >
+> >        Josh
+>
+
+From larryr at saturn.sdsu.edu  Sat Apr 30 16:29:34 2005
+From: larryr at saturn.sdsu.edu (Larry Riedel)
+Date: Sat Apr 30 16:29:44 2005
+Subject: [concurrency-interest] reusing threads and thread local state
+In-Reply-To: <b097ac5105043010335d1837c2@mail.gmail.com>
+Message-ID: <20050430202934.21356.qmail@home19.riedel.org>
+
+
+> > It seems to me plainly reasonable to ask to be able to
+> > iterate through all the ThreadLocals associated with a
+> > particular Thread, as well as to be able to clear each
+> > one found via iteration, regardless of whether there
+> > is a provided method which promises to clear all the
+> > ThreadLocals, or whether clearing them would (not) put
+> > the Thread in a pristine state.
+>
+> [...] It's equally reasonable to ask to iterate through
+> all of the fields contained in an instance
+
+I agree that is conceptually similar.
+
+
+> (whatever their access level).
+
+I think when policy dictates, method(s) providing
+mechanisms for accessing ThreadLocals in this manner
+should of course support the throwing of appropriate
+exceptions such as IllegalAccessException.
+
+
+Larry
+
+From hanson.char at gmail.com  Sat Apr 30 17:41:39 2005
+From: hanson.char at gmail.com (Hanson Char)
+Date: Sat Apr 30 17:41:53 2005
+Subject: [concurrency-interest] reusing threads and thread local state
+In-Reply-To: <20050430202934.21356.qmail@home19.riedel.org>
+References: <b097ac5105043010335d1837c2@mail.gmail.com>
+	<20050430202934.21356.qmail@home19.riedel.org>
+Message-ID: <ca53c8f8050430144128ef5fc4@mail.gmail.com>
+
+Or AccessControlException.
+
+Hanson
+
+On 30 Apr 2005 20:29:34 -0000, Larry Riedel <larryr@saturn.sdsu.edu> wrote:
+> 
+> > > It seems to me plainly reasonable to ask to be able to
+> > > iterate through all the ThreadLocals associated with a
+> > > particular Thread, as well as to be able to clear each
+> > > one found via iteration, regardless of whether there
+> > > is a provided method which promises to clear all the
+> > > ThreadLocals, or whether clearing them would (not) put
+> > > the Thread in a pristine state.
+> >
+> > [...] It's equally reasonable to ask to iterate through
+> > all of the fields contained in an instance
+> 
+> I agree that is conceptually similar.
+> 
+> > (whatever their access level).
+> 
+> I think when policy dictates, method(s) providing
+> mechanisms for accessing ThreadLocals in this manner
+> should of course support the throwing of appropriate
+> exceptions such as IllegalAccessException.
+> 
+> 
+> Larry
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From dholmes at dltech.com.au  Sat Apr 30 17:48:20 2005
+From: dholmes at dltech.com.au (David Holmes)
+Date: Sat Apr 30 17:48:31 2005
+Subject: [concurrency-interest] reusing threads and thread local state
+In-Reply-To: <20050430202934.21356.qmail@home19.riedel.org>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEGNFKAA.dholmes@dltech.com.au>
+
+Larry Riedel writes:
+> I think when policy dictates, method(s) providing
+> mechanisms for accessing ThreadLocals in this manner
+> should of course support the throwing of appropriate
+> exceptions such as IllegalAccessException.
+
+Other than breaking encapsulation what purpose would having such an
+iteration method serve? If you can't fully violate encapsulation by
+accessing in-accessible fields then you can't clear them. If you can't clear
+them all then there is no point trying to do anything this way.
+
+ThreadLocals are an implementation detail, not something that a thread
+should need to concern themselves about. The problems stem from mis-use of
+ThreadLocals by libraries, or by those libraries not providing suitable
+API's for clearing them.
+
+I'd rather see and discuss specific examples of where there is a need to
+clear ThreadLocal's than to entertain an API that exposes them all and
+encourages further misuse.
+
+David Holmes
+
+From jmanson at cs.purdue.edu  Sat Apr 30 18:19:39 2005
+From: jmanson at cs.purdue.edu (Jeremy Manson)
+Date: Sat Apr 30 18:20:03 2005
+Subject: [concurrency-interest] reusing threads and thread local state
+In-Reply-To: <b097ac510504301040dad6e2b@mail.gmail.com>
+References: <4272A99F.3060207@Sun.COM>	
+	<b097ac5105042914557f83ae9@mail.gmail.com>	
+	<4272B448.3080308@cs.purdue.edu>
+	<b097ac510504301040dad6e2b@mail.gmail.com>
+Message-ID: <4274047B.2060106@cs.purdue.edu>
+
+Joshua Bloch wrote:
+> Jeremy,
+> 
+> Honestly, my complexity meter is buried deep in the red.  Anything
+> that complex can't be good.  Regardless of whether it's sound, the
+> average bear coudln't make use of such a facility.
+> 
+>          Sorry to be so blunt,
+> 
+>          Josh
+>
+
+Honestly, I think it is more my inability to explain it articulately in 
+that last message.  Basically, you could imagine a class ExecutionUnit 
+with a method start() that executes in the same thread, but pretends to 
+be in a different thread for the purposes of final fields and 
+ThreadLocals.  Use would look something like:
+
+public class Foo implements Runnable {
+
+   static ThreadLocal t = new ThreadLocal();
+   static Object o = new Object();
+   static Object p = new Object();
+
+   public static void main(String [] args) {
+     t.put(o);
+     Object r1 = t.get(); // sees o
+     ExecutionUnit eu = new ExecutionUnit(new Foo());
+     eu.start();
+     Object r2 = t.get(); // sees o
+   }
+
+   public void run() {
+     Object r3 = t.get(); // sees null
+     t.put(p);
+     Object r4 = t.get(); // sees p
+   }
+
+}
+
+Basically, all of the ThreadLocals are pushed on a stack for the 
+duration of the execution of the ExecutionUnit.  Implementation would be 
+fairly straightforward - ThreadLocals would be defined in terms of 
+ExecutionUnits instead of Threads.  The other benefits would be what I 
+said about final fields (the complex bit) and anything else people 
+wanted to think of.  Maybe you could call join on ExecutionUnits, for 
+example.
+
+At a high level, this is an attempt to separate Threads into two 
+orthogonal concepts - the programmer-level view of a thread as some 
+activities performed by the program versus the vm-level view of a thread 
+as some low-level constructs.
+
+On the other hand, perhaps this is hitting a small nail with a big 
+hammer.  Between other projects, I'm trying to get up the courage to 
+think about a standard way to deserialize final fields, and this is the 
+kind of related thing that pops into my head from time to time.
+
+					Jeremy
+From larryr at saturn.sdsu.edu  Sat Apr 30 20:42:03 2005
+From: larryr at saturn.sdsu.edu (Larry Riedel)
+Date: Sat Apr 30 20:42:08 2005
+Subject: [concurrency-interest] reusing threads and thread local state
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCKEGNFKAA.dholmes@dltech.com.au>
+Message-ID: <20050501004203.22254.qmail@home19.riedel.org>
+
+
+> what purpose would having such an iteration method serve?
+
+The same general purpose as the other elements of java.lang.reflect.
+
+
+Larry
+

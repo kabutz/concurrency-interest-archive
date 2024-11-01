@@ -1,0 +1,472 @@
+From rba at activeviam.com  Mon Feb 11 11:27:36 2019
+From: rba at activeviam.com (=?UTF-8?Q?R=C3=A9mi_Barat?=)
+Date: Mon, 11 Feb 2019 17:27:36 +0100
+Subject: [concurrency-interest] livelocks in jdk11 not occurring in
+ jdk1.8 due to work stealing policy change
+In-Reply-To: <CAKsH56WYCB1D4c9kAvPpk3T7v+j3Xyb3LHPcy7MyAf1hHYEd8A@mail.gmail.com>
+References: <CAKsH56WYCB1D4c9kAvPpk3T7v+j3Xyb3LHPcy7MyAf1hHYEd8A@mail.gmail.com>
+Message-ID: <CAKsH56U1SLz1Up6kOFtTudqNKOuhAiPWuFO5L3-4m99n5D6nnA@mail.gmail.com>
+
+Hi,
+
+I recently sent an email with the same object but got no answer. I assume
+it was too long and not clear enough. This is a more concise version.
+
+When upgrading our application from JDK 1.8 to JDK 11, we experienced many
+(dead|live)locks. This seems to be due to a change in the way work stealing
+is performed.
+
+The main differences that I found between JDK 11 and JDK 1.8 are:
+- In JDK 1.8, when a thread A joins a task it has created,
+    1) It will spawn another thread that will help to perform it.
+    2) This thread will first perform other tasks that A created before
+stealing tasks.
+- In JDK 11, when a thread A joins a task it has created, it immediately
+steals tasks.
+
+Is this the expected behavior? If so, how can we avoid that a thread
+performing a child task steals a parent task? We are currently trying to
+get rid of calls to `join` with CountedCompleters, but maybe our way of
+using the ForkJoinTasks was wrong to begin with?
+
+See these two simple examples that show the differences:
+https://gist.github.com/remibarat/889293cad02dc45a13d98aa4dbfe716e.
+
+Thank you for your time,
+
+Rémi Barat
+
+
+
+On Fri, Jan 25, 2019 at 4:40 PM Rémi Barat <rba at activeviam.com> wrote:
+
+> Hi,
+>
+> When upgrading our application from jdk1.8 to jdk11, we experienced many
+> (dead|live)locks. This seems to be due to a change in the way work stealing
+> is performed.
+>
+> I created two examples to reproduce such situations. Both show that work
+> stealing behaves differently between jdk1.8 and jdk11. Both work fine when
+> compiled and executed with jdk1.8 but do not finish when using jdk11. The
+> second example illustrates how our code gets into this kind of livelocks.
+> The source code of the examples is available here:
+> https://gist.github.com/remibarat/889293cad02dc45a13d98aa4dbfe716e
+>
+> === First example
+>
+> This example uses a Parent task (e.g. mapping in a custom Map when the Map
+> is full) that will launch a Child task (e.g. to resize the Map, we need to
+> rehash it). Any new Parent task needs to wait for the Child task to finish.
+> The Child task will also launch Child tasks.
+>
+> The idea is that, a thread B in a child task C0 `join`s a child task C2
+> and manages to steal a parent task P1 from thread A. However, P1 `join`s
+> C0, so even though thread A finishes C2, B is blocked by itself.
+>
+> The following explains how this example behaves, on the left when executed
+> in jdk11, and on the right when executed with jdk1.8. The code uses a
+> `ForkJoinPool` with 2 threads, and `CountDownLatch`es to control work
+> stealing. Note that, although we use a `ForkJoinPool` with 2 threads, with
+> jdk1.8 we see a third thread coming to help when both thread A and thread B
+> are blocked.
+>
+>                 ,-------,                         ||
+> ,--------,
+>                 | jdk11 |                         ||                |
+> jdk1.8 |
+>                 '-------'                         ||
+> '--------'
+>                                                   ||
+>       thread A                      thread B      ||     thread A
+>             thread B             thread C
+> time  --------                      --------      ||     --------
+>             --------             --------
+> |     starts P0                                   ||     starts P0
+> |     creates C0                                  ||     creates C0
+> |         +-- forks C0 <-----  steals --+         ||         +-- forks C0
+> <-----  steals --+
+> |         |                         starts C0     ||         |
+>              starts C0
+> |         |                         creates C2    ||         |
+>              creates C2
+> |         |              ,-> forks C2 --+         ||         |
+>       forks C2 --+
+> |         |              |          invokes C1    ||         |
+>        ^     invokes C1
+> |     creates P1         |              |         ||     creates P1
+>       |         |
+> |         +-- forks P1 <-|-,            |         ||         +-- forks P1
+> <----------------|--,
+> |     joins C0           | |            |         ||     joins C0
+>       |         |  |
+> |         +-- steals ----' |            |         ||         |
+>        |         |  '-- compensates --+
+> |     starts C2            |            |         ||         |
+>        |         |                starts P1
+> |         |                |        finishes C1   ||         |
+>        |         |                joins C0
+> |         |                |            |         ||         |
+>        '---------|---------- steals --+
+> |         |                |        joins C2      ||         |
+>                  |                starts C2
+> |         |                '-- steals --+         ||         |
+>              finishes C1              |
+> |         |                         starts P1     ||         |
+>              joins C2 -- nothing      |
+> |         |                         joins C0      ||         |
+>                  |       to steal     |
+> |     finishes C2                       |         ||         |
+>                  |       from C   finishes C2
+> |         x                             x         ||         |
+>              finishes C0              |
+> |     cannot proceed               cannot proceed ||         |
+>                                   finishes C1
+> |     (join C0)                    even though    ||     finishes P0
+> |                                  C2 finished    ||
+> v                                                 ||
+>
+>                                                Outputs
+>
+> === Thread 13 is ForkJoinPool-1-worker-3          || === Thread 11 is
+> ForkJoinPool-1-worker-1
+> === Thread 14 is ForkJoinPool-1-worker-1          || === Thread 12 is
+> ForkJoinPool-1-worker-0
+>                                                   ||
+>  thread 13 | thread 14                            ||  thread 11 | thread 12
+> -----------|------------                          ||
+> -----------|------------
+>  P0 starts |                                      ||  P0 starts |
+>            | C0 starts                            ||            | C0 starts
+>            | C1 starts                            ||            | C1 starts
+>  C2 starts |                                      ||            |
+>    | P1 starts (new Thread: 13)
+>            | C1 ends                              ||            |
+>    | C2 starts (new Thread: 13)
+>            | P1 starts                            ||            |
+>      | C2 ends   (new Thread: 13)
+>  C2 ends   |                                      ||            | C1 ends
+>                                                   ||            | C0 ends
+> [Program does not finish]                         ||            |
+>    | P1 ends   (new Thread: 13)
+>                                                   ||  P0 ends   |
+>
+>
+> The main difference between jdk1.8 and jdk11 seems to be that, when thread
+> A `join`s thread B:
+> * In jdk1.8, if A still has a task (e.g. P1) in its work queue, a new
+> thread (e.g. C) pops up and begins to perform A's task (C is "compensating"
+> while A is blocked). It is only when the joining thread (e.g. C) has an
+> empty work queue that it will steal from the thread it joins (e.g. B).
+> * In jdk11, even though A still has a task in its work queue, A itself
+> will steal from B. This is documented in `ForkJoinPool.awaitJoin(...)`:
+> "First tries to locally helping, then scans other queues for a task
+> produced by one of w's stealers; compensating and blocking if none are
+> found."
+>
+> As one may wonder why thread A joins C0 after forking P1, I have added
+> another example, which illustrates how our code encounters a livelock with
+> jdk11.
+>
+> === Second example
+>
+> This example is based on how our code works. A `CopyAction` will create
+> `WriteAction`s (e.g. W0, W1, W2) that concurrently write in a custom
+> dictionary. When the dictionary is full, it must be resized and rehashed,
+> which
+> is performed concurrently by a `RehashAction` (R0 created by W0). The
+> following `WriteAction` (e.g. W1, W2) that will try to write in the
+> dictionary will need to wait for the `RehashAction` to finish, so they
+> `join` it. This is where work stealing will occur.
+>
+>                 ,-------,                         ||
+> ,--------,
+>                 | jdk11 |                         ||                |
+> jdk1.8 |
+>                 '-------'                         ||
+> '--------'
+>                                                   ||
+>       thread A                      thread B      ||     thread A
+>             thread B             thread C
+> time  --------                      --------      ||     --------
+>             --------             --------
+> |     creates W0                        |         ||     creates W0
+>                 |
+> |         +-- forks W0 <------ steals --+         ||         +-- forks W0
+> <------ steals --+
+> |         |                         starts W0     ||         |
+>              starts W0
+> |         |                         starts R0     ||         |
+>              starts R0
+> |         |                         creates R1    ||         |
+>              creates R1
+> |         |              ,-> forks R1 --+         ||         |
+>       forks R1 --+
+> |         |              |          invokes R2    ||         |
+>              invokes R2
+> |     creates W1         |              |         ||     creates W1
+>                 |
+> |         +-- forks W1 <-|-,            |         ||         +-- forks W1
+> <----------------|--,
+> |     invokes W2         | |            |         ||     invokes W2
+>                 |  |
+> |     joins R0           | |            |         ||     joins R0
+>                 |  |
+> |         +-- steals ----' |            |         ||         |
+>                  |  '--- compensates --+
+> |     starts R1            |            |         ||         |
+>                  |                 starts W1
+> |         |                |        finishes R2   ||         |
+>                  |                 joins R0 -- does not
+> |         |                '-- steals --+         ||         |
+>              finishes R2               |       steal
+> |         |                         starts W1     ||         |
+>              joins R1 --- nothing      |       from B (?)
+> |         |                         joins R0      ||         |
+>              starts R1    to steal     |
+> |     finishes R1                       |         ||         |
+>              finishes R1  from C       |
+> |         x                             x         ||         |
+>              finishes R0               |
+> |            both tasks cannot proceed            ||         |
+>              finishes W0           finishes W1
+> |     (join C0)                    even though    ||     finishes W2
+> |                                  C2 finished    ||
+> v                                                 ||
+>
+>                                                Outputs
+>
+> === Thread 13 is ForkJoinPool-1-worker-3          ||   === Thread 11 is
+> ForkJoinPool-1-worker-1
+> === Thread 14 is ForkJoinPool-1-worker-1          ||   === Thread 12 is
+> ForkJoinPool-1-worker-0
+>                                                   ||
+>  thread 13 | thread 14                            ||    thread 11 | thread
+> 12
+> -----------|------------                          ||
+>  -----------|------------
+>  W2 starts |                                      ||    W2 starts |
+>            | R0 starts                            ||              | R0
+> starts
+>            | R2 starts                            ||              | R2
+> starts
+>  R1 starts |                                      ||              |
+>      | W1 starts (new Thread: 13)
+>            | R2 ends                              ||              | R2 ends
+>  R1 ends   |                                      ||              | R1
+> starts
+>            | W1 starts                            ||              | R1 ends
+>                                                   ||              | R0 ends
+>                                                   ||              | W0 ends
+>                                                   ||              |
+>      | W1 ends   (new Thread: 13)
+>                                                   ||    W2 ends   |
+>
+> Here, with jdk1.8, surprisingly, thread C does not steal from B when it
+> could, although it stole C2 in the first example.
+>
+> =======
+>
+> Is this the expected behavior? Should we re-write our code without using
+> `joins` (for example, using CountedCompleters), or re-design the way we use
+> ForkJoinPools?
+>
+> Thank you for your time,
+> Rémi Barat
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190211/a5399d52/attachment-0001.html>
+
+From dl at cs.oswego.edu  Mon Feb 11 12:11:09 2019
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 11 Feb 2019 12:11:09 -0500
+Subject: [concurrency-interest] livelocks in jdk11 not occurring in
+ jdk1.8 due to work stealing policy change
+In-Reply-To: <CAKsH56U1SLz1Up6kOFtTudqNKOuhAiPWuFO5L3-4m99n5D6nnA@mail.gmail.com>
+References: <CAKsH56WYCB1D4c9kAvPpk3T7v+j3Xyb3LHPcy7MyAf1hHYEd8A@mail.gmail.com>
+ <CAKsH56U1SLz1Up6kOFtTudqNKOuhAiPWuFO5L3-4m99n5D6nnA@mail.gmail.com>
+Message-ID: <aa853f91-14b1-4e80-7585-b28371fff78c@cs.oswego.edu>
+
+On 2/11/19 11:27 AM, Rémi Barat via Concurrency-interest wrote:
+> Hi,
+> 
+> I recently sent an email with the same object but got no answer.
+
+Sorry for the delay. I've been looking into this, but nothing much to
+report. The updates between jdk8->jdk9 greatly reduced extra thread
+construction under some problematic usages, at the expense of not
+generating them in some cases it once did. But only those in which it
+was racy whether a joining thread sees a legal task to steal. Yours are
+the first examples I've seen in which you can reliably tell the
+difference (even though it is officially still racy). I've experimented
+with some variant FJ mechanics, but none at the moment seem to be better
+policies than the current one.
+
+
+> We are currently trying to get rid of calls to `join` with
+> CountedCompleters, but maybe our way of using the ForkJoinTasks was
+> wrong to begin with?
+
+Using CountedCompleters is definitely the best option for those trying
+to maximize throughput, at the expense of a more user-hostile API.
+
+I reluctantly agree that it was wrong to assume that FJ would always
+maximize parallelism across all reasonable task graphs. It doesn't
+promise to. It previously did better in some cases though. Sorry.
+
+-Doug
+
+
+
+From mark.falco at gmail.com  Wed Feb 13 13:56:25 2019
+From: mark.falco at gmail.com (Mark Falco)
+Date: Wed, 13 Feb 2019 13:56:25 -0500
+Subject: [concurrency-interest] non-volatile writes and reachability
+Message-ID: <CADw9S5wmJ1A8S5ExpdmgBb2S9Me9yf6nRRwpO4EmMGStTc2PTw@mail.gmail.com>
+
+Hi all,
+
+I have a question on how the JMM rules interact with GC rules around
+reachability.  Imagine I have object A which has a non-volatile field which
+is the only reference into some heavy weight object B.  I safely publish A
+to other threads such that at least two threads reference the A. If
+subsequently one of the threads nulls out that non-volatile field
+referencing B, would B still be considered reachable, and thus not eligible
+for GC?  I imagine the answer is yes in theory, but either no or unlikely
+in practice?
+
+My apologies if this has been previously asked and answered, I couldn't
+find it in the archives.
+
+thanks,
+
+Mark
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190213/d415a396/attachment.html>
+
+From shade at redhat.com  Wed Feb 13 14:32:15 2019
+From: shade at redhat.com (Aleksey Shipilev)
+Date: Wed, 13 Feb 2019 20:32:15 +0100
+Subject: [concurrency-interest] non-volatile writes and reachability
+In-Reply-To: <CADw9S5wmJ1A8S5ExpdmgBb2S9Me9yf6nRRwpO4EmMGStTc2PTw@mail.gmail.com>
+References: <CADw9S5wmJ1A8S5ExpdmgBb2S9Me9yf6nRRwpO4EmMGStTc2PTw@mail.gmail.com>
+Message-ID: <21a04d03-fb0a-3daa-ef21-3aca0744e374@redhat.com>
+
+On 2/13/19 7:56 PM, Mark Falco via Concurrency-interest wrote:
+> I have a question on how the JMM rules interact with GC rules around reachability.  Imagine I have
+> object A which has a non-volatile field which is the only reference into some heavy weight object
+> B.  I safely publish A to other threads such that at least two threads reference the A. If
+> subsequently one of the threads nulls out that non-volatile field referencing B, would B still be
+> considered reachable, and thus not eligible for GC?
+
+The general rule about interactions with runtime is this: whatever happens in JVM, whatever JVM
+subsystems do, the behavior should be consistent with JMM rules. Neither GC, nor JIT, nor
+interpreter can introduce violations.
+
+The concrete answer depends on effect you are after. What does it mean "object not eligible for GC":
+the backing storage is not reclaimed? object contents are accessible? associated finalizer is not
+able to run? the relevant weak references are not enqueued? something else?
+
+If one of the threads have read the reference to B into the local variable, it would to be able to
+read its contents fine (since it was published safely), as JMM mandates. The finalizers might run on
+that object, it might get queued on ReferenceQueue, etc. while the thread _appears_ to hold the
+reference to it, because local variables do not necessarily extend the liveness of the object
+[1][2]. The optimizers might cache the values of the object fields and still be able to "access
+them", when object is "actually" gone. The object might stay untouched by runtime at all, until it
+is safe to do so.
+
+So, JVM would not crash, JMM rules would hold, but the object might be in this heisen-state where it
+appears both reachable and unreachable at the same time, depending on definitions :)
+
+-Aleksey
+
+[1] https://shipilev.net/jvm-anatomy-park/8-local-var-reachability/
+[2] http://www.hboehm.info/popl03/slides.pdf
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 833 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190213/dcc3602b/attachment.sig>
+
+From gil at azul.com  Wed Feb 13 14:57:20 2019
+From: gil at azul.com (Gil Tene)
+Date: Wed, 13 Feb 2019 19:57:20 +0000
+Subject: [concurrency-interest] non-volatile writes and reachability
+In-Reply-To: <CADw9S5wmJ1A8S5ExpdmgBb2S9Me9yf6nRRwpO4EmMGStTc2PTw@mail.gmail.com>
+References: <CADw9S5wmJ1A8S5ExpdmgBb2S9Me9yf6nRRwpO4EmMGStTc2PTw@mail.gmail.com>
+Message-ID: <1FE8009D-6D6F-4599-9FD3-4B71DDC74E9A@azul.com>
+
+It is certainly possible to build something that would keep an object indefinitely reachable even after all references to it (in the heap and in programmatically declared local variables) have been nulled. See below. But in most practical situations a subsequent ordering operation will take care of reachability, as most java GCs leverage precise information about the location of references (in the heap and on the stack) to only consider actually-reachable-from-roots things reachable.
+
+Class b {
+	int x;
+}
+
+class A {
+	boolean done = false;
+	B b;
+	A(B b) { this.b = b; }
+}
+
+
+static final A a = new A(new B());
+
+Thread 1:
+done = true;
+a.b = null;
+
+
+Thread 2:
+...
+while (!a.done) {
+	if (a.b != null)
+		total += a.b.x;
+}
+
+Thread 2 can remain in an infinitive loop,. and the instance originally referred to by a.b can remain reachable forever, because it can be validly transformed to the equivalent of:
+
+boolean localDone = a.done;
+B localB = a.b;
+if (localB != null) {
+	while (!localDone) {
+		total += localB.x;
+	}
+} else {
+	while (!localDone) {
+	}
+}
+
+
+
+
+> On Feb 13, 2019, at 10:56 AM, Mark Falco via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+> Hi all,
+> 
+> I have a question on how the JMM rules interact with GC rules around reachability.  Imagine I have object A which has a non-volatile field which is the only reference into some heavy weight object B.  I safely publish A to other threads such that at least two threads reference the A. If subsequently one of the threads nulls out that non-volatile field referencing B, would B still be considered reachable, and thus not eligible for GC?  I imagine the answer is yes in theory, but either no or unlikely in practice?
+> 
+> My apologies if this has been previously asked and answered, I couldn't find it in the archives.
+> 
+> thanks,
+> 
+> Mark
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 833 bytes
+Desc: Message signed with OpenPGP
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190213/b397ef6f/attachment.sig>
+

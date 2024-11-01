@@ -1,0 +1,2611 @@
+From noel@devtech.com  Sun Feb  2 17:46:13 2003
+From: noel@devtech.com (Noel J. Bergman)
+Date: Sun, 2 Feb 2003 12:46:13 -0500
+Subject: [concurrency-interest] Queue is a Collection, not producer / consumer model?
+Message-ID: <NBBBJGEAGJAKLIDBKJOPCEGNPOAA.noel@devtech.com>
+
+I realize that this is probably a bit late in the game, but I am wondering
+why the separation of consumer and producer that was partially present in
+util.concurrent, and fully fleshed out in the CORBA COS Event Service model,
+was completely discarded for JSR 166?
+
+I've coded implementations (and variants) of the COS Event Service before,
+and was hoping that JSR 166 would include a Java-specific, simplified
+version of that model (just a bit more added to what was already present in
+util.concurrent).
+
+Or am I missing an alternative to Queue?  It seems to me that viewing a
+queue as a collection is focusing on containment behavior than its use in a
+concurrency package.  And requiring all of the behavior of Collection, e.g.,
+containsAll, imposes rather onerous obligations on a potentially distributed
+data structure.
+
+If done properly, a basic Queue could be used in J2ME, J2SE, J2EE, while
+hiding transports ranging form in-memory operation to JMS or JavaMail.
+
+For what it is worth, I did download and search the entire mbox archive
+before posting this question, so if it has come up before, I didn't see it.
+
+	--- Noel
+
+ref: http://www.omg.org/technology/documents/formal/event_service.htm
+
+
+From dl@cs.oswego.edu  Mon Feb  3 12:41:42 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Mon, 3 Feb 2003 07:41:42 -0500
+Subject: [concurrency-interest] Extending Executors
+Message-ID: <15934.25478.899930.572362@altair.cs.oswego.edu>
+
+Thanks to those posting examples and issues about executors!  We are
+going to go back into hiding now to rework a few things. But
+additional comments and concerns are still welcome.
+
+-Doug
+
+
+From dl@cs.oswego.edu  Mon Feb  3 14:12:08 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Mon, 3 Feb 2003 09:12:08 -0500
+Subject: [concurrency-interest] Queue is a Collection, not producer / consumer model?
+In-Reply-To: <NBBBJGEAGJAKLIDBKJOPCEGNPOAA.noel@devtech.com>
+References: <NBBBJGEAGJAKLIDBKJOPCEGNPOAA.noel@devtech.com>
+Message-ID: <15934.30904.667817.561696@altair.cs.oswego.edu>
+
+Noel J. Bergman wrote: 
+> I am wondering
+> why the separation of consumer and producer that was partially present in
+> util.concurrent, and fully fleshed out in the CORBA COS Event Service model,
+> was completely discarded for JSR 166?
+
+It wasn't completely discarded.
+
+As compared to dl.u.c.Channels, Queues require two additional basic
+capabilities: removal of arbitrary elements (remove(Object x)) and
+iterators.  All the others required by being a Collection can be built
+up from these plus the main add/poll etc methods. Both of these
+capabilities were very commonly requested for dl.u.c. Also Queues
+require size(), which was provided in only some dl.u.c. Channels.
+
+In Queues designed primarily for producer-consumer designs, remove(x)
+especially is unlikely to be very efficient, and in fact in most of
+current prototype implementations, it isn't. But that's OK, since the
+method should be used only rarely, for example for message
+cancellation.  Similarly, it is even acceptable for size() to be very
+slow (e.g., by recounting elements on each call), so long as it is
+somehow implementable, which it always is.  So the implementation
+burden isn't too high, and the big win is that we tie into the
+most familiar framework in all of Java (i.e., Collections).
+
+(Queues are among the last classes in JSR-166 to get their specs fully
+fleshed out, so the online javadocs aren't yet very informative about
+these issues.)
+
+About interfaces etc: Rather than the dl.u.c strategy of providing
+put-side and take-side only superinterfaces, we rely on people who
+desire this to create their own "view" classes. For example, you might
+write:
+
+class ProducerChannel {
+  private Queue q = ...
+  public void put(Object x) { q.put(x) }
+}
+
+Alternatively, you can create Queue classes that throw
+UnsupportedOperationExceptions for unwanted operations.  Either of
+these tactics is more in keeping with java.util conventions than the
+dl.u.c. approach.
+
+> I've coded implementations (and variants) of the COS Event Service before,
+> and was hoping that JSR 166 would include a Java-specific, simplified
+> version of that model (just a bit more added to what was already present in
+> util.concurrent).
+
+Could you explain what you have in mind here?
+
+-Doug
+
+From qamar@stablecode.com  Wed Feb  5 07:08:44 2003
+From: qamar@stablecode.com (Asif Qamar)
+Date: Tue, 04 Feb 2003 23:08:44 -0800
+Subject: [concurrency-interest] Should there also be an acquire (long n) method in Semaphore class
+ ?
+Message-ID: <3E40B87C.7000102@stablecode.com>
+
+Hi,
+
+In Doug Lea's Semaphore implementation, besides the
+
+acquire () and
+release ()
+
+methods, there is release (long n) method.
+
+My question is exploratory: why is there no corresponding
+
+acquire (int n)
+
+method?
+
+The context of the question is follows, and I am wondering if this is 
+not the best solution:
+
+At quite a few places, I need to fire-off n threads that in parallel do 
+certain tasks from a Manager thread. The Manager needs to wait till each 
+of the threads finish the task. On each thread finishing the task, the 
+thread does a callback on the manager.
+
+So I create a
+
+Semaphore semaphore = new Semaphore (n);
+
+For each new thread, the Manager does an acquire() on the semaphore.
+
+After firing off n-threads, the Manager does a
+
+semaphore.acquire (n);
+
+which causes the Manager's thread to block.
+
+At each callback, the Manager does a semaphore.release ().
+
+When all n permits get released, the Manager thread unblocks and continues.
+
+So for this, I just added an acquire (long n) method to Doug's semaphore 
+in my local copy...
+
+
+
+
+From dholmes@dltech.com.au  Wed Feb  5 22:27:18 2003
+From: dholmes@dltech.com.au (David Holmes)
+Date: Thu, 6 Feb 2003 08:27:18 +1000
+Subject: [concurrency-interest] Should there also be an acquire (long n) method in Semaphore class ?
+In-Reply-To: <3E40B87C.7000102@stablecode.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMENMCPAA.dholmes@dltech.com.au>
+
+Hello Asif,
+
+> My question is exploratory: why is there no corresponding
+> acquire (int n) method?
+
+There is no acquire(n) method in semaphore because it requires some
+sense of ordering that Semaphore does not provide. You need to decide
+whether a thread waiting for n permits prevents other threads from
+taking any available permits: if the answer is yes then you've
+effectively imposed a Fifo ordering; if no, then it probably doesn't
+do what you want.
+
+There is acquire(n) on FifoSemaphore as the semantics are clear-cut:
+acquire the next n available permits.
+
+> At quite a few places, I need to fire-off n threads that in
+> parallel do certain tasks from a Manager thread. The Manager needs
+to
+> wait till each of the threads finish the task. On each thread
+finishing
+> the task, the thread does a callback on the manager.
+>
+> So I create a
+>
+> Semaphore semaphore = new Semaphore (n);
+>
+> For each new thread, the Manager does an acquire() on the semaphore.
+>
+> After firing off n-threads, the Manager does a
+>
+> semaphore.acquire (n);
+>
+> which causes the Manager's thread to block.
+>
+> At each callback, the Manager does a semaphore.release ().
+
+A semaphore is not the right tool for this job. The "obvious" approach
+does not work - for example suppose you code is something like this:
+
+  // for each thread
+  public void run() {
+     semaphore.acquire();
+     ...
+     manager.callback(); // does semaphore.release()
+  }
+
+   // manager
+   for (i = 0; i < N; i++)
+       new WorkerThread.start();
+   semaphore.acquire(n); // wait for all threads to do callback
+
+The problem is that the manager could enter acquire(n) before any of
+the workers have done their acquire(), so the manager could proceed
+before the workers, or some of the workers will be blocked initially
+until some other workers finish. In short you are dependent on
+scheduling properties to make this work correctly.
+
+A better tool for this sort of job is the CountDownLatch.
+
+   CountDownLatch completeSignal = new CountDownLatch(N);
+
+   // manager
+   for (i = 0; i < N; i++)
+       new WorkerThread.start();
+   completeSignal.await(); // wait for all threads to do callback
+
+   // manager callback
+   void callback() {
+      // ...
+      completeSignal.countDown();
+   }
+
+   // worker
+   public void run() {
+       // ...
+       manager.callback();
+   }
+
+David Holmes
+
+
+From arkin@intalio.com  Wed Feb  5 23:36:28 2003
+From: arkin@intalio.com (Assaf Arkin)
+Date: Wed, 5 Feb 2003 15:36:28 -0800
+Subject: [concurrency-interest] Proposal for adding service provider interface to concurrency API
+Message-ID: <IGEJLEPAJBPHKACOOKHNGEILDCAA.arkin@intalio.com>
+
+
+In many applications we have the need to acquire access to a resource that
+is bound by some condition. The condition can be as simple as a flag raised
+from some other thread, a mutex that can be acquired by a single owner, a
+counter, a timeout, conflicting and non-conflicting locks, etc.
+
+In either case, there are three requirements on the API that guardes such
+access:
+
+1. It must allow the container to enforce timeout
+2. It must allow the component to specify timeout
+3. It must allow the container to detect deadlocks
+
+In our implementation we assume a model in which the container takes some
+responsibility to assure eventual termination of all component invocations.
+So the container would like to enforce some timeout on the invocation of the
+component, not specifically on the request to acquire access.
+
+The container has various strategies for doing that, I will not discuss them
+in detail, but one way of achieving that is by interrupting the thread. This
+can be done by calling Thread.interrupt(), through for requirement no. 3 I
+would also propose another solution. The concurrent API needs to support the
+notion that a timeout may occur ahead of what the caller expects, in other
+words, the caller may acquire a resource without specifying a timeout, but
+the container may impose a timeout and cause an InterruptedException (or
+other exception) to occur.
+
+Even if all operations can be performed in the context of a container, the
+component still needs a way to specify a particular timeout that is
+differnet from no-timeout or zero-timeout. This can be used to implement
+various back-out strategies. For example, the component may acquire access
+to resource X and then attempt to acquire access to resource Y.
+
+Assuming access to resource Y will be available within say 5 seconds, it
+will acquire that access and proceed. However, if the access is not
+available for 30 seconds, the component prevents anyone else from acquiring
+access to resource X, which reduces concurrency in the system.
+
+In some cases it is beneficial to implement a back-out strategy. Wait for 5
+seconds, release access, wait some more, re-acquire, repeat until done. If
+all components use the same back-out time then we enter a livelock situation
+where locks never deadlock, but are never fully acquired either. One way
+around it is to ask the container for some recommended back-out which it can
+calculate based on various parameters (e.g. how many locks have been
+requested so far, more requests means longer time-out).
+
+Deadlock situations can be resolved in two ways: using timeouts and
+back-out, and using deadlock detection algorithms. In many cases a deadlock
+detection algorithm would work best, and would definitely simplify the logic
+of the component.
+
+When a deadlock is detected one component is elected as the deadlock victim
+and it's request to acquire a resource is denied by simply aborting that
+operation. For example, by throwing an InterruptedException. However, if the
+component can determine that it was not interrupted but simply encountered a
+deadlock it can do some corrective action, e.g. reschedule a second
+execution and then release all locks.
+
+What I would like to propose is an extension to the concurrency API that
+allows the library to interface with some SPI that provides additional
+functionality.
+
+Whenever a component blocks waiting to acquire access to a resource, a
+thread-hold token would be acquired from the service provider (e.g. a
+container). The thread-hold token would be use to implement a lock with the
+specified timeout. The lock is released from another thread by associating a
+reason code with the token, which then ends the block and returns control to
+the concurrency API. The concurrency API can order requests and release them
+in FIFO order, or in some arbitrary order.
+
+There could be multiple reason codes that are mutually understood by all the
+objects. One reason code would be notification from another thread that
+access to the resource can be granted. Another reason code would be
+notification of a timeout, a different one would be interruption of the
+thread. And of course notification of a deadlock.
+
+Since a new token-hold needs to be acquired from the SPI in order to block a
+thread, only the concurrency library and the service provider can interrupt
+a thread block.
+
+This model can further be extended in two ways.
+
+First, when locks are acquired or released on named resources (a mutex is a
+lock, a read lock is a lock, a write lock is a combination read/write lock),
+the service provider could be notified and run a deadlock detection
+algorithm. The service provider would also be used to determine the lock
+owner, it could be a component, a transaction, a process, etc.
+
+Second, the service provider can include heuristic logic to determine the
+optimal back-out time and return that in the exception, the component can
+then use that information to implement a back-out strategy.
+
+A basic implementation could be devised that has no heuristic for
+determining back-out and uses known time-outs to detect deadlocks. Such an
+implementation would not be optimal, but would definitely be usable and
+could be improved over time or replaced by a more capable service provider.
+
+arkin
+
+
+From dholmes@dltech.com.au  Thu Feb  6 00:10:35 2003
+From: dholmes@dltech.com.au (David Holmes)
+Date: Thu, 6 Feb 2003 10:10:35 +1000
+Subject: [concurrency-interest] Proposal for adding service provider interface to concurrency API
+In-Reply-To: <IGEJLEPAJBPHKACOOKHNGEILDCAA.arkin@intalio.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKENOCPAA.dholmes@dltech.com.au>
+
+Assaf Arkin wrote:
+> In many applications we have the need to acquire access to
+> a resource that is bound by some condition. The condition can
+> be as simple as a flag raised from some other thread, a mutex
+> that can be acquired by a single owner, a counter, a timeout,
+> conflicting and non-conflicting locks, etc.
+
+I'm having trouble understanding exactly what it is you are trying to
+do. Could you give a concrete example.
+
+Thanks,
+David Holmes
+
+
+From qamar@stablecode.com  Thu Feb  6 00:48:33 2003
+From: qamar@stablecode.com (Asif Qamar)
+Date: Wed, 05 Feb 2003 16:48:33 -0800
+Subject: [Fwd: Re: [concurrency-interest] Should there also be an acquire
+ (long n) method in Semaphore class ?]
+Message-ID: <3E41B0E1.4050804@stablecode.com>
+
+This is a multi-part message in MIME format.
+--------------070708090605080709030600
+Content-Type: text/plain; charset=us-ascii; format=flowed
+Content-Transfer-Encoding: 7bit
+
+
+
+--------------070708090605080709030600
+Content-Type: message/rfc822;
+ name="Re: [concurrency-interest] Should there also be an acquire (long n) methodin Semaphore class ?"
+Content-Transfer-Encoding: 7bit
+Content-Disposition: inline;
+ filename="Re: [concurrency-interest] Should there also be an acquire (long n) methodin Semaphore class ?"
+
+Message-ID: <3E41B073.7070803@stablecode.com>
+Date: Wed, 05 Feb 2003 16:46:43 -0800
+From: Asif Qamar <qamar@stablecode.com>
+User-Agent: Mozilla/5.0 (Windows; U; Windows NT 5.0; en-US; rv:1.3a) Gecko/20021212
+X-Accept-Language: en-us, en
+MIME-Version: 1.0
+To: David Holmes <dholmes@dltech.com.au>
+Subject: Re: [concurrency-interest] Should there also be an acquire (long
+ n) method in Semaphore class ?
+References: <NFBBKALFDCPFIDBNKAPCMENMCPAA.dholmes@dltech.com.au>
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCMENMCPAA.dholmes@dltech.com.au>
+Content-Type: multipart/alternative;
+ boundary="------------000508030106090008010307"
+
+This is a multi-part message in MIME format.
+--------------000508030106090008010307
+Content-Type: text/plain; charset=us-ascii; format=flowed
+Content-Transfer-Encoding: 7bit
+
+Hi David,
+
+Thanks for pointing out about the CountDownLatch!  Knowing now about 
+CountDownLatch, I could have done it with that. But Semaphores can do it 
+too, as below.
+
+I seem to be achieving the same effect with Semaphore aquire (n), in a 
+way analogous to  CountDown behavior. In particular I was causing NOT 
+the created thread to acquire the semaphore, but the Manager to acquire 
+it before firing of  the thread, and the manager to release when it gets 
+a callback.Which is why the manager cannot possibly enter acquire (n) 
+before all threads are done, i..e before it releases all n semaphores 
+that it iteratively acquired.
+
+(Manager class code outline:)
+
+------------------------------------------------------------------------
+
+    public boolean execute() {
+        try {
+            int n = runnables.size();
+            semaphore = new Semaphore(i);
+
+            for (Iterator iter = runnables.iterator(); iter.hasNext();) {
+                ImportExportWrapper element = (ImportExportWrapper) 
+iter.next();
+                try {
+                    semaphore.acquire();
+                } catch (InterruptedException e) {
+                    //Should never happen for us.
+                    }
+                new Thread(element).start();
+            } //for (Iterator iter = runnables.iterator(); iter.hasNext(); )
+
+            //                Try to acquire all the semaphores.
+            //             This will only be true if all the n-threads 
+are done, owing to Callback.
+            try {
+                semaphore.acquire(n);
+            } catch (InterruptedException e) {
+            }
+
+            System.out.println("All ImportExport done");
+        } catch (Throwable t) {
+            t.printStackTrace();
+        }
+        return true;
+    }
+
+   public void callback() {
+        semaphore.release();
+    }
+
+------------------------------------------------------------------------
+
+
+David Holmes wrote:
+
+>Hello Asif,
+>
+>  
+>
+>>My question is exploratory: why is there no corresponding
+>>acquire (int n) method?
+>>    
+>>
+>
+>There is no acquire(n) method in semaphore because it requires some
+>sense of ordering that Semaphore does not provide. You need to decide
+>whether a thread waiting for n permits prevents other threads from
+>taking any available permits: if the answer is yes then you've
+>effectively imposed a Fifo ordering; if no, then it probably doesn't
+>do what you want.
+>
+>There is acquire(n) on FifoSemaphore as the semantics are clear-cut:
+>acquire the next n available permits.
+>
+>  
+>
+>>At quite a few places, I need to fire-off n threads that in
+>>parallel do certain tasks from a Manager thread. The Manager needs
+>>    
+>>
+>to
+>  
+>
+>>wait till each of the threads finish the task. On each thread
+>>    
+>>
+>finishing
+>  
+>
+>>the task, the thread does a callback on the manager.
+>>
+>>So I create a
+>>
+>>Semaphore semaphore = new Semaphore (n);
+>>
+>>For each new thread, the Manager does an acquire() on the semaphore.
+>>
+>>After firing off n-threads, the Manager does a
+>>
+>>semaphore.acquire (n);
+>>
+>>which causes the Manager's thread to block.
+>>
+>>At each callback, the Manager does a semaphore.release ().
+>>    
+>>
+>
+>A semaphore is not the right tool for this job. The "obvious" approach
+>does not work - for example suppose you code is something like this:
+>
+>  // for each thread
+>  public void run() {
+>     semaphore.acquire();
+>     ...
+>     manager.callback(); // does semaphore.release()
+>  }
+>
+>   // manager
+>   for (i = 0; i < N; i++)
+>       new WorkerThread.start();
+>   semaphore.acquire(n); // wait for all threads to do callback
+>
+>The problem is that the manager could enter acquire(n) before any of
+>the workers have done their acquire(), so the manager could proceed
+>before the workers, or some of the workers will be blocked initially
+>until some other workers finish. In short you are dependent on
+>scheduling properties to make this work correctly.
+>
+>A better tool for this sort of job is the CountDownLatch.
+>
+>   CountDownLatch completeSignal = new CountDownLatch(N);
+>
+>   // manager
+>   for (i = 0; i < N; i++)
+>       new WorkerThread.start();
+>   completeSignal.await(); // wait for all threads to do callback
+>
+>   // manager callback
+>   void callback() {
+>      // ...
+>      completeSignal.countDown();
+>   }
+>
+>   // worker
+>   public void run() {
+>       // ...
+>       manager.callback();
+>   }
+>
+>David Holmes
+>
+>_______________________________________________
+>Concurrency-interest mailing list
+>Concurrency-interest@altair.cs.oswego.edu
+>http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>  
+>
+
+
+--------------000508030106090008010307
+Content-Type: text/html; charset=us-ascii
+Content-Transfer-Encoding: 7bit
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+  <meta http-equiv="Content-Type" content="text/html;charset=ISO-8859-1">
+  <title></title>
+</head>
+<body>
+Hi David,<br>
+<br>
+Thanks for pointing out about the CountDownLatch!&nbsp; Knowing now about
+CountDownLatch, I could have done it with that. But Semaphores can do
+it too, as below.<br>
+<br>
+I seem to be achieving the same effect with Semaphore aquire (n), in a
+way analogous to&nbsp; CountDown behavior. In particular I was causing NOT
+the created thread to acquire the semaphore, but the Manager to acquire
+it before firing of&nbsp; the thread, and the manager to release when it
+gets a callback.Which is why the manager cannot possibly enter acquire
+(n) before all threads are done, i..e before it releases all n
+semaphores that it iteratively acquired.<br>
+<br>
+(Manager class code outline:)<br>
+<br>
+<hr width="100%" size="2"><br>
+&nbsp;<tt>&nbsp;&nbsp; public boolean execute() {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; try {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; int n = runnables.size();<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; semaphore = new Semaphore(i);<br>
+<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; for (Iterator iter = runnables.iterator(); iter.hasNext();)
+{<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ImportExportWrapper element = (ImportExportWrapper)
+iter.next();<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; try {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; semaphore.acquire();<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; } catch (InterruptedException e) {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; //Should never happen for us.<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; }<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; new Thread(element).start();<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; } //for (Iterator iter = runnables.iterator();
+iter.hasNext(); )<br>
+<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; //&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; Try to acquire all the semaphores.<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; //&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; This will only be true if all the n-threads
+are done, owing to Callback.<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; try {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; semaphore.acquire(n);<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; } catch (InterruptedException e) {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; }<br>
+<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; System.out.println("All ImportExport done");<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; } catch (Throwable t) {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; t.printStackTrace();<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; }<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; return true;<br>
+&nbsp;&nbsp;&nbsp; }<br>
+<br>
+&nbsp;&nbsp; public void callback() {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; semaphore.release();<br>
+&nbsp;&nbsp;&nbsp; }<br>
+<br>
+</tt>
+<hr width="100%" size="2"><br>
+<br>
+David Holmes wrote:<br>
+<blockquote type="cite"
+ cite="midNFBBKALFDCPFIDBNKAPCMENMCPAA.dholmes@dltech.com.au">
+  <pre wrap="">Hello Asif,
+
+  </pre>
+  <blockquote type="cite">
+    <pre wrap="">My question is exploratory: why is there no corresponding
+acquire (int n) method?
+    </pre>
+  </blockquote>
+  <pre wrap=""><!---->
+There is no acquire(n) method in semaphore because it requires some
+sense of ordering that Semaphore does not provide. You need to decide
+whether a thread waiting for n permits prevents other threads from
+taking any available permits: if the answer is yes then you've
+effectively imposed a Fifo ordering; if no, then it probably doesn't
+do what you want.
+
+There is acquire(n) on FifoSemaphore as the semantics are clear-cut:
+acquire the next n available permits.
+
+  </pre>
+  <blockquote type="cite">
+    <pre wrap="">At quite a few places, I need to fire-off n threads that in
+parallel do certain tasks from a Manager thread. The Manager needs
+    </pre>
+  </blockquote>
+  <pre wrap=""><!---->to
+  </pre>
+  <blockquote type="cite">
+    <pre wrap="">wait till each of the threads finish the task. On each thread
+    </pre>
+  </blockquote>
+  <pre wrap=""><!---->finishing
+  </pre>
+  <blockquote type="cite">
+    <pre wrap="">the task, the thread does a callback on the manager.
+
+So I create a
+
+Semaphore semaphore = new Semaphore (n);
+
+For each new thread, the Manager does an acquire() on the semaphore.
+
+After firing off n-threads, the Manager does a
+
+semaphore.acquire (n);
+
+which causes the Manager's thread to block.
+
+At each callback, the Manager does a semaphore.release ().
+    </pre>
+  </blockquote>
+  <pre wrap=""><!---->
+A semaphore is not the right tool for this job. The "obvious" approach
+does not work - for example suppose you code is something like this:
+
+  // for each thread
+  public void run() {
+     semaphore.acquire();
+     ...
+     manager.callback(); // does semaphore.release()
+  }
+
+   // manager
+   for (i = 0; i &lt; N; i++)
+       new WorkerThread.start();
+   semaphore.acquire(n); // wait for all threads to do callback
+
+The problem is that the manager could enter acquire(n) before any of
+the workers have done their acquire(), so the manager could proceed
+before the workers, or some of the workers will be blocked initially
+until some other workers finish. In short you are dependent on
+scheduling properties to make this work correctly.
+
+A better tool for this sort of job is the CountDownLatch.
+
+   CountDownLatch completeSignal = new CountDownLatch(N);
+
+   // manager
+   for (i = 0; i &lt; N; i++)
+       new WorkerThread.start();
+   completeSignal.await(); // wait for all threads to do callback
+
+   // manager callback
+   void callback() {
+      // ...
+      completeSignal.countDown();
+   }
+
+   // worker
+   public void run() {
+       // ...
+       manager.callback();
+   }
+
+David Holmes
+
+_______________________________________________
+Concurrency-interest mailing list
+<a class="moz-txt-link-abbreviated" href="mailto:Concurrency-interest@altair.cs.oswego.edu">Concurrency-interest@altair.cs.oswego.edu</a>
+<a class="moz-txt-link-freetext" href="http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest">http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest</a>
+
+  </pre>
+</blockquote>
+<br>
+</body>
+</html>
+
+--------------000508030106090008010307--
+
+
+--------------070708090605080709030600--
+
+
+From dholmes@dltech.com.au  Thu Feb  6 01:12:48 2003
+From: dholmes@dltech.com.au (David Holmes)
+Date: Thu, 6 Feb 2003 11:12:48 +1000
+Subject: [concurrency-interest] Should there also be an acquire (long n) method in Semaphore class ?
+In-Reply-To: <3E41B073.7070803@stablecode.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOEOACPAA.dholmes@dltech.com.au>
+
+Hello Asif,
+
+> I seem to be achieving the same effect with Semaphore aquire (n), in
+a way
+> analogous to  CountDown behavior. In particular I was causing NOT
+the
+> created thread to acquire the semaphore, but the Manager to acquire
+it
+> before firing of  the thread, and the manager to release when it
+gets a
+> callback.
+
+            int n = runnables.size();
+            semaphore = new Semaphore(i);
+                                      ^ presumably n - right?
+
+I had trouble understanding exactly what you were doing but I rejected
+the above interpretation because I couldn't see any point in doing
+this:
+
+        for (Iterator iter = runnables.iterator(); iter.hasNext();) {
+            ImportExportWrapper element = (ImportExportWrapper)
+iter.next();
+            try {
+                semaphore.acquire();
+            } catch (InterruptedException e) {
+                //Should never happen for us.
+            }
+            new Thread(element).start();
+        }
+
+Given you have preloaded the semaphore the acquire will never block
+and so you'll pass straight through. All you need to do is:
+
+        for (Iterator iter = runnables.iterator(); iter.hasNext();) {
+            ImportExportWrapper element = (ImportExportWrapper)
+iter.next();
+            new Thread(element).start();
+        }
+
+        // Try to acquire all the semaphores.
+        // This will only be true if all the n-threads are
+doneCallback.
+        try {
+           semaphore.acquire(n);
+        } catch (InterruptedException e) {
+        }
+
+You won't be able to acquire n permits until there have been n
+releases. But in this context you don't need acquire(n) because there
+is only one thread doing the acquiring while the others all release,
+hence you can simply do an acquire() in a loop. acquire(n) solves an
+atomicity problem that you don't seem to have.
+
+That said, my interpetation of what I thought you were doing didn't
+make any sense. I was imagining some kind of synchronization on the
+start of each thread, but there isn't any and my suggestion didn't
+provide any.
+
+David Holmes
+
+
+
+
+From arkin@intalio.com  Thu Feb  6 03:26:07 2003
+From: arkin@intalio.com (Assaf Arkin)
+Date: Wed, 5 Feb 2003 19:26:07 -0800
+Subject: [concurrency-interest] Proposal for adding service provider interface to concurrency API
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCKENOCPAA.dholmes@dltech.com.au>
+Message-ID: <IGEJLEPAJBPHKACOOKHNEEJADCAA.arkin@intalio.com>
+
+> Assaf Arkin wrote:
+> > In many applications we have the need to acquire access to
+> > a resource that is bound by some condition. The condition can
+> > be as simple as a flag raised from some other thread, a mutex
+> > that can be acquired by a single owner, a counter, a timeout,
+> > conflicting and non-conflicting locks, etc.
+>
+> I'm having trouble understanding exactly what it is you are trying to
+> do. Could you give a concrete example.
+
+We are building a process engine and one of the requirements is to be able
+to execute any activity on any server in the cluster. Since activities can
+execute in the context of the same process, or related contexts, you need a
+lot of synchronization to make sure things don't get out of whack.
+
+I have a variety of use cases for where we use mutexes, locks, semaphors,
+etc. I'll give just one example. I hope the details are not overwhelming.
+
+When you update data you can achieve synchronization using the database
+server. Every read/write talks to the database, the database manages the
+locks, and no two activities ever modify the same piece of data. Doable, but
+not very efficient. You can get more throughput if you 1) move updates to
+the end of the transaction and 2) use a distributed cache engine and read
+data from the in-memory cache.
+
+To solve the synchronization problems you need read/write locks, mutexes and
+semaphors.
+
+All data is accessed directly from the in-memory cache. All updates are made
+in a transaction context, held in memory (not in the cache) and during
+transaction completion the database and cache are updated. That way, if you
+change the value of a given property multiple times, you only record the
+last value when the transaction commits.
+
+To make sure no two transactions update the same data property at the same
+time we use read/write locks. That gives us serialization, and the locks are
+released after the transaction completes (commits or aborts). During
+completion we need to update a data structure that is shared by all these
+properties. In other words, if two transactions within the same process
+complete at the same time, their completion needs to be serialized. (It can
+be concurrent if they belong to two different processes).
+
+Transaction completion occurs in two steps. First a call to beforeCompletion
+and then a call to afterCompletion. The first can be synchronized using Java
+synchronized block, so no two beforeCompletion occur at the same time.
+However, you can get a sequence of calls beforeCompletion(T1),
+beforeCompletion(T2), afterCompletion(T2), afterCompletion(T1) and that
+would not work if T1 and T2 access the same process. This is where we use
+mutexes. A mutex is acquired during beforeCompletion and released during
+afterCompletion.
+
+The cache has a background thread that periodically looks for objects that
+have not been accessed recently and evicts them from the cache. The
+background thread may attempt to evict an object at the same time the object
+is being used. The cache has no notion of locks, and since multiple
+transactions may acquire a read lock and access the object you cannot use a
+mutex there. Instead we use semaphors in the current implementation to let
+the background thread skip over objects that may be accessed at that point.
+
+Here's the tricky part.
+
+
+Problem no. 1. Everytime you want to acquire a lock, mutex, etc you have to
+block. Most of these times the blocks are acceptable, you end up serializing
+some work but most of the work is concurrent and in reality you don't block
+that often. But you can block for an indefinite amount of time.
+
+Locks are acquired indirectly by a component on behalf of an owner through a
+library the uses the synchronization API (e.g. a cache engine, an entity
+manager). The component simply invokes a method, e.g. getProperty(), the
+library identifies the owner (e.g. thread, transaction, process) and
+acquires the lock. The library has no clue when it gets used, the component
+has no clue which locks are actually acquired.
+
+Let's say transaction T1 times-out in the next 10 seconds (it dead a lot of
+work), and transaction T2 has just started, but transaction T1 is now
+blocking waiting for a lock acquired by transaction T2. This is not a
+deadlock situation, so the deadlock detector does not kick in. Eventually,
+say after 60 seconds, transaction T2 will complete, release the lock and T1
+can proceed. T1 will time-out and rollback immediately. In the mean time, we
+start transaction T3 and transaction T3 is blocked waiting for a lock held
+by T1 which will only be released in 60 seconds (and so forth for T4, T5).
+
+This is a cascading effect that reduces the throughput of the system. A
+simple counter measure uses time-outs. Since the TM knows when T1 times-out,
+it simply marks it for rollback only and interrupts the thread. T1 then
+dies, all locks are released, T3 is allowed to proceed without waiting.
+
+The TM knows which thread is associated with the transaction so it can do
+Thread.interrupt(). But, the transaction still does not know it has
+rolledback, it may simply decide to try and acquire the resource again.
+Alternatively, the TM can release the block by throws a RollbackException.
+The transaction knows that not only did it fail to acquire this lock, in
+fact it has rolledback.
+
+In our implementation the concurrency service queues a request to acquire
+the lock then obtains a ThreadHold from the TM and calls hold(ms). If the
+request is granted it then calls release(ALERT), method unblocks and lock
+token is returned to the caller. If the TM decides to time-out the
+transaction it calls release(ROLLBACK) and method ends with
+RollbackException. If a deadlock is detected then release(DEADLOCK) causes a
+DeadlockException.
+
+
+Problem no. 2. Deadlock detection. Since there is no specific order for
+beforeCompletion/afterCompletion calls across multiple transactions, each
+beforeCompletion acquires a mutex. But a transaction may call
+beforeCompletion for two separate contexts, each acquiring its own mutex,
+and in any order. So you can end up in a situation where beforeCompletion
+calls deadlock when they try to acquire mutexes.
+
+There are several strategies to solve this problem, but one that always
+works is to rely on a deadlock detector. The assumption is that a deadlock
+detector could be concieved that is 100% reliable,
+
+In our first implementation mutexes and locks were separate mechanisms, but
+in the new implementation mutexes are based on locks. There are six locks:
+null, concurrent read/write, protected read/write, and exclusive. A mutex is
+simply an exclusive lock. Semaphors use read locks to read the value,
+exclusive->read downgrades to update it.
+
+In other words: you build the code to avoid deadlocks and if you get too
+many deadlocks you fix the code. But the system never hangs because
+eventually any deadlock will be detected and resolved.
+
+
+Problem no. 3. Circular dependency. Component A acquires a lock/mutex and
+then waits for some semaphor to be raised before proceeding. Component B
+raised the semaphor but before doing so it attempts to acquire the same
+lock/mutex. Deadlock. This can be solved in three ways. Rewite the logic -
+not always possible. Use time-outs - works but reduces concurrency. Detect
+deadlocks - even a distributed lock manager can detect most deadlocks within
+1 second, so deadlock detection keeps the system ticking.
+
+Question is, how do you determine that a deadlock would occur? The solution
+is to acquire a token in order to raise a semaphor and use locks.
+
+Component A acquires a write lock in order to lower the semaphor. Component
+B acquires a read lock in order to raise the semaphor way before it actually
+raises it (by acquiring a token it will use to raise it). Component A blocks
+component B, but component A is notified of the conflict, release the locks,
+waits, then tries to acquire it again. At this point A is blocked by B. When
+component B raises the semaphor it upgrades to a write lock (bypassing A's
+request for a write lock), writes the new value, drops the lock, and A can
+read it and proceed. (Component B does the reverse whenever someone tries to
+acquire a write lock)
+
+If component B tries to acquire a mutex, a deadlock is detected. If A is the
+deadlock victim then the mutex is released, the write lock is released, A
+dies and B proceeds. If B is the deadlock victim then the lock is released,
+and B dies. Component A keeps waiting for the semaphor to be raised, maybe
+by component C. Since B and C acquire a read lock they can both claim to
+raise the semaphor at the same time.
+
+Actual algorithm is a bit more complicated, but it's basically all lock
+based. A simple implementation can simply give you a SemaphorToken without
+acquiring any locks on the semaphor.
+
+What happens if component A acquires a write lock but determines that the
+semaphor has not been raised? It simply obtains a ThreadHold and calls
+hold(). Before component B can raise the semaphor it needs to get a write
+lock, some callback is notified of the conflicting lock, the lock is
+released and then reacquired. When the callback manages to acquire a write
+lock and get the semaphor value it calls ThreadHold.release(ALERT). If, on
+the other hand, a deadlock is detected the callback releases the lock and
+calls ThreadHold.release(DEADLOCK).
+
+
+Problem no. 4. Handling failure. Let's say two locks are acquired on behalf
+of transaction T1, and transaction T1 rollsback. The locks have to be
+released and technically this is the responbility of the component that
+acquired them. But what if the component has a logic problem, which explains
+the rollback? A system that is based on that design will eventually reach a
+state where no progress can be made since locks have not been released.
+
+What you need is a single service that could be made 100% reliable and make
+it responsible for detecting failure and dropping locks. For example, a
+transaction manager. When the TM detects that a transaction died it tries to
+talk to the component and ask it to rollback. Whether it succeeds in talking
+to the component or not is immaterial - it will drop all the locks.
+
+The TM has no clue which locks were acquired on behalf of the transaction,
+but it knows who the owner is. It can be the transaction, or in fact a
+server on which all transactions were running (e.g. in a cluster). The TM
+identifies the owner and calls dropLocks() for all locks held by that owner.
+To do that the lock manager must record the same owner identification and it
+does so by requesting the owner identification from the TM. This could be
+any object that the TM tracks: a thread, a transaction, a process, a remote
+server.
+
+
+I forgot to mention why all this is interesting.
+
+In our current implementation we have two separate libraries. We built the
+first one using different logic for mutexes, semaphors and locks (and
+derived objects like timers). We added ThreadHold to allow the TM to
+interrupt threads and improve concurrency, but keep the concurrency library
+independent of the TM implementation.
+
+In some test cases where you simulate deadlocks and other nasty situations
+you can see that throughput is increased when transactions rollback no later
+than the desiganted time-out and even further increased if you can detect
+deadlock and terminate the deadlock victim immediately.
+
+In the second library we used a distributed lock manager and are building
+everything around it. We added the getOwner() and dropLocks(owner). This
+allows us to do synchronization in a distributed environment where a
+component may run on any server in the cluster. All that it needs is some
+mobile token (mutex, semaphor) that can be a serializable object and passed
+around, that token needs some name so it can acquired locks on the named
+resource (its value), and it needs access to the service provider so it
+could function in its environment.
+
+In other words, I can create a Mutex object on server A, pass it along to
+server B and C and try to acquire the mutex in both servers at the same
+time, one will block until the other releases the mutex. The Mutex object is
+totally mobile and even persistent (not that we use that) since it only
+represents access to the mutex from any node in the cluster.
+
+
+I am assuming that this implementation is out of scope for the concurrency
+API (in particular no. 3 is over the top for most applications), but at
+least some form of abstraction would allow both a simple implementation and
+more sophisticated implementations to exist. So right now my interest is
+merely in allowing the container to intercept thread-blocking calls.
+
+arkin
+
+
+>
+> Thanks,
+> David Holmes
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From qamar@stablecode.com  Thu Feb  6 03:31:01 2003
+From: qamar@stablecode.com (Asif Qamar)
+Date: Wed, 05 Feb 2003 19:31:01 -0800
+Subject: [concurrency-interest] Should there also be an acquire (long
+ n) method in Semaphore class ?
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCOEOACPAA.dholmes@dltech.com.au>
+References: <NFBBKALFDCPFIDBNKAPCOEOACPAA.dholmes@dltech.com.au>
+Message-ID: <3E41D6F5.6040107@stablecode.com>
+
+This is a multi-part message in MIME format.
+--------------000503010907020500090405
+Content-Type: text/plain; charset=us-ascii; format=flowed
+Content-Transfer-Encoding: 7bit
+
+
+Hi David,
+Thanks for taking the time for valuable feedback!
+Asif
+
+
+David Holmes wrote:
+
+>Hello Asif,
+>
+>  
+>
+>>I seem to be achieving the same effect with Semaphore aquire (n), in
+>>    
+>>
+>a way
+>  
+>
+>>analogous to  CountDown behavior. In particular I was causing NOT
+>>    
+>>
+>the
+>  
+>
+>>created thread to acquire the semaphore, but the Manager to acquire
+>>    
+>>
+>it
+>  
+>
+>>before firing of  the thread, and the manager to release when it
+>>    
+>>
+>gets a
+>  
+>
+>>callback.
+>>    
+>>
+>
+>            int n = runnables.size();
+>            semaphore = new Semaphore(i);
+>                                      ^ presumably n - right?
+>
+>I had trouble understanding exactly what you were doing but I rejected
+>the above interpretation because I couldn't see any point in doing
+>this:
+>
+>        for (Iterator iter = runnables.iterator(); iter.hasNext();) {
+>            ImportExportWrapper element = (ImportExportWrapper)
+>iter.next();
+>            try {
+>                semaphore.acquire();
+>            } catch (InterruptedException e) {
+>                //Should never happen for us.
+>            }
+>            new Thread(element).start();
+>        }
+>
+>Given you have preloaded the semaphore the acquire will never block
+>and so you'll pass straight through. All you need to do is:
+>
+>        for (Iterator iter = runnables.iterator(); iter.hasNext();) {
+>            ImportExportWrapper element = (ImportExportWrapper)
+>iter.next();
+>            new Thread(element).start();
+>        }
+>
+>        // Try to acquire all the semaphores.
+>        // This will only be true if all the n-threads are
+>doneCallback.
+>        try {
+>           semaphore.acquire(n);
+>        } catch (InterruptedException e) {
+>        }
+>
+>You won't be able to acquire n permits until there have been n
+>releases. But in this context you don't need acquire(n) because there
+>is only one thread doing the acquiring while the others all release,
+>hence you can simply do an acquire() in a loop. acquire(n) solves an
+>atomicity problem that you don't seem to have.
+>
+>That said, my interpetation of what I thought you were doing didn't
+>make any sense. I was imagining some kind of synchronization on the
+>start of each thread, but there isn't any and my suggestion didn't
+>provide any.
+>
+>David Holmes
+>
+>
+>
+>_______________________________________________
+>Concurrency-interest mailing list
+>Concurrency-interest@altair.cs.oswego.edu
+>http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>  
+>
+
+
+--------------000503010907020500090405
+Content-Type: text/html; charset=us-ascii
+Content-Transfer-Encoding: 7bit
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+  <meta http-equiv="Content-Type" content="text/html;charset=ISO-8859-1">
+  <title></title>
+</head>
+<body>
+<br>
+Hi David,<br>
+Thanks for taking the time for valuable feedback! <br>
+Asif <br>
+<br>
+<br>
+David Holmes wrote:<br>
+<blockquote type="cite"
+ cite="midNFBBKALFDCPFIDBNKAPCOEOACPAA.dholmes@dltech.com.au">
+  <pre wrap="">Hello Asif,
+
+  </pre>
+  <blockquote type="cite">
+    <pre wrap="">I seem to be achieving the same effect with Semaphore aquire (n), in
+    </pre>
+  </blockquote>
+  <pre wrap=""><!---->a way
+  </pre>
+  <blockquote type="cite">
+    <pre wrap="">analogous to  CountDown behavior. In particular I was causing NOT
+    </pre>
+  </blockquote>
+  <pre wrap=""><!---->the
+  </pre>
+  <blockquote type="cite">
+    <pre wrap="">created thread to acquire the semaphore, but the Manager to acquire
+    </pre>
+  </blockquote>
+  <pre wrap=""><!---->it
+  </pre>
+  <blockquote type="cite">
+    <pre wrap="">before firing of  the thread, and the manager to release when it
+    </pre>
+  </blockquote>
+  <pre wrap=""><!---->gets a
+  </pre>
+  <blockquote type="cite">
+    <pre wrap="">callback.
+    </pre>
+  </blockquote>
+  <pre wrap=""><!---->
+            int n = runnables.size();
+            semaphore = new Semaphore(i);
+                                      ^ presumably n - right?
+
+I had trouble understanding exactly what you were doing but I rejected
+the above interpretation because I couldn't see any point in doing
+this:
+
+        for (Iterator iter = runnables.iterator(); iter.hasNext();) {
+            ImportExportWrapper element = (ImportExportWrapper)
+iter.next();
+            try {
+                semaphore.acquire();
+            } catch (InterruptedException e) {
+                //Should never happen for us.
+            }
+            new Thread(element).start();
+        }
+
+Given you have preloaded the semaphore the acquire will never block
+and so you'll pass straight through. All you need to do is:
+
+        for (Iterator iter = runnables.iterator(); iter.hasNext();) {
+            ImportExportWrapper element = (ImportExportWrapper)
+iter.next();
+            new Thread(element).start();
+        }
+
+        // Try to acquire all the semaphores.
+        // This will only be true if all the n-threads are
+doneCallback.
+        try {
+           semaphore.acquire(n);
+        } catch (InterruptedException e) {
+        }
+
+You won't be able to acquire n permits until there have been n
+releases. But in this context you don't need acquire(n) because there
+is only one thread doing the acquiring while the others all release,
+hence you can simply do an acquire() in a loop. acquire(n) solves an
+atomicity problem that you don't seem to have.
+
+That said, my interpetation of what I thought you were doing didn't
+make any sense. I was imagining some kind of synchronization on the
+start of each thread, but there isn't any and my suggestion didn't
+provide any.
+
+David Holmes
+
+
+
+_______________________________________________
+Concurrency-interest mailing list
+<a class="moz-txt-link-abbreviated" href="mailto:Concurrency-interest@altair.cs.oswego.edu">Concurrency-interest@altair.cs.oswego.edu</a>
+<a class="moz-txt-link-freetext" href="http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest">http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest</a>
+
+  </pre>
+</blockquote>
+<br>
+</body>
+</html>
+
+--------------000503010907020500090405--
+
+
+From dholmes@dltech.com.au  Thu Feb  6 03:52:20 2003
+From: dholmes@dltech.com.au (David Holmes)
+Date: Thu, 6 Feb 2003 13:52:20 +1000
+Subject: [concurrency-interest] Proposal for adding service provider interface to concurrency API
+In-Reply-To: <IGEJLEPAJBPHKACOOKHNEEJADCAA.arkin@intalio.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEODCPAA.dholmes@dltech.com.au>
+
+Arkin, I think I'm sorry I asked. :-) Very interesting - and very
+complex.
+
+> I am assuming that this implementation is out of scope for
+> the concurrency API (in particular no. 3 is over the top for most
+> applications),
+
+I think 99% of what you discussed is way beyond the scope of this JSR.
+
+> So right now my interest is
+> merely in allowing the container to intercept thread-blocking calls.
+
+I'd be lying if I said I fully understood what you were doing, but I
+don't see why you need a "standard" API for this rather than providing
+wrappers for the library classes and adding your own extensions?
+
+David Holmes
+
+
+From arkin@intalio.com  Thu Feb  6 04:22:21 2003
+From: arkin@intalio.com (Assaf Arkin)
+Date: Wed, 5 Feb 2003 20:22:21 -0800
+Subject: [concurrency-interest] Proposal for adding service provider interface to concurrency API
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCEEODCPAA.dholmes@dltech.com.au>
+Message-ID: <IGEJLEPAJBPHKACOOKHNGEJCDCAA.arkin@intalio.com>
+
+
+> -----Original Message-----
+> From: David Holmes [mailto:dholmes@dltech.com.au]
+> Sent: Wednesday, February 05, 2003 7:52 PM
+> To: Assaf Arkin; concurrency-interest@altair.cs.oswego.edu
+> Subject: RE: [concurrency-interest] Proposal for adding service provider
+> interface to concurrency API
+>
+>
+> Arkin, I think I'm sorry I asked. :-) Very interesting - and very
+> complex.
+>
+> > I am assuming that this implementation is out of scope for
+> > the concurrency API (in particular no. 3 is over the top for most
+> > applications),
+>
+> I think 99% of what you discussed is way beyond the scope of this JSR.
+
+Most probably ;-)
+
+I would like to see less APIs and not more. As I said we have two different
+APIs since we have to different implementations. One API (the
+non-distributed one) could be replaced by the concurrency API, and we plan
+to do that.
+
+It would be nice if we could have just one API and any number of
+implementations, some distributed some not. But that requires abstraction
+and abstraction may make the API harder to use. In our case we use factories
+so you can get any implementation, the API is purely an interface. But I
+agree with you, if there is no value for the majority of users than it just
+adds complexity. So let's just go with the non-distributed one.
+
+Besides, there's so much value in this JSR that I would not want to add any
+complexity that will delay its completion.
+
+
+> > So right now my interest is
+> > merely in allowing the container to intercept thread-blocking calls.
+>
+> I'd be lying if I said I fully understood what you were doing, but I
+> don't see why you need a "standard" API for this rather than providing
+> wrappers for the library classes and adding your own extensions?
+
+First, because I would like to have one API and just allow the
+implementation to override some details, possibly extending it but not
+introducing two separate APIs. I prefer to not have wrappers.
+
+Second, I am not sure if that could be done with a wrapper. The wrapper
+would not know how long to block. When you want to acquire a mutex you can
+just try, wait, try, wait, but that would eat up CPU. On the other hand if
+you have an SPI function there you can easily override it with a different
+implementation of wait.
+
+I don't know what the current implementation looks like, but in our case
+this piece of code is about 100 lines long. It's just a wait(), notify()
+that record the blocked thread in ThreadLocal, a bunch of reason codes and
+extension of InterruptedException. I can give you the sources if you want.
+
+arkin
+
+
+>
+> David Holmes
+
+
+From rganesan-l@myrealbox.com  Thu Feb  6 13:22:59 2003
+From: rganesan-l@myrealbox.com (rganesan-l@myrealbox.com)
+Date: 06 Feb 2003 18:52:59 +0530
+Subject: [concurrency-interest] Extending Executors
+In-Reply-To: <15929.6374.269341.25426@altair.cs.oswego.edu>
+References: <15929.6374.269341.25426@altair.cs.oswego.edu>
+Message-ID: <oud6m55yrw.fsf@andlx-anamika.cisco.com>
+
+>>>>> "Doug" == Doug Lea <dl@cs.oswego.edu> writes:
+
+> Question 1:
+>    Do you need to do anything that is not covered by this approach? 
+
+I hope this request is too late. I have multiple sets of tasks and each
+set needs to be executed serially. The newSingleThreadExecutor() factory
+method in ThreadExecutor fits the bill perfectly. 
+
+However, there is a problem. Each set of tasks gets a dedicated thread in
+the form of a SingleThreadExecutor(). It would be nice if the
+SingleThreadExecutors can internally share a pool of threads for execution. 
+
+One possibility I can think of is to have newSingleThreadExecutor() accept
+another ThreadExecutor in it's constructor. Internally all tasks are
+executed by the ThreadExecutor passed in the constructor; but the
+SingleThreadExecutor makes sure that a new job is run only after the
+earlier one completes.
+
+Ganesan
+
+-- 
+Ganesan R
+
+
+From jozart@csi.com  Thu Feb  6 21:16:07 2003
+From: jozart@csi.com (Joseph Bowbeer)
+Date: Thu, 6 Feb 2003 13:16:07 -0800
+Subject: [concurrency-interest] Extending Executors
+References: <15929.6374.269341.25426@altair.cs.oswego.edu> <oud6m55yrw.fsf@andlx-anamika.cisco.com>
+Message-ID: <01fd01c2ce24$f71b6f30$0a0a0a0a@REPLICANT>
+
+Ganesan R writes:
+
+> I have multiple sets of tasks and each
+> set needs to be executed serially.
+> It would be nice if [all sets] shared a
+> pool of threads for execution.
+
+You should be able to accomplish this using a task "wrapper".
+
+Given a threadPool instance, you can wrap your tasks as follows and schedule
+these on your singleThreadExecutor:
+
+class Wrapper implements Runnable {
+  Runnable r;
+  Wrapper(Runnable r) { this.r = r; }
+  public void run() {
+    Executors.invoke(threadPool, r);
+  }
+}
+
+Is this sufficient?
+
+
+----- Original Message -----
+From: <rganesan-l@myrealbox.com>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Thursday, February 06, 2003 5:22 AM
+Subject: Re: [concurrency-interest] Extending Executors
+
+
+
+>>>>> "Doug" == Doug Lea <dl@cs.oswego.edu> writes:
+
+> Question 1:
+>    Do you need to do anything that is not covered by this approach?
+
+I hope this request is too late. I have multiple sets of tasks and each
+set needs to be executed serially. The newSingleThreadExecutor() factory
+method in ThreadExecutor fits the bill perfectly.
+
+However, there is a problem. Each set of tasks gets a dedicated thread in
+the form of a SingleThreadExecutor(). It would be nice if the
+SingleThreadExecutors can internally share a pool of threads for execution.
+
+One possibility I can think of is to have newSingleThreadExecutor() accept
+another ThreadExecutor in it's constructor. Internally all tasks are
+executed by the ThreadExecutor passed in the constructor; but the
+SingleThreadExecutor makes sure that a new job is run only after the
+earlier one completes.
+
+Ganesan
+
+--
+Ganesan R
+
+
+
+From rganesan-l@myrealbox.com  Fri Feb  7 03:32:49 2003
+From: rganesan-l@myrealbox.com (rganesan-l@myrealbox.com)
+Date: 07 Feb 2003 09:02:49 +0530
+Subject: [concurrency-interest] Extending Executors
+In-Reply-To: <oud6m55yrw.fsf@andlx-anamika.cisco.com>
+References: <15929.6374.269341.25426@altair.cs.oswego.edu>
+ <oud6m55yrw.fsf@andlx-anamika.cisco.com>
+Message-ID: <ou8yws69zy.fsf@andlx-anamika.cisco.com>
+
+>>>>> "rganesan-l" == rganesan-l  <rganesan-l@myrealbox.com> writes:
+
+>>>>> "Doug" == Doug Lea <dl@cs.oswego.edu> writes:
+>> Question 1:
+>> Do you need to do anything that is not covered by this approach? 
+
+> I hope this request is too late. 
+
+Arrgh. Obviously, I meant I hope this request *isn't* too late :-).
+
+Ganesan
+
+-- 
+Ganesan R 
+
+
+From vishalb20@hotmail.com  Fri Feb  7 05:46:55 2003
+From: vishalb20@hotmail.com (vishal veer)
+Date: Fri, 07 Feb 2003 11:16:55 +0530
+Subject: [concurrency-interest] is there a circular buffer class ?
+Message-ID: <BAY2-F87WvFmaWnbzOU00006ddb@hotmail.com>
+
+Hi  ,
+
+Is there a CircularBuffer class in util.concurrency ??
+Though I can implement my own CircularBuffer class, I wanted to know
+if there is one readily available.
+
+Regards
+Vishal
+
+_________________________________________________________________
+MSN 8 with e-mail virus protection service: 2 months FREE* 
+http://join.msn.com/?page=features/virus
+
+
+From dl@cs.oswego.edu  Fri Feb  7 11:17:19 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 7 Feb 2003 06:17:19 -0500
+Subject: [concurrency-interest] is there a circular buffer class ?
+In-Reply-To: <BAY2-F87WvFmaWnbzOU00006ddb@hotmail.com>
+References: <BAY2-F87WvFmaWnbzOU00006ddb@hotmail.com>
+Message-ID: <15939.38335.701179.301916@altair.cs.oswego.edu>
+
+vishal wrote:
+> Is there a CircularBuffer class in util.concurrency ??
+
+Yes, see ArrayBlockingQueue in JSR-166 draft APIs.
+  http://gee.cs.oswego.edu/dl/concurrent/dist/docs/index.html
+(The dl.u.c version is called BoundedBuffer)
+
+-Doug
+
+From rganesan-l@myrealbox.com  Sat Feb  8 04:54:00 2003
+From: rganesan-l@myrealbox.com (rganesan-l@myrealbox.com)
+Date: 08 Feb 2003 10:24:00 +0530
+Subject: [concurrency-interest] Extending Executors
+In-Reply-To: <01fd01c2ce24$f71b6f30$0a0a0a0a@REPLICANT>
+References: <15929.6374.269341.25426@altair.cs.oswego.edu>
+ <oud6m55yrw.fsf@andlx-anamika.cisco.com>
+ <01fd01c2ce24$f71b6f30$0a0a0a0a@REPLICANT>
+Message-ID: <ouznp74bkn.fsf@andlx-anamika.cisco.com>
+
+>>>>> "Joseph" == Joseph Bowbeer <jozart@csi.com> writes:
+
+> Ganesan R writes:
+>> I have multiple sets of tasks and each set needs to be executed serially.
+>> It would be nice if [all sets] shared a pool of threads for execution.
+
+> You should be able to accomplish this using a task "wrapper".
+
+> Given a threadPool instance, you can wrap your tasks as follows and schedule
+> these on your singleThreadExecutor:
+
+> class Wrapper implements Runnable {
+>   Runnable r;
+>   Wrapper(Runnable r) { this.r = r; }
+>   public void run() {
+>     Executors.invoke(threadPool, r);
+>   }
+> }
+
+I don't understand the reference to Executors. If I understand you correctly 
+you're suggesting that I use a custom Executor that schedules it's jobs
+on a thread pool. I think that would work, but I need to take care of
+serialization.
+
+Okay, here's a cleaner proposal of what I need. I need a SerialExecutor,
+which is a concrete implementation of Executor. Just like
+ThreadExecutor.newThreadExecutor(), "Tasks are guaranteed to execute
+sequentially, and no more than one task will be active at any given
+time". The difference is SerialExecutor is not a ThreadExecutor. It takes a
+ThreadExecutor in it's constructor and submits jobs to that ThreadExecutor.
+
+I think SerialExecutor would make a useful addition to JSR 166.
+
+Ganesan
+
+-- 
+Ganesan R
+
+
+From jozart@csi.com  Sat Feb  8 05:35:57 2003
+From: jozart@csi.com (Joseph Bowbeer)
+Date: Fri, 7 Feb 2003 21:35:57 -0800
+Subject: [concurrency-interest] Extending Executors
+References: <15929.6374.269341.25426@altair.cs.oswego.edu><oud6m55yrw.fsf@andlx-anamika.cisco.com><01fd01c2ce24$f71b6f30$0a0a0a0a@REPLICANT> <ouznp74bkn.fsf@andlx-anamika.cisco.com>
+Message-ID: <00be01c2cf33$f4d5a8c0$0a0a0a0a@REPLICANT>
+
+Ganesh R writes:
+
+> I don't understand the reference to Executors.
+
+Sorry about the shorthand.
+
+Executors.invoke(threadPool, r) is shorthand for executing r on threadPool
+and waiting for its completion.  (We're considering adding this shorthand to
+the Executors tools class.)
+
+
+> I think SerialExecutor would make a useful addition to JSR 166.
+
+Like the LockedExecutor or dl.util.concurrent, right?
+
+
+It's pretty easy to implement this directly.  Here are a couple different
+versions.  The first version uses locks to serialize and the second version
+uses threads to serialize.
+
+class SerialExecutor implements Executor {
+    Object lock = new Object();
+    Executor threadPool;
+    SerialExecutor(Executor threadPool) {
+        this.threadPool = threadPool;
+    }
+    public void execute(Runnable r) {
+        threadPool.execute(new Runnable() {
+            public void run() {
+                synchronized(lock) { r.run(); }
+            }
+        });
+    }
+}
+
+class SerialExecutor2 implements Executor {
+    Executor singleExec = Executors.newSingleThreadExecutor();
+    Executor threadPool;
+    SerialExecutor(Executor threadPool) {
+        this.threadPool = threadPool;
+    }
+    public void execute(Runnable r) {
+        singleExec.execute(new Runnable() {
+            public void run() {
+                Executors.invoke(threadPool, r);
+            }
+        });
+    }
+}
+
+
+
+----- Original Message -----
+From: <rganesan-l@myrealbox.com>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Friday, February 07, 2003 8:54 PM
+Subject: Re: [concurrency-interest] Extending Executors
+
+>>>>> "Joseph" == Joseph Bowbeer <jozart@csi.com> writes:
+
+> Ganesan R writes:
+>> I have multiple sets of tasks and each set needs to be executed serially.
+>> It would be nice if [all sets] shared a pool of threads for execution.
+
+> You should be able to accomplish this using a task "wrapper".
+
+> Given a threadPool instance, you can wrap your tasks as follows and
+schedule
+> these on your singleThreadExecutor:
+
+> class Wrapper implements Runnable {
+>   Runnable r;
+>   Wrapper(Runnable r) { this.r = r; }
+>   public void run() {
+>     Executors.invoke(threadPool, r);
+>   }
+> }
+
+I don't understand the reference to Executors. If I understand you correctly
+you're suggesting that I use a custom Executor that schedules it's jobs
+on a thread pool. I think that would work, but I need to take care of
+serialization.
+
+Okay, here's a cleaner proposal of what I need. I need a SerialExecutor,
+which is a concrete implementation of Executor. Just like
+ThreadExecutor.newThreadExecutor(), "Tasks are guaranteed to execute
+sequentially, and no more than one task will be active at any given
+time". The difference is SerialExecutor is not a ThreadExecutor. It takes a
+ThreadExecutor in it's constructor and submits jobs to that ThreadExecutor.
+
+I think SerialExecutor would make a useful addition to JSR 166.
+
+Ganesan
+
+--
+Ganesan R
+
+
+From rganesan-l@myrealbox.com  Sat Feb  8 07:04:22 2003
+From: rganesan-l@myrealbox.com (rganesan-l@myrealbox.com)
+Date: 08 Feb 2003 12:34:22 +0530
+Subject: [concurrency-interest] Extending Executors
+In-Reply-To: <00be01c2cf33$f4d5a8c0$0a0a0a0a@REPLICANT>
+References: <15929.6374.269341.25426@altair.cs.oswego.edu>
+ <oud6m55yrw.fsf@andlx-anamika.cisco.com>
+ <01fd01c2ce24$f71b6f30$0a0a0a0a@REPLICANT>
+ <ouznp74bkn.fsf@andlx-anamika.cisco.com>
+ <00be01c2cf33$f4d5a8c0$0a0a0a0a@REPLICANT>
+Message-ID: <our8aj45jd.fsf@andlx-anamika.cisco.com>
+
+>>>>> "Joseph" == Joseph Bowbeer <jozart@csi.com> writes:
+
+> Ganesh R writes:
+>> I don't understand the reference to Executors.
+
+> Sorry about the shorthand.
+
+> Executors.invoke(threadPool, r) is shorthand for executing r on threadPool
+> and waiting for its completion.  (We're considering adding this shorthand
+> to the Executors tools class.)
+
+Got it :-). Looks like you've moved the factory methods from ThreadExecutor
+to the Executors tools class. Makes sense. 
+
+>> I think SerialExecutor would make a useful addition to JSR 166.
+
+> Like the LockedExecutor or dl.util.concurrent, right?
+
+Not exactly. I don't want the submitter to wait. This would be the case
+with LockedExecutor. LockedExecutor.execute() says "Execute the given
+command directly in the current thread, within the supplied lock".
+
+> It's pretty easy to implement this directly.  Here are a couple different
+> versions.  The first version uses locks to serialize and the second version
+> uses threads to serialize.
+
+> class SerialExecutor implements Executor {
+>     Object lock = new Object();
+>     Executor threadPool;
+>     SerialExecutor(Executor threadPool) {
+>         this.threadPool = threadPool;
+>     }
+>     public void execute(Runnable r) {
+>         threadPool.execute(new Runnable() {
+>             public void run() {
+>                 synchronized(lock) { r.run(); }
+>             }
+>         });
+>     }
+> }
+
+This is more like it. However, I don't like the fact that pool threads are
+blocked without doing any useful work. I would prefer an implementation
+with an internal queue. Some thing like this
+
+class SerialExecutor implements Executor, Runnable {
+     LinkedQueue tasks = new LinkedQueue();
+     Executor threadPool;
+
+     SerialExecutor(Executor threadPool) {
+         this.threadPool = threadPool;
+     }
+     
+     public void execute(Runnable r) {
+         boolean submit = false;
+         synchronized (tasks) {
+             submit = tasks.isEmpty(); // submit to pool if no running thread 
+             tasks.offer(r);
+         }
+         if (submit)
+             threadPool.execute(this);
+     }
+
+     public void run() {
+         while (1) {
+             Runnable r;
+             synchronized (tasks) {
+                 // pick first task, but leave it in the queue. 
+                 r = (Runnable) tasks.peek();
+             }
+             if (r == null)
+                 break; // thread returns to threadPool
+             r.run();
+             synchronized (tasks) {
+                 tasks.poll(); // discard head of queue
+             }
+         }
+     }
+}
+
+This implementation does not keep pool threads waiting if there's nothing to
+do.  A bit convoluted, but I hope it makes sense :-).
+
+> class SerialExecutor2 implements Executor {
+>     Executor singleExec = Executors.newSingleThreadExecutor();
+>     Executor threadPool;
+>     SerialExecutor(Executor threadPool) {
+>         this.threadPool = threadPool;
+>     }
+>     public void execute(Runnable r) {
+>         singleExec.execute(new Runnable() {
+>             public void run() {
+>                 Executors.invoke(threadPool, r);
+>             }
+>         });
+>     }
+> }
+
+I am not clear what this would accomplish. The reason I don't want to use
+Executors.newSingleThreadExecutor() is to avoid the extra thread in favor
+of one from a common pool.
+
+Ganesan
+
+-- 
+Ganesan R
+
+
+From jozart@csi.com  Sat Feb  8 21:44:15 2003
+From: jozart@csi.com (Joseph Bowbeer)
+Date: Sat, 8 Feb 2003 13:44:15 -0800
+Subject: [concurrency-interest] Extending Executors
+References: <15929.6374.269341.25426@altair.cs.oswego.edu><oud6m55yrw.fsf@andlx-anamika.cisco.com><01fd01c2ce24$f71b6f30$0a0a0a0a@REPLICANT><ouznp74bkn.fsf@andlx-anamika.cisco.com><00be01c2cf33$f4d5a8c0$0a0a0a0a@REPLICANT> <our8aj45jd.fsf@andlx-anamika.cisco.com>
+Message-ID: <00f501c2cfbb$3a406d50$0a0a0a0a@REPLICANT>
+
+Ganesh R writes:
+
+> I would prefer an implementation with an
+> internal queue. Some thing like this [...]
+> This implementation does not keep pool
+> threads waiting if there's nothing to do.
+
+Here's a variation that is perhaps a little simpler.  As in your version,
+this SerialExecutor doesn't create any threads, and only one ("active") task
+for each SerialExecutor is scheduled on the threadPool at any given time.
+
+The difference is that in this version the active task is only responsible
+for scheduling the next task, it doesn't actually run the next task.
+
+class SerialExecutor4 implements Executor {
+     LinkedQueue tasks = new LinkedQueue(<Runnable>);
+     Executor threadPool;
+     Runnable active;
+
+     SerialExecutor(Executor threadPool) {
+         this.threadPool = threadPool;
+     }
+
+    public synchronized void execute(final Runnable r) {
+        tasks.offer(new Runnable() {
+            public void run() {
+                try {
+                    r.run();
+                } finally {
+                    scheduleNext();
+                }
+            }
+        });
+        if (active == null) {
+            scheduleNext();
+        }
+    }
+
+    protected synchronized void scheduleNext() {
+        if ((active = tasks.poll()) != null) {
+            threadPool.execute(active);
+        }
+    }
+}
+
+
+
+----- Original Message -----
+From: <rganesan-l@myrealbox.com>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Friday, February 07, 2003 11:04 PM
+Subject: Re: [concurrency-interest] Extending Executors
+
+>>>>> "Joseph" == Joseph Bowbeer <jozart@csi.com> writes:
+
+> Ganesh R writes:
+>> I don't understand the reference to Executors.
+
+> Sorry about the shorthand.
+
+> Executors.invoke(threadPool, r) is shorthand for executing r on threadPool
+> and waiting for its completion.  (We're considering adding this shorthand
+> to the Executors tools class.)
+
+Got it :-). Looks like you've moved the factory methods from ThreadExecutor
+to the Executors tools class. Makes sense.
+
+>> I think SerialExecutor would make a useful addition to JSR 166.
+
+> Like the LockedExecutor or dl.util.concurrent, right?
+
+Not exactly. I don't want the submitter to wait. This would be the case
+with LockedExecutor. LockedExecutor.execute() says "Execute the given
+command directly in the current thread, within the supplied lock".
+
+> It's pretty easy to implement this directly.  Here are a couple different
+> versions.  The first version uses locks to serialize and the second
+version
+> uses threads to serialize.
+
+> class SerialExecutor implements Executor {
+>     Object lock = new Object();
+>     Executor threadPool;
+>     SerialExecutor(Executor threadPool) {
+>         this.threadPool = threadPool;
+>     }
+>     public void execute(Runnable r) {
+>         threadPool.execute(new Runnable() {
+>             public void run() {
+>                 synchronized(lock) { r.run(); }
+>             }
+>         });
+>     }
+> }
+
+This is more like it. However, I don't like the fact that pool threads are
+blocked without doing any useful work. I would prefer an implementation
+with an internal queue. Some thing like this
+
+class SerialExecutor implements Executor, Runnable {
+     LinkedQueue tasks = new LinkedQueue();
+     Executor threadPool;
+
+     SerialExecutor(Executor threadPool) {
+         this.threadPool = threadPool;
+     }
+
+     public void execute(Runnable r) {
+         boolean submit = false;
+         synchronized (tasks) {
+             submit = tasks.isEmpty(); // submit to pool if no running
+thread
+             tasks.offer(r);
+         }
+         if (submit)
+             threadPool.execute(this);
+     }
+
+     public void run() {
+         while (1) {
+             Runnable r;
+             synchronized (tasks) {
+                 // pick first task, but leave it in the queue.
+                 r = (Runnable) tasks.peek();
+             }
+             if (r == null)
+                 break; // thread returns to threadPool
+             r.run();
+             synchronized (tasks) {
+                 tasks.poll(); // discard head of queue
+             }
+         }
+     }
+}
+
+This implementation does not keep pool threads waiting if there's nothing to
+do.  A bit convoluted, but I hope it makes sense :-).
+
+> class SerialExecutor2 implements Executor {
+>     Executor singleExec = Executors.newSingleThreadExecutor();
+>     Executor threadPool;
+>     SerialExecutor(Executor threadPool) {
+>         this.threadPool = threadPool;
+>     }
+>     public void execute(Runnable r) {
+>         singleExec.execute(new Runnable() {
+>             public void run() {
+>                 Executors.invoke(threadPool, r);
+>             }
+>         });
+>     }
+> }
+
+I am not clear what this would accomplish. The reason I don't want to use
+Executors.newSingleThreadExecutor() is to avoid the extra thread in favor
+of one from a common pool.
+
+Ganesan
+
+--
+Ganesan R
+
+
+From jozart@csi.com  Sun Feb  9 01:12:39 2003
+From: jozart@csi.com (Joseph Bowbeer)
+Date: Sat, 8 Feb 2003 17:12:39 -0800
+Subject: [concurrency-interest] Extending Executors
+References: <15929.6374.269341.25426@altair.cs.oswego.edu><oud6m55yrw.fsf@andlx-anamika.cisco.com><01fd01c2ce24$f71b6f30$0a0a0a0a@REPLICANT><ouznp74bkn.fsf@andlx-anamika.cisco.com><00be01c2cf33$f4d5a8c0$0a0a0a0a@REPLICANT> <our8aj45jd.fsf@andlx-anamika.cisco.com> <00f501c2cfbb$3a406d50$0a0a0a0a@REPLICANT>
+Message-ID: <011901c2cfd8$572cbaf0$0a0a0a0a@REPLICANT>
+
+Correction:
+
+=> [Ganesan] R writes
+
+
+Sorry about that!  I had your name right at first but then I lost it...
+
+
+----- Original Message -----
+From: "Joseph Bowbeer" <jozart@csi.com>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Saturday, February 08, 2003 1:44 PM
+Subject: Re: [concurrency-interest] Extending Executors
+
+Ganesan R writes:
+
+> I would prefer an implementation with an
+> internal queue. Some thing like this [...]
+> This implementation does not keep pool
+> threads waiting if there's nothing to do.
+
+Here's a variation that is perhaps a little simpler.  As in your version,
+this SerialExecutor doesn't create any threads, and only one ("active") task
+for each SerialExecutor is scheduled on the threadPool at any given time.
+
+The difference is that in this version the active task is only responsible
+for scheduling the next task, it doesn't actually run the next task.
+
+class SerialExecutor4 implements Executor {
+     LinkedQueue tasks = new LinkedQueue(<Runnable>);
+     Executor threadPool;
+     Runnable active;
+
+     SerialExecutor(Executor threadPool) {
+         this.threadPool = threadPool;
+     }
+
+    public synchronized void execute(final Runnable r) {
+        tasks.offer(new Runnable() {
+            public void run() {
+                try {
+                    r.run();
+                } finally {
+                    scheduleNext();
+                }
+            }
+        });
+        if (active == null) {
+            scheduleNext();
+        }
+    }
+
+    protected synchronized void scheduleNext() {
+        if ((active = tasks.poll()) != null) {
+            threadPool.execute(active);
+        }
+    }
+}
+
+
+
+----- Original Message -----
+From: <rganesan-l@myrealbox.com>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Friday, February 07, 2003 11:04 PM
+Subject: Re: [concurrency-interest] Extending Executors
+
+>>>>> "Joseph" == Joseph Bowbeer <jozart@csi.com> writes:
+
+> Ganesan R writes:
+>> I don't understand the reference to Executors.
+
+> Sorry about the shorthand.
+
+> Executors.invoke(threadPool, r) is shorthand for executing r on threadPool
+> and waiting for its completion.  (We're considering adding this shorthand
+> to the Executors tools class.)
+
+Got it :-). Looks like you've moved the factory methods from ThreadExecutor
+to the Executors tools class. Makes sense.
+
+>> I think SerialExecutor would make a useful addition to JSR 166.
+
+> Like the LockedExecutor or dl.util.concurrent, right?
+
+Not exactly. I don't want the submitter to wait. This would be the case
+with LockedExecutor. LockedExecutor.execute() says "Execute the given
+command directly in the current thread, within the supplied lock".
+
+> It's pretty easy to implement this directly.  Here are a couple different
+> versions.  The first version uses locks to serialize and the second
+version
+> uses threads to serialize.
+
+> class SerialExecutor implements Executor {
+>     Object lock = new Object();
+>     Executor threadPool;
+>     SerialExecutor(Executor threadPool) {
+>         this.threadPool = threadPool;
+>     }
+>     public void execute(Runnable r) {
+>         threadPool.execute(new Runnable() {
+>             public void run() {
+>                 synchronized(lock) { r.run(); }
+>             }
+>         });
+>     }
+> }
+
+This is more like it. However, I don't like the fact that pool threads are
+blocked without doing any useful work. I would prefer an implementation
+with an internal queue. Some thing like this
+
+class SerialExecutor implements Executor, Runnable {
+     LinkedQueue tasks = new LinkedQueue();
+     Executor threadPool;
+
+     SerialExecutor(Executor threadPool) {
+         this.threadPool = threadPool;
+     }
+
+     public void execute(Runnable r) {
+         boolean submit = false;
+         synchronized (tasks) {
+             submit = tasks.isEmpty(); // submit to pool if no running
+thread
+             tasks.offer(r);
+         }
+         if (submit)
+             threadPool.execute(this);
+     }
+
+     public void run() {
+         while (1) {
+             Runnable r;
+             synchronized (tasks) {
+                 // pick first task, but leave it in the queue.
+                 r = (Runnable) tasks.peek();
+             }
+             if (r == null)
+                 break; // thread returns to threadPool
+             r.run();
+             synchronized (tasks) {
+                 tasks.poll(); // discard head of queue
+             }
+         }
+     }
+}
+
+This implementation does not keep pool threads waiting if there's nothing to
+do.  A bit convoluted, but I hope it makes sense :-).
+
+> class SerialExecutor2 implements Executor {
+>     Executor singleExec = Executors.newSingleThreadExecutor();
+>     Executor threadPool;
+>     SerialExecutor(Executor threadPool) {
+>         this.threadPool = threadPool;
+>     }
+>     public void execute(Runnable r) {
+>         singleExec.execute(new Runnable() {
+>             public void run() {
+>                 Executors.invoke(threadPool, r);
+>             }
+>         });
+>     }
+> }
+
+I am not clear what this would accomplish. The reason I don't want to use
+Executors.newSingleThreadExecutor() is to avoid the extra thread in favor
+of one from a common pool.
+
+Ganesan
+
+--
+Ganesan R
+
+
+From rganesan-l@myrealbox.com  Sun Feb  9 04:44:55 2003
+From: rganesan-l@myrealbox.com (rganesan-l@myrealbox.com)
+Date: 09 Feb 2003 10:14:55 +0530
+Subject: [concurrency-interest] Extending Executors
+In-Reply-To: <00f501c2cfbb$3a406d50$0a0a0a0a@REPLICANT>
+References: <15929.6374.269341.25426@altair.cs.oswego.edu>
+ <oud6m55yrw.fsf@andlx-anamika.cisco.com>
+ <01fd01c2ce24$f71b6f30$0a0a0a0a@REPLICANT>
+ <ouznp74bkn.fsf@andlx-anamika.cisco.com>
+ <00be01c2cf33$f4d5a8c0$0a0a0a0a@REPLICANT>
+ <our8aj45jd.fsf@andlx-anamika.cisco.com>
+ <00f501c2cfbb$3a406d50$0a0a0a0a@REPLICANT>
+Message-ID: <ouk7ga3vw8.fsf@andlx-anamika.cisco.com>
+
+>>>>> "Joseph" == Joseph Bowbeer <jozart@csi.com> writes:
+
+> Here's a variation that is perhaps a little simpler.  As in your version,
+> this SerialExecutor doesn't create any threads, and only one ("active") task
+> for each SerialExecutor is scheduled on the threadPool at any given time.
+
+> The difference is that in this version the active task is only responsible
+> for scheduling the next task, it doesn't actually run the next task.
+
+> class SerialExecutor4 implements Executor {
+>      LinkedQueue tasks = new LinkedQueue(<Runnable>);
+>      Executor threadPool;
+>      Runnable active;
+
+>      SerialExecutor(Executor threadPool) {
+>          this.threadPool = threadPool;
+>      }
+
+>     public synchronized void execute(final Runnable r) {
+>         tasks.offer(new Runnable() {
+>             public void run() {
+>                 try {
+>                     r.run();
+>                 } finally {
+>                     scheduleNext();
+>                 }
+>             }
+>         });
+>         if (active == null) {
+>             scheduleNext();
+>         }
+>     }
+
+>     protected synchronized void scheduleNext() {
+>         if ((active = tasks.poll()) != null) {
+>             threadPool.execute(active);
+>         }
+>     }
+> }
+
+Perfect. Definitely more readable than the version that I wrote. Thanks :-).
+I am going to use this snippet pretty much as it is in my application.  
+I suggest that you put this snippet in the documentation as an example
+for users wishing to implement their own Executors. 
+
+java.util.concurrent appears to encourage users to create as many threaded
+executors as the application needs. SingleThreadExecutor, FixedThreadPool,
+CachedThreadPool, or even the ScheduledExecutor all point in this direction.
+I have been giving this issue some thought recently. I raised the issue
+first in this list in the context of ScheduledExecutor.
+
+My personal preference is to have a single CachedThreadPool for the whole
+application and use customized Executors that implement a scheduling model
+(like serial execution, scheduled execution etc) "backed" by this thread
+pool. In other words, the CachedThreadPool is essentially an efficient thread
+factory for the whole application. 
+
+I am not arguing that the current design is flawed.  As this discussion
+thread has shown, j.u.c has certainly proved flexible enough to meet the
+user's (i.e. my :-) needs. What I am suggesting is to consider including
+concrete implementations of Executors like the SerialExecutor above and a
+ScheduledExecutor which don't have active threads but execute on a user
+supplied thread pool.
+
+Ganesan
+
+-- 
+Ganesan R
+
+
+From rganesan-l@myrealbox.com  Sun Feb  9 04:50:52 2003
+From: rganesan-l@myrealbox.com (rganesan-l@myrealbox.com)
+Date: 09 Feb 2003 10:20:52 +0530
+Subject: [concurrency-interest] Extending Executors
+In-Reply-To: <011901c2cfd8$572cbaf0$0a0a0a0a@REPLICANT>
+References: <15929.6374.269341.25426@altair.cs.oswego.edu>
+ <oud6m55yrw.fsf@andlx-anamika.cisco.com>
+ <01fd01c2ce24$f71b6f30$0a0a0a0a@REPLICANT>
+ <ouznp74bkn.fsf@andlx-anamika.cisco.com>
+ <00be01c2cf33$f4d5a8c0$0a0a0a0a@REPLICANT>
+ <our8aj45jd.fsf@andlx-anamika.cisco.com>
+ <00f501c2cfbb$3a406d50$0a0a0a0a@REPLICANT>
+ <011901c2cfd8$572cbaf0$0a0a0a0a@REPLICANT>
+Message-ID: <oufzqy3vmb.fsf@andlx-anamika.cisco.com>
+
+>>>>> "Joseph" == Joseph Bowbeer <jozart@csi.com> writes:
+
+> Correction:
+> => [Ganesan] R writes
+
+> Sorry about that!  I had your name right at first but then I lost it...
+
+That's okay. I am kind of used to that now, though usually here in India
+than in a mailing list :-). 
+
+Ganesan
+
+-- 
+Ganesan R
+
+From arkin@intalio.com  Sun Feb  9 04:53:33 2003
+From: arkin@intalio.com (Assaf Arkin)
+Date: Sat, 8 Feb 2003 20:53:33 -0800
+Subject: [concurrency-interest] Extending Executors
+In-Reply-To: <ouk7ga3vw8.fsf@andlx-anamika.cisco.com>
+Message-ID: <IGEJLEPAJBPHKACOOKHNKEMFDCAA.arkin@intalio.com>
+
+I definitely agree. I can see the value of having multiple executors with
+different policies, but you do want to have a smaller set of thread pools
+(in most cases just one).
+
+Perhaps an adapter pattern would solve that problem? You could have a single
+Executor, the CachedThreadPool, and then multiple adapter Executors (serial,
+scheduled, etc) that all use that Executor to access the single thread pool.
+
+arkin
+
+
+> -----Original Message-----
+> From: concurrency-interest-admin@cs.oswego.edu
+> [mailto:concurrency-interest-admin@cs.oswego.edu]On Behalf Of
+> rganesan-l@myrealbox.com
+> Sent: Saturday, February 08, 2003 8:45 PM
+> To: concurrency-interest@altair.cs.oswego.edu
+> Subject: Re: [concurrency-interest] Extending Executors
+>
+>
+> >>>>> "Joseph" == Joseph Bowbeer <jozart@csi.com> writes:
+>
+> > Here's a variation that is perhaps a little simpler.  As in
+> your version,
+> > this SerialExecutor doesn't create any threads, and only one
+> ("active") task
+> > for each SerialExecutor is scheduled on the threadPool at any
+> given time.
+>
+> > The difference is that in this version the active task is only
+> responsible
+> > for scheduling the next task, it doesn't actually run the next task.
+>
+> > class SerialExecutor4 implements Executor {
+> >      LinkedQueue tasks = new LinkedQueue(<Runnable>);
+> >      Executor threadPool;
+> >      Runnable active;
+>
+> >      SerialExecutor(Executor threadPool) {
+> >          this.threadPool = threadPool;
+> >      }
+>
+> >     public synchronized void execute(final Runnable r) {
+> >         tasks.offer(new Runnable() {
+> >             public void run() {
+> >                 try {
+> >                     r.run();
+> >                 } finally {
+> >                     scheduleNext();
+> >                 }
+> >             }
+> >         });
+> >         if (active == null) {
+> >             scheduleNext();
+> >         }
+> >     }
+>
+> >     protected synchronized void scheduleNext() {
+> >         if ((active = tasks.poll()) != null) {
+> >             threadPool.execute(active);
+> >         }
+> >     }
+> > }
+>
+> Perfect. Definitely more readable than the version that I wrote.
+> Thanks :-).
+> I am going to use this snippet pretty much as it is in my application.
+> I suggest that you put this snippet in the documentation as an example
+> for users wishing to implement their own Executors.
+>
+> java.util.concurrent appears to encourage users to create as many threaded
+> executors as the application needs. SingleThreadExecutor, FixedThreadPool,
+> CachedThreadPool, or even the ScheduledExecutor all point in this
+> direction.
+> I have been giving this issue some thought recently. I raised the issue
+> first in this list in the context of ScheduledExecutor.
+>
+> My personal preference is to have a single CachedThreadPool for the whole
+> application and use customized Executors that implement a scheduling model
+> (like serial execution, scheduled execution etc) "backed" by this thread
+> pool. In other words, the CachedThreadPool is essentially an
+> efficient thread
+> factory for the whole application.
+>
+> I am not arguing that the current design is flawed.  As this discussion
+> thread has shown, j.u.c has certainly proved flexible enough to meet the
+> user's (i.e. my :-) needs. What I am suggesting is to consider including
+> concrete implementations of Executors like the SerialExecutor above and a
+> ScheduledExecutor which don't have active threads but execute on a user
+> supplied thread pool.
+>
+> Ganesan
+>
+> --
+> Ganesan R
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From rgansesan-l@myrealbox.com  Sun Feb  9 05:23:24 2003
+From: rgansesan-l@myrealbox.com (Ganesan R)
+Date: 09 Feb 2003 10:53:24 +0530
+Subject: [concurrency-interest] Extending Executors
+In-Reply-To: <IGEJLEPAJBPHKACOOKHNKEMFDCAA.arkin@intalio.com>
+References: <IGEJLEPAJBPHKACOOKHNKEMFDCAA.arkin@intalio.com>
+Message-ID: <ouadh63u43.fsf@andlx-anamika.cisco.com>
+
+>>>>> "Assaf" == Assaf Arkin <arkin@intalio.com> writes:
+
+> Perhaps an adapter pattern would solve that problem? You could have a single
+> Executor, the CachedThreadPool, and then multiple adapter Executors (serial,
+> scheduled, etc) that all use that Executor to access the single thread pool.
+
+Right. The different versions of SerialExecutor that were discussed in this
+thread use the adapter pattern. I am suggesting more of those :-).
+
+-- 
+Ganesan R
+
+From manish.jethani@oracle.com  Sun Feb 23 23:31:48 2003
+From: manish.jethani@oracle.com (Manish Jethani)
+Date: Mon, 24 Feb 2003 05:01:48 +0530
+Subject: [concurrency-interest] Mutex.isInUse()
+Message-ID: <3E5959E4.3030309@oracle.com>
+
+This is regarding the Mutex class in Doug Lea's package.
+
+How can I check whether a mutex is in use without actually 
+acquire()'ing it?  Yeah, I know attempt(), but I don't want to 
+acquire it at all.
+
+Something like this would have been helpful --
+
+   public synchronized boolean isInUse()
+   {
+     return inuse_;
+   }
+
+?
+
+-mj
+
+-- 
+Manish Jethani (Technical Staff, Oracle Reports)
++91 80 51073488, manish.jethani at oracle.com
+http://www.geocities.com/manish_jethani/
+
+disclaimer: "The statements and opinions expressed here are my 
+own and do not necessarily represent those of Oracle Corporation."
+
+
+
+From noel@devtech.com  Fri Feb 28 07:24:05 2003
+From: noel@devtech.com (Noel J. Bergman)
+Date: Fri, 28 Feb 2003 02:24:05 -0500
+Subject: [concurrency-interest] Queue is a Collection, not producer / consumer model?
+In-Reply-To: <15934.30904.667817.561696@altair.cs.oswego.edu>
+Message-ID: <NBBBJGEAGJAKLIDBKJOPMEEAAHAB.noel@devtech.com>
+
+[Good grief ... I knew I'd had a busy week, but I'm shocked to see that it
+has been 3 weeks since this message came in ... my sincere apologies for the
+delay in replying!]
+
+OK, to answer your question, what I am looking for is an inter-process
+communication and synchronization model, not a collection.  Something that
+efficiently scales from multiple threads in a J2ME environment to multiple
+components across an unspecified transport.  Something that I can embed
+within a high performance message passing kernel, and then reliably extend
+across the wire in a distributed processing model.  Something more like
+JMS-lite than a collection.
+
+I don't believe that tying an distriuted transport and synchronization
+mechanism into the Collection hierarchy is useful, regardless of the
+popularity of the latter, and it imposes implementation requirements that
+aren't efficient, or possibly even meaningful in a given implementation.
+
+I do appreciate your comment on interfaces that use a Queue internally to
+implement a better surface, but I'd rather than such interfaces were part of
+JSR 166 to begin with, even if Queues remain as is for those people who
+choose to implement with them.  I'd prefer to see something like COS Event
+Services, but perhaps a JMS-lite type package would be more politically
+palatable.
+
+	--- Noel
+
+-----Original Message-----
+From: Doug Lea [mailto:dl@cs.oswego.edu]
+Sent: Monday, February 03, 2003 9:12
+To: JSR 166
+Cc: Noel J. Bergman
+Subject: Re: [concurrency-interest] Queue is a Collection, not producer
+/ consumer model?
+
+Noel J. Bergman wrote:
+> I am wondering
+> why the separation of consumer and producer that was partially present in
+> util.concurrent, and fully fleshed out in the CORBA COS Event Service
+model,
+> was completely discarded for JSR 166?
+
+It wasn't completely discarded.
+
+As compared to dl.u.c.Channels, Queues require two additional basic
+capabilities: removal of arbitrary elements (remove(Object x)) and
+iterators.  All the others required by being a Collection can be built
+up from these plus the main add/poll etc methods. Both of these
+capabilities were very commonly requested for dl.u.c. Also Queues
+require size(), which was provided in only some dl.u.c. Channels.
+
+In Queues designed primarily for producer-consumer designs, remove(x)
+especially is unlikely to be very efficient, and in fact in most of
+current prototype implementations, it isn't. But that's OK, since the
+method should be used only rarely, for example for message
+cancellation.  Similarly, it is even acceptable for size() to be very
+slow (e.g., by recounting elements on each call), so long as it is
+somehow implementable, which it always is.  So the implementation
+burden isn't too high, and the big win is that we tie into the
+most familiar framework in all of Java (i.e., Collections).
+
+(Queues are among the last classes in JSR-166 to get their specs fully
+fleshed out, so the online javadocs aren't yet very informative about
+these issues.)
+
+About interfaces etc: Rather than the dl.u.c strategy of providing
+put-side and take-side only superinterfaces, we rely on people who
+desire this to create their own "view" classes. For example, you might
+write:
+
+class ProducerChannel {
+  private Queue q = ...
+  public void put(Object x) { q.put(x) }
+}
+
+Alternatively, you can create Queue classes that throw
+UnsupportedOperationExceptions for unwanted operations.  Either of
+these tactics is more in keeping with java.util conventions than the
+dl.u.c. approach.
+
+> I've coded implementations (and variants) of the COS Event Service before,
+> and was hoping that JSR 166 would include a Java-specific, simplified
+> version of that model (just a bit more added to what was already present
+in
+> util.concurrent).
+
+Could you explain what you have in mind here?
+
+-Doug
+
+
+From david@walend.net  Fri Feb 28 19:17:54 2003
+From: david@walend.net (David Walend)
+Date: Fri, 28 Feb 2003 14:17:54 -0500
+Subject: [concurrency-interest] Queue is a Collection, not producer / consumer model?
+References: <20030228170001.14557.25806.Mailman@altair.cs.oswego.edu>
+Message-ID: <3E5FB5E2.1040002@walend.net>
+
+concurrency-interest-request@cs.oswego.edu wrote:
+
+>Message: 1
+>From: "Noel J. Bergman" <noel@devtech.com>
+>
+>
+>OK, to answer your question, what I am looking for is an inter-process
+>communication and synchronization model, not a collection.  Something that
+>efficiently scales from multiple threads in a J2ME environment to multiple
+>components across an unspecified transport.  Something that I can embed
+>within a high performance message passing kernel, and then reliably extend
+>across the wire in a distributed processing model.  Something more like
+>JMS-lite than a collection.
+>
+>  
+>
+Noel,
+
+Have you looked at http://somnifugi.sourceforge.net/ ? It is JMS-lite, 
+built on top of Professor Lea's concurrency kit. (I'm not sure what a 
+high performace messaging kernel would be in context. Do Channels and 
+LinkedQueues count?) I've used it on several projects to prototype a 
+system, then separated the parts that have to be in different JVMs using 
+a JMS that does that work, by reconfiguring instead of recompiling. It 
+sounds more likely to have the API you want.
+
+Hope that helps,
+
+Dave
+
+-- 
+David Walend
+david@walend.net
+http://www.walend.net
+
+
+

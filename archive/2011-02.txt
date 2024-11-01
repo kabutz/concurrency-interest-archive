@@ -1,0 +1,4245 @@
+From yccheok at yahoo.com  Tue Feb  1 09:36:06 2011
+From: yccheok at yahoo.com (Yan Cheng CHEOK)
+Date: Tue, 1 Feb 2011 06:36:06 -0800 (PST)
+Subject: [concurrency-interest] Is it possible to prevent out of order
+	execution by using reader writer lock?
+Message-ID: <498592.68669.qm@web65706.mail.ac4.yahoo.com>
+
+Hello all,
+
+>From http://java.sun.com/docs/books/jls/second_edition/html/memory.doc.html and http://g.oswego.edu/dl/jmm/cookbook.html, it is possible to prevent out of order execution by using "volatile" or "synchronized" method. 
+
+However, may I know, is it possible to to use reader writer lock to prevent out of order execution?
+
+Code which is having out of order execution problem
+===================================================
+void fun_by_thread_1() {
+    this.isNuclearFactory = true;
+    this.factory = new NuclearFactory();
+}
+
+void fun_by_thread_2() {
+    Factory _factory = this.factory;
+    if (this.isNuclearFactory) {
+        // Do not operate nuclear factory!!!
+        return;
+    }
+    // If out-of-order execution happens, _factory might 
+    // be NuclearFactory instance.
+    _factory.operate();
+}
+
+Factory factory = new FoodFactory();
+boolean isNuclearFactory = false;
+
+
+
+Solved by using volatile keyword
+================================
+void fun_by_thread_1() {
+    this.isNuclearFactory = true;
+    this.factory = new NuclearFactory();
+}
+
+void fun_by_thread_2() {
+    Factory _factory = this.factory;
+    if (this.isNuclearFactory) {
+        // Do not operate nuclear factory!!!
+        return;
+    }
+    // If out-of-order execution happens, _factory might 
+    // be NuclearFactory instance.
+    _factory.operate();
+}
+
+volatile Factory factory = new FoodFactory();
+volatile boolean isNuclearFactory = false;
+
+
+
+Solved by using synchronized keyword
+====================================
+void fun_by_thread_1() {
+    synchronized(this) {
+        this.isNuclearFactory = true;
+        this.factory = new NuclearFactory();
+    }
+}
+
+void fun_by_thread_2() {
+    synchronized(this) {
+        Factory _factory = this.factory;
+        if (this.isNuclearFactory) {
+            // Do not operate nuclear factory!!!
+            return;
+        }
+    }
+    // If out-of-order execution happens, _factory might 
+    // be NuclearFactory instance.
+    _factory.operate();
+}
+
+Factory factory = new FoodFactory();
+boolean isNuclearFactory = false;
+
+
+
+Solved by using Reader Writer Lock - Is this a correct way?
+===========================================================
+void fun_by_thread_1() {
+    writerLock.lock();
+    try {
+        this.isNuclearFactory = true;
+        this.factory = new NuclearFactory();
+    } finally {
+        writerLock.unlock();
+    }
+}
+
+void fun_by_thread_2() {
+    readerLock.lock();
+    Factory _factory = this.factory;    
+    try {        
+        if (this.isNuclearFactory) {
+            // Do not operate nuclear factory!!!
+            return;
+        }
+    } finally {
+        readerLock.unlock();
+    }
+    
+    // If out-of-order execution happens, _factory might 
+    // be NuclearFactory instance.
+    _factory.operate();
+}
+
+Factory factory = new FoodFactory();
+boolean isNuclearFactory = false;
+private final java.util.concurrent.locks.Lock readerLock;
+private final java.util.concurrent.locks.Lock writerLock;
+
+Thanks and Regards
+Yan Cheng CHEOK
+
+
+      
+
+From niko at alum.mit.edu  Wed Feb  2 14:20:08 2011
+From: niko at alum.mit.edu (Niko Matsakis)
+Date: Wed, 02 Feb 2011 20:20:08 +0100
+Subject: [concurrency-interest] "Volatile-like" guarantees
+Message-ID: <4D49AE68.4090008@alum.mit.edu>
+
+Hello everyone,
+
+I have a question about the Java Memory Model.  I am trying to decide if 
+it is possible to use a dummy volatile field, like the field v below, to 
+get the same guarantees as an actual volatile field.  In other words, is 
+the class Foo shown here equivalent to a class where the the field f is 
+declared volatile:
+>     class Foo {
+>         private volatile int v;
+>         private int f;
+>
+>         void setF(int x) {
+>             v = 0;    // Wv
+>             x = f;    // Wf
+>         }
+>
+>         int getF() {
+>             int x = f;     // Rf
+>             int y = v;    // Rv
+>             return x;
+>         }
+>     }
+In particular, would code using the accessors shown above still be 
+sequentially consistent, as it would be if "f" were volatile?
+
+Clearly, the program is not data-race free as defined by the JMM, 
+because the write Wf does not happen before Rf.  Nonetheless, I believe 
+there is a guarantee very much like the one that volatile offers, which 
+I will call "volatile-like":
+> If Rf sees the value written by Wf, then no subsequent read will see a 
+> write that was overwritten before the write Wv occurred.  More 
+> formally, no read r that happens after Rv, which includes all reads in 
+> the thread calling getF(), will see a write w that happens before Wv 
+> where there exists another write w' such that w -> w' -> Wv.
+An informal argument can be found below [1].  I believe that this 
+"volatile-like" guarantee implies sequential consistency, in the same 
+way that the volatile guarantee would (argument [2] below).  However, I 
+ALSO believe that the JMM is fairly subtle, and I may well be missing 
+something. :) Hence my e-mail to this list.
+
+One particular concern I have is the possibility that a compiler might 
+observe that all the writes to the volatile field "v" are of the same 
+value, 0, and therefore eliminated the field.  (A similar example 
+appears in the JMM paper I have been consulting).  I believe however 
+that this ought to be illegal by the JMM, as "v" is volatile and 
+therefore induces happens-before relations in addition to carrying a value.
+
+I thank all of you in advance, both for taking the time to read this 
+e-mail and for any insight you may provide.
+
+
+regards,
+Niko
+
+-----
+
+[1] The argument that Rf/Wf have a "volatile-like" relationship is as 
+follows:
+
+First, the only important cases are those where Rf sees the write Wf.  
+This is because the "volatile-like" guarantees described above only 
+concern what happens when Rf sees the write Wf.  As the volatile 
+accesses Wv and Rv are both synchronization actions, one must happen 
+before the other in any particular execution.  If Rv happens before Wv, 
+then at the time when field f is read, Wf cannot be visible, because Rf 
+-> Rv -> Wv -> Wf.  Therefore, Rf cannot see the write Wf, and this case 
+is not important.
+
+If Wv happens before Rv, then when Rf executes, it is possible that Wf 
+has already been committed.  In that case, Rf may legally see the value 
+written by Wf, as it would not violate happens-before consistency (Rf 
+does not happen before Wf, nor is there a write w such that Wf -> w -> 
+Rf).  However, those same happens-before consistency requirements, 
+combined with the happens-before relation from Wv to Rv, guarantee that 
+any reads that happen after Rv will not see overwritten writes that 
+happen before Wv.
+
+[2] A rather loose argument for sequential consistency is that if there 
+were two instances of this class Foo f1 and f2, and thread T1 performed 
+{ f1.setF(w1); f2.setF(w2); } where another thread T2 performed { int r2 
+= f2.getF(); int r1 = f1.getF(); }, it should be impossible for T2 to 
+observe w2 but not w1.  Why?  Because the write of w1 happens before the 
+write of w2 (presumably overwriting the value written by some previous 
+write w).  Therefore, by the "volatile-like" guarantee on f2.f, the 
+subsequent read of f1.f cannot see the write w, as w -> write of w1 -> 
+write of w2.  A better argument would probably construct a sequentially 
+consistent equivalent to any schedule, but I haven't tried writing such 
+a thing out yet.
+
+From vitalyd at gmail.com  Wed Feb  2 16:02:14 2011
+From: vitalyd at gmail.com (Vitaly Davidovich)
+Date: Wed, 2 Feb 2011 16:02:14 -0500
+Subject: [concurrency-interest] "Volatile-like" guarantees
+In-Reply-To: <4D49AE68.4090008@alum.mit.edu>
+References: <4D49AE68.4090008@alum.mit.edu>
+Message-ID: <AANLkTi=Amvntf44_TgLmRvWP=kFOyncE16Up2V8ymGkf@mail.gmail.com>
+
+In your example class Foo I think you meant setF to actually write x to f,
+not read it.
+
+In any case, the code you have is not sequentially consistent because the
+write to non-volatile must happen before the volatile write, and the
+corresponding non-volatile read must happen after the volatile read.  If you
+do that, the JMM guarantees sequential consistency (data race is a separate
+issue, as you mentioned).
+
+The "piggybacking" of non-volatile read/writes through volatile ones happens
+a lot in Java; it's just usually done indirectly by using some higher-level
+constructs (locks, Java.utility.concurrent classes, etc).
+
+Also the compiler is not allowed to, amongst other things, eliminate reads
+or stores to volatile members so your assignment of zero shouldn't be a
+problem (for a compliant jvm and static compiler).
+On Feb 2, 2011 2:23 PM, "Niko Matsakis" <niko at alum.mit.edu> wrote:
+> Hello everyone,
+>
+> I have a question about the Java Memory Model. I am trying to decide if
+> it is possible to use a dummy volatile field, like the field v below, to
+> get the same guarantees as an actual volatile field. In other words, is
+> the class Foo shown here equivalent to a class where the the field f is
+> declared volatile:
+>> class Foo {
+>> private volatile int v;
+>> private int f;
+>>
+>> void setF(int x) {
+>> v = 0; // Wv
+>> x = f; // Wf
+>> }
+>>
+>> int getF() {
+>> int x = f; // Rf
+>> int y = v; // Rv
+>> return x;
+>> }
+>> }
+> In particular, would code using the accessors shown above still be
+> sequentially consistent, as it would be if "f" were volatile?
+>
+> Clearly, the program is not data-race free as defined by the JMM,
+> because the write Wf does not happen before Rf. Nonetheless, I believe
+> there is a guarantee very much like the one that volatile offers, which
+> I will call "volatile-like":
+>> If Rf sees the value written by Wf, then no subsequent read will see a
+>> write that was overwritten before the write Wv occurred. More
+>> formally, no read r that happens after Rv, which includes all reads in
+>> the thread calling getF(), will see a write w that happens before Wv
+>> where there exists another write w' such that w -> w' -> Wv.
+> An informal argument can be found below [1]. I believe that this
+> "volatile-like" guarantee implies sequential consistency, in the same
+> way that the volatile guarantee would (argument [2] below). However, I
+> ALSO believe that the JMM is fairly subtle, and I may well be missing
+> something. :) Hence my e-mail to this list.
+>
+> One particular concern I have is the possibility that a compiler might
+> observe that all the writes to the volatile field "v" are of the same
+> value, 0, and therefore eliminated the field. (A similar example
+> appears in the JMM paper I have been consulting). I believe however
+> that this ought to be illegal by the JMM, as "v" is volatile and
+> therefore induces happens-before relations in addition to carrying a
+value.
+>
+> I thank all of you in advance, both for taking the time to read this
+> e-mail and for any insight you may provide.
+>
+>
+> regards,
+> Niko
+>
+> -----
+>
+> [1] The argument that Rf/Wf have a "volatile-like" relationship is as
+> follows:
+>
+> First, the only important cases are those where Rf sees the write Wf.
+> This is because the "volatile-like" guarantees described above only
+> concern what happens when Rf sees the write Wf. As the volatile
+> accesses Wv and Rv are both synchronization actions, one must happen
+> before the other in any particular execution. If Rv happens before Wv,
+> then at the time when field f is read, Wf cannot be visible, because Rf
+> -> Rv -> Wv -> Wf. Therefore, Rf cannot see the write Wf, and this case
+> is not important.
+>
+> If Wv happens before Rv, then when Rf executes, it is possible that Wf
+> has already been committed. In that case, Rf may legally see the value
+> written by Wf, as it would not violate happens-before consistency (Rf
+> does not happen before Wf, nor is there a write w such that Wf -> w ->
+> Rf). However, those same happens-before consistency requirements,
+> combined with the happens-before relation from Wv to Rv, guarantee that
+> any reads that happen after Rv will not see overwritten writes that
+> happen before Wv.
+>
+> [2] A rather loose argument for sequential consistency is that if there
+> were two instances of this class Foo f1 and f2, and thread T1 performed
+> { f1.setF(w1); f2.setF(w2); } where another thread T2 performed { int r2
+> = f2.getF(); int r1 = f1.getF(); }, it should be impossible for T2 to
+> observe w2 but not w1. Why? Because the write of w1 happens before the
+> write of w2 (presumably overwriting the value written by some previous
+> write w). Therefore, by the "volatile-like" guarantee on f2.f, the
+> subsequent read of f1.f cannot see the write w, as w -> write of w1 ->
+> write of w2. A better argument would probably construct a sequentially
+> consistent equivalent to any schedule, but I haven't tried writing such
+> a thing out yet.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110202/6ddda3ec/attachment.html>
+
+From brian at briangoetz.com  Wed Feb  2 22:32:37 2011
+From: brian at briangoetz.com (Brian Goetz)
+Date: Wed, 02 Feb 2011 22:32:37 -0500
+Subject: [concurrency-interest] "Volatile-like" guarantees
+In-Reply-To: <4D49AE68.4090008@alum.mit.edu>
+References: <4D49AE68.4090008@alum.mit.edu>
+Message-ID: <4D4A21D5.8010707@briangoetz.com>
+
+I think you've got some things backwards in Foo.  You want to swap the 
+statements in setF, and swap the Wf assignment.  Similarly, you want to 
+swap the statements in getF:
+
+     class Foo {
+         private volatile int v;
+         private int f;
+
+         void setF(int x) {
+             f = x;    // Wf
+             v = 0;    // Wv
+         }
+
+         int getF() {
+             int y = v;    // Rv
+             return f;     // Rf
+         }
+     }
+
+Now, calls to setF happen-before calls to getF, which is the ordering 
+you want to expose.  But additionally, you no longer have a data race on 
+f; the write to f really does happen-before the read of f in another thread:
+
+   Program Order rule: write to f HB write to v
+   Volatile rule: write of v HB subsequent read of v
+   Program order rule: read of v HB read of f
+   Transitivity: write to f HB read of f
+
+The tricky part here is the meaning of subsequent.  Synchronization 
+operations (lock/unlock, read/write volatile) are totally ordered.  So 
+it makes sense to say "subsequent read of v".  Does it make sense to say 
+"subsequent call to getF"?  I say yes; there is a 1:1 relationship 
+between setf and Wf, as well as getF and Rf, so you can align the calls 
+to getF/setF in the synchronization order.
+
+Your question about compilers eliding the "stupid" write to v is a fair 
+one.  But compilers are carefully trained to not be overeager on 
+eliminating volatile writes, for this reason.
+
+Cheers,
+-Brian
+
+On 2/2/2011 2:20 PM, Niko Matsakis wrote:
+> Hello everyone,
+>
+> I have a question about the Java Memory Model. I am trying to decide if
+> it is possible to use a dummy volatile field, like the field v below, to
+> get the same guarantees as an actual volatile field. In other words, is
+> the class Foo shown here equivalent to a class where the the field f is
+> declared volatile:
+>> class Foo {
+>> private volatile int v;
+>> private int f;
+>>
+>> void setF(int x) {
+>> v = 0; // Wv
+>> x = f; // Wf
+>> }
+>>
+>> int getF() {
+>> int x = f; // Rf
+>> int y = v; // Rv
+>> return x;
+>> }
+>> }
+> In particular, would code using the accessors shown above still be
+> sequentially consistent, as it would be if "f" were volatile?
+>
+> Clearly, the program is not data-race free as defined by the JMM,
+> because the write Wf does not happen before Rf. Nonetheless, I believe
+> there is a guarantee very much like the one that volatile offers, which
+> I will call "volatile-like":
+>> If Rf sees the value written by Wf, then no subsequent read will see a
+>> write that was overwritten before the write Wv occurred. More
+>> formally, no read r that happens after Rv, which includes all reads in
+>> the thread calling getF(), will see a write w that happens before Wv
+>> where there exists another write w' such that w -> w' -> Wv.
+> An informal argument can be found below [1]. I believe that this
+> "volatile-like" guarantee implies sequential consistency, in the same
+> way that the volatile guarantee would (argument [2] below). However, I
+> ALSO believe that the JMM is fairly subtle, and I may well be missing
+> something. :) Hence my e-mail to this list.
+>
+> One particular concern I have is the possibility that a compiler might
+> observe that all the writes to the volatile field "v" are of the same
+> value, 0, and therefore eliminated the field. (A similar example appears
+> in the JMM paper I have been consulting). I believe however that this
+> ought to be illegal by the JMM, as "v" is volatile and therefore induces
+> happens-before relations in addition to carrying a value.
+>
+> I thank all of you in advance, both for taking the time to read this
+> e-mail and for any insight you may provide.
+>
+>
+> regards,
+> Niko
+>
+> -----
+>
+> [1] The argument that Rf/Wf have a "volatile-like" relationship is as
+> follows:
+>
+> First, the only important cases are those where Rf sees the write Wf.
+> This is because the "volatile-like" guarantees described above only
+> concern what happens when Rf sees the write Wf. As the volatile accesses
+> Wv and Rv are both synchronization actions, one must happen before the
+> other in any particular execution. If Rv happens before Wv, then at the
+> time when field f is read, Wf cannot be visible, because Rf -> Rv -> Wv
+> -> Wf. Therefore, Rf cannot see the write Wf, and this case is not
+> important.
+>
+> If Wv happens before Rv, then when Rf executes, it is possible that Wf
+> has already been committed. In that case, Rf may legally see the value
+> written by Wf, as it would not violate happens-before consistency (Rf
+> does not happen before Wf, nor is there a write w such that Wf -> w ->
+> Rf). However, those same happens-before consistency requirements,
+> combined with the happens-before relation from Wv to Rv, guarantee that
+> any reads that happen after Rv will not see overwritten writes that
+> happen before Wv.
+>
+> [2] A rather loose argument for sequential consistency is that if there
+> were two instances of this class Foo f1 and f2, and thread T1 performed
+> { f1.setF(w1); f2.setF(w2); } where another thread T2 performed { int r2
+> = f2.getF(); int r1 = f1.getF(); }, it should be impossible for T2 to
+> observe w2 but not w1. Why? Because the write of w1 happens before the
+> write of w2 (presumably overwriting the value written by some previous
+> write w). Therefore, by the "volatile-like" guarantee on f2.f, the
+> subsequent read of f1.f cannot see the write w, as w -> write of w1 ->
+> write of w2. A better argument would probably construct a sequentially
+> consistent equivalent to any schedule, but I haven't tried writing such
+> a thing out yet.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From niko at alum.mit.edu  Thu Feb  3 00:23:08 2011
+From: niko at alum.mit.edu (Niko Matsakis)
+Date: Thu, 03 Feb 2011 06:23:08 +0100
+Subject: [concurrency-interest] "Volatile-like" guarantees
+In-Reply-To: <4D4A21D5.8010707@briangoetz.com>
+References: <4D49AE68.4090008@alum.mit.edu> <4D4A21D5.8010707@briangoetz.com>
+Message-ID: <4D4A3BBC.6040101@alum.mit.edu>
+
+Brian Goetz wrote:
+> I think you've got some things backwards in Foo.  You want to swap the 
+> statements in setF, and swap the Wf assignment.  Similarly, you want 
+> to swap the statements in getF:
+>
+>     class Foo {
+>         private volatile int v;
+>         private int f;
+>
+>         void setF(int x) {
+>             f = x;    // Wf
+>             v = 0;    // Wv
+>         }
+>
+>         int getF() {
+>             int y = v;    // Rv
+>             return f;     // Rf
+>         }
+>     }
+>
+> Now, calls to setF happen-before calls to getF, which is the ordering 
+> you want to expose.  But additionally, you no longer have a data race 
+> on f; the write to f really does happen-before the read of f in 
+> another thread:
+So, my first instinct was to place the volatile writes/reads in the 
+order you show here, but I'm not sure that it provides the proper 
+guarantees.  In particular, isn't it possible that in some program run 
+Rv synchronizes with Wv, but Rf still sees the write from Wf? In that 
+case, the reads that follow Rf would not happen after the writes that 
+preceded Wf.
+
+Certainly when using memory barriers/fences, the sequence is traditionally:
+     Thread 1. perform dependent writes, memory barrier, perform 
+significant write
+     Thread 2. perform significant read, memory barrier, perform 
+dependent reads
+is it not?  I guess the question is to what extent a volatile can be 
+used like a memory barrier.
+
+
+
+Niko
+
+
+From niko at alum.mit.edu  Thu Feb  3 00:55:45 2011
+From: niko at alum.mit.edu (Niko Matsakis)
+Date: Thu, 03 Feb 2011 06:55:45 +0100
+Subject: [concurrency-interest] "Volatile-like" guarantees
+In-Reply-To: <4D4A3BBC.6040101@alum.mit.edu>
+References: <4D49AE68.4090008@alum.mit.edu> <4D4A21D5.8010707@briangoetz.com>
+	<4D4A3BBC.6040101@alum.mit.edu>
+Message-ID: <4D4A4361.3090908@alum.mit.edu>
+
+Niko Matsakis wrote:
+> So, my first instinct was to place the volatile writes/reads in the 
+> order you show here, but I'm not sure that it provides the proper 
+> guarantees.  In particular, isn't it possible that in some program run 
+> Rv synchronizes with Wv, but Rf still sees the write from Wf? In that 
+> case, the reads that follow Rf would not happen after the writes that 
+> preceded Wf.
+Sorry, I wrote "Rv synchronizes with Wv", but I meant "Rv appears before 
+Wv in the total synchronization order".  (In other words, Wv does not 
+happen before Rv.) I had the impression those were synonyms, but 
+re-reading the POPL JMM paper [1] I see that is not the case.
+
+
+
+Niko
+
+[1] http://doi.acm.org/10.1145/1040305.1040336
+
+From davidcholmes at aapt.net.au  Thu Feb  3 00:59:35 2011
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Thu, 3 Feb 2011 15:59:35 +1000
+Subject: [concurrency-interest] "Volatile-like" guarantees
+In-Reply-To: <4D4A4361.3090908@alum.mit.edu>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIEBBILAA.davidcholmes@aapt.net.au>
+
+So does this mean you are happy that Brian's explanation is correct?
+
+Cheers,
+David
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Niko
+> Matsakis
+> Sent: Thursday, 3 February 2011 3:56 PM
+> To: Brian Goetz
+> Cc: concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] "Volatile-like" guarantees
+> 
+> 
+> Niko Matsakis wrote:
+> > So, my first instinct was to place the volatile writes/reads in the 
+> > order you show here, but I'm not sure that it provides the proper 
+> > guarantees.  In particular, isn't it possible that in some program run 
+> > Rv synchronizes with Wv, but Rf still sees the write from Wf? In that 
+> > case, the reads that follow Rf would not happen after the writes that 
+> > preceded Wf.
+> Sorry, I wrote "Rv synchronizes with Wv", but I meant "Rv appears before 
+> Wv in the total synchronization order".  (In other words, Wv does not 
+> happen before Rv.) I had the impression those were synonyms, but 
+> re-reading the POPL JMM paper [1] I see that is not the case.
+> 
+> 
+> 
+> Niko
+> 
+> [1] http://doi.acm.org/10.1145/1040305.1040336
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+From niko at alum.mit.edu  Thu Feb  3 01:23:48 2011
+From: niko at alum.mit.edu (Niko Matsakis)
+Date: Thu, 03 Feb 2011 07:23:48 +0100
+Subject: [concurrency-interest] "Volatile-like" guarantees
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCIEBBILAA.davidcholmes@aapt.net.au>
+References: <NFBBKALFDCPFIDBNKAPCIEBBILAA.davidcholmes@aapt.net.au>
+Message-ID: <4D4A49F4.9080807@alum.mit.edu>
+
+David Holmes wrote:
+> So does this mean you are happy that Brian's explanation is correct?
+>    
+No, it does not really change the question that I had.  Clearly, the 
+volatile read in the getter (Rv) may precede the volatile write in the 
+setter (Wv), in which case there would be no happens-before 
+relationship.  However, unless I am mistaken, in that case it is still 
+possible that the non-volatile read (Rf) sees the write from the 
+non-volatile write (Wf).  Intuitively, in some execution, the reads in 
+the getter may occur in between the two writes in the setter.  In that 
+scenario, the write to f occurs first, then both reads, then the 
+volatile write to v.  So there is no happens-before relationship, but 
+the read may see the write to f (it also may not, as there is no 
+happens-before relationship to force the issue).  Now reads which follow 
+the getter are not guaranteed to the see writes which preceded the setter.
+
+The difference between this scenario and the normal volatile example is 
+that the volatile write is not the "significant" write.  In other words, 
+the intended usage of volatile as I understand is that one performs 
+various writes W, then writes a value to the volatile field that serves 
+as a signal to the reader.  The reader, seeing that value, performs 
+various dependent reads that would not be safe had the writes W not been 
+completed.  In this scenario, though, it is not the write to the 
+volatile that signals the reader, but rather the write to the 
+non-volatile field f.  The question then is can a volatile read/write be 
+used purely as a supplement and, if so, what is the right way to do it.
+
+To motivate the question, I am working on a compiler for a parallel 
+language.  The language generally guarantees data-race freedom, but in 
+some cases it allows the user to signal that they permit data-races; in 
+those cases I would still like to guarantee sequential consistency.  The 
+problem is that a single class may be used both in a racy and non-racy 
+context.  The conservative thing to do then is to mark all fields 
+volatile, but that penalizes the non-racy context, which is by far the 
+most common.  I could generate two versions of the class, and maybe 
+eventually I will, but for the moment I'd like to use a simpler scheme.  
+A final option, then, is to have a delegate class which optionally uses 
+a volatile field in the way that I have shown here to add in memory 
+barriers.  So, in that case, writes to a field "f" would be compiled as
+
+     this.f = ...;
+     this.delegate.synchronizeWrite();
+
+where synchronizeWrite() would either do nothing (non-ract case) or 
+write a dummy value to a volatile field (racy case).  The question is, 
+will a scheme like this work?  (Of course, it may also prove to be slow, 
+if the cost of the method call is too high, but that could be optimized 
+in various ways)
+
+
+
+Niko
+
+From davidcholmes at aapt.net.au  Thu Feb  3 01:42:13 2011
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Thu, 3 Feb 2011 16:42:13 +1000
+Subject: [concurrency-interest] "Volatile-like" guarantees
+In-Reply-To: <4D4A49F4.9080807@alum.mit.edu>
+Message-ID: <NFBBKALFDCPFIDBNKAPCGEBCILAA.davidcholmes@aapt.net.au>
+
+Niko Matsakis writes:
+> David Holmes wrote:
+> > So does this mean you are happy that Brian's explanation is correct?
+> >
+> No, it does not really change the question that I had.
+
+That's a shame as I had a response to that email nearly finished when your
+clarification came in. :) But I'll try to respond to how you have expressed
+things below. For reference let me rewrite the code:
+
+        void setF(int x) {
+            f = x;    // Wf
+            v = 0;    // Wv
+        }
+        int getF() {
+           int y = v;    // Rv
+           return f;     // Rf
+
+> Clearly, the
+> volatile read in the getter (Rv) may precede the volatile write in the
+> setter (Wv), in which case there would be no happens-before
+> relationship.
+
+Correct.
+
+> However, unless I am mistaken, in that case it is still
+> possible that the non-volatile read (Rf) sees the write from the
+> non-volatile write (Wf).  Intuitively, in some execution, the reads in
+> the getter may occur in between the two writes in the setter.  In that
+> scenario, the write to f occurs first, then both reads, then the
+> volatile write to v.  So there is no happens-before relationship, but
+> the read may see the write to f (it also may not, as there is no
+> happens-before relationship to force the issue).
+
+Correct. Writes can become immediately visible and be totally ordered.
+Barriers are only needed to establish visibility and ordering properties
+when that is not the case.
+
+> Now reads which follow
+> the getter are not guaranteed to the see writes which preceded the setter.
+
+I see. Yes the transitive HB relationship does not apply. But you have
+arbitrary racing between the two threads so I don't see how you define
+correctness here.
+
+> The difference between this scenario and the normal volatile example is
+> that the volatile write is not the "significant" write.  In other words,
+> the intended usage of volatile as I understand is that one performs
+> various writes W, then writes a value to the volatile field that serves
+> as a signal to the reader.  The reader, seeing that value, performs
+> various dependent reads that would not be safe had the writes W not been
+> completed.
+
+Correct.
+
+> In this scenario, though, it is not the write to the
+> volatile that signals the reader, but rather the write to the
+> non-volatile field f.  The question then is can a volatile read/write be
+> used purely as a supplement and, if so, what is the right way to do it.
+
+But the non-volatile write can't be used as a signal to the reader as it is
+unordered - only the volatile accesses impose a limited ordering on the
+accesses in the program.
+
+> To motivate the question, I am working on a compiler for a parallel
+> language.  The language generally guarantees data-race freedom, but in
+> some cases it allows the user to signal that they permit data-races; in
+> those cases I would still like to guarantee sequential consistency.
+
+Given that the Java Memory Model does not guarantee sequential consistency
+in the face of data races, I don't see how you can construct a
+sequentially-consistent but racy implementation on top of it.
+
+But this is something better discussed on the JMM mailing list.
+
+Cheers,
+David Holmes
+
+ The
+> problem is that a single class may be used both in a racy and non-racy
+> context.  The conservative thing to do then is to mark all fields
+> volatile, but that penalizes the non-racy context, which is by far the
+> most common.  I could generate two versions of the class, and maybe
+> eventually I will, but for the moment I'd like to use a simpler scheme.
+> A final option, then, is to have a delegate class which optionally uses
+> a volatile field in the way that I have shown here to add in memory
+> barriers.  So, in that case, writes to a field "f" would be compiled as
+>
+>      this.f = ...;
+>      this.delegate.synchronizeWrite();
+>
+> where synchronizeWrite() would either do nothing (non-ract case) or
+> write a dummy value to a volatile field (racy case).  The question is,
+> will a scheme like this work?  (Of course, it may also prove to be slow,
+> if the cost of the method call is too high, but that could be optimized
+> in various ways)
+>
+>
+>
+> Niko
+>
+
+
+From niko at alum.mit.edu  Thu Feb  3 02:43:21 2011
+From: niko at alum.mit.edu (Niko Matsakis)
+Date: Thu, 03 Feb 2011 08:43:21 +0100
+Subject: [concurrency-interest] "Volatile-like" guarantees
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCGEBCILAA.davidcholmes@aapt.net.au>
+References: <NFBBKALFDCPFIDBNKAPCGEBCILAA.davidcholmes@aapt.net.au>
+Message-ID: <4D4A5C99.40302@alum.mit.edu>
+
+
+> Given that the Java Memory Model does not guarantee sequential consistency
+> in the face of data races, I don't see how you can construct a
+> sequentially-consistent but racy implementation on top of it.
+>
+> But this is something better discussed on the JMM mailing list.
+>    
+Indeed, I didn't realize there was such a mailing list.  I will move the 
+discussion over there.
+
+
+Thanks,
+
+Niko
+
+From yccheok at yahoo.com  Thu Feb  3 14:29:14 2011
+From: yccheok at yahoo.com (Yan Cheng CHEOK)
+Date: Thu, 3 Feb 2011 11:29:14 -0800 (PST)
+Subject: [concurrency-interest] Is it possible to prevent out of order
+	execution by using reader writer lock?
+In-Reply-To: <AANLkTikLrWooTu60gQy1BBEJdAkROZ68Nca0j_5BQQvB@mail.gmail.com>
+Message-ID: <311369.28569.qm@web65705.mail.ac4.yahoo.com>
+
+Hi Bob,
+Take note that, the reference of the object is being stored in a local variable. After assignment to local variable, any switching of reference through member variable, shall have 0 impact on the local variable.?
+Hence, "volatile" and "synchronized"?should work. Just that I am not sure on reader writer lock.
+
+Thanks and Regards
+Yan Cheng CHEOK
+
+--- On Fri, 2/4/11, Bob Hiestand <bob.hiestand at gmail.com> wrote:
+
+From: Bob Hiestand <bob.hiestand at gmail.com>
+Subject: Re: [concurrency-interest] Is it possible to prevent out of order execution by using reader writer lock?
+To: "Yan Cheng CHEOK" <yccheok at yahoo.com>
+Date: Friday, February 4, 2011, 3:19 AM
+
+
+Yan,
+??I am not an expert, but I'll take a stab.
+
+On Tue, Feb 1, 2011 at 8:36 AM, Yan Cheng CHEOK <yccheok at yahoo.com> wrote:
+
+
+Solved by using volatile keyword
+
+================================
+
+void fun_by_thread_1() {
+
+ ? ?this.isNuclearFactory = true;
+
+ ? ?this.factory = new NuclearFactory();
+
+}
+
+
+
+void fun_by_thread_2() {
+
+ ? ?Factory _factory = this.factory;
+
+ ? ?if (this.isNuclearFactory) {
+
+ ? ? ? ?// Do not operate nuclear factory!!!
+
+ ? ? ? ?return;
+
+ ? ?}
+
+ ? ?// If out-of-order execution happens, _factory might
+
+ ? ?// be NuclearFactory instance.
+
+ ? ?_factory.operate();
+
+}
+
+
+
+volatile Factory factory = new FoodFactory();
+
+volatile boolean isNuclearFactory = false;
+
+This does not work because both isNuclearFactory and factory can be set by thread 1 after thread 2 has checked isNuclearFactory and before it operates the factory.
+
+Solved by using synchronized keyword
+
+====================================
+
+void fun_by_thread_1() {
+
+ ? ?synchronized(this) {
+
+ ? ? ? ?this.isNuclearFactory = true;
+
+ ? ? ? ?this.factory = new NuclearFactory();
+
+ ? ?}
+
+}
+
+
+
+void fun_by_thread_2() {
+
+ ? ?synchronized(this) {
+
+ ? ? ? ?Factory _factory = this.factory;
+
+ ? ? ? ?if (this.isNuclearFactory) {
+
+ ? ? ? ? ? ?// Do not operate nuclear factory!!!
+
+ ? ? ? ? ? ?return;
+
+ ? ? ? ?}
+
+ ? ?}
+
+ ? ?// If out-of-order execution happens, _factory might
+
+ ? ?// be NuclearFactory instance.
+
+ ? ?_factory.operate();
+
+}
+
+
+
+Factory factory = new FoodFactory();
+
+boolean isNuclearFactory = false;
+?This does not work because operate() is not called in the synchronized block. ?It could see a NuclearFactory if thread 1 executes after the synchronized block in thread 2 completes.
+
+Solved by using Reader Writer Lock - Is this a correct way?
+
+===========================================================
+
+void fun_by_thread_1() {
+
+ ? ?writerLock.lock();
+
+ ? ?try {
+
+ ? ? ? ?this.isNuclearFactory = true;
+
+ ? ? ? ?this.factory = new NuclearFactory();
+
+ ? ?} finally {
+
+ ? ? ? ?writerLock.unlock();
+
+ ? ?}
+
+}
+
+
+
+void fun_by_thread_2() {
+
+ ? ?readerLock.lock();
+
+ ? ?Factory _factory = this.factory;
+
+ ? ?try {
+
+ ? ? ? ?if (this.isNuclearFactory) {
+
+ ? ? ? ? ? ?// Do not operate nuclear factory!!!
+
+ ? ? ? ? ? ?return;
+
+ ? ? ? ?}
+
+ ? ?} finally {
+
+ ? ? ? ?readerLock.unlock();
+
+ ? ?}
+
+
+
+ ? ?// If out-of-order execution happens, _factory might
+
+ ? ?// be NuclearFactory instance.
+
+ ? ?_factory.operate();
+
+}
+
+
+
+Factory factory = new FoodFactory();
+
+boolean isNuclearFactory = false;
+
+private final java.util.concurrent.locks.Lock readerLock;
+
+private final java.util.concurrent.locks.Lock writerLock;
+
+
+
+This does not work in the same way that the synchronized approach could fail.
+Thank you,
+bob
+
+
+
+      
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110203/4a186ac9/attachment.html>
+
+From bob.hiestand at gmail.com  Thu Feb  3 15:23:06 2011
+From: bob.hiestand at gmail.com (Bob Hiestand)
+Date: Thu, 3 Feb 2011 14:23:06 -0600
+Subject: [concurrency-interest] Is it possible to prevent out of order
+ execution by using reader writer lock?
+In-Reply-To: <311369.28569.qm@web65705.mail.ac4.yahoo.com>
+References: <AANLkTikLrWooTu60gQy1BBEJdAkROZ68Nca0j_5BQQvB@mail.gmail.com>
+	<311369.28569.qm@web65705.mail.ac4.yahoo.com>
+Message-ID: <AANLkTi=3po-q=S4Z2hevgc5Rm4o6C+2tTPrgfwBuWQi0@mail.gmail.com>
+
+Yan,
+
+  Yes, I totally missed that.  The volatile and synchronized variants are
+safe, though the volatile variant leaves open the possibility of aborting
+even if the local _factory is actually a FoodFactory.  The lock version will
+work if they are the same lock; your example is a little incomplete on that
+issue.
+
+Thank you,
+
+bob
+
+
+On Thu, Feb 3, 2011 at 1:29 PM, Yan Cheng CHEOK <yccheok at yahoo.com> wrote:
+
+> Hi Bob,
+>
+> Take note that, the reference of the object is being stored in a local
+> variable. After assignment to local variable, any switching of reference
+> through member variable, shall have 0 impact on the local variable.
+>
+> Hence, "volatile" and "synchronized" should work. Just that I am not sure
+> on reader writer lock.
+>
+> Thanks and Regards
+> Yan Cheng CHEOK
+>
+>
+> --- On *Fri, 2/4/11, Bob Hiestand <bob.hiestand at gmail.com>* wrote:
+>
+>
+> From: Bob Hiestand <bob.hiestand at gmail.com>
+> Subject: Re: [concurrency-interest] Is it possible to prevent out of order
+> execution by using reader writer lock?
+> To: "Yan Cheng CHEOK" <yccheok at yahoo.com>
+> Date: Friday, February 4, 2011, 3:19 AM
+>
+>
+> Yan,
+>
+>   I am not an expert, but I'll take a stab.
+>
+>
+> On Tue, Feb 1, 2011 at 8:36 AM, Yan Cheng CHEOK <yccheok at yahoo.com<http://mc/compose?to=yccheok at yahoo.com>
+> > wrote:
+>
+> Solved by using volatile keyword
+> ================================
+> void fun_by_thread_1() {
+>    this.isNuclearFactory = true;
+>    this.factory = new NuclearFactory();
+> }
+>
+> void fun_by_thread_2() {
+>    Factory _factory = this.factory;
+>    if (this.isNuclearFactory) {
+>        // Do not operate nuclear factory!!!
+>        return;
+>    }
+>    // If out-of-order execution happens, _factory might
+>    // be NuclearFactory instance.
+>    _factory.operate();
+> }
+>
+> volatile Factory factory = new FoodFactory();
+> volatile boolean isNuclearFactory = false;
+>
+>
+> This does not work because both isNuclearFactory and factory can be set by
+> thread 1 after thread 2 has checked isNuclearFactory and before it operates
+> the factory.
+>
+> Solved by using synchronized keyword
+> ====================================
+> void fun_by_thread_1() {
+>    synchronized(this) {
+>        this.isNuclearFactory = true;
+>        this.factory = new NuclearFactory();
+>    }
+> }
+>
+> void fun_by_thread_2() {
+>    synchronized(this) {
+>        Factory _factory = this.factory;
+>        if (this.isNuclearFactory) {
+>            // Do not operate nuclear factory!!!
+>            return;
+>        }
+>    }
+>    // If out-of-order execution happens, _factory might
+>    // be NuclearFactory instance.
+>    _factory.operate();
+> }
+>
+> Factory factory = new FoodFactory();
+> boolean isNuclearFactory = false;
+>
+>
+> This does not work because operate() is not called in the synchronized
+> block.  It could see a NuclearFactory if thread 1 executes after the
+> synchronized block in thread 2 completes.
+>
+> Solved by using Reader Writer Lock - Is this a correct way?
+> ===========================================================
+> void fun_by_thread_1() {
+>    writerLock.lock();
+>    try {
+>        this.isNuclearFactory = true;
+>        this.factory = new NuclearFactory();
+>    } finally {
+>        writerLock.unlock();
+>    }
+> }
+>
+> void fun_by_thread_2() {
+>    readerLock.lock();
+>    Factory _factory = this.factory;
+>    try {
+>        if (this.isNuclearFactory) {
+>            // Do not operate nuclear factory!!!
+>            return;
+>        }
+>    } finally {
+>        readerLock.unlock();
+>    }
+>
+>    // If out-of-order execution happens, _factory might
+>    // be NuclearFactory instance.
+>    _factory.operate();
+> }
+>
+> Factory factory = new FoodFactory();
+> boolean isNuclearFactory = false;
+> private final java.util.concurrent.locks.Lock readerLock;
+> private final java.util.concurrent.locks.Lock writerLock;
+>
+>
+> This does not work in the same way that the synchronized approach could
+> fail.
+>
+> Thank you,
+>
+> bob
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110203/42e54d85/attachment-0001.html>
+
+From davidcholmes at aapt.net.au  Thu Feb  3 16:41:11 2011
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Fri, 4 Feb 2011 07:41:11 +1000
+Subject: [concurrency-interest] Is it possible to prevent out of
+	orderexecution by using reader writer lock?
+In-Reply-To: <311369.28569.qm@web65705.mail.ac4.yahoo.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOEBEILAA.davidcholmes@aapt.net.au>
+
+I don't seem to have received the original email on this and can't quite
+extract what the original question was, but from the subject I think the
+question is just about the happens-before ordering provided by a
+ReadWriteLock.
+
+All ReadWriteLock implementations must guarantee that the memory
+synchronization effects of writeLock operations (as specified in the Lock
+interface) also hold with respect to the associated readLock. That is, a
+thread successfully acquiring the read lock will see all updates made upon
+previous release of the write lock.
+
+http://download.oracle.com/javase/6/docs/api/java/util/concurrent/locks/Read
+WriteLock.html
+
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Yan Cheng
+CHEOK
+  Sent: Friday, 4 February 2011 5:29 AM
+  To: Bob Hiestand
+  Cc: concurrency-interest at cs.oswego.edu
+  Subject: Re: [concurrency-interest] Is it possible to prevent out of
+orderexecution by using reader writer lock?
+
+
+              Hi Bob,
+
+
+              Take note that, the reference of the object is being stored in
+a local variable. After assignment to local variable, any switching of
+reference through member variable, shall have 0 impact on the local
+variable.
+
+
+              Hence, "volatile" and "synchronized" should work. Just that I
+am not sure on reader writer lock.
+
+              Thanks and Regards
+              Yan Cheng CHEOK
+
+
+        --- On Fri, 2/4/11, Bob Hiestand <bob.hiestand at gmail.com> wrote:
+
+
+          From: Bob Hiestand <bob.hiestand at gmail.com>
+          Subject: Re: [concurrency-interest] Is it possible to prevent out
+of order execution by using reader writer lock?
+          To: "Yan Cheng CHEOK" <yccheok at yahoo.com>
+          Date: Friday, February 4, 2011, 3:19 AM
+
+
+
+
+          Yan,
+
+
+            I am not an expert, but I'll take a stab.
+
+
+
+
+          On Tue, Feb 1, 2011 at 8:36 AM, Yan Cheng CHEOK
+<yccheok at yahoo.com> wrote:
+
+
+            Solved by using volatile keyword
+            ================================
+            void fun_by_thread_1() {
+               this.isNuclearFactory = true;
+               this.factory = new NuclearFactory();
+            }
+
+            void fun_by_thread_2() {
+               Factory _factory = this.factory;
+               if (this.isNuclearFactory) {
+                   // Do not operate nuclear factory!!!
+                   return;
+               }
+               // If out-of-order execution happens, _factory might
+               // be NuclearFactory instance.
+               _factory.operate();
+            }
+
+            volatile Factory factory = new FoodFactory();
+            volatile boolean isNuclearFactory = false;
+
+
+
+          This does not work because both isNuclearFactory and factory can
+be set by thread 1 after thread 2 has checked isNuclearFactory and before it
+operates the factory.
+
+
+            Solved by using synchronized keyword
+            ====================================
+            void fun_by_thread_1() {
+               synchronized(this) {
+                   this.isNuclearFactory = true;
+                   this.factory = new NuclearFactory();
+               }
+            }
+
+            void fun_by_thread_2() {
+               synchronized(this) {
+                   Factory _factory = this.factory;
+                   if (this.isNuclearFactory) {
+                       // Do not operate nuclear factory!!!
+                       return;
+                   }
+               }
+               // If out-of-order execution happens, _factory might
+               // be NuclearFactory instance.
+               _factory.operate();
+            }
+
+            Factory factory = new FoodFactory();
+            boolean isNuclearFactory = false;
+
+
+          This does not work because operate() is not called in the
+synchronized block.  It could see a NuclearFactory if thread 1 executes
+after the synchronized block in thread 2 completes.
+
+
+            Solved by using Reader Writer Lock - Is this a correct way?
+            ===========================================================
+            void fun_by_thread_1() {
+               writerLock.lock();
+               try {
+                   this.isNuclearFactory = true;
+                   this.factory = new NuclearFactory();
+               } finally {
+                   writerLock.unlock();
+               }
+            }
+
+            void fun_by_thread_2() {
+               readerLock.lock();
+               Factory _factory = this.factory;
+               try {
+                   if (this.isNuclearFactory) {
+                       // Do not operate nuclear factory!!!
+                       return;
+                   }
+               } finally {
+                   readerLock.unlock();
+               }
+
+               // If out-of-order execution happens, _factory might
+               // be NuclearFactory instance.
+               _factory.operate();
+            }
+
+            Factory factory = new FoodFactory();
+            boolean isNuclearFactory = false;
+            private final java.util.concurrent.locks.Lock readerLock;
+            private final java.util.concurrent.locks.Lock writerLock;
+
+
+
+
+          This does not work in the same way that the synchronized approach
+could fail.
+
+
+          Thank you,
+
+
+          bob
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110204/932cd52f/attachment.html>
+
+From yccheok at yahoo.com  Mon Feb  7 03:24:36 2011
+From: yccheok at yahoo.com (Yan Cheng CHEOK)
+Date: Mon, 7 Feb 2011 00:24:36 -0800 (PST)
+Subject: [concurrency-interest] Using a volatile variable as a "guard"
+Message-ID: <860650.41079.qm@web65701.mail.ac4.yahoo.com>
+
+Hello all,
+
+I came across the article "Java theory and practice: Fixing the Java Memory Model, Part 2", by Brian Goetz.
+
+I hope I understand section "New guarantees for volatile" correctly. 
+
+I try to use a similar technique as Brian Goetz's. My objective is :
+
+A) Never execute factory's operate member function, if it is a NuclearFactory.
+
+Hence, I try to turn on volatile guard variable isNuclearFactor, before I attempt to construct nuclear factory. This is different from Brian Goetz's.
+Brian Goetz only write to volatile variable, after he had finished constructed configOptions.
+
+I feel the following code should work, based on the information picked from Brian Goetz's article.
+
+""Under the new memory model, when thread A writes to a volatile variable V, and thread B reads from V, any variable values that were visible to A at the time that V was written are guaranteed now to be visible to B""
+
+when thread A writes to volatile isNuclearFactory, and thread B reads from isNuclearFactory, factory was visible to A as FoodFactory at the time that isNuclearFactory was written. Hence, factory are guranteed now to be visible to B as FoodFactory too.
+
+
+I hope I am getting this correctly. Or, do I need to mark factory as volatile too?
+
+
+void fun_by_thread_A() {
+    this.isNuclearFactory = true;
+    this.factory = new NuclearFactory();
+}
+
+void fun_by_thread_B() {
+    Factory _factory = this.factory;
+    if (this.isNuclearFactory) {
+        // Do not operate nuclear factory!!!
+        return;
+    }
+    // If out-of-order execution happens, _factory might 
+    // be NuclearFactory instance.
+    _factory.operate();
+}
+
+Factory factory = new FoodFactory();
+volatile boolean isNuclearFactory = false;
+
+Thanks and Regards
+Yan Cheng CHEOK
+
+
+      
+
+From yccheok at yahoo.com  Mon Feb  7 03:25:48 2011
+From: yccheok at yahoo.com (Yan Cheng CHEOK)
+Date: Mon, 7 Feb 2011 00:25:48 -0800 (PST)
+Subject: [concurrency-interest] Using a volatile variable as a "guard"
+Message-ID: <35533.20102.qm@web65704.mail.ac4.yahoo.com>
+
+Missing URL for the reference article :
+
+http://www.ibm.com/developerworks/library/j-jtp03304/
+
+Thanks and Regards
+Yan Cheng CHEOK
+
+
+
+
+      
+
+From joe.bowbeer at gmail.com  Mon Feb  7 03:57:27 2011
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Mon, 7 Feb 2011 00:57:27 -0800
+Subject: [concurrency-interest] Using a volatile variable as a "guard"
+In-Reply-To: <860650.41079.qm@web65701.mail.ac4.yahoo.com>
+References: <860650.41079.qm@web65701.mail.ac4.yahoo.com>
+Message-ID: <AANLkTikRh=vF81TTe0JjQkF6D_YOykXj=8E+FpnTNiib@mail.gmail.com>
+
+You got it.
+
+For the specifics, see 8.3.1.4 and Ch. 17 in the Java Language Spec.
+
+http://java.sun.com/docs/books/jls/third_edition/html/classes.html#36930
+
+In practice, it would be clearer to declare factory to be volatile and to
+replace isNuclearFactory by a getType() method in the Factory class.
+
+Joe
+
+On Mon, Feb 7, 2011 at 12:24 AM, Yan Cheng CHEOK wrote:
+
+> Hello all,
+>
+> I came across the article "Java theory and practice: Fixing the Java Memory
+> Model, Part 2", by Brian Goetz.
+>
+> I hope I understand section "New guarantees for volatile" correctly.
+>
+> I try to use a similar technique as Brian Goetz's. My objective is :
+>
+> A) Never execute factory's operate member function, if it is a
+> NuclearFactory.
+>
+> Hence, I try to turn on volatile guard variable isNuclearFactor, before I
+> attempt to construct nuclear factory. This is different from Brian Goetz's.
+> Brian Goetz only write to volatile variable, after he had finished
+> constructed configOptions.
+>
+> I feel the following code should work, based on the information picked from
+> Brian Goetz's article.
+>
+> ""Under the new memory model, when thread A writes to a volatile variable
+> V, and thread B reads from V, any variable values that were visible to A at
+> the time that V was written are guaranteed now to be visible to B""
+>
+> when thread A writes to volatile isNuclearFactory, and thread B reads from
+> isNuclearFactory, factory was visible to A as FoodFactory at the time that
+> isNuclearFactory was written. Hence, factory are guranteed now to be visible
+> to B as FoodFactory too.
+>
+>
+> I hope I am getting this correctly. Or, do I need to mark factory as
+> volatile too?
+>
+>
+> void fun_by_thread_A() {
+>    this.isNuclearFactory = true;
+>    this.factory = new NuclearFactory();
+> }
+>
+> void fun_by_thread_B() {
+>    Factory _factory = this.factory;
+>    if (this.isNuclearFactory) {
+>        // Do not operate nuclear factory!!!
+>        return;
+>    }
+>    // If out-of-order execution happens, _factory might
+>    // be NuclearFactory instance.
+>    _factory.operate();
+> }
+>
+> Factory factory = new FoodFactory();
+> volatile boolean isNuclearFactory = false;
+>
+> Thanks and Regards
+> Yan Cheng CHEOK
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110207/529e11f6/attachment.html>
+
+From davidcholmes at aapt.net.au  Mon Feb  7 04:28:14 2011
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Mon, 7 Feb 2011 19:28:14 +1000
+Subject: [concurrency-interest] Using a volatile variable as a "guard"
+In-Reply-To: <860650.41079.qm@web65701.mail.ac4.yahoo.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCGECEILAA.davidcholmes@aapt.net.au>
+
+You need factory to be volatile too so that the two variables maintain their
+respective ordering. Otherwise the write to the factory can move before the
+write to the flag:
+
+    this.factory = new NuclearFactory();
+    this.isNuclearFactory = true;
+
+and now thread B can get a NuclearFactory but see isNuclearFactory before it
+was set to true.
+
+There has been a bit of discussion on this recently. The use a volatile flag
+ensures data is visible when needed, but doesn't prevent it being visible
+earlier. In this example you need strict ordering, or atomicity, to make
+sure that a NuclearFactory is only ever seen when isNuclearfactory is set.
+
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Yan
+> Cheng CHEOK
+> Sent: Monday, 7 February 2011 6:25 PM
+> To: concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] Using a volatile variable as a "guard"
+>
+>
+> Hello all,
+>
+> I came across the article "Java theory and practice: Fixing the
+> Java Memory Model, Part 2", by Brian Goetz.
+>
+> I hope I understand section "New guarantees for volatile" correctly.
+>
+> I try to use a similar technique as Brian Goetz's. My objective is :
+>
+> A) Never execute factory's operate member function, if it is a
+> NuclearFactory.
+>
+> Hence, I try to turn on volatile guard variable isNuclearFactor,
+> before I attempt to construct nuclear factory. This is different
+> from Brian Goetz's.
+> Brian Goetz only write to volatile variable, after he had
+> finished constructed configOptions.
+>
+> I feel the following code should work, based on the information
+> picked from Brian Goetz's article.
+>
+> ""Under the new memory model, when thread A writes to a volatile
+> variable V, and thread B reads from V, any variable values that
+> were visible to A at the time that V was written are guaranteed
+> now to be visible to B""
+>
+> when thread A writes to volatile isNuclearFactory, and thread B
+> reads from isNuclearFactory, factory was visible to A as
+> FoodFactory at the time that isNuclearFactory was written. Hence,
+> factory are guranteed now to be visible to B as FoodFactory too.
+>
+>
+> I hope I am getting this correctly. Or, do I need to mark factory
+> as volatile too?
+>
+>
+> void fun_by_thread_A() {
+>     this.isNuclearFactory = true;
+>     this.factory = new NuclearFactory();
+> }
+>
+> void fun_by_thread_B() {
+>     Factory _factory = this.factory;
+>     if (this.isNuclearFactory) {
+>         // Do not operate nuclear factory!!!
+>         return;
+>     }
+>     // If out-of-order execution happens, _factory might
+>     // be NuclearFactory instance.
+>     _factory.operate();
+> }
+>
+> Factory factory = new FoodFactory();
+> volatile boolean isNuclearFactory = false;
+>
+> Thanks and Regards
+> Yan Cheng CHEOK
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From viktor.klang at gmail.com  Mon Feb  7 04:34:51 2011
+From: viktor.klang at gmail.com (=?UTF-8?B?4oiaaWt0b3IgS2xhbmc=?=)
+Date: Mon, 7 Feb 2011 10:34:51 +0100
+Subject: [concurrency-interest] Using a volatile variable as a "guard"
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCGECEILAA.davidcholmes@aapt.net.au>
+References: <860650.41079.qm@web65701.mail.ac4.yahoo.com>
+	<NFBBKALFDCPFIDBNKAPCGECEILAA.davidcholmes@aapt.net.au>
+Message-ID: <AANLkTikWdc6WWmVHsuV6xAiPN5czmgMNS+9FdSavvnuE@mail.gmail.com>
+
+On Mon, Feb 7, 2011 at 10:28 AM, David Holmes <davidcholmes at aapt.net.au>wrote:
+
+> You need factory to be volatile too so that the two variables maintain
+> their
+> respective ordering. Otherwise the write to the factory can move before the
+> write to the flag:
+>
+>    this.factory = new NuclearFactory();
+>    this.isNuclearFactory = true;
+>
+> and now thread B can get a NuclearFactory but see isNuclearFactory before
+> it
+> was set to true.
+>
+> There has been a bit of discussion on this recently. The use a volatile
+> flag
+> ensures data is visible when needed, but doesn't prevent it being visible
+> earlier. In this example you need strict ordering, or atomicity, to make
+> sure that a NuclearFactory is only ever seen when isNuclearfactory is set.
+>
+>
+Or avoid mutable state when possible and make the factory volatile and the
+nuclear property final.
+
+
+
+> David Holmes
+>
+> > -----Original Message-----
+> > From: concurrency-interest-bounces at cs.oswego.edu
+> > [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Yan
+> > Cheng CHEOK
+> > Sent: Monday, 7 February 2011 6:25 PM
+> > To: concurrency-interest at cs.oswego.edu
+> > Subject: [concurrency-interest] Using a volatile variable as a "guard"
+> >
+> >
+> > Hello all,
+> >
+> > I came across the article "Java theory and practice: Fixing the
+> > Java Memory Model, Part 2", by Brian Goetz.
+> >
+> > I hope I understand section "New guarantees for volatile" correctly.
+> >
+> > I try to use a similar technique as Brian Goetz's. My objective is :
+> >
+> > A) Never execute factory's operate member function, if it is a
+> > NuclearFactory.
+> >
+> > Hence, I try to turn on volatile guard variable isNuclearFactor,
+> > before I attempt to construct nuclear factory. This is different
+> > from Brian Goetz's.
+> > Brian Goetz only write to volatile variable, after he had
+> > finished constructed configOptions.
+> >
+> > I feel the following code should work, based on the information
+> > picked from Brian Goetz's article.
+> >
+> > ""Under the new memory model, when thread A writes to a volatile
+> > variable V, and thread B reads from V, any variable values that
+> > were visible to A at the time that V was written are guaranteed
+> > now to be visible to B""
+> >
+> > when thread A writes to volatile isNuclearFactory, and thread B
+> > reads from isNuclearFactory, factory was visible to A as
+> > FoodFactory at the time that isNuclearFactory was written. Hence,
+> > factory are guranteed now to be visible to B as FoodFactory too.
+> >
+> >
+> > I hope I am getting this correctly. Or, do I need to mark factory
+> > as volatile too?
+> >
+> >
+> > void fun_by_thread_A() {
+> >     this.isNuclearFactory = true;
+> >     this.factory = new NuclearFactory();
+> > }
+> >
+> > void fun_by_thread_B() {
+> >     Factory _factory = this.factory;
+> >     if (this.isNuclearFactory) {
+> >         // Do not operate nuclear factory!!!
+> >         return;
+> >     }
+> >     // If out-of-order execution happens, _factory might
+> >     // be NuclearFactory instance.
+> >     _factory.operate();
+> > }
+> >
+> > Factory factory = new FoodFactory();
+> > volatile boolean isNuclearFactory = false;
+> >
+> > Thanks and Regards
+> > Yan Cheng CHEOK
+> >
+> >
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+-- 
+Viktor Klang,
+Code Connoisseur
+Work:   Scalable Solutions <http://www.scalablesolutions.se>
+Code:   github.com/viktorklang
+Follow: twitter.com/viktorklang
+Read:   klangism.tumblr.com
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110207/0ffce793/attachment-0001.html>
+
+From yccheok at yahoo.com  Mon Feb  7 04:39:13 2011
+From: yccheok at yahoo.com (Yan Cheng CHEOK)
+Date: Mon, 7 Feb 2011 01:39:13 -0800 (PST)
+Subject: [concurrency-interest] Using a volatile variable as a "guard"
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCGECEILAA.davidcholmes@aapt.net.au>
+Message-ID: <889029.32561.qm@web65703.mail.ac4.yahoo.com>
+
+Dear David Holmes,
+
+In that case, is it correct for me to make the following 2 conclusion?
+
+Based on http://www.cs.umd.edu/~pugh/java/memoryModel/jsr-133-faq.html#incorrectlySync,
+
+class VolatileExample {
+  int x = 0;
+  volatile boolean v = false;
+  public void writer() {
+    x = 42;
+    v = true;
+  }
+
+  public void reader() {
+    if (v == true) {
+      //uses x - guaranteed to see 42.
+    }
+  }
+}
+
+Conclusion 1
+============
+1a) write to non-volatile variable x 
+1b) write to volatile variable v
+1a can never moved pass 1b
+
+and based on the need of using volatile in NuclearFactory example.
+
+Conclusion 2
+============
+2a) write to volatile variable v
+2b) write to non-volatile variable x
+2b can moved before 2a
+
+Thanks and Regards
+Yan Cheng CHEOK
+
+
+--- On Mon, 2/7/11, David Holmes <davidcholmes at aapt.net.au> wrote:
+
+> From: David Holmes <davidcholmes at aapt.net.au>
+> Subject: RE: [concurrency-interest] Using a volatile variable as a "guard"
+> To: "Yan Cheng CHEOK" <yccheok at yahoo.com>, concurrency-interest at cs.oswego.edu
+> Date: Monday, February 7, 2011, 5:28 PM
+> You need factory to be volatile too
+> so that the two variables maintain their
+> respective ordering. Otherwise the write to the factory can
+> move before the
+> write to the flag:
+> 
+> ? ? this.factory = new NuclearFactory();
+> ? ? this.isNuclearFactory = true;
+> 
+> and now thread B can get a NuclearFactory but see
+> isNuclearFactory before it
+> was set to true.
+> 
+> There has been a bit of discussion on this recently. The
+> use a volatile flag
+> ensures data is visible when needed, but doesn't prevent it
+> being visible
+> earlier. In this example you need strict ordering, or
+> atomicity, to make
+> sure that a NuclearFactory is only ever seen when
+> isNuclearfactory is set.
+> 
+> David Holmes
+> 
+> > -----Original Message-----
+> > From: concurrency-interest-bounces at cs.oswego.edu
+> > [mailto:concurrency-interest-bounces at cs.oswego.edu]On
+> Behalf Of Yan
+> > Cheng CHEOK
+> > Sent: Monday, 7 February 2011 6:25 PM
+> > To: concurrency-interest at cs.oswego.edu
+> > Subject: [concurrency-interest] Using a volatile
+> variable as a "guard"
+> >
+> >
+> > Hello all,
+> >
+> > I came across the article "Java theory and practice:
+> Fixing the
+> > Java Memory Model, Part 2", by Brian Goetz.
+> >
+> > I hope I understand section "New guarantees for
+> volatile" correctly.
+> >
+> > I try to use a similar technique as Brian Goetz's. My
+> objective is :
+> >
+> > A) Never execute factory's operate member function, if
+> it is a
+> > NuclearFactory.
+> >
+> > Hence, I try to turn on volatile guard variable
+> isNuclearFactor,
+> > before I attempt to construct nuclear factory. This is
+> different
+> > from Brian Goetz's.
+> > Brian Goetz only write to volatile variable, after he
+> had
+> > finished constructed configOptions.
+> >
+> > I feel the following code should work, based on the
+> information
+> > picked from Brian Goetz's article.
+> >
+> > ""Under the new memory model, when thread A writes to
+> a volatile
+> > variable V, and thread B reads from V, any variable
+> values that
+> > were visible to A at the time that V was written are
+> guaranteed
+> > now to be visible to B""
+> >
+> > when thread A writes to volatile isNuclearFactory, and
+> thread B
+> > reads from isNuclearFactory, factory was visible to A
+> as
+> > FoodFactory at the time that isNuclearFactory was
+> written. Hence,
+> > factory are guranteed now to be visible to B as
+> FoodFactory too.
+> >
+> >
+> > I hope I am getting this correctly. Or, do I need to
+> mark factory
+> > as volatile too?
+> >
+> >
+> > void fun_by_thread_A() {
+> >? ???this.isNuclearFactory = true;
+> >? ???this.factory = new
+> NuclearFactory();
+> > }
+> >
+> > void fun_by_thread_B() {
+> >? ???Factory _factory =
+> this.factory;
+> >? ???if (this.isNuclearFactory) {
+> >? ? ? ???// Do not
+> operate nuclear factory!!!
+> >? ? ? ???return;
+> >? ???}
+> >? ???// If out-of-order execution
+> happens, _factory might
+> >? ???// be NuclearFactory
+> instance.
+> >? ???_factory.operate();
+> > }
+> >
+> > Factory factory = new FoodFactory();
+> > volatile boolean isNuclearFactory = false;
+> >
+> > Thanks and Regards
+> > Yan Cheng CHEOK
+> >
+> >
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> 
+> 
+
+
+      
+
+
+From davidcholmes at aapt.net.au  Mon Feb  7 05:12:24 2011
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Mon, 7 Feb 2011 20:12:24 +1000
+Subject: [concurrency-interest] Using a volatile variable as a "guard"
+In-Reply-To: <889029.32561.qm@web65703.mail.ac4.yahoo.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIECFILAA.davidcholmes@aapt.net.au>
+
+Yan Cheng Cheok writes:
+> In that case, is it correct for me to make the following 2 conclusion?
+>
+> Based on
+> http://www.cs.umd.edu/~pugh/java/memoryModel/jsr-133-faq.html#inco
+> rrectlySync,
+>
+> class VolatileExample {
+>   int x = 0;
+>   volatile boolean v = false;
+>   public void writer() {
+>     x = 42;
+>     v = true;
+>   }
+>
+>   public void reader() {
+>     if (v == true) {
+>       //uses x - guaranteed to see 42.
+>     }
+>   }
+> }
+>
+> Conclusion 1
+> ============
+> 1a) write to non-volatile variable x
+> 1b) write to volatile variable v
+> 1a can never moved pass 1b
+>
+> and based on the need of using volatile in NuclearFactory example.
+>
+> Conclusion 2
+> ============
+> 2a) write to volatile variable v
+> 2b) write to non-volatile variable x
+> 2b can moved before 2a
+
+Correct on both counts. A read of a volatile has a acquire semantics; a
+write to a volatile has release semantics. Given:
+
+  acquire();
+  ...
+  release();
+
+we informally talk about  the "Roach Motel" rules - you can move in (to the
+... region) but you can't move out. So any normal access before the acquire
+can move to after the acquire, but not the other way around. Any normal
+access after the release can be moved to before the release, but not the
+other way around.
+
+So:
+
+   volatile_v = 1;
+   non_volatile_x = 42;
+
+can be reordered; but
+
+   non_volatile_x = 42;
+   volatile_v = 1;
+
+can not.
+
+David
+
+> Thanks and Regards
+> Yan Cheng CHEOK
+>
+>
+> --- On Mon, 2/7/11, David Holmes <davidcholmes at aapt.net.au> wrote:
+>
+> > From: David Holmes <davidcholmes at aapt.net.au>
+> > Subject: RE: [concurrency-interest] Using a volatile variable
+> as a "guard"
+> > To: "Yan Cheng CHEOK" <yccheok at yahoo.com>,
+> concurrency-interest at cs.oswego.edu
+> > Date: Monday, February 7, 2011, 5:28 PM
+> > You need factory to be volatile too
+> > so that the two variables maintain their
+> > respective ordering. Otherwise the write to the factory can
+> > move before the
+> > write to the flag:
+> >
+> > ? ? this.factory = new NuclearFactory();
+> > ? ? this.isNuclearFactory = true;
+> >
+> > and now thread B can get a NuclearFactory but see
+> > isNuclearFactory before it
+> > was set to true.
+> >
+> > There has been a bit of discussion on this recently. The
+> > use a volatile flag
+> > ensures data is visible when needed, but doesn't prevent it
+> > being visible
+> > earlier. In this example you need strict ordering, or
+> > atomicity, to make
+> > sure that a NuclearFactory is only ever seen when
+> > isNuclearfactory is set.
+> >
+> > David Holmes
+> >
+> > > -----Original Message-----
+> > > From: concurrency-interest-bounces at cs.oswego.edu
+> > > [mailto:concurrency-interest-bounces at cs.oswego.edu]On
+> > Behalf Of Yan
+> > > Cheng CHEOK
+> > > Sent: Monday, 7 February 2011 6:25 PM
+> > > To: concurrency-interest at cs.oswego.edu
+> > > Subject: [concurrency-interest] Using a volatile
+> > variable as a "guard"
+> > >
+> > >
+> > > Hello all,
+> > >
+> > > I came across the article "Java theory and practice:
+> > Fixing the
+> > > Java Memory Model, Part 2", by Brian Goetz.
+> > >
+> > > I hope I understand section "New guarantees for
+> > volatile" correctly.
+> > >
+> > > I try to use a similar technique as Brian Goetz's. My
+> > objective is :
+> > >
+> > > A) Never execute factory's operate member function, if
+> > it is a
+> > > NuclearFactory.
+> > >
+> > > Hence, I try to turn on volatile guard variable
+> > isNuclearFactor,
+> > > before I attempt to construct nuclear factory. This is
+> > different
+> > > from Brian Goetz's.
+> > > Brian Goetz only write to volatile variable, after he
+> > had
+> > > finished constructed configOptions.
+> > >
+> > > I feel the following code should work, based on the
+> > information
+> > > picked from Brian Goetz's article.
+> > >
+> > > ""Under the new memory model, when thread A writes to
+> > a volatile
+> > > variable V, and thread B reads from V, any variable
+> > values that
+> > > were visible to A at the time that V was written are
+> > guaranteed
+> > > now to be visible to B""
+> > >
+> > > when thread A writes to volatile isNuclearFactory, and
+> > thread B
+> > > reads from isNuclearFactory, factory was visible to A
+> > as
+> > > FoodFactory at the time that isNuclearFactory was
+> > written. Hence,
+> > > factory are guranteed now to be visible to B as
+> > FoodFactory too.
+> > >
+> > >
+> > > I hope I am getting this correctly. Or, do I need to
+> > mark factory
+> > > as volatile too?
+> > >
+> > >
+> > > void fun_by_thread_A() {
+> > >? ???this.isNuclearFactory = true;
+> > >? ???this.factory = new
+> > NuclearFactory();
+> > > }
+> > >
+> > > void fun_by_thread_B() {
+> > >? ???Factory _factory =
+> > this.factory;
+> > >? ???if (this.isNuclearFactory) {
+> > >? ? ? ???// Do not
+> > operate nuclear factory!!!
+> > >? ? ? ???return;
+> > >? ???}
+> > >? ???// If out-of-order execution
+> > happens, _factory might
+> > >? ???// be NuclearFactory
+> > instance.
+> > >? ???_factory.operate();
+> > > }
+> > >
+> > > Factory factory = new FoodFactory();
+> > > volatile boolean isNuclearFactory = false;
+> > >
+> > > Thanks and Regards
+> > > Yan Cheng CHEOK
+> > >
+> > >
+> > >
+> > > _______________________________________________
+> > > Concurrency-interest mailing list
+> > > Concurrency-interest at cs.oswego.edu
+> > > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> > >
+> >
+> >
+>
+>
+>
+>
+
+
+
+From joe.bowbeer at gmail.com  Mon Feb  7 06:04:05 2011
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Mon, 7 Feb 2011 03:04:05 -0800
+Subject: [concurrency-interest] Using a volatile variable as a "guard"
+In-Reply-To: <AANLkTikRh=vF81TTe0JjQkF6D_YOykXj=8E+FpnTNiib@mail.gmail.com>
+References: <860650.41079.qm@web65701.mail.ac4.yahoo.com>
+	<AANLkTikRh=vF81TTe0JjQkF6D_YOykXj=8E+FpnTNiib@mail.gmail.com>
+Message-ID: <AANLkTinHSPPhUa-sTX400BwcM_oxr8Wn+4Uv-mOzGF+a@mail.gmail.com>
+
+I forgot to mention a critical assumption in my analysis:
+
+The NuclearFactory's state is "atomic" (well, of course!)
+
+That is, NuclearFactory is a thread-safe immutable object.  Then the
+volatile flag is sufficient to guarantee that if method B sees
+isNuclearFactory=true then it will eventually see the NuclearFactory
+constructed by method A.
+
+If NuclearFactory construction is not atomic (immutable) then all bets are
+off regarding its safe operation by your sample code.
+
+Joe
+
+On Mon, Feb 7, 2011 at 12:57 AM, Joe Bowbeer wrote:
+
+> You got it.
+>
+> For the specifics, see 8.3.1.4 and Ch. 17 in the Java Language Spec.
+>
+> http://java.sun.com/docs/books/jls/third_edition/html/classes.html#36930
+>
+> In practice, it would be clearer to declare factory to be volatile and to
+> replace isNuclearFactory by a getType() method in the Factory class.
+>
+> Joe
+>
+> On Mon, Feb 7, 2011 at 12:24 AM, Yan Cheng CHEOK wrote:
+>
+> Hello all,
+>>
+>> I came across the article "Java theory and practice: Fixing the Java
+>> Memory Model, Part 2", by Brian Goetz.
+>>
+>> I hope I understand section "New guarantees for volatile" correctly.
+>>
+>> I try to use a similar technique as Brian Goetz's. My objective is :
+>>
+>> A) Never execute factory's operate member function, if it is a
+>> NuclearFactory.
+>>
+>> Hence, I try to turn on volatile guard variable isNuclearFactor, before I
+>> attempt to construct nuclear factory. This is different from Brian Goetz's.
+>> Brian Goetz only write to volatile variable, after he had finished
+>> constructed configOptions.
+>>
+>> I feel the following code should work, based on the information picked
+>> from Brian Goetz's article.
+>>
+>> ""Under the new memory model, when thread A writes to a volatile variable
+>> V, and thread B reads from V, any variable values that were visible to A at
+>> the time that V was written are guaranteed now to be visible to B""
+>>
+>> when thread A writes to volatile isNuclearFactory, and thread B reads from
+>> isNuclearFactory, factory was visible to A as FoodFactory at the time that
+>> isNuclearFactory was written. Hence, factory are guranteed now to be visible
+>> to B as FoodFactory too.
+>>
+>>
+>> I hope I am getting this correctly. Or, do I need to mark factory as
+>> volatile too?
+>>
+>>
+>> void fun_by_thread_A() {
+>>    this.isNuclearFactory = true;
+>>    this.factory = new NuclearFactory();
+>> }
+>>
+>> void fun_by_thread_B() {
+>>    Factory _factory = this.factory;
+>>    if (this.isNuclearFactory) {
+>>        // Do not operate nuclear factory!!!
+>>        return;
+>>    }
+>>    // If out-of-order execution happens, _factory might
+>>    // be NuclearFactory instance.
+>>    _factory.operate();
+>> }
+>>
+>> Factory factory = new FoodFactory();
+>> volatile boolean isNuclearFactory = false;
+>>
+>> Thanks and Regards
+>> Yan Cheng CHEOK
+>>
+>>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110207/fa4a7591/attachment.html>
+
+From joe.bowbeer at gmail.com  Mon Feb  7 06:20:03 2011
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Mon, 7 Feb 2011 03:20:03 -0800
+Subject: [concurrency-interest] Using a volatile variable as a "guard"
+In-Reply-To: <AANLkTinHSPPhUa-sTX400BwcM_oxr8Wn+4Uv-mOzGF+a@mail.gmail.com>
+References: <860650.41079.qm@web65701.mail.ac4.yahoo.com>
+	<AANLkTikRh=vF81TTe0JjQkF6D_YOykXj=8E+FpnTNiib@mail.gmail.com>
+	<AANLkTinHSPPhUa-sTX400BwcM_oxr8Wn+4Uv-mOzGF+a@mail.gmail.com>
+Message-ID: <AANLkTimHEDshRY61VGUWdNAyWejt68sOYpqxyO1ubX+A@mail.gmail.com>
+
+Sorry.  Never mind.  Reordering...
+
+(My score for answering volatile questions on this list is now below 50%.)
+
+On Mon, Feb 7, 2011 at 3:04 AM, Joe Bowbeer wrote:
+
+> I forgot to mention a critical assumption in my analysis:
+>
+> The NuclearFactory's state is "atomic" (well, of course!)
+>
+> That is, NuclearFactory is a thread-safe immutable object.  Then the
+> volatile flag is sufficient to guarantee that if method B sees
+> isNuclearFactory=true then it will eventually see the NuclearFactory
+> constructed by method A.
+>
+> If NuclearFactory construction is not atomic (immutable) then all bets are
+> off regarding its safe operation by your sample code.
+>
+> Joe
+>
+> On Mon, Feb 7, 2011 at 12:57 AM, Joe Bowbeer wrote:
+>
+> You got it.
+>>
+>> For the specifics, see 8.3.1.4 and Ch. 17 in the Java Language Spec.
+>>
+>> http://java.sun.com/docs/books/jls/third_edition/html/classes.html#36930
+>>
+>> In practice, it would be clearer to declare factory to be volatile and to
+>> replace isNuclearFactory by a getType() method in the Factory class.
+>>
+>> Joe
+>>
+>> On Mon, Feb 7, 2011 at 12:24 AM, Yan Cheng CHEOK wrote:
+>>
+>> Hello all,
+>>>
+>>> I came across the article "Java theory and practice: Fixing the Java
+>>> Memory Model, Part 2", by Brian Goetz.
+>>>
+>>> I hope I understand section "New guarantees for volatile" correctly.
+>>>
+>>> I try to use a similar technique as Brian Goetz's. My objective is :
+>>>
+>>> A) Never execute factory's operate member function, if it is a
+>>> NuclearFactory.
+>>>
+>>> Hence, I try to turn on volatile guard variable isNuclearFactor, before I
+>>> attempt to construct nuclear factory. This is different from Brian Goetz's.
+>>> Brian Goetz only write to volatile variable, after he had finished
+>>> constructed configOptions.
+>>>
+>>> I feel the following code should work, based on the information picked
+>>> from Brian Goetz's article.
+>>>
+>>> ""Under the new memory model, when thread A writes to a volatile variable
+>>> V, and thread B reads from V, any variable values that were visible to A at
+>>> the time that V was written are guaranteed now to be visible to B""
+>>>
+>>> when thread A writes to volatile isNuclearFactory, and thread B reads
+>>> from isNuclearFactory, factory was visible to A as FoodFactory at the time
+>>> that isNuclearFactory was written. Hence, factory are guranteed now to be
+>>> visible to B as FoodFactory too.
+>>>
+>>>
+>>> I hope I am getting this correctly. Or, do I need to mark factory as
+>>> volatile too?
+>>>
+>>>
+>>> void fun_by_thread_A() {
+>>>    this.isNuclearFactory = true;
+>>>    this.factory = new NuclearFactory();
+>>> }
+>>>
+>>> void fun_by_thread_B() {
+>>>    Factory _factory = this.factory;
+>>>    if (this.isNuclearFactory) {
+>>>        // Do not operate nuclear factory!!!
+>>>        return;
+>>>    }
+>>>    // If out-of-order execution happens, _factory might
+>>>    // be NuclearFactory instance.
+>>>    _factory.operate();
+>>> }
+>>>
+>>> Factory factory = new FoodFactory();
+>>> volatile boolean isNuclearFactory = false;
+>>>
+>>> Thanks and Regards
+>>> Yan Cheng CHEOK
+>>>
+>>>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110207/507bfb3c/attachment-0001.html>
+
+From hans.boehm at hp.com  Mon Feb  7 14:50:47 2011
+From: hans.boehm at hp.com (Boehm, Hans)
+Date: Mon, 7 Feb 2011 19:50:47 +0000
+Subject: [concurrency-interest] Using a volatile variable as a "guard"
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCIECFILAA.davidcholmes@aapt.net.au>
+References: <889029.32561.qm@web65703.mail.ac4.yahoo.com>
+	<NFBBKALFDCPFIDBNKAPCIECFILAA.davidcholmes@aapt.net.au>
+Message-ID: <238A96A773B3934685A7269CC8A8D0426F299C1600@GVW0436EXB.americas.hpqcorp.net>
+
+I personally still think that by far the cleanest way to think about whether a variable should be volatile is to ask:
+
+Does it participate in a data race?  Can one thread be reading or writing it while another thread is writing it?  To answer this question use a simple interleaved ("sequentially consistent") model in which nothing can be reordered.  In VolatileExample below (continuing to assume a single writer) x does not participate in a data race, since x is accessed by the reader only after it sees v true, and thus the writer must be done.  v can clearly participate in a data race, as can factory and isNuclearFactory in the original example.
+
+This does assume that:
+
+1) You apply this rule consistently.  If you don't declare v in the example below volatile, then the sequentially consistent reasoning I used to argue that x doesn't participate in a data race doesn't hold, since I no longer have a data-race-free program.
+
+2) Library implementers do the same, or at least make sure that library APIs are defined such that clients can continue to use sequentially consistent reasoning.  Currently, I think that's a goal of nearly all standard library APIs, at least in all cases in which reasonable client code can tell.  I suspect there are remaining bugs in some of the details.  But none of these issues arise in these examples.
+
+3) The program is otherwise correct under sequentially consistent reasoning.
+
+Hans
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-
+> interest-bounces at cs.oswego.edu] On Behalf Of David Holmes
+> Sent: Monday, February 07, 2011 2:12 AM
+> To: Yan Cheng CHEOK; concurrency-interest at cs.oswego.edu;
+> dholmes at ieee.org
+> Subject: Re: [concurrency-interest] Using a volatile variable as a
+> "guard"
+> 
+> Yan Cheng Cheok writes:
+> > In that case, is it correct for me to make the following 2
+> conclusion?
+> >
+> > Based on
+> > http://www.cs.umd.edu/~pugh/java/memoryModel/jsr-133-faq.html#inco
+> > rrectlySync,
+> >
+> > class VolatileExample {
+> >   int x = 0;
+> >   volatile boolean v = false;
+> >   public void writer() {
+> >     x = 42;
+> >     v = true;
+> >   }
+> >
+> >   public void reader() {
+> >     if (v == true) {
+> >       //uses x - guaranteed to see 42.
+> >     }
+> >   }
+> > }
+> >
+> > Conclusion 1
+> > ============
+> > 1a) write to non-volatile variable x
+> > 1b) write to volatile variable v
+> > 1a can never moved pass 1b
+> >
+> > and based on the need of using volatile in NuclearFactory example.
+> >
+> > Conclusion 2
+> > ============
+> > 2a) write to volatile variable v
+> > 2b) write to non-volatile variable x
+> > 2b can moved before 2a
+> 
+> Correct on both counts. A read of a volatile has a acquire semantics; a
+> write to a volatile has release semantics. Given:
+> 
+>   acquire();
+>   ...
+>   release();
+> 
+> we informally talk about  the "Roach Motel" rules - you can move in (to
+> the
+> ... region) but you can't move out. So any normal access before the
+> acquire
+> can move to after the acquire, but not the other way around. Any normal
+> access after the release can be moved to before the release, but not
+> the
+> other way around.
+> 
+> So:
+> 
+>    volatile_v = 1;
+>    non_volatile_x = 42;
+> 
+> can be reordered; but
+> 
+>    non_volatile_x = 42;
+>    volatile_v = 1;
+> 
+> can not.
+> 
+> David
+> 
+> > Thanks and Regards
+> > Yan Cheng CHEOK
+> >
+> >
+> > --- On Mon, 2/7/11, David Holmes <davidcholmes at aapt.net.au> wrote:
+> >
+> > > From: David Holmes <davidcholmes at aapt.net.au>
+> > > Subject: RE: [concurrency-interest] Using a volatile variable
+> > as a "guard"
+> > > To: "Yan Cheng CHEOK" <yccheok at yahoo.com>,
+> > concurrency-interest at cs.oswego.edu
+> > > Date: Monday, February 7, 2011, 5:28 PM
+> > > You need factory to be volatile too
+> > > so that the two variables maintain their
+> > > respective ordering. Otherwise the write to the factory can
+> > > move before the
+> > > write to the flag:
+> > >
+> > > ? ? this.factory = new NuclearFactory();
+> > > ? ? this.isNuclearFactory = true;
+> > >
+> > > and now thread B can get a NuclearFactory but see
+> > > isNuclearFactory before it
+> > > was set to true.
+> > >
+> > > There has been a bit of discussion on this recently. The
+> > > use a volatile flag
+> > > ensures data is visible when needed, but doesn't prevent it
+> > > being visible
+> > > earlier. In this example you need strict ordering, or
+> > > atomicity, to make
+> > > sure that a NuclearFactory is only ever seen when
+> > > isNuclearfactory is set.
+> > >
+> > > David Holmes
+> > >
+> > > > -----Original Message-----
+> > > > From: concurrency-interest-bounces at cs.oswego.edu
+> > > > [mailto:concurrency-interest-bounces at cs.oswego.edu]On
+> > > Behalf Of Yan
+> > > > Cheng CHEOK
+> > > > Sent: Monday, 7 February 2011 6:25 PM
+> > > > To: concurrency-interest at cs.oswego.edu
+> > > > Subject: [concurrency-interest] Using a volatile
+> > > variable as a "guard"
+> > > >
+> > > >
+> > > > Hello all,
+> > > >
+> > > > I came across the article "Java theory and practice:
+> > > Fixing the
+> > > > Java Memory Model, Part 2", by Brian Goetz.
+> > > >
+> > > > I hope I understand section "New guarantees for
+> > > volatile" correctly.
+> > > >
+> > > > I try to use a similar technique as Brian Goetz's. My
+> > > objective is :
+> > > >
+> > > > A) Never execute factory's operate member function, if
+> > > it is a
+> > > > NuclearFactory.
+> > > >
+> > > > Hence, I try to turn on volatile guard variable
+> > > isNuclearFactor,
+> > > > before I attempt to construct nuclear factory. This is
+> > > different
+> > > > from Brian Goetz's.
+> > > > Brian Goetz only write to volatile variable, after he
+> > > had
+> > > > finished constructed configOptions.
+> > > >
+> > > > I feel the following code should work, based on the
+> > > information
+> > > > picked from Brian Goetz's article.
+> > > >
+> > > > ""Under the new memory model, when thread A writes to
+> > > a volatile
+> > > > variable V, and thread B reads from V, any variable
+> > > values that
+> > > > were visible to A at the time that V was written are
+> > > guaranteed
+> > > > now to be visible to B""
+> > > >
+> > > > when thread A writes to volatile isNuclearFactory, and
+> > > thread B
+> > > > reads from isNuclearFactory, factory was visible to A
+> > > as
+> > > > FoodFactory at the time that isNuclearFactory was
+> > > written. Hence,
+> > > > factory are guranteed now to be visible to B as
+> > > FoodFactory too.
+> > > >
+> > > >
+> > > > I hope I am getting this correctly. Or, do I need to
+> > > mark factory
+> > > > as volatile too?
+> > > >
+> > > >
+> > > > void fun_by_thread_A() {
+> > > >? ???this.isNuclearFactory = true;
+> > > >? ???this.factory = new
+> > > NuclearFactory();
+> > > > }
+> > > >
+> > > > void fun_by_thread_B() {
+> > > >? ???Factory _factory =
+> > > this.factory;
+> > > >? ???if (this.isNuclearFactory) {
+> > > >? ? ? ???// Do not
+> > > operate nuclear factory!!!
+> > > >? ? ? ???return;
+> > > >? ???}
+> > > >? ???// If out-of-order execution
+> > > happens, _factory might
+> > > >? ???// be NuclearFactory
+> > > instance.
+> > > >? ???_factory.operate();
+> > > > }
+> > > >
+> > > > Factory factory = new FoodFactory();
+> > > > volatile boolean isNuclearFactory = false;
+> > > >
+> > > > Thanks and Regards
+> > > > Yan Cheng CHEOK
+> > > >
+> > > >
+> > > >
+> > > > _______________________________________________
+> > > > Concurrency-interest mailing list
+> > > > Concurrency-interest at cs.oswego.edu
+> > > > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> > > >
+> > >
+> > >
+> >
+> >
+> >
+> >
+> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From joe.bowbeer at gmail.com  Mon Feb  7 15:45:45 2011
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Mon, 7 Feb 2011 12:45:45 -0800
+Subject: [concurrency-interest] Using a volatile variable as a "guard"
+In-Reply-To: <238A96A773B3934685A7269CC8A8D0426F299C1600@GVW0436EXB.americas.hpqcorp.net>
+References: <889029.32561.qm@web65703.mail.ac4.yahoo.com>
+	<NFBBKALFDCPFIDBNKAPCIECFILAA.davidcholmes@aapt.net.au>
+	<238A96A773B3934685A7269CC8A8D0426F299C1600@GVW0436EXB.americas.hpqcorp.net>
+Message-ID: <AANLkTikUxaowAWzA+UT3bbemOegNyT0RjTJcD5u7Fy0F@mail.gmail.com>
+
+Thanks, Hans.
+
+Between the acquire/release model and the data-race check, I should be able
+to keep this straight!
+
+However, even though I was one of the ones pointing out problems in the
+volatile spec in 1997 (after Tom May brought it to my attention), and I
+really should be capable of using them correctly, I haven't used volatiles
+in more than 10 years for anything more than a termination flag.
+
+Whenever I see a volatile today, the only thing I know for certain is: there
+be bugs.
+
+So, as a favor to me and others like me, please refrain from using volatile
+if there's a clearer way to do it.
+
+Joe
+
+On Mon, Feb 7, 2011 at 11:50 AM, Boehm, Hans wrote:
+
+> I personally still think that by far the cleanest way to think about
+> whether a variable should be volatile is to ask:
+>
+> Does it participate in a data race?  Can one thread be reading or writing
+> it while another thread is writing it?  To answer this question use a simple
+> interleaved ("sequentially consistent") model in which nothing can be
+> reordered.  In VolatileExample below (continuing to assume a single writer)
+> x does not participate in a data race, since x is accessed by the reader
+> only after it sees v true, and thus the writer must be done.  v can clearly
+> participate in a data race, as can factory and isNuclearFactory in the
+> original example.
+>
+> This does assume that:
+>
+> 1) You apply this rule consistently.  If you don't declare v in the example
+> below volatile, then the sequentially consistent reasoning I used to argue
+> that x doesn't participate in a data race doesn't hold, since I no longer
+> have a data-race-free program.
+>
+> 2) Library implementers do the same, or at least make sure that library
+> APIs are defined such that clients can continue to use sequentially
+> consistent reasoning.  Currently, I think that's a goal of nearly all
+> standard library APIs, at least in all cases in which reasonable client code
+> can tell.  I suspect there are remaining bugs in some of the details.  But
+> none of these issues arise in these examples.
+>
+> 3) The program is otherwise correct under sequentially consistent
+> reasoning.
+>
+> Hans
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110207/5a9350d2/attachment.html>
+
+From tim at peierls.net  Mon Feb  7 16:12:53 2011
+From: tim at peierls.net (Tim Peierls)
+Date: Mon, 7 Feb 2011 16:12:53 -0500
+Subject: [concurrency-interest] Using a volatile variable as a "guard"
+In-Reply-To: <AANLkTikUxaowAWzA+UT3bbemOegNyT0RjTJcD5u7Fy0F@mail.gmail.com>
+References: <889029.32561.qm@web65703.mail.ac4.yahoo.com>
+	<NFBBKALFDCPFIDBNKAPCIECFILAA.davidcholmes@aapt.net.au>
+	<238A96A773B3934685A7269CC8A8D0426F299C1600@GVW0436EXB.americas.hpqcorp.net>
+	<AANLkTikUxaowAWzA+UT3bbemOegNyT0RjTJcD5u7Fy0F@mail.gmail.com>
+Message-ID: <AANLkTik=vGmZqObwF2ENVrT0k+ZekzepikPSctgBv7FO@mail.gmail.com>
+
+On Mon, Feb 7, 2011 at 3:45 PM, Joe Bowbeer <joe.bowbeer at gmail.com> wrote:
+
+> So, as a favor to me and others like me, please refrain from using volatile
+> if there's a clearer way to do it.
+>
+
+Agreed, but there's an important case that I would like to call out:
+
+There are many unsafe classes out there that have public setters primarily
+used by reflection-based frameworks to build instances, calling the default
+constructor and then the setters. (Tools are better, now, but you still find
+the "must have public no-arg constructor" restriction depressingly often.)
+As long as clients don't use those setters after an object is published,
+things are fine, but there's often no way to guarantee this.
+
+In such cases, I like using volatile on the affected fields, at least as a
+first step towards refactoring for safety; it is a simple way to ensure
+visibilty and to document what is going on: "Can't make this final -- wish I
+could -- best I can do and still be safe." This applies only as long as the
+affected fields are independent, but I've seen a *lot* of classes that
+qualify. (And in some cases, interdependent fields can be handled with a few
+key synchronized blocks.)
+
+If it gets more complicated, with collections being returned and
+interdependent state, then the class will need major redesign, but in many
+common situations, all you need is volatile.
+
+But otherwise I tend to avoid volatile.
+
+--tim
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110207/65e5ccda/attachment.html>
+
+From mohanr at fss.co.in  Wed Feb 16 01:52:05 2011
+From: mohanr at fss.co.in (Mohan Radhakrishnan)
+Date: Wed, 16 Feb 2011 12:22:05 +0530
+Subject: [concurrency-interest] Visualize parallelism
+Message-ID: <E49F4E6D734B954487B074B4EFE60D0141C6B4@fssbemail.fss.india>
+
+Hi,
+
+ 
+
+This is a newbie question.
+
+ 
+
+        What is the recommended way to visualize how the FJ API's
+parallelism is able to use different cores ? Is there a Windows tool for
+visualizing it at that level ?
+
+ 
+
+Is any tool like this used by the team to test the API ? 
+
+ 
+
+Thanks,
+
+Mohan
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110216/13d0e706/attachment.html>
+
+From davidcholmes at aapt.net.au  Wed Feb 16 02:01:27 2011
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 16 Feb 2011 17:01:27 +1000
+Subject: [concurrency-interest] Visualize parallelism
+In-Reply-To: <E49F4E6D734B954487B074B4EFE60D0141C6B4@fssbemail.fss.india>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOEGDILAA.davidcholmes@aapt.net.au>
+
+Are you looking for something that would show you the task graph that gets
+created? I don't know of any such tools, though it would be interesting to
+know a few basic facts about the graph when tuning your algorithms.
+
+The ability to use different cores is just a consequence of multi-threading.
+There's nothing specific to FJ about that - it will use as many cores as it
+has threads with work to do.
+
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Mohan
+Radhakrishnan
+  Sent: Wednesday, 16 February 2011 4:52 PM
+  To: concurrency-interest at cs.oswego.edu
+  Subject: [concurrency-interest] Visualize parallelism
+
+
+  Hi,
+
+
+
+  This is a newbie question.
+
+
+
+          What is the recommended way to visualize how the FJ API's
+parallelism is able to use different cores ? Is there a Windows tool for
+visualizing it at that level ?
+
+
+
+  Is any tool like this used by the team to test the API ?
+
+
+
+  Thanks,
+
+  Mohan
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110216/b4a6ab46/attachment.html>
+
+From markus.jevring at petercam.be  Wed Feb 16 05:57:00 2011
+From: markus.jevring at petercam.be (Markus Jevring)
+Date: Wed, 16 Feb 2011 11:57:00 +0100
+Subject: [concurrency-interest] Visualize parallelism
+In-Reply-To: <E49F4E6D734B954487B074B4EFE60D0141C6B4@fssbemail.fss.india>
+References: <E49F4E6D734B954487B074B4EFE60D0141C6B4@fssbemail.fss.india>
+Message-ID: <FC96218C31BC8442949628C0A26159979685F915AE@emaildata.petercam.corp>
+
+Perhaps this is what you are looking for: http://sourceforge.net/projects/javaconcurrenta/
+That should show you fundamentally how things work. It won't show you your particular implementation, though. i also don't know if FJ is in there already, but I know the author reads this mailinglist, and so might be persuaded to add it, if it's not already present.
+
+________________________________
+From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of Mohan Radhakrishnan
+Sent: Wednesday, February 16, 2011 7:52 AM
+To: concurrency-interest at cs.oswego.edu
+Subject: [concurrency-interest] Visualize parallelism
+
+Hi,
+
+This is a newbie question.
+
+        What is the recommended way to visualize how the FJ API's parallelism is able to use different cores ? Is there a Windows tool for visualizing it at that level ?
+
+Is any tool like this used by the team to test the API ?
+
+Thanks,
+Mohan
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110216/66e83bb1/attachment.html>
+
+From kasper at kav.dk  Wed Feb 16 08:26:01 2011
+From: kasper at kav.dk (Kasper Nielsen)
+Date: Wed, 16 Feb 2011 14:26:01 +0100
+Subject: [concurrency-interest] Visualize parallelism
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCOEGDILAA.davidcholmes@aapt.net.au>
+References: <NFBBKALFDCPFIDBNKAPCOEGDILAA.davidcholmes@aapt.net.au>
+Message-ID: <4D5BD069.6070805@kav.dk>
+
+I looked into creating something like this.
+But it proved a bit more cumbersome that I had expected because 
+everything in ForkJoinPool&friends is final or private/package protected.
+
+FJP needs some methods similar to beforeExecute and afterExecute
+on ThreadPoolExecutor to make this happen.
+Something like
+ForkJoinPool.beforeExecute(ForkJoinWorkerThread thread, ForkJoinTask task);
+ForkJoinPool.afterExecute(ForkJoinWorkerThread thread, ForkJoinTask 
+task, Throwable t);
+would be a good start.
+
+Also FJP.forkOrSubmit(Task) is private so its cumbersome
+to wrap tasks, because you have to override every execute() and submit() 
+method in ForkJoinPool. At least make the execute() methods delegate to 
+the submit() methods.
+
+Cheers
+  Kasper
+
+On 16-02-2011 08:01, David Holmes wrote:
+> Are you looking for something that would show you the task graph that
+> gets created? I don't know of any such tools, though it would be
+> interesting to know a few basic facts about the graph when tuning your
+> algorithms.
+> The ability to use different cores is just a consequence of
+> multi-threading. There's nothing specific to FJ about that - it will use
+> as many cores as it has threads with work to do.
+> David Holmes
+>
+>     -----Original Message-----
+>     *From:* concurrency-interest-bounces at cs.oswego.edu
+>     [mailto:concurrency-interest-bounces at cs.oswego.edu]*On Behalf Of
+>     *Mohan Radhakrishnan
+>     *Sent:* Wednesday, 16 February 2011 4:52 PM
+>     *To:* concurrency-interest at cs.oswego.edu
+>     *Subject:* [concurrency-interest] Visualize parallelism
+>
+>     Hi,
+>
+>     This is a newbie question.
+>
+>     What is the recommended way to visualize how the FJ API?s
+>     parallelism is able to use different cores ? Is there a Windows tool
+>     for visualizing it at that level ?
+>
+>     Is any tool like this used by the team to test the API ?
+>
+>     Thanks,
+>
+>     Mohan
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From dl at cs.oswego.edu  Wed Feb 16 09:10:57 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 16 Feb 2011 09:10:57 -0500
+Subject: [concurrency-interest] Visualize parallelism
+In-Reply-To: <E49F4E6D734B954487B074B4EFE60D0141C6B4@fssbemail.fss.india>
+References: <E49F4E6D734B954487B074B4EFE60D0141C6B4@fssbemail.fss.india>
+Message-ID: <4D5BDAF1.2080304@cs.oswego.edu>
+
+On 02/16/11 01:52, Mohan Radhakrishnan wrote:
+> What is the recommended way to visualize how the FJ API?s parallelism is able to
+> use different cores ? Is there a Windows tool for visualizing it at that level ?
+>
+> Is any tool like this used by the team to test the API ?
+
+For most purposes, the best visual tool is just something
+that displays per-core CPU activity with a reasonably high
+refresh rate. On Linux and Solaris I use "perfbar" --
+http://gee.cs.oswego.edu/dl/code/
+But these days there are a lot of options across platforms,
+as googling "cpu core meter" and the like shows.
+
+-Doug
+
+
+
+
+From kasper at kav.dk  Wed Feb 16 09:12:28 2011
+From: kasper at kav.dk (Kasper Nielsen)
+Date: Wed, 16 Feb 2011 15:12:28 +0100
+Subject: [concurrency-interest] Visualize parallelism
+In-Reply-To: <4D5BD069.6070805@kav.dk>
+References: <NFBBKALFDCPFIDBNKAPCOEGDILAA.davidcholmes@aapt.net.au>
+	<4D5BD069.6070805@kav.dk>
+Message-ID: <4D5BDB4C.8030107@kav.dk>
+
+Actually, I don't how useful it would be to wrap ForkJoinTasks.
+Unlike ThreadPoolExecutor which uses Runnable.run() ForkJoinPool uses 
+ForkJoinTask.exec() which is protected. This makes it difficult to 
+create generic wrappers,
+Any reason not to make ForkJoinTask.exec() public?
+
+Cheers
+  Kasper
+
+On 16-02-2011 14:26, Kasper Nielsen wrote:
+> I looked into creating something like this.
+> But it proved a bit more cumbersome that I had expected because
+> everything in ForkJoinPool&friends is final or private/package protected.
+>
+> FJP needs some methods similar to beforeExecute and afterExecute
+> on ThreadPoolExecutor to make this happen.
+> Something like
+> ForkJoinPool.beforeExecute(ForkJoinWorkerThread thread, ForkJoinTask task);
+> ForkJoinPool.afterExecute(ForkJoinWorkerThread thread, ForkJoinTask
+> task, Throwable t);
+> would be a good start.
+>
+> Also FJP.forkOrSubmit(Task) is private so its cumbersome
+> to wrap tasks, because you have to override every execute() and submit()
+> method in ForkJoinPool. At least make the execute() methods delegate to
+> the submit() methods.
+>
+> Cheers
+> Kasper
+>
+> On 16-02-2011 08:01, David Holmes wrote:
+>> Are you looking for something that would show you the task graph that
+>> gets created? I don't know of any such tools, though it would be
+>> interesting to know a few basic facts about the graph when tuning your
+>> algorithms.
+>> The ability to use different cores is just a consequence of
+>> multi-threading. There's nothing specific to FJ about that - it will use
+>> as many cores as it has threads with work to do.
+>> David Holmes
+>>
+>> -----Original Message-----
+>> *From:* concurrency-interest-bounces at cs.oswego.edu
+>> [mailto:concurrency-interest-bounces at cs.oswego.edu]*On Behalf Of
+>> *Mohan Radhakrishnan
+>> *Sent:* Wednesday, 16 February 2011 4:52 PM
+>> *To:* concurrency-interest at cs.oswego.edu
+>> *Subject:* [concurrency-interest] Visualize parallelism
+>>
+>> Hi,
+>>
+>> This is a newbie question.
+>>
+>> What is the recommended way to visualize how the FJ API?s
+>> parallelism is able to use different cores ? Is there a Windows tool
+>> for visualizing it at that level ?
+>>
+>> Is any tool like this used by the team to test the API ?
+>>
+>> Thanks,
+>>
+>> Mohan
+>>
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From navin.jha at FXALL.com  Wed Feb 16 10:02:38 2011
+From: navin.jha at FXALL.com (Navin Jha)
+Date: Wed, 16 Feb 2011 10:02:38 -0500
+Subject: [concurrency-interest] Making copy of a referencetoReentrantLock
+In-Reply-To: <mailman.1.1295888400.1950.concurrency-interest@cs.oswego.edu>
+References: <mailman.1.1295888400.1950.concurrency-interest@cs.oswego.edu>
+Message-ID: <EA6FFD6D7496E940BA1A5A5C1CEFAF76135BF408ED@NYEXCH02.fxall.com>
+
+David,
+
+
+Sorry to bring this up again. Can I draw a general conclusion from this discussion that when you have a method that needs to be very efficient (e.g. handling market data in a trading application) in a multi-threaded environment you should look to make local copies of final variables (and even other variable which you don't expect to change going forward)?
+
+-Navin
+
+
+
+
+-----Original Message-----
+From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of concurrency-interest-request at cs.oswego.edu
+Sent: Monday, January 24, 2011 12:00 PM
+To: concurrency-interest at cs.oswego.edu
+Subject: Concurrency-interest Digest, Vol 72, Issue 39
+
+Send Concurrency-interest mailing list submissions to
+	concurrency-interest at cs.oswego.edu
+
+To subscribe or unsubscribe via the World Wide Web, visit
+	http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+or, via email, send a message with subject or body 'help' to
+	concurrency-interest-request at cs.oswego.edu
+
+You can reach the person managing the list at
+	concurrency-interest-owner at cs.oswego.edu
+
+When replying, please edit your Subject line so it is more specific
+than "Re: Contents of Concurrency-interest digest..."
+
+
+Today's Topics:
+
+   1. Re: Making copy of a referencetoReentrantLock (David Holmes)
+   2. Re: Making copy of a referencetoReentrantLock (David M. Lloyd)
+   3. Re: Making copy of a referencetoReentrantLock (David Holmes)
+
+
+----------------------------------------------------------------------
+
+Message: 1
+Date: Mon, 24 Jan 2011 08:30:03 +1000
+From: "David Holmes" <davidcholmes at aapt.net.au>
+Subject: Re: [concurrency-interest] Making copy of a
+	referencetoReentrantLock
+To: "David M. Lloyd" <david.lloyd at redhat.com>,
+	<concurrency-interest at cs.oswego.edu>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEMOIKAA.davidcholmes at aapt.net.au>
+Content-Type: text/plain;	charset="iso-8859-1"
+
+David,
+
+> There's a bit more to it than that.  System.in/out/err are "special" in
+> that they are final but can be reloaded in the normal course of program
+> execution.
+
+But that happens during VM initialization and is covered by "before they are
+made available for access by other parts of a program" clause.
+
+I guess all this just reinforces why finals are tricky to handle and hence
+why the j.u.c code loads finals into locals.
+
+David Holmes
+
+> On 01/22/2011 09:20 PM, David Holmes wrote:
+> > Remi,
+> > The specification makes it clear that setting of a final field via
+> > reflection is only valid in certain contexts:
+> > "Setting a final field in this way is meaningful only during
+> > deserialization or reconstruction of instances of classes with blank
+> > final fields, before they are made available for access by other parts
+> > of a program. Use in any other context may have unpredictable effects,
+> > including cases in which other parts of a program continue to use the
+> > original value of this field. "
+> > So the compiler can optimize away re-loading of final fields, even if
+> > reflection (or Unsafe) is mis-used. (Though compilation of
+> > deserialization code would have to be handled specially.)
+> > David
+> >
+> >     -----Original Message-----
+> >     *From:* R?mi Forax [mailto:forax at univ-mlv.fr]
+> >     *Sent:* Sunday, 23 January 2011 10:49 AM
+> >     *To:* dholmes at ieee.org
+> >     *Cc:* David Holmes; Vitaly Davidovich;
+> >     concurrency-interest at cs.oswego.edu
+> >     *Subject:* Re: [concurrency-interest] Making copy of a
+> >     referencetoReentrantLock
+> >
+> >     On 01/23/2011 01:37 AM, David Holmes wrote:
+> >>     Re-loading a final field is always redundant, the question is
+> >>     whether the compiler recognizes that regardless of method calls or
+> >>     inlining. It didn't in the past. I dont know what it does now.
+> >
+> >     You can't optimize re-loading of final field if the field is changed
+> >     (by reflection or using unsafe) in the middle.
+> >     That why it depends on method calls/inlining.
+> >
+> >     The other solution is optimize optimistically and deopt if someone
+> >     changes the field.
+> >     Hotspot don't do that.
+> >
+> >>     Remi:thanks for correcting my comment on final locals.
+> >>     Cheers,
+> >>     David
+> >
+> >     regards,
+> >     R?mi
+> >
+> >>         -----Original Message-----
+> >>         *From:* concurrency-interest-bounces at cs.oswego.edu
+> >>         [mailto:concurrency-interest-bounces at cs.oswego.edu]*On Behalf
+> >>         Of *Vitaly Davidovich
+> >>         *Sent:* Sunday, 23 January 2011 9:21 AM
+> >>         *To:* R?mi Forax
+> >>         *Cc:* Martin Buchholz; concurrency-interest at cs.oswego.edu
+> >>         *Subject:* Re: [concurrency-interest] Making copy of a
+> >>         referencetoReentrantLock
+> >>
+> >>         I guess you're talking about final field loads across method
+> >>         calls by mentioning inlining; if so, clearly inlining exposes
+> >>         opportunities for optos, but I'm personally curious whether
+> >>         all loads are eliminated within one method - seems you're
+> >>         saying that's the case (I should take a look at the
+> >>         disassembly myself and not be lazy :)). Furthermore, with
+> >>         respect to the original question, interesting to know whether
+> >>         lock() and the like prevent this opto in the latest product
+> >>         hotspot.
+> >>
+> >>         On Jan 22, 2011 6:03 PM, "R?mi Forax" <forax at univ-mlv.fr
+> >>         <mailto:forax at univ-mlv.fr>> wrote:
+> >>         > On 01/22/2011 10:24 PM, Vitaly Davidovich wrote:
+> >>         >>
+> >>         >> Martin,
+> >>         >>
+> >>         >> Are you saying that the current (e.g. jdk 6u23) C2 compiler
+> >>         (let's
+> >>         >> focus on this one) does not eliminate repeated loads of
+> >>         final fields
+> >>         >> even in trivial methods (i.e. no mem fences)? I'd imagine
+> >>         that's a
+> >>         >> failure in the compiler if that's true. Style/engineering
+> >>         practices
+> >>         >> aside, developers should not have to resort to manually
+> >>         optimizing a
+> >>         >> final read by using a local. I'm still curious to hear from
+> >>         someone
+> >>         >> on the compiler team on this subject.
+> >>         >>
+> >>         >> Vitaly
+> >>         >>
+> >>         >
+> >>         > c1 and c2 eliminate redundant loads (as far as I can see by
+> >>         playing with
+> >>         > hsdis),
+> >>         > but for that all the bytecodes between the two loads must be
+> >>         inlined.
+> >>         > It's often the case with c2, c1 is less aggressive.
+> >>         >
+> >>         > R?mi
+> >>         >
+> >>         >> On Jan 22, 2011 3:35 PM, "Martin Buchholz"
+> >>         <martinrb at google.com <mailto:martinrb at google.com>
+> >>         >> <mailto:martinrb at google.com <mailto:martinrb at google.com>>>
+> >>         wrote:
+> >>         >> > On Sat, Jan 22, 2011 at 04:55, R?mi Forax
+> >>         <forax at univ-mlv.fr <mailto:forax at univ-mlv.fr>
+> >>         >> <mailto:forax at univ-mlv.fr
+> <mailto:forax at univ-mlv.fr>>> wrote:
+> >>         >> >
+> >>         >> >>
+> >>         >> >> No, making the local final doesn't trigger any
+> optimization.
+> >>         >> >> javac doesn't do any optimization and in the bytecode
+> >>         there is no
+> >>         >> way to
+> >>         >> >> say this local variable is final.
+> >>         >> >>
+> >>         >> >
+> >>         >> > We in jsr166-land consider our software important enough
+> >>         to make
+> >>         >> > optimizations we don't recommend to regular java
+> >>         programmers.
+> >>         >> Copying final
+> >>         >> > fields to locals generates smaller bytecode and might
+> >>         help the jit
+> >>         >> produce
+> >>         >> > better code (and with current hotspot, still does).
+> >>         >> >
+> >>         >> > Using final on locals has no performance advantage, but
+> >>         it does have
+> >>         >> some
+> >>         >> > software engineering advantages. We tend to use it for
+> >>         locals with
+> >>         >> the same
+> >>         >> > name as a field, e.g.
+> >>         >> >
+> >>         >> > final Foo foo = this.foo;
+> >>         >> >
+> >>         >> > Martin
+> >>         >
+> >
+> >
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> --
+> - DML
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+
+------------------------------
+
+Message: 2
+Date: Sun, 23 Jan 2011 17:03:04 -0600
+From: "David M. Lloyd" <david.lloyd at redhat.com>
+Subject: Re: [concurrency-interest] Making copy of a
+	referencetoReentrantLock
+To: dholmes at ieee.org
+Cc: concurrency-interest at cs.oswego.edu
+Message-ID: <4D3CB3A8.2060103 at redhat.com>
+Content-Type: text/plain; charset=ISO-8859-1; format=flowed
+
+On 01/23/2011 04:30 PM, David Holmes wrote:
+> David,
+>
+>> There's a bit more to it than that.  System.in/out/err are "special" in
+>> that they are final but can be reloaded in the normal course of program
+>> execution.
+>
+> But that happens during VM initialization and is covered by "before they are
+> made available for access by other parts of a program" clause.
+
+However, you can call System.setIn/Out/Err() at any time, thus it's not 
+exclusively relegated to VM init.
+
+-- 
+- DML
+
+
+------------------------------
+
+Message: 3
+Date: Mon, 24 Jan 2011 09:41:57 +1000
+From: "David Holmes" <davidcholmes at aapt.net.au>
+Subject: Re: [concurrency-interest] Making copy of a
+	referencetoReentrantLock
+To: "David M. Lloyd" <david.lloyd at redhat.com>
+Cc: concurrency-interest at cs.oswego.edu
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEMPIKAA.davidcholmes at aapt.net.au>
+Content-Type: text/plain;	charset="iso-8859-1"
+
+David Lloyd writes:
+> >> There's a bit more to it than that.  System.in/out/err are "special" in
+> >> that they are final but can be reloaded in the normal course of program
+> >> execution.
+> >
+> > But that happens during VM initialization and is covered by
+> "before they are
+> > made available for access by other parts of a program" clause.
+>
+> However, you can call System.setIn/Out/Err() at any time, thus it's not
+> exclusively relegated to VM init.
+
+Ouch! So you can. Those static fields are treated specially by the compiler
+as explicitly not being considered constants.
+
+David
+
+
+
+------------------------------
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+End of Concurrency-interest Digest, Vol 72, Issue 39
+****************************************************
+
+
+
+From brian at briangoetz.com  Wed Feb 16 12:21:40 2011
+From: brian at briangoetz.com (Brian Goetz)
+Date: Wed, 16 Feb 2011 12:21:40 -0500
+Subject: [concurrency-interest] Making copy of a referencetoReentrantLock
+In-Reply-To: <EA6FFD6D7496E940BA1A5A5C1CEFAF76135BF408ED@NYEXCH02.fxall.com>
+References: <mailman.1.1295888400.1950.concurrency-interest@cs.oswego.edu>
+	<EA6FFD6D7496E940BA1A5A5C1CEFAF76135BF408ED@NYEXCH02.fxall.com>
+Message-ID: <4D5C07A4.6020309@briangoetz.com>
+
+As a general rule, you can not draw any general conclusions about "black 
+performance magic."  I understand that it is natural to want to distill 
+a set of "best practices" for high-performance code, but such things 
+don't really exist.  Most of these tricks are ad-hoc, VM-specific (both 
+product and version), statistical in nature, moving targets as VMs 
+evolve, etc.  The list of "but it depends on" qualifiers for statements 
+like this is about as long as the VM source code.
+
+Sorry :(
+
+> Sorry to bring this up again. Can I draw a general conclusion from this discussion that when you have a method that needs to be very efficient (e.g. handling market data in a trading application) in a multi-threaded environment you should look to make local copies of final variables (and even other variable which you don't expect to change going forward)?
+>
+> -Navin
+>
+>
+>
+>
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of concurrency-interest-request at cs.oswego.edu
+> Sent: Monday, January 24, 2011 12:00 PM
+> To: concurrency-interest at cs.oswego.edu
+> Subject: Concurrency-interest Digest, Vol 72, Issue 39
+>
+> Send Concurrency-interest mailing list submissions to
+> 	concurrency-interest at cs.oswego.edu
+>
+> To subscribe or unsubscribe via the World Wide Web, visit
+> 	http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> or, via email, send a message with subject or body 'help' to
+> 	concurrency-interest-request at cs.oswego.edu
+>
+> You can reach the person managing the list at
+> 	concurrency-interest-owner at cs.oswego.edu
+>
+> When replying, please edit your Subject line so it is more specific
+> than "Re: Contents of Concurrency-interest digest..."
+>
+>
+> Today's Topics:
+>
+>     1. Re: Making copy of a referencetoReentrantLock (David Holmes)
+>     2. Re: Making copy of a referencetoReentrantLock (David M. Lloyd)
+>     3. Re: Making copy of a referencetoReentrantLock (David Holmes)
+>
+>
+> ----------------------------------------------------------------------
+>
+> Message: 1
+> Date: Mon, 24 Jan 2011 08:30:03 +1000
+> From: "David Holmes"<davidcholmes at aapt.net.au>
+> Subject: Re: [concurrency-interest] Making copy of a
+> 	referencetoReentrantLock
+> To: "David M. Lloyd"<david.lloyd at redhat.com>,
+> 	<concurrency-interest at cs.oswego.edu>
+> Message-ID:<NFBBKALFDCPFIDBNKAPCCEMOIKAA.davidcholmes at aapt.net.au>
+> Content-Type: text/plain;	charset="iso-8859-1"
+>
+> David,
+>
+>> There's a bit more to it than that.  System.in/out/err are "special" in
+>> that they are final but can be reloaded in the normal course of program
+>> execution.
+>
+> But that happens during VM initialization and is covered by "before they are
+> made available for access by other parts of a program" clause.
+>
+> I guess all this just reinforces why finals are tricky to handle and hence
+> why the j.u.c code loads finals into locals.
+>
+> David Holmes
+>
+>> On 01/22/2011 09:20 PM, David Holmes wrote:
+>>> Remi,
+>>> The specification makes it clear that setting of a final field via
+>>> reflection is only valid in certain contexts:
+>>> "Setting a final field in this way is meaningful only during
+>>> deserialization or reconstruction of instances of classes with blank
+>>> final fields, before they are made available for access by other parts
+>>> of a program. Use in any other context may have unpredictable effects,
+>>> including cases in which other parts of a program continue to use the
+>>> original value of this field. "
+>>> So the compiler can optimize away re-loading of final fields, even if
+>>> reflection (or Unsafe) is mis-used. (Though compilation of
+>>> deserialization code would have to be handled specially.)
+>>> David
+>>>
+>>>      -----Original Message-----
+>>>      *From:* R?mi Forax [mailto:forax at univ-mlv.fr]
+>>>      *Sent:* Sunday, 23 January 2011 10:49 AM
+>>>      *To:* dholmes at ieee.org
+>>>      *Cc:* David Holmes; Vitaly Davidovich;
+>>>      concurrency-interest at cs.oswego.edu
+>>>      *Subject:* Re: [concurrency-interest] Making copy of a
+>>>      referencetoReentrantLock
+>>>
+>>>      On 01/23/2011 01:37 AM, David Holmes wrote:
+>>>>      Re-loading a final field is always redundant, the question is
+>>>>      whether the compiler recognizes that regardless of method calls or
+>>>>      inlining. It didn't in the past. I dont know what it does now.
+>>>
+>>>      You can't optimize re-loading of final field if the field is changed
+>>>      (by reflection or using unsafe) in the middle.
+>>>      That why it depends on method calls/inlining.
+>>>
+>>>      The other solution is optimize optimistically and deopt if someone
+>>>      changes the field.
+>>>      Hotspot don't do that.
+>>>
+>>>>      Remi:thanks for correcting my comment on final locals.
+>>>>      Cheers,
+>>>>      David
+>>>
+>>>      regards,
+>>>      R?mi
+>>>
+>>>>          -----Original Message-----
+>>>>          *From:* concurrency-interest-bounces at cs.oswego.edu
+>>>>          [mailto:concurrency-interest-bounces at cs.oswego.edu]*On Behalf
+>>>>          Of *Vitaly Davidovich
+>>>>          *Sent:* Sunday, 23 January 2011 9:21 AM
+>>>>          *To:* R?mi Forax
+>>>>          *Cc:* Martin Buchholz; concurrency-interest at cs.oswego.edu
+>>>>          *Subject:* Re: [concurrency-interest] Making copy of a
+>>>>          referencetoReentrantLock
+>>>>
+>>>>          I guess you're talking about final field loads across method
+>>>>          calls by mentioning inlining; if so, clearly inlining exposes
+>>>>          opportunities for optos, but I'm personally curious whether
+>>>>          all loads are eliminated within one method - seems you're
+>>>>          saying that's the case (I should take a look at the
+>>>>          disassembly myself and not be lazy :)). Furthermore, with
+>>>>          respect to the original question, interesting to know whether
+>>>>          lock() and the like prevent this opto in the latest product
+>>>>          hotspot.
+>>>>
+>>>>          On Jan 22, 2011 6:03 PM, "R?mi Forax"<forax at univ-mlv.fr
+>>>>          <mailto:forax at univ-mlv.fr>>  wrote:
+>>>>          >  On 01/22/2011 10:24 PM, Vitaly Davidovich wrote:
+>>>>          >>
+>>>>          >>  Martin,
+>>>>          >>
+>>>>          >>  Are you saying that the current (e.g. jdk 6u23) C2 compiler
+>>>>          (let's
+>>>>          >>  focus on this one) does not eliminate repeated loads of
+>>>>          final fields
+>>>>          >>  even in trivial methods (i.e. no mem fences)? I'd imagine
+>>>>          that's a
+>>>>          >>  failure in the compiler if that's true. Style/engineering
+>>>>          practices
+>>>>          >>  aside, developers should not have to resort to manually
+>>>>          optimizing a
+>>>>          >>  final read by using a local. I'm still curious to hear from
+>>>>          someone
+>>>>          >>  on the compiler team on this subject.
+>>>>          >>
+>>>>          >>  Vitaly
+>>>>          >>
+>>>>          >
+>>>>          >  c1 and c2 eliminate redundant loads (as far as I can see by
+>>>>          playing with
+>>>>          >  hsdis),
+>>>>          >  but for that all the bytecodes between the two loads must be
+>>>>          inlined.
+>>>>          >  It's often the case with c2, c1 is less aggressive.
+>>>>          >
+>>>>          >  R?mi
+>>>>          >
+>>>>          >>  On Jan 22, 2011 3:35 PM, "Martin Buchholz"
+>>>>          <martinrb at google.com<mailto:martinrb at google.com>
+>>>>          >>  <mailto:martinrb at google.com<mailto:martinrb at google.com>>>
+>>>>          wrote:
+>>>>          >>  >  On Sat, Jan 22, 2011 at 04:55, R?mi Forax
+>>>>          <forax at univ-mlv.fr<mailto:forax at univ-mlv.fr>
+>>>>          >>  <mailto:forax at univ-mlv.fr
+>> <mailto:forax at univ-mlv.fr>>>  wrote:
+>>>>          >>  >
+>>>>          >>  >>
+>>>>          >>  >>  No, making the local final doesn't trigger any
+>> optimization.
+>>>>          >>  >>  javac doesn't do any optimization and in the bytecode
+>>>>          there is no
+>>>>          >>  way to
+>>>>          >>  >>  say this local variable is final.
+>>>>          >>  >>
+>>>>          >>  >
+>>>>          >>  >  We in jsr166-land consider our software important enough
+>>>>          to make
+>>>>          >>  >  optimizations we don't recommend to regular java
+>>>>          programmers.
+>>>>          >>  Copying final
+>>>>          >>  >  fields to locals generates smaller bytecode and might
+>>>>          help the jit
+>>>>          >>  produce
+>>>>          >>  >  better code (and with current hotspot, still does).
+>>>>          >>  >
+>>>>          >>  >  Using final on locals has no performance advantage, but
+>>>>          it does have
+>>>>          >>  some
+>>>>          >>  >  software engineering advantages. We tend to use it for
+>>>>          locals with
+>>>>          >>  the same
+>>>>          >>  >  name as a field, e.g.
+>>>>          >>  >
+>>>>          >>  >  final Foo foo = this.foo;
+>>>>          >>  >
+>>>>          >>  >  Martin
+>>>>          >
+>>>
+>>>
+>>>
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+>> --
+>> - DML
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+>
+>
+>
+> ------------------------------
+>
+> Message: 2
+> Date: Sun, 23 Jan 2011 17:03:04 -0600
+> From: "David M. Lloyd"<david.lloyd at redhat.com>
+> Subject: Re: [concurrency-interest] Making copy of a
+> 	referencetoReentrantLock
+> To: dholmes at ieee.org
+> Cc: concurrency-interest at cs.oswego.edu
+> Message-ID:<4D3CB3A8.2060103 at redhat.com>
+> Content-Type: text/plain; charset=ISO-8859-1; format=flowed
+>
+> On 01/23/2011 04:30 PM, David Holmes wrote:
+>> David,
+>>
+>>> There's a bit more to it than that.  System.in/out/err are "special" in
+>>> that they are final but can be reloaded in the normal course of program
+>>> execution.
+>>
+>> But that happens during VM initialization and is covered by "before they are
+>> made available for access by other parts of a program" clause.
+>
+> However, you can call System.setIn/Out/Err() at any time, thus it's not
+> exclusively relegated to VM init.
+>
+
+From dl at cs.oswego.edu  Wed Feb 16 18:50:00 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 16 Feb 2011 18:50:00 -0500
+Subject: [concurrency-interest] Visualize parallelism
+In-Reply-To: <4D5BDB4C.8030107@kav.dk>
+References: <NFBBKALFDCPFIDBNKAPCOEGDILAA.davidcholmes@aapt.net.au>	<4D5BD069.6070805@kav.dk>
+	<4D5BDB4C.8030107@kav.dk>
+Message-ID: <4D5C62A8.1050803@cs.oswego.edu>
+
+On 02/16/11 09:12, Kasper Nielsen wrote:
+> ForkJoinPool uses
+> ForkJoinTask.exec() which is protected. This makes it difficult to create
+> generic wrappers,
+> Any reason not to make ForkJoinTask.exec() public?
+
+The use of "protected" in FJ methods eliminates one kind
+of error that we'd otherwise see and internally need to cope
+with -- it makes it hard at best to call them from outside
+of a FJ computation.
+
+-Doug
+
+
+
+
+From kasper at kav.dk  Thu Feb 17 11:12:31 2011
+From: kasper at kav.dk (Kasper Nielsen)
+Date: Thu, 17 Feb 2011 17:12:31 +0100
+Subject: [concurrency-interest] Visualize parallelism
+In-Reply-To: <4D5C62A8.1050803@cs.oswego.edu>
+References: <NFBBKALFDCPFIDBNKAPCOEGDILAA.davidcholmes@aapt.net.au>
+	<4D5BD069.6070805@kav.dk> <4D5BDB4C.8030107@kav.dk>
+	<4D5C62A8.1050803@cs.oswego.edu>
+Message-ID: <4D5D48EF.1040701@kav.dk>
+
+Right, It is probably wise to avoid similar problems to
+new Thread(runnable).run();
+Even though it is rather annoying that you cannot decorate FJ tasks.
+
+Cheers
+   Kasper
+On 17-02-2011 00:50, Doug Lea wrote:
+> On 02/16/11 09:12, Kasper Nielsen wrote:
+>> ForkJoinPool uses
+>> ForkJoinTask.exec() which is protected. This makes it difficult to create
+>> generic wrappers,
+>> Any reason not to make ForkJoinTask.exec() public?
+>
+> The use of "protected" in FJ methods eliminates one kind
+> of error that we'd otherwise see and internally need to cope
+> with -- it makes it hard at best to call them from outside
+> of a FJ computation.
+>
+> -Doug
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From dl at cs.oswego.edu  Mon Feb 21 20:20:51 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 21 Feb 2011 20:20:51 -0500
+Subject: [concurrency-interest] ForkJoin Improvements
+Message-ID: <4D630F73.6090503@cs.oswego.edu>
+
+
+Another round of improvements to ForkJoin framework is
+now available in the usual places (see below). The main
+change is an overhaul to core control that better avoids
+creating or restarting more threads than needed. You'll
+probably see better overall performance too.
+Also, exceptions stemming from user errors are now
+more informative.
+
+Please try these out let us know about any problems.
+Pasting from http://gee.cs.oswego.edu/dl/concurrency-interest/index.html
+
+
+jsr166y versions
+     *  API specs:  http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/
+     * jar file: http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166y.jar (compiled 
+using Java6 javac).
+     * Browsable CVS sources: 
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/jsr166y/
+
+java7 java.util.concurrent versions
+     *  API specs:  http://gee.cs.oswego.edu/dl/jsr166/dist/docs/
+     * jar file: http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166.jar
+     * Browsable CVS sources: 
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/
+     * Browsable CVS TCK test sources: 
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/tests/tck/
+
+You may be able to use these versions now, without waiting for JDK releases, by 
+obtaining jsr166 jar and running java using the option 
+-Xbootclasspath/p:jsr166.jar (You may need to precede "jsr166.jar" with its full 
+file path.)
+
+
+From alex at puredanger.com  Tue Feb 22 11:37:24 2011
+From: alex at puredanger.com (Alex Miller)
+Date: Tue, 22 Feb 2011 10:37:24 -0600
+Subject: [concurrency-interest] ForkJoinPool.ManagedBlocker examples
+Message-ID: <AANLkTikEnmWNPLgPVG8SPZUTK4WvvNaKjut1D5SdtVeC@mail.gmail.com>
+
+We're trying to make use of ManagedBlocker and the documentation is a
+bit light in terms of actual usage.
+
+AFAICT, the running task must call ForkJoinPool.managedBlock() with
+the blocker implementation.  At that point, it seems the pool will
+repeatedly call isReleasable() until it gets true at which it calls
+block()?  Here "releasable" means the *task* can be released, not the
+thing doing the blocking right?  So in the ReentrantLock example in
+the ManagedBlocker javadoc
+(http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166ydocs/jsr166y/ForkJoinPool.ManagedBlocker.html),
+isReleasable() returns true when the lock has been *acquired* so that
+the blocking task can be *released*.
+
+Also, in the ReentrantLock example, I note that hasLock is not
+volatile which I found surprising.  Is the example wrong or is there
+really no visibility issue there?
+
+From christopher at trumpet.io  Tue Feb 22 17:21:37 2011
+From: christopher at trumpet.io (Christopher Berner)
+Date: Tue, 22 Feb 2011 14:21:37 -0800
+Subject: [concurrency-interest] ForkJoinPool creating thousands of threads
+Message-ID: <B311F5B7-6CE8-469A-B3F4-E5CE3C7D8794@trumpet.io>
+
+Hi everyone,
+
+I recently started using ForkJoin for a large numerical analysis job. I've subclassed RecursiveAction, and implemented compute() essentially as follows
+
+if (users.size <= THRESHOLD) {
+  System.out.println("Computing");
+  //do work
+  System.out.println("Computation took X time.");
+} else {
+  MyAction right = new MyAction(users.subList(0, THRESHOLD));
+  MyAction left = new MyAction(users.subList(THRESHOLD, users.size()));
+  left.fork();
+  right.compute();
+  System.out.println("Joining");
+  left.join();
+  //do a little more work
+}
+
+
+The results I'm seeing are very confusing, however. It appears that the threads are blocking on join, instead of stealing more work. And the problem appears to get worse over time, as after ~30secs the pool has spawned thousands of threads, and almost all of them are "waiting." If anyone knows why this is happening, I'd very much appreciate any insight you can share.
+
+Thanks,
+Christopher
+
+
+Below is part of the logged output:
+
+INFO 2011-02-22 14:10:39,264 ForkJoinPool-1-worker-0  Starting compute
+INFO 2011-02-22 14:10:39,264 ForkJoinPool-1-worker-3  Starting compute
+INFO 2011-02-22 14:10:39,266 ForkJoinPool-1-worker-2  Starting compute
+INFO 2011-02-22 14:10:39,265 ForkJoinPool-1-worker-1  Starting compute
+INFO 2011-02-22 14:10:39,275 ForkJoinPool-1-worker-3  96 items in 9.248ms
+INFO 2011-02-22 14:10:39,275 ForkJoinPool-1-worker-3  Joining
+<<< Note that worker 3 never shows up again >>>
+INFO 2011-02-22 14:10:39,283 ForkJoinPool-1-worker-2  58 items in 16.487ms
+INFO 2011-02-22 14:10:39,283 ForkJoinPool-1-worker-2  Joining
+INFO 2011-02-22 14:10:39,283 ForkJoinPool-1-worker-2  Starting compute
+INFO 2011-02-22 14:10:39,286 ForkJoinPool-1-worker-2  34 items in 2.744ms
+INFO 2011-02-22 14:10:39,286 ForkJoinPool-1-worker-2  Joining
+INFO 2011-02-22 14:10:39,286 ForkJoinPool-1-worker-2  Starting compute
+INFO 2011-02-22 14:10:39,287 ForkJoinPool-1-worker-1  55 items in 20.468ms
+INFO 2011-02-22 14:10:39,287 ForkJoinPool-1-worker-1  Joining
+INFO 2011-02-22 14:10:39,287 ForkJoinPool-1-worker-1  Starting compute
+INFO 2011-02-22 14:10:39,290 ForkJoinPool-1-worker-1  47 items in 3.087ms
+INFO 2011-02-22 14:10:39,290 ForkJoinPool-1-worker-1  Joining
+INFO 2011-02-22 14:10:39,290 ForkJoinPool-1-worker-1  Starting compute
+INFO 2011-02-22 14:10:39,302 ForkJoinPool-1-worker-0  39 items in 36.166ms
+INFO 2011-02-22 14:10:39,302 ForkJoinPool-1-worker-0  Joining
+INFO 2011-02-22 14:10:39,303 ForkJoinPool-1-worker-1  54 items in 13.156ms
+INFO 2011-02-22 14:10:39,303 ForkJoinPool-1-worker-1  Joining
+.
+.
+.
+<<< The pool spawns a fifth worker (my computer only has 4 cores) >>>
+INFO 2011-02-22 14:10:39,527 ForkJoinPool-1-worker-4  Starting compute
+INFO 2011-02-22 14:10:39,527 ForkJoinPool-1-worker-2  39 items in 1.129ms
+INFO 2011-02-22 14:10:39,527 ForkJoinPool-1-worker-2  Joining
+INFO 2011-02-22 14:10:39,528 ForkJoinPool-1-worker-4  49 items in 1.109ms
+INFO 2011-02-22 14:10:39,528 ForkJoinPool-1-worker-4  Joining
+INFO 2011-02-22 14:10:39,528 ForkJoinPool-1-worker-4  Starting compute
+INFO 2011-02-22 14:10:39,528 ForkJoinPool-1-worker-1  43 items in 1.857ms
+INFO 2011-02-22 14:10:39,528 ForkJoinPool-1-worker-1  Joining
+INFO 2011-02-22 14:10:39,528 ForkJoinPool-1-worker-1  Starting compute
+INFO 2011-02-22 14:10:39,529 ForkJoinPool-1-worker-4  41 items in 1.019ms
+.
+.
+.
+<<< A second later we're already up to 22 workers >>>
+INFO 2011-02-22 14:10:40,578 ForkJoinPool-1-worker-22  16 items in 11.961ms
+INFO 2011-02-22 14:10:40,578 ForkJoinPool-1-worker-22  Joining
+INFO 2011-02-22 14:10:40,578 ForkJoinPool-1-worker-22  Starting compute
+INFO 2011-02-22 14:10:40,586 ForkJoinPool-1-worker-21  18 items in 11.595ms
+INFO 2011-02-22 14:10:40,586 ForkJoinPool-1-worker-21  Joining
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110222/72efe4f4/attachment.html>
+
+From alex at puredanger.com  Tue Feb 22 17:27:58 2011
+From: alex at puredanger.com (Alex Miller)
+Date: Tue, 22 Feb 2011 16:27:58 -0600
+Subject: [concurrency-interest] ForkJoinPool.ManagedBlocker examples
+In-Reply-To: <401B48CD-4CCD-4514-9D92-8A2C70756334@atlassian.com>
+References: <AANLkTikEnmWNPLgPVG8SPZUTK4WvvNaKjut1D5SdtVeC@mail.gmail.com>
+	<401B48CD-4CCD-4514-9D92-8A2C70756334@atlassian.com>
+Message-ID: <AANLkTik-HWCDCsNuJoLGxHOdffbA-ShW1x16KAAmO3zt@mail.gmail.com>
+
+>From looking at the source, it does appear that the ManagedBlocker
+instance .  One of the things that made me ask the question was the
+example below it that uses volatile for item but I guess that is just
+to support getItem(), right?  I guess I now think the examples are
+correct but it would be helpful to add a note in the docs that block()
+and isReleasable() will only be called from the thread that invokes
+managedBlock().
+
+A separate question, why are the ForkJoin classes no longer in a
+forkjoin sub-package and just mixed into java.util.concurrent?  Seems
+weird.
+
+
+
+On Tue, Feb 22, 2011 at 3:39 PM, Jed Wesley-Smith
+<jwesleysmith at atlassian.com> wrote:
+> On 23/02/2011, at 3:37 AM, Alex Miller wrote:
+>
+>> Also, in the ReentrantLock example, I note that hasLock is not
+>> volatile which I found surprising. ?Is the example wrong or is there
+>> really no visibility issue there?
+>
+> Does it make sense at all? Isn't hasLock a thread-local property anyway? That property only seems to make sense if the ManagedLocker is local to a single thread, as hasLock can't transfer between them meaningfully.
+>
+> Might need some more docs here.
+>
+> cheers,
+> jed
+
+
+From dl at cs.oswego.edu  Tue Feb 22 19:26:57 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 22 Feb 2011 19:26:57 -0500
+Subject: [concurrency-interest] ForkJoinPool.ManagedBlocker examples
+In-Reply-To: <AANLkTik-HWCDCsNuJoLGxHOdffbA-ShW1x16KAAmO3zt@mail.gmail.com>
+References: <AANLkTikEnmWNPLgPVG8SPZUTK4WvvNaKjut1D5SdtVeC@mail.gmail.com>	<401B48CD-4CCD-4514-9D92-8A2C70756334@atlassian.com>
+	<AANLkTik-HWCDCsNuJoLGxHOdffbA-ShW1x16KAAmO3zt@mail.gmail.com>
+Message-ID: <4D645451.10208@cs.oswego.edu>
+
+On 02/22/11 17:27, Alex Miller wrote:
+> it would be helpful to add a note in the docs that block()
+> and isReleasable() will only be called from the thread that invokes
+> managedBlock().
+
+Sure. Now (after a code update commit) is a good time to
+incorporate documentation improvements. I added a sentence
+to the middle of ManagedBlocker doc, now reading:
+
+      * Interface for extending managed parallelism for tasks running
+      * in {@link ForkJoinPool}s.
+      *
+      * <p>A {@code ManagedBlocker} provides two methods.  Method
+      * {@code isReleasable} must return {@code true} if blocking is
+      * not necessary. Method {@code block} blocks the current thread
+      * if necessary (perhaps internally invoking {@code isReleasable}
+      * before actually blocking). These actions are performed threads
+      * invoking {@link ForkJoinPool#managedBlock}.  The unusual
+      * methods in this API accommodate synchronizers that may, but
+      * don't usually, block for long periods. Similarly, they allow
+      * more efficient internal handling of cases in which additional
+      * workers may be, but usually are not, needed to ensure
+      * sufficient parallelism.  Toward this end, implementations of
+      * method {@code isReleasable} must be amenable to repeated
+      * invocation.
+      *
+>
+> A separate question, why are the ForkJoin classes no longer in a
+> forkjoin sub-package and just mixed into java.util.concurrent?  Seems
+> weird.
+
+It could have gone either way, but it is no weirder than having
+ThreadPoolExecutor and FutureTask being in j.u.c:
+Like them, a ForkJoinPool is "just" a special kind of Executor, and a
+ForkJoinTask a kind of Future.
+
+-Doug
+
+From dl at cs.oswego.edu  Tue Feb 22 19:32:38 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 22 Feb 2011 19:32:38 -0500
+Subject: [concurrency-interest] ForkJoinPool creating thousands of
+	threads
+In-Reply-To: <B311F5B7-6CE8-469A-B3F4-E5CE3C7D8794@trumpet.io>
+References: <B311F5B7-6CE8-469A-B3F4-E5CE3C7D8794@trumpet.io>
+Message-ID: <4D6455A6.5010409@cs.oswego.edu>
+
+On 02/22/11 17:21, Christopher Berner wrote:
+> The results I'm seeing are very confusing, however. It appears that the threads
+> are blocking on join, instead of stealing more work.
+
+Joining threads will eventually give up looking for stealable work
+and instead block after arranging a replacement. Among the reasons
+they can give up is that code to split subtasks is very slow,
+or most likely, it blocks on some lock common to all subtasks,
+so splits become sequential, leading to an expensive emulation
+of a sequential program.
+
+If neither of these apply, feel free to send code off-list
+and I'll try to diagnose.
+
+-Doug
+
+
+
+
+From dl at cs.oswego.edu  Tue Feb 22 19:34:24 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 22 Feb 2011 19:34:24 -0500
+Subject: [concurrency-interest] ForkJoinPool.ManagedBlocker examples
+In-Reply-To: <4D645451.10208@cs.oswego.edu>
+References: <AANLkTikEnmWNPLgPVG8SPZUTK4WvvNaKjut1D5SdtVeC@mail.gmail.com>	<401B48CD-4CCD-4514-9D92-8A2C70756334@atlassian.com>	<AANLkTik-HWCDCsNuJoLGxHOdffbA-ShW1x16KAAmO3zt@mail.gmail.com>
+	<4D645451.10208@cs.oswego.edu>
+Message-ID: <4D645610.30601@cs.oswego.edu>
+
+On 02/22/11 19:26, Doug Lea wrote:
+> I added a sentence to the middle of ManagedBlocker doc, now reading:
+>
+> * before actually blocking). These actions are performed threads
+
+Oops: performed *by* threads
+
+-Doug
+
+From alex at puredanger.com  Tue Feb 22 20:30:02 2011
+From: alex at puredanger.com (Alex Miller)
+Date: Tue, 22 Feb 2011 19:30:02 -0600
+Subject: [concurrency-interest] ForkJoinPool.ManagedBlocker examples
+In-Reply-To: <AANLkTik-HWCDCsNuJoLGxHOdffbA-ShW1x16KAAmO3zt@mail.gmail.com>
+References: <AANLkTikEnmWNPLgPVG8SPZUTK4WvvNaKjut1D5SdtVeC@mail.gmail.com>
+	<401B48CD-4CCD-4514-9D92-8A2C70756334@atlassian.com>
+	<AANLkTik-HWCDCsNuJoLGxHOdffbA-ShW1x16KAAmO3zt@mail.gmail.com>
+Message-ID: <AANLkTimcTV6_k4PmbrGWrM419ESz2eP_u4_RJ0PMk6KJ@mail.gmail.com>
+
+Sorry that first hanging sentence should say ... usage is thread-contained.
+
+On Tue, Feb 22, 2011 at 4:27 PM, Alex Miller <alex at puredanger.com> wrote:
+> From looking at the source, it does appear that the ManagedBlocker
+> instance . ?One of the things that made me ask the question was the
+> example below it that uses volatile for item but I guess that is just
+> to support getItem(), right? ?I guess I now think the examples are
+> correct but it would be helpful to add a note in the docs that block()
+> and isReleasable() will only be called from the thread that invokes
+> managedBlock().
+>
+> A separate question, why are the ForkJoin classes no longer in a
+> forkjoin sub-package and just mixed into java.util.concurrent? ?Seems
+> weird.
+>
+>
+>
+> On Tue, Feb 22, 2011 at 3:39 PM, Jed Wesley-Smith
+> <jwesleysmith at atlassian.com> wrote:
+>> On 23/02/2011, at 3:37 AM, Alex Miller wrote:
+>>
+>>> Also, in the ReentrantLock example, I note that hasLock is not
+>>> volatile which I found surprising. ?Is the example wrong or is there
+>>> really no visibility issue there?
+>>
+>> Does it make sense at all? Isn't hasLock a thread-local property anyway? That property only seems to make sense if the ManagedLocker is local to a single thread, as hasLock can't transfer between them meaningfully.
+>>
+>> Might need some more docs here.
+>>
+>> cheers,
+>> jed
+>
+
+
+From alex at puredanger.com  Tue Feb 22 21:04:03 2011
+From: alex at puredanger.com (Alex Miller)
+Date: Tue, 22 Feb 2011 20:04:03 -0600
+Subject: [concurrency-interest] ForkJoinPool.ManagedBlocker examples
+Message-ID: <AANLkTikwCSw7w8fF6CNEo4WT01b_5bhiKWxHYYbsQWAH@mail.gmail.com>
+
+Would it be clearer to say:  "These actions are performed by the
+thread invoking {@link ForkJoinPool#managedBlock}." ?
+
+On 2/22/11 19:26, Doug Lea wrote:
+>> A separate question, why are the ForkJoin classes no longer in a
+>> forkjoin sub-package and just mixed into java.util.concurrent? ?Seems
+>> weird.
+>
+> It could have gone either way, but it is no weirder than having
+> ThreadPoolExecutor and FutureTask being in j.u.c:
+> Like them, a ForkJoinPool is "just" a special kind of Executor, and a
+> ForkJoinTask a kind of Future.
+
+True, although it seems like it would provide some more obvious
+separation of what has been introduced together, especially things
+like RecursiveTask, RecursiveAction, ManagedBlocker (which could be
+pulled out), and ForkJoinWorkerThread.  But I assume this is all too
+late to futz with now anyhow.
+
+Thanks...
+
+
+From gdenys at yahoo.com  Wed Feb 23 04:30:44 2011
+From: gdenys at yahoo.com (Geert Denys)
+Date: Wed, 23 Feb 2011 01:30:44 -0800 (PST)
+Subject: [concurrency-interest] ForkJoinPool creating thousands of
+	threads
+In-Reply-To: <B311F5B7-6CE8-469A-B3F4-E5CE3C7D8794@trumpet.io>
+References: <B311F5B7-6CE8-469A-B3F4-E5CE3C7D8794@trumpet.io>
+Message-ID: <58725.7637.qm@web161206.mail.bf1.yahoo.com>
+
+As each task only forks one other task, no additional parallellism can be 
+achieved by the FJ pool and it's basically a sequential execution. Splitting the 
+list in two equal parts and forking tasks for those parts should be a better 
+match for FJ.
+
+Regards,
+Geert.
+
+
+
+________________________________
+From: Christopher Berner <christopher at trumpet.io>
+To: concurrency-interest at cs.oswego.edu
+Sent: Tue, February 22, 2011 11:21:37 PM
+Subject: [concurrency-interest] ForkJoinPool creating thousands of threads
+
+Hi everyone,
+
+I recently started using ForkJoin for a large numerical analysis job. I've 
+subclassed RecursiveAction, and implemented compute() essentially as follows
+
+if (users.size <= THRESHOLD) {
+  System.out.println("Computing");
+  //do work
+  System.out.println("Computation took X time.");
+} else {
+  MyAction right = new MyAction(users.subList(0, THRESHOLD));
+  MyAction left = new MyAction(users.subList(THRESHOLD, users.size()));
+  left.fork();
+  right.compute();
+  System.out.println("Joining");
+  left.join();
+  //do a little more work
+}
+
+
+The results I'm seeing are very confusing, however. It appears that the threads 
+are blocking on join, instead of stealing more work. And the problem appears to 
+get worse over time, as after ~30secs the pool has spawned thousands of threads, 
+and almost all of them are "waiting." If anyone knows why this is happening, I'd 
+very much appreciate any insight you can share.
+
+Thanks,
+Christopher
+
+
+Below is part of the logged output:
+
+INFO 2011-02-22 14:10:39,264 ForkJoinPool-1-worker-0  Starting compute
+INFO 2011-02-22 14:10:39,264 ForkJoinPool-1-worker-3  Starting compute
+INFO 2011-02-22 14:10:39,266 ForkJoinPool-1-worker-2  Starting compute
+INFO 2011-02-22 14:10:39,265 ForkJoinPool-1-worker-1  Starting compute
+INFO 2011-02-22 14:10:39,275 ForkJoinPool-1-worker-3  96 items in 9.248ms
+INFO 2011-02-22 14:10:39,275 ForkJoinPool-1-worker-3  Joining
+<<< Note that worker 3 never shows up again >>>
+INFO 2011-02-22 14:10:39,283 ForkJoinPool-1-worker-2  58 items in 16.487ms
+INFO 2011-02-22 14:10:39,283 ForkJoinPool-1-worker-2  Joining
+INFO 2011-02-22 14:10:39,283 ForkJoinPool-1-worker-2  Starting compute
+INFO 2011-02-22 14:10:39,286 ForkJoinPool-1-worker-2  34 items in 2.744ms
+INFO 2011-02-22 14:10:39,286 ForkJoinPool-1-worker-2  Joining
+INFO 2011-02-22 14:10:39,286 ForkJoinPool-1-worker-2  Starting compute
+INFO 2011-02-22 14:10:39,287 ForkJoinPool-1-worker-1  55 items in 20.468ms
+INFO 2011-02-22 14:10:39,287 ForkJoinPool-1-worker-1  Joining
+INFO 2011-02-22 14:10:39,287 ForkJoinPool-1-worker-1  Starting compute
+INFO 2011-02-22 14:10:39,290 ForkJoinPool-1-worker-1  47 items in 3.087ms
+INFO 2011-02-22 14:10:39,290 ForkJoinPool-1-worker-1  Joining
+INFO 2011-02-22 14:10:39,290 ForkJoinPool-1-worker-1  Starting compute
+INFO 2011-02-22 14:10:39,302 ForkJoinPool-1-worker-0  39 items in 36.166ms
+INFO 2011-02-22 14:10:39,302 ForkJoinPool-1-worker-0  Joining
+INFO 2011-02-22 14:10:39,303 ForkJoinPool-1-worker-1  54 items in 13.156ms
+INFO 2011-02-22 14:10:39,303 ForkJoinPool-1-worker-1  Joining
+.
+.
+.
+<<< The pool spawns a fifth worker (my computer only has 4 cores) >>>
+INFO 2011-02-22 14:10:39,527 ForkJoinPool-1-worker-4  Starting compute
+INFO 2011-02-22 14:10:39,527 ForkJoinPool-1-worker-2  39 items in 1.129ms
+INFO 2011-02-22 14:10:39,527 ForkJoinPool-1-worker-2  Joining
+INFO 2011-02-22 14:10:39,528 ForkJoinPool-1-worker-4  49 items in 1.109ms
+INFO 2011-02-22 14:10:39,528 ForkJoinPool-1-worker-4  Joining
+INFO 2011-02-22 14:10:39,528 ForkJoinPool-1-worker-4  Starting compute
+INFO 2011-02-22 14:10:39,528 ForkJoinPool-1-worker-1  43 items in 1.857ms
+INFO 2011-02-22 14:10:39,528 ForkJoinPool-1-worker-1  Joining
+INFO 2011-02-22 14:10:39,528 ForkJoinPool-1-worker-1  Starting compute
+INFO 2011-02-22 14:10:39,529 ForkJoinPool-1-worker-4  41 items in 1.019ms
+.
+.
+.
+<<< A second later we're already up to 22 workers >>>
+INFO 2011-02-22 14:10:40,578 ForkJoinPool-1-worker-22  16 items in 11.961ms
+INFO 2011-02-22 14:10:40,578 ForkJoinPool-1-worker-22  Joining
+INFO 2011-02-22 14:10:40,578 ForkJoinPool-1-worker-22  Starting compute
+INFO 2011-02-22 14:10:40,586 ForkJoinPool-1-worker-21  18 items in 11.595ms
+INFO 2011-02-22 14:10:40,586 ForkJoinPool-1-worker-21  Joining
+
+
+      
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110223/41327aed/attachment.html>
+
+From akarnokd at gmail.com  Wed Feb 23 05:01:44 2011
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Wed, 23 Feb 2011 11:01:44 +0100
+Subject: [concurrency-interest] Java 7 try-with-resources on j.u.c.locks.Lock
+Message-ID: <AANLkTimsKq+GcX9FPkeAqymGD0HyYcm+LBPirP0tXqkT@mail.gmail.com>
+
+Hi!
+
+Is there a chance the new Java 7 try-with-resources operator will be
+supported by the standard Lock interface and/or implementations? E.g.,
+writing simply
+
+try (lock.lock()) {
+   // do work
+}
+
+because lock() returns an AutoCloseable instance, or this kind of
+functionality will be deferred to 3rd party libraries with nice long static
+utility class names and method names?
+
+Regards,
+
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110223/8f058c3c/attachment.html>
+
+From davidcholmes at aapt.net.au  Wed Feb 23 06:01:05 2011
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 23 Feb 2011 21:01:05 +1000
+Subject: [concurrency-interest] Java 7 try-with-resources on
+	j.u.c.locks.Lock
+In-Reply-To: <AANLkTimsKq+GcX9FPkeAqymGD0HyYcm+LBPirP0tXqkT@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEIGILAA.davidcholmes@aapt.net.au>
+
+Simple answer: no.
+
+try-with-resources doesn't work that way. Ignoring that you'd have to define a close() method that does the unlock, you'd have to write something like:
+
+void getAndLock(Lock l) {
+  l.lock();
+  return l;
+}
+
+  try (Lock l = getAndLock(lock)) {
+    // do work
+  }
+
+to turn it into a resource-based statement.
+
+This doesn't add to the useability or clarity in my view.
+
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of D?vid Karnok
+  Sent: Wednesday, 23 February 2011 8:02 PM
+  To: concurrency-interest at cs.oswego.edu
+  Subject: [concurrency-interest] Java 7 try-with-resources on j.u.c.locks.Lock
+
+
+  Hi! 
+
+
+  Is there a chance the new Java 7 try-with-resources operator will be supported by the standard Lock interface and/or implementations? E.g., writing simply
+
+
+  try (lock.lock()) {
+     // do work
+  }
+
+
+  because lock() returns an AutoCloseable instance, or this kind of functionality will be deferred to 3rd party libraries with nice long static utility class names and method names?
+
+
+  Regards,
+
+
+  David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110223/4df2cc3b/attachment-0001.html>
+
+From mohit.riverstone at gmail.com  Sat Feb 26 10:39:03 2011
+From: mohit.riverstone at gmail.com (Mohit Kumar)
+Date: Sat, 26 Feb 2011 21:09:03 +0530
+Subject: [concurrency-interest] Numa and ReentrantLock
+In-Reply-To: <4c7735e4.10c98e0a.47d4.ffffe2fe@mx.google.com>
+References: <ActFmuAlWJKDMsJWT2qQSlkcxGBftw==>
+	<4c7735e4.10c98e0a.47d4.ffffe2fe@mx.google.com>
+Message-ID: <AANLkTimUauV1znGmfaoKieKZmNWth3WCS4RafSV5-cS3@mail.gmail.com>
+
+Hi Doug,
+
+In the ConcurrentHashMap the get method does not require
+"readValueUnderLock" because a racing remove does not make the value null.
+The value never becomes null on the from the removing thread. this means it
+is possible for get to return a value for key even if the removing thread
+(on the same key) has progressed till the point of cloning the preceding
+parts of the list.
+This is fine so long as it is the desired effect.
+
+But this means "readValueUnderLock" is not required for NEW memory model.
+
+However for the OLD memory model a put may see the value null due to
+reordering(Rare but possible).
+
+Is my understanding correct.
+
+Thanks in advance
+Mohit
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110226/399d0259/attachment.html>
+
+From dl at cs.oswego.edu  Sat Feb 26 11:16:26 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sat, 26 Feb 2011 11:16:26 -0500
+Subject: [concurrency-interest] Numa and ReentrantLock
+In-Reply-To: <AANLkTimUauV1znGmfaoKieKZmNWth3WCS4RafSV5-cS3@mail.gmail.com>
+References: <ActFmuAlWJKDMsJWT2qQSlkcxGBftw==>	<4c7735e4.10c98e0a.47d4.ffffe2fe@mx.google.com>
+	<AANLkTimUauV1znGmfaoKieKZmNWth3WCS4RafSV5-cS3@mail.gmail.com>
+Message-ID: <4D69275A.8010009@cs.oswego.edu>
+
+On 02/26/11 10:39, Mohit Kumar wrote:
+> Hi Doug,
+>
+> In the ConcurrentHashMap the get method does not require "readValueUnderLock"
+> because a racing remove does not make the value null.
+>
+> Is my understanding correct.
+>
+
+Not quite. You are right that it should never be called.
+However, the JLS/JMM can be read as not absolutely
+forbidding it from being called because of weaknesses
+in required ordering relationships among finals
+vs volatiles set in constructors (key is final, value is
+volatile), wrt the reads by threads using the
+entry objects. (In JMM-ese, ordering constraints for
+finals fall outside of the synchronizes-with relation.)
+That's the issue the doc comment (pasted below) refers to.
+No one has ever thought of any practical loophole that a
+processor/compiler might find to produce a null value read,
+and it may be provable that none exist (and perhaps someday
+a JLS/JMM revision will fill in gaps to clarify this),
+but Bill Pugh once suggested we put this in anyway just
+for the sake of being conservatively pedantically correct.
+In retrospect, I'm not so sure this was a good idea, since
+it leads people to come up with exotic theories.
+
+...
+
+      * Because the value field is volatile, not final, it is legal wrt
+      * the Java Memory Model for an unsynchronized reader to see null
+      * instead of initial value when read via a data race.  Although a
+      * reordering leading to this is not likely to ever actually
+      * occur, the Segment.readValueUnderLock method is used as a
+      * backup in case a null (pre-initialized) value is ever seen in
+      * an unsynchronized access method.
+      */
+     static final class HashEntry<K,V> {
+         final K key;
+         final int hash;
+         volatile V value;
+         final HashEntry<K,V> next;
+
+From asst2003 at sina.com  Mon Feb 28 04:50:17 2011
+From: asst2003 at sina.com (asst2003 at sina.com)
+Date: Mon, 28 Feb 2011 17:50:17 +0800 
+Subject: [concurrency-interest] Today's Java virtual machine to use any
+	SpinLock algorithm?
+Message-ID: <20110228095017.7BFF450C38@mail2-211.sinamail.sina.com.cn>
+
+Today's Java virtual machine to use any SpinLock&nbsp;algorithm? 
+Is Thinlock, Metalock or RelaxedLock it?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110228/306cf64b/attachment.html>
+

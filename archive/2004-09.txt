@@ -1,0 +1,1417 @@
+From Darron_Shaffer@stercomm.com  Wed Sep  1 00:49:44 2004
+From: Darron_Shaffer@stercomm.com (Shaffer, Darron)
+Date: Tue, 31 Aug 2004 18:49:44 -0500
+Subject: [concurrency-interest] Asynchronous I/O
+Message-ID: <3D4B9DB9860D18419C7D6B393C7F43980653F9F9@SCIDALMSG01.sci.local>
+
+In my current project we have something like these "colors".
+
+We have a Scheduler interface with a couple of implementations that wrap
+an Executor.  If you call Scheduler.getGatedScheduler() it returns a new
+Scheduler that wraps the original.  At most one task from a particular
+GatedScheduler will be submitted to the wrapped Scheduler at a time.  If
+a Scheduler has only one thread, then getGatedScheduler() returns
+`this'.
+
+We use this for an event-driven I/O infrastructure built around NIO.
+
+-----Original Message-----
+From: concurrency-interest-admin@cs.oswego.edu
+[mailto:concurrency-interest-admin@cs.oswego.edu] On Behalf Of Kasper
+Nielsen
+Sent: Tuesday, August 31, 2004 5:08 PM
+To: Doug Lea
+Cc: concurrency-interest@altair.cs.oswego.edu
+Subject: Re: [concurrency-interest] Asynchronous I/O
+
+Doug Lea wrote:
+> Hi Kaspar,
+> 
+> (Catching up after being out for a while.)
+> 
+> It's great to see the Coconut AIO package, not only because it looks 
+> (on first glance anyway :-) useful and well designed and a nice fit 
+> with java.util.concurrent, but also because I think JSR203 is due to 
+> be resurrected someday (I have no idea when) for JDK 1.6/6.0.
+> 
+> See http://www.jcp.org/en/jsr/detail?id=203 where it lists as the 
+> second deliverable:
+> 
+>     2. An API for asynchronous (as opposed to polled, non-blocking)
+>        I/O operations on both sockets and files;
+> 
+> JSR203 was triaged out of Tiger, which was probably a good thing, 
+> because I don't think there would have been enough time to try out the
+
+> various ways to make this mesh with JSR166 and to develop enough usage
+
+> experience with them to standardize on a particular API.  I hope you 
+> are happy having Coconut serve as a potential testing ground (as 
+> dl.util.concurrent did for java.util.concurrent). Sure, this was 
+> actually the plan from the beginning. I've tried to
+create the API as flexible as possible to allow people to experiment
+with different asynchronous models. One way, for example, that I've used
+is to have a single Executor (for an application) with around 3-5
+threads (per processor).
+   But first, I just need to quickly explain how callbacks are handled
+in Coconut AIO. The idea is to pass along both a Callback and an
+Executor to an asynchronous method. When the computation finishes the
+asynchronous method wraps the Callback inside a Runnable and submits it
+to the provided Executor.
+   One of the benefits of using a classic (one single thread)
+event-driven architecture is that there is no need to worry about
+concurrency control. Obvious this is a very appealing reason for using
+this kind of architecture, however, dual-core and multi-cpu are common
+nowadays. Instead I've used another approach where each Callback is
+explicitly given a specific Color:
+public interface Colored {
+   int getColor();
+}
+Callbacks with different colors are allowed to be executed in parallel.
+callbacks with the same color must be executed one at a time. A special
+Executor (http://tinyurl.com/3kltr) is then used for serializing the
+execution of these Callbacks in such a way that no Callbacks with the
+same color is executed concurrently. The original 3-5 thread per
+processor Executor is then wrapped inside the special Executor.
+Letting the special Executor delagate the actual execution of the
+Callback to original Executor.
+   Of course this approach can't be used in every application because it
+requires someway of splitting the application data into course grain
+objects each having a separate color.  This "coloring" technique is
+somewhat similar to what is used in libasync-smp.
+
+The NIO "emulation" layer itself is actually pretty stable having around
+250 testcases. Im currently working on implementing asynchronous file
+I/O but also on a small visualization application that uses jmx
+information to show the connectivity between different peers in real
+time (as a graph). Each vertex in the graph is a peer and the thickness
+of the edges represents the relative amount of data that has been
+transmitted or the average throughput.
+
+- Kasper
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From david@walend.net  Wed Sep  1 06:25:42 2004
+From: david@walend.net (David Walend)
+Date: Wed, 1 Sep 2004 01:25:42 -0400
+Subject: [concurrency-interest] Re: ConcurrentLinkedList or ConcurrentLinkedDeque
+In-Reply-To: <20040829160001.27433.74932.Mailman@altair.cs.oswego.edu>
+References: <20040829160001.27433.74932.Mailman@altair.cs.oswego.edu>
+Message-ID: <5E5D8EE6-FBD7-11D8-A5F6-000D933614C0@walend.net>
+
+Doug,
+
+I'd like to use one of these for the insides of a JMS Queue and 
+QueueBrowser.
+
+To do that, I need to have the ability to add to the tail of the queue, 
+get the object at the head of a queue, remove the head of a queue, 
+remove an arbitrary element from the queue, add to the head of a queue 
+(push-back), get a "best guess" of how big the queue is, and iterate 
+through (but not remove) the elements in the queue from head to tail. I 
+think my API list is:
+
+boolean addLast(E e)
+E peekFirst()
+E getFirst()
+E pollFirst()
+E removeFirst()
+boolean removeFirst(E e)
+boolean addFirst(E e)
+int size()
+Enumeration headToTailEnumeration()
+
+I'd prefer a Deque interface. I don't need all of List. (I kinda miss 
+Puttable and Takable.) The only one of these API calls that seems to 
+call for something outside of Deque is removeFirst(E e). I need that to 
+handle client_acknowledge calls. There's other ways to do 
+client_acknowledge, such as putting unacknowledged messages into an in 
+an unacknowledged message list, remove messages as they're 
+acknowledged, and push the unacknowledged messages back into the queue 
+as they time out. That might be better. I need to sling some code to 
+decide.
+
+Thanks for taking this up,
+
+Dave
+
+>
+> The main question is whether this class should support the full
+> java.util.List interface.
+>   http://java.sun.com/j2se/1.5.0/docs/api/java/util/List.html
+>
+> The best argument in favor of this is that the List interface is
+> familiar and well-used by programmers, and it would be nice to allow
+> people to replace usages of "Collections.synchronizedList(new
+> LinkedList())" with "new ConcurrentLinkedList()".  (Recall that the
+> idea of concurrent as opposed to synchronized collections is that
+> concurrent ones safely allow, and cannot even prevent, truly
+> concurrent reads and writes across multiple threads, typically
+> providing much better scalability.)
+>
+> However, there are three aspects of functionality in the List API that
+> are supportable but arguably could do more harm than good to provide
+> in a concurrent implementation:
+>
+> 1. The use of index-based List operations (get(index), set(index,
+> element), indexOf(element), etc) in concurrently modifiable lists is
+> almost always a bad idea, since the relative positions/indices of
+> elements can change asynchronously, so common idioms like
+> "list.set(list.indexOf(A), B)" don't work reliably.  Also, like
+> LinkedList, this class has to traverse/count elements to find the one
+> at a requested index, so these operations are at slow (even a bit
+> slower than LinkedList), and fit for use only in small lists, but this
+> would be OK in itself.
+>
+> 2. The use of sublists (as in list.sublist(3, 17).get(2)) can be
+> doubly surprising/problematic because two sets of positions/indices
+> can asynchronously vary. Plus this is very slow to correctly support
+> since bounds need to be verified/adjusted on each call to any method
+> of a sublist.
+>
+> 3. Weakly consistent ListIterators would break an implicit assumption
+> probably held by most code using bidirectional iteration: that next()
+> and previous() are symmetric. But in a concurrent version, for example:
+>    it.next();
+>    it.previous();
+> does NOT necessarily get you back to the same position you started at
+> when there are asynchronous concurrent list modifications. People
+> using generic List code probably won't get the expected results when
+> there are concurrent modifications, which means they will get
+> rarely-triggering bugs.  And there are related error-seekingness and
+> inefficiency problems with the ListIterator.nextIndex() method and
+> others.  (None of these issues arise with weakly consistent
+> unidirectional Iterators (as opposed to ListIterators) where you can't
+> revisit elements.)
+>
+> So, indexed operations, sublists, and ListIterators all CAN be
+> supported, but (1) Each behaves in ways that seem likely to lead to
+> hard-to-debug programming errors by users of the class; and (2) Each
+> is inefficient compared to other List classes (even less efficient
+> than LinkedList).
+>
+> Should they be supported anyway?
+>
+> At the moment, I'm leaning against this. In which case, there are
+> still some other API and functionality issues:
+>
+> 1. Not supporting List means that there is no longer any required
+> method to replace/set the value of an arbitrary element.
+> (List.set(index, value) and ListIterator.set(value) do this.)  Should
+> this be supported? The Queue API doesn't provide any way to set
+> values, but Deques might more often be used in ways that could benefit
+> from methods like:
+>   boolean replaceFirstOccurrence(oldValue, newValue)
+>   boolean replaceLastOccurrence(oldValue, newValue)
+>   int replaceAllOccurrences(oldValue, newValue)
+>
+>   (Aside: It would be a bad idea to support methods
+>   replaceFirst(value) and/or replaceLast(value) because if
+>   firsts/lasts were concurrently added or removed, you'd replace an
+>   element other than the one you had in mind.)
+>
+> 2. For convenience, LinkedList implements interface Queue by
+> interpreting Queue operations as FIFO, even though it, too, allows
+> double-ended access. Should this class do this as well?
+>
+> 3. Alternatively, or in addition to (2), should there be a Deque
+> interface, along the lines of:
+>   interface Deque<E> extends Collection<E> {
+>      boolean offerFirst(E o);
+>      boolean offerLast(E o);
+>      boolean addFirst(E o);
+>      boolean addLast(E o);
+>      E peekFirst();
+>      E peekLast();
+>      E getFirst() throws NoSuchElementException;
+>      E getLast() throws NoSuchElementException;
+>      E pollFirst();
+>      E pollLast();
+>      E removeFirst() throws NoSuchElementException;
+>      E removeLast() throws NoSuchElementException;
+>
+>      // And probably the above replace methods?
+>   }
+>
+David Walend
+david@walend.net
+http://walend.net
+
+
+From ccox@tripos.com  Thu Sep  2 23:22:26 2004
+From: ccox@tripos.com (Curt Cox)
+Date: Thu, 2 Sep 2004 17:22:26 -0500
+Subject: [concurrency-interest] Concurrency Annotations
+Message-ID: <E1C2zyM-0002Wa-00@mailhost.tripos.com>
+
+Hi,
+
+Is there any effort underway to develop standard annotations
+that would allow tools to detect concurrency problems?
+
+JSR 250: Common Annotations for the JavaTM Platform
+http://www.jcp.org/en/jsr/detail?id=250
+
+- Curt
+
+
+
+From leou@us.ibm.com  Sat Sep  4 03:25:53 2004
+From: leou@us.ibm.com (Leo Uzcategui)
+Date: Fri, 3 Sep 2004 20:25:53 -0600
+Subject: [concurrency-interest] Leo Uzcategui/Austin/IBM is out of the office.
+Message-ID: <OFCDCFC746.8630630F-ON87256F05.000D5B85-87256F05.000D5B86@us.ibm.com>
+
+--0__=08BBE596DF9EDD158f9e8a93df938690918c08BBE596DF9EDD15
+Content-type: text/plain; charset=US-ASCII
+
+
+
+
+
+I will be out of the office starting  09/02/2004 and will not return until
+09/08/2004.
+
+For assistance, please contact Robin Redden at (512) 838-1542.
+--0__=08BBE596DF9EDD158f9e8a93df938690918c08BBE596DF9EDD15
+Content-type: text/html; charset=US-ASCII
+Content-Disposition: inline
+
+<html><body>
+<p>I will be out of the office starting  09/02/2004 and will not return until 09/08/2004.<br>
+<br>
+For assistance, please contact Robin Redden at (512) 838-1542.<br>
+</body></html>
+--0__=08BBE596DF9EDD158f9e8a93df938690918c08BBE596DF9EDD15--
+
+
+From dl@cs.oswego.edu  Sun Sep  5 22:59:54 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sun, 5 Sep 2004 17:59:54 -0400
+Subject: [concurrency-interest] ConcurrentLinkedDeque now in jsr166x
+Message-ID: <16699.35930.879494.591958@altair.cs.oswego.edu>
+
+Class jsr166x.ConcurrentLinkedDeque (and interface Deque) is now
+available off the concurrency-interest page
+  http://gee.cs.oswego.edu/dl/concurrency-interest/index.html
+Get it as:
+  API specs: http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166xdocs/
+  jar file: http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166x.jar
+  Browsable CVS sources: http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/jsr166x/ 
+
+This is a scalable non-blocking concurrent implementation of a
+double-ended queue (Deque, usually pronounced "deck", or sometimes
+"deek"). Deques may be useful in, among other applications,
+work-stealing execution frameworks and JMS (as being pursued by David
+Walend). Also, a ConcurrentLinkedDeque can be used as a concurrent
+Stack, or even as a FIFO queue (although you are generally better off
+using ConcurrentLinkedQueue if all you need is a FIFO queue).
+
+As usual, this class has undergone a fair amount of testing before
+being added, but has not be subjected to use in actual applications.
+Please do so! Feel free to report usage experience.
+
+Also as usual, the intent is that this class will eventually become
+part of java.util.concurrent via Maintenance JSRs or RFEs. Any
+comments about API issues etc would also be welcome.
+
+While I'm at it: Everyone now agrees that ConcurrentSkipListMap and/or
+ConcurrentSkipListSet need associated interfaces, but we still haven't
+arrived at ones everyone can agree to. Be prepared for some minor
+interface/API changes when we finally decide to commit to them.
+
+Also while I'm at it: please feel free to post to this list other
+features and RFEs that you'd like to be considered. The only kinds of
+things we are supposed to deal with are minor additions like these new
+concurrent data structures. 
+
+-Doug
+
+From sergemasse1@yahoo.com  Mon Sep  6 01:04:53 2004
+From: sergemasse1@yahoo.com (serge masse)
+Date: Sun, 5 Sep 2004 17:04:53 -0700 (PDT)
+Subject: [concurrency-interest] We need a ConcurrentSortedMap<K extends Comparable,V>
+Message-ID: <20040906000453.78360.qmail@web51401.mail.yahoo.com>
+
+It could implement SortedMap or look like as if it
+does.
+
+We are now using J2SE 5 and java.util.concurrent in
+the current version of Leafy and LeafySeadragon. The
+only thing missing so far is a fast
+ConcurrentSortedMap.
+
+Love it. 
+
+thanks,
+
+serge (sm1) https://leafy.dev.java.net/
+
+
+
+From dl@cs.oswego.edu  Mon Sep  6 18:25:12 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Mon, 6 Sep 2004 13:25:12 -0400
+Subject: [concurrency-interest] concurrent skip list / sorted map API improvements
+Message-ID: <16700.40312.931895.335149@altair.cs.oswego.edu>
+
+We settled on a set of "Navigable" interfaces to describe added
+functionality in concurrent skip lists and other possible sorted
+mass/sets. For details, see the usual links from:
+  http://gee.cs.oswego.edu/dl/concurrency-interest/index.html
+
+We tried to define interfaces so that various other possible future
+sorted set implementations could also be accommodated, to avoid having
+to add new interfaces every time new implementations are added. This
+led to only a couple each of minor method renamings, signature
+changes, and additions, that we hope won't impact ongoing usage. Now
+that we have this set, we hope not to change APIs in any interesting
+way...
+
+... Except for one question that we'd like your feedback about
+(only) if you have a strong opinion about it:
+
+Should the main ConcurrentSkipListMap class be renamed to ConcurrentTreeMap?
+
+The main arguments for doing this are:
+  1) People looking for concurrent analog of TreeMap will immediately find it
+  2) Internally, the implementation uses a tree-like variant of skip lists
+
+The main arguments against it are:
+  1) While tree-like, the implementation shares the common property
+     of all skip lists that operations near the front are faster than
+     those near the end, which the term "tree" does not readily imply.
+  2) If someday we introduce a concurrent map based on a balanced tree,
+     the name will already have been taken.
+
+None of these seem very compelling, so for now, we are sticking with
+current names.
+
+-Doug
+
+From larryr@saturn.sdsu.edu  Mon Sep  6 18:47:35 2004
+From: larryr@saturn.sdsu.edu (Larry Riedel)
+Date: 6 Sep 2004 17:47:35 -0000
+Subject: [concurrency-interest] Re: concurrent skip list / sorted map API improvements
+In-Reply-To: <16700.40312.931895.335149@altair.cs.oswego.edu>
+Message-ID: <20040906174735.32447.qmail@home19.riedel.org>
+
+> Should the main ConcurrentSkipListMap class be renamed to ConcurrentTreeMap?
+
+I would favor SkipListConcurrentTreeMap or ConcurrentSkipListTreeMap,
+and have ConcurrentTreeMap be abstract or an interface.
+
+
+Larry
+
+
+From dawidk@mathcs.emory.edu  Fri Sep 17 07:40:11 2004
+From: dawidk@mathcs.emory.edu (Dawid Kurzyniec)
+Date: Fri, 17 Sep 2004 01:40:11 -0500
+Subject: [concurrency-interest] Announcing backport of JSR166 to Java 1.4
+Message-ID: <414A86CB.6050709@mathcs.emory.edu>
+
+Hello everybody,
+
+I am happy to announce availability of a backport of  
+java.util.concurrent API to Java 1.4. The backport is based on sources 
+from JSR 166 CVS repository (September 2004), and dl.util.concurrent 
+1.3.4. The backport is nearly complete; unsupported functionality is 
+limited mostly to the following classes: 1) requiring explicit JVM 
+support (e.g. nanosecond clock), 2) some non-essential functions 
+described as "designed primarily for use in monitoring in system state, 
+not for synchronization control", 3) functionality that would affect 
+performance, or 4) functionality that would require development of 
+substantial amount of new code.
+
+The backport will probably go into the Emory Utilities package 
+(http://www.mathcs.emory.edu/dcl/util/). However, the interest expressed 
+earlier in this list motivates releasing the library as soon as 
+possible. Hence I am hereby releasing the "still warm" version. The 
+purpose of this library is to enable gradual transition from Java 1.4 to 
+5.0: the library allows to develop concurrent applications for Java 1.4 
+that will work with Java 5.0 by simply changing package names.
+
+So here it is:
+http://www.mathcs.emory.edu/dcl/util/util-concurrent.jar (binaries)
+http://www.mathcs.emory.edu/dcl/util/util-concurrent-src.jar (source code)
+http://www.mathcs.emory.edu/dcl/util/util-concurrent-doc.jar (javadoc)
+
+This is NOT an emulation: it is adaptation of JSR 166 and dl.u.c. code 
+to Java 1.4. Performance levels of this backport are comparable to dl.u.c.
+
+Overview of supported functionality:
+all JSR 166 executors, utilities, and everything related (thread pools, 
+FutureTask, scheduled tasks and executors, etc)
+Locks: ReentrantLock, Semaphore, ReentrantReadWriteLock (see remarks 
+below), Conditions
+Queues: synchronous, array, linked, delay, and priority queues
+Atomics: everything except reflection-based updaters
+Other concurrency utils: CountDownLatch, CyclicBarrier
+Collections: ConcurrentHashMap, CopyOnWriteArrayList, CopyOnWriteArraySet
+
+As far as stability and reliability is considered: the library passes 
+all of attempted 941 tests from tck test package designed for 
+java.util.concurrent (the tests of unsupported funcionality were 
+skipped). Occasionally, there are failures of "condition timeout" test 
+cases of boolean Condition.await(timeout) and boolean 
+Condition.awaitUntil(Date), but it is because the tests assume stronger 
+semantics than required by the specification (see comments on Condition 
+below).
+
+The following classes were unit-tested:
+AbstractExecutorService
+AbstractQueue
+ArrayBlockingQueue
+AtomicBoolean
+Atomic[Integer,Long]Array
+Atomic[Integer,Long]
+AtomicMarkableReference
+AtomicReferenceArray
+AtomicReference
+AtomicStampedReference
+ConcurrentHashMap
+CopyOnWriteArray[List,Set]
+CountDownLatch
+CyclicBarrier
+DelayQueue
+Exchanger
+Executors
+ExecutorCompletionService
+FutureTask
+LinkedBlockingQueue
+PriorityBlockingQueue
+PriorityQueue
+ReentrantLock
+ReentrantReadWriteLock
+ScheduledExecutor
+Semaphore
+SynchronousQueue
+ThreadLocal
+ThreadPoolExecutor
+TimeUnit
+
+It is also important to stress out that vast proportion of this library 
+is based on source code from JSR 166 and dl.util.concurrent, both very 
+well tested. Whenever possible, the JSR 166 code was used. In cases when 
+it was infeasible (e.g. the JSR 166 code had strong dependencies on 
+native JVM support), the dl.util.concurrent code was adapted. The new 
+code was introduced only when absolutely neccessary, e.g. to make 
+dl.u.c. code conforming to JSR 166 interfaces and semantics.
+
+However, as any software, it may still contain bugs. I will conduct more 
+tests, but I would like to welcome everybody to try it out, report any 
+issues, or contribute source code. There is still a couple of things 
+missing (e.g. JSR 166 functionality that didn't make it to 
+java.util.concurrent yet, or some of things listed below), and I welcome 
+collaboration. The library is released to public domain and can be used 
+without acknowledgement and for any purpose.
+
+While substantial effort was made to ensure reliability and conformance 
+to specifications, the library is provided AS IS and without any express 
+or implied warranty.
+
+
+-------------------------------------------------------------------------------------------------------------------------
+The detailed explanation of what JSR 166 functionality is not supported:
+
+Condition:
+long awaitNanos(long nanosTimeout) is not supported, since it cannot 
+accurately report remaining times with nanosecond precision.
+boolean await(timeout) and boolean awaitUntil(Date), called on 
+conditions obtained from locks, may sometimes wake up spuriously. This 
+is allowed by the Condition specification. However, it causes them to 
+occassionally fail tck unit tests. Maybe the tests are too rigorous, or 
+maybe the semantics of conditions returned from lock classes in 
+java.util.concurrent are stronger than required by the specification. 
+Nevertheless, this implementation still conforms to the specification.
+
+ReentrantLock:
+the following monitoring methods are not supported: boolean 
+hasWaiters(Condition), int getWaitQueueLength(Condition), Collection 
+getWaitingThreads(Condition).
+the following monitoring methods are supported only for fair locks: 
+boolean hasQueuedThreads(), int getQueueLength(), Collection 
+getQueuedThreads(), boolean isQueued().
+
+ReentrantReadWriteLock:
+this implementation is based on dl.u.c. 
+ReentrantWriterPreferenceReadWriteLock, and thus is a slight departure 
+from java.util.concurrent that does not specify acquisition order but 
+allows to enable/disable fairness. This implementation does not have a 
+single-parameter constructor allowing to specify fairness policy; it 
+always behaves like writer-preference lock with no fairness guarantees.
+Bacause of these characteristics, this class is compliant with JSR 166 
+specification of non-fair reentrant read-write locks, while the exact 
+semantics of fair locks are not supported (and the appropriate 
+constructor is missing).
+Also, the following instrumentation and status methods are not 
+supported: Collection getQueuedWriterThreads(), Collection 
+getQueuedReaderThreads(), boolean hasQueuedThreads(), boolean 
+hasQueuedThread(Thread), Collection getQueuedThreads(), boolean 
+hasWaiters(Condition), int getWaitQueueLength(Condition), Collection 
+getWaitingThreads(Condition).
+
+Semaphore:
+Atomic multi-acquires: tryAcquire(int permits) and tryAcquire(int 
+permits, long timeout, TimeUnit unit) are not supported.
+
+The following platform-level functionality is unsupported: 
+System.nanoTime(), UncaughtExceptionHandlers
+
+The following low-level concurrency classes are not supported: 
+LockSupport, AbstractQueuedSynchronizer.
+
+The following "atomic" utilities are not supported: 
+Atomic[Integer,Long,Reference]FieldUpdater.
+
+The following collection classes are not supported: LinkedList, 
+ConcurrentLinkedQueue.
+
+Note on nanosecond precision: although nanoTime() is not supported, the 
+library strives to honor nanosecond timeouts, if such are requested, by 
+using two-parameter variant of Object.wait(). Note, however, that most 
+JVMs prior to 5.0 will round up the timeout to full milliseconds anyway.
+
+
+I kindly ask members of JSR 166 expert group to straighten out any 
+inaccuracies that I may have made in the above description.
+
+Regards,
+Dawid Kurzyniec
+
+
+From rahul_tyagi@freddiemac.com  Fri Sep 17 22:40:07 2004
+From: rahul_tyagi@freddiemac.com (rahul_tyagi@freddiemac.com)
+Date: Fri, 17 Sep 2004 17:40:07 -0400
+Subject: [concurrency-interest] Re: Concurrency-interest digest, Vol 1 #292 - 1 msg
+In-Reply-To: <20040917160001.27436.10332.Mailman@altair.cs.oswego.edu>
+Message-ID: <OFA4AAD88B.6277CE8C-ON85256F12.0076B8DB-85256F12.0077084F@freddiemac.com>
+
+This is a multipart message in MIME format.
+--=_alternative 0077084685256F12_=
+Content-Type: text/plain; charset="US-ASCII"
+
+Dawid,
+Thanks for publishishing backport of jsr166 for jdk 1.4,
+
+I would like to do my hands dirty with api published by you very soon :).
+
+Thanks for investing your time in this effort.
+
+Rahul
+
+
+
+
+concurrency-interest-request@cs.oswego.edu
+Sent by: concurrency-interest-admin@cs.oswego.edu
+09/17/2004 12:00 PM
+Please respond to concurrency-interest
+ 
+        To:     concurrency-interest@altair.cs.oswego.edu
+        cc: 
+        Subject:        Concurrency-interest digest, Vol 1 #292 - 1 msg
+
+
+Send Concurrency-interest mailing list submissions to
+                 concurrency-interest@altair.cs.oswego.edu
+
+To subscribe or unsubscribe via the World Wide Web, visit
+                 
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+or, via email, send a message with subject or body 'help' to
+                 concurrency-interest-request@altair.cs.oswego.edu
+
+You can reach the person managing the list at
+                 concurrency-interest-admin@altair.cs.oswego.edu
+
+When replying, please edit your Subject line so it is more specific
+than "Re: Contents of Concurrency-interest digest..."
+
+
+Today's Topics:
+
+   1. Announcing backport of JSR166 to Java 1.4 (Dawid Kurzyniec)
+
+--__--__--
+
+Message: 1
+Date: Fri, 17 Sep 2004 01:40:11 -0500
+From: Dawid Kurzyniec <dawidk@mathcs.emory.edu>
+To: concurrency-interest@altair.cs.oswego.edu
+Subject: [concurrency-interest] Announcing backport of JSR166 to Java 1.4
+
+Hello everybody,
+
+I am happy to announce availability of a backport of 
+java.util.concurrent API to Java 1.4. The backport is based on sources 
+from JSR 166 CVS repository (September 2004), and dl.util.concurrent 
+1.3.4. The backport is nearly complete; unsupported functionality is 
+limited mostly to the following classes: 1) requiring explicit JVM 
+support (e.g. nanosecond clock), 2) some non-essential functions 
+described as "designed primarily for use in monitoring in system state, 
+not for synchronization control", 3) functionality that would affect 
+performance, or 4) functionality that would require development of 
+substantial amount of new code.
+
+The backport will probably go into the Emory Utilities package 
+(http://www.mathcs.emory.edu/dcl/util/). However, the interest expressed 
+earlier in this list motivates releasing the library as soon as 
+possible. Hence I am hereby releasing the "still warm" version. The 
+purpose of this library is to enable gradual transition from Java 1.4 to 
+5.0: the library allows to develop concurrent applications for Java 1.4 
+that will work with Java 5.0 by simply changing package names.
+
+So here it is:
+http://www.mathcs.emory.edu/dcl/util/util-concurrent.jar (binaries)
+http://www.mathcs.emory.edu/dcl/util/util-concurrent-src.jar (source code)
+http://www.mathcs.emory.edu/dcl/util/util-concurrent-doc.jar (javadoc)
+
+This is NOT an emulation: it is adaptation of JSR 166 and dl.u.c. code 
+to Java 1.4. Performance levels of this backport are comparable to dl.u.c.
+
+Overview of supported functionality:
+all JSR 166 executors, utilities, and everything related (thread pools, 
+FutureTask, scheduled tasks and executors, etc)
+Locks: ReentrantLock, Semaphore, ReentrantReadWriteLock (see remarks 
+below), Conditions
+Queues: synchronous, array, linked, delay, and priority queues
+Atomics: everything except reflection-based updaters
+Other concurrency utils: CountDownLatch, CyclicBarrier
+Collections: ConcurrentHashMap, CopyOnWriteArrayList, CopyOnWriteArraySet
+
+As far as stability and reliability is considered: the library passes 
+all of attempted 941 tests from tck test package designed for 
+java.util.concurrent (the tests of unsupported funcionality were 
+skipped). Occasionally, there are failures of "condition timeout" test 
+cases of boolean Condition.await(timeout) and boolean 
+Condition.awaitUntil(Date), but it is because the tests assume stronger 
+semantics than required by the specification (see comments on Condition 
+below).
+
+The following classes were unit-tested:
+AbstractExecutorService
+AbstractQueue
+ArrayBlockingQueue
+AtomicBoolean
+Atomic[Integer,Long]Array
+Atomic[Integer,Long]
+AtomicMarkableReference
+AtomicReferenceArray
+AtomicReference
+AtomicStampedReference
+ConcurrentHashMap
+CopyOnWriteArray[List,Set]
+CountDownLatch
+CyclicBarrier
+DelayQueue
+Exchanger
+Executors
+ExecutorCompletionService
+FutureTask
+LinkedBlockingQueue
+PriorityBlockingQueue
+PriorityQueue
+ReentrantLock
+ReentrantReadWriteLock
+ScheduledExecutor
+Semaphore
+SynchronousQueue
+ThreadLocal
+ThreadPoolExecutor
+TimeUnit
+
+It is also important to stress out that vast proportion of this library 
+is based on source code from JSR 166 and dl.util.concurrent, both very 
+well tested. Whenever possible, the JSR 166 code was used. In cases when 
+it was infeasible (e.g. the JSR 166 code had strong dependencies on 
+native JVM support), the dl.util.concurrent code was adapted. The new 
+code was introduced only when absolutely neccessary, e.g. to make 
+dl.u.c. code conforming to JSR 166 interfaces and semantics.
+
+However, as any software, it may still contain bugs. I will conduct more 
+tests, but I would like to welcome everybody to try it out, report any 
+issues, or contribute source code. There is still a couple of things 
+missing (e.g. JSR 166 functionality that didn't make it to 
+java.util.concurrent yet, or some of things listed below), and I welcome 
+collaboration. The library is released to public domain and can be used 
+without acknowledgement and for any purpose.
+
+While substantial effort was made to ensure reliability and conformance 
+to specifications, the library is provided AS IS and without any express 
+or implied warranty.
+
+
+-------------------------------------------------------------------------------------------------------------------------
+The detailed explanation of what JSR 166 functionality is not supported:
+
+Condition:
+long awaitNanos(long nanosTimeout) is not supported, since it cannot 
+accurately report remaining times with nanosecond precision.
+boolean await(timeout) and boolean awaitUntil(Date), called on 
+conditions obtained from locks, may sometimes wake up spuriously. This 
+is allowed by the Condition specification. However, it causes them to 
+occassionally fail tck unit tests. Maybe the tests are too rigorous, or 
+maybe the semantics of conditions returned from lock classes in 
+java.util.concurrent are stronger than required by the specification. 
+Nevertheless, this implementation still conforms to the specification.
+
+ReentrantLock:
+the following monitoring methods are not supported: boolean 
+hasWaiters(Condition), int getWaitQueueLength(Condition), Collection 
+getWaitingThreads(Condition).
+the following monitoring methods are supported only for fair locks: 
+boolean hasQueuedThreads(), int getQueueLength(), Collection 
+getQueuedThreads(), boolean isQueued().
+
+ReentrantReadWriteLock:
+this implementation is based on dl.u.c. 
+ReentrantWriterPreferenceReadWriteLock, and thus is a slight departure 
+from java.util.concurrent that does not specify acquisition order but 
+allows to enable/disable fairness. This implementation does not have a 
+single-parameter constructor allowing to specify fairness policy; it 
+always behaves like writer-preference lock with no fairness guarantees.
+Bacause of these characteristics, this class is compliant with JSR 166 
+specification of non-fair reentrant read-write locks, while the exact 
+semantics of fair locks are not supported (and the appropriate 
+constructor is missing).
+Also, the following instrumentation and status methods are not 
+supported: Collection getQueuedWriterThreads(), Collection 
+getQueuedReaderThreads(), boolean hasQueuedThreads(), boolean 
+hasQueuedThread(Thread), Collection getQueuedThreads(), boolean 
+hasWaiters(Condition), int getWaitQueueLength(Condition), Collection 
+getWaitingThreads(Condition).
+
+Semaphore:
+Atomic multi-acquires: tryAcquire(int permits) and tryAcquire(int 
+permits, long timeout, TimeUnit unit) are not supported.
+
+The following platform-level functionality is unsupported: 
+System.nanoTime(), UncaughtExceptionHandlers
+
+The following low-level concurrency classes are not supported: 
+LockSupport, AbstractQueuedSynchronizer.
+
+The following "atomic" utilities are not supported: 
+Atomic[Integer,Long,Reference]FieldUpdater.
+
+The following collection classes are not supported: LinkedList, 
+ConcurrentLinkedQueue.
+
+Note on nanosecond precision: although nanoTime() is not supported, the 
+library strives to honor nanosecond timeouts, if such are requested, by 
+using two-parameter variant of Object.wait(). Note, however, that most 
+JVMs prior to 5.0 will round up the timeout to full milliseconds anyway.
+
+
+I kindly ask members of JSR 166 expert group to straighten out any 
+inaccuracies that I may have made in the above description.
+
+Regards,
+Dawid Kurzyniec
+
+
+
+--__--__--
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+End of Concurrency-interest Digest
+
+
+
+--=_alternative 0077084685256F12_=
+Content-Type: text/html; charset="US-ASCII"
+
+
+<br><font size=2 face="sans-serif">Dawid,</font>
+<br><font size=2 face="sans-serif">Thanks for publishishing backport of
+jsr166 for jdk 1.4,</font>
+<br>
+<br><font size=2 face="sans-serif">I would like to do my hands dirty with
+api published by you very soon :).</font>
+<br>
+<br><font size=2 face="sans-serif">Thanks for investing your time in this
+effort.</font>
+<br>
+<br><font size=2 face="sans-serif">Rahul</font>
+<br>
+<br>
+<br>
+<table width=100%>
+<tr valign=top>
+<td>
+<td><font size=1 face="sans-serif"><b>concurrency-interest-request@cs.oswego.edu</b></font>
+<br><font size=1 face="sans-serif">Sent by: concurrency-interest-admin@cs.oswego.edu</font>
+<p><font size=1 face="sans-serif">09/17/2004 12:00 PM</font>
+<br><font size=1 face="sans-serif">Please respond to concurrency-interest</font>
+<td><font size=1 face="Arial">&nbsp; &nbsp; &nbsp; &nbsp; </font>
+<br><font size=1 face="sans-serif">&nbsp; &nbsp; &nbsp; &nbsp; To:
+&nbsp; &nbsp; &nbsp; &nbsp;concurrency-interest@altair.cs.oswego.edu</font>
+<br><font size=1 face="sans-serif">&nbsp; &nbsp; &nbsp; &nbsp; cc:
+&nbsp; &nbsp; &nbsp; &nbsp;</font>
+<br><font size=1 face="sans-serif">&nbsp; &nbsp; &nbsp; &nbsp; Subject:
+&nbsp; &nbsp; &nbsp; &nbsp;Concurrency-interest digest, Vol 1 #292
+- 1 msg</font></table>
+<br>
+<br>
+<br><font size=2><tt>Send Concurrency-interest mailing list submissions
+to<br>
+ &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;
+concurrency-interest@altair.cs.oswego.edu<br>
+<br>
+To subscribe or unsubscribe via the World Wide Web, visit<br>
+ &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest<br>
+or, via email, send a message with subject or body 'help' to<br>
+ &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;
+concurrency-interest-request@altair.cs.oswego.edu<br>
+<br>
+You can reach the person managing the list at<br>
+ &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp;
+concurrency-interest-admin@altair.cs.oswego.edu<br>
+<br>
+When replying, please edit your Subject line so it is more specific<br>
+than &quot;Re: Contents of Concurrency-interest digest...&quot;<br>
+<br>
+<br>
+Today's Topics:<br>
+<br>
+ &nbsp; 1. Announcing backport of JSR166 to Java 1.4 (Dawid Kurzyniec)<br>
+<br>
+--__--__--<br>
+<br>
+Message: 1<br>
+Date: Fri, 17 Sep 2004 01:40:11 -0500<br>
+From: Dawid Kurzyniec &lt;dawidk@mathcs.emory.edu&gt;<br>
+To: concurrency-interest@altair.cs.oswego.edu<br>
+Subject: [concurrency-interest] Announcing backport of JSR166 to Java 1.4<br>
+<br>
+Hello everybody,<br>
+<br>
+I am happy to announce availability of a backport of &nbsp;<br>
+java.util.concurrent API to Java 1.4. The backport is based on sources
+<br>
+from JSR 166 CVS repository (September 2004), and dl.util.concurrent <br>
+1.3.4. The backport is nearly complete; unsupported functionality is <br>
+limited mostly to the following classes: 1) requiring explicit JVM <br>
+support (e.g. nanosecond clock), 2) some non-essential functions <br>
+described as &quot;designed primarily for use in monitoring in system state,
+<br>
+not for synchronization control&quot;, 3) functionality that would affect
+<br>
+performance, or 4) functionality that would require development of <br>
+substantial amount of new code.<br>
+<br>
+The backport will probably go into the Emory Utilities package <br>
+(http://www.mathcs.emory.edu/dcl/util/). However, the interest expressed
+<br>
+earlier in this list motivates releasing the library as soon as <br>
+possible. Hence I am hereby releasing the &quot;still warm&quot; version.
+The <br>
+purpose of this library is to enable gradual transition from Java 1.4 to
+<br>
+5.0: the library allows to develop concurrent applications for Java 1.4
+<br>
+that will work with Java 5.0 by simply changing package names.<br>
+<br>
+So here it is:<br>
+http://www.mathcs.emory.edu/dcl/util/util-concurrent.jar (binaries)<br>
+http://www.mathcs.emory.edu/dcl/util/util-concurrent-src.jar (source code)<br>
+http://www.mathcs.emory.edu/dcl/util/util-concurrent-doc.jar (javadoc)<br>
+<br>
+This is NOT an emulation: it is adaptation of JSR 166 and dl.u.c. code
+<br>
+to Java 1.4. Performance levels of this backport are comparable to dl.u.c.<br>
+<br>
+Overview of supported functionality:<br>
+all JSR 166 executors, utilities, and everything related (thread pools,
+<br>
+FutureTask, scheduled tasks and executors, etc)<br>
+Locks: ReentrantLock, Semaphore, ReentrantReadWriteLock (see remarks <br>
+below), Conditions<br>
+Queues: synchronous, array, linked, delay, and priority queues<br>
+Atomics: everything except reflection-based updaters<br>
+Other concurrency utils: CountDownLatch, CyclicBarrier<br>
+Collections: ConcurrentHashMap, CopyOnWriteArrayList, CopyOnWriteArraySet<br>
+<br>
+As far as stability and reliability is considered: the library passes <br>
+all of attempted 941 tests from tck test package designed for <br>
+java.util.concurrent (the tests of unsupported funcionality were <br>
+skipped). Occasionally, there are failures of &quot;condition timeout&quot;
+test <br>
+cases of boolean Condition.await(timeout) and boolean <br>
+Condition.awaitUntil(Date), but it is because the tests assume stronger
+<br>
+semantics than required by the specification (see comments on Condition
+<br>
+below).<br>
+<br>
+The following classes were unit-tested:<br>
+AbstractExecutorService<br>
+AbstractQueue<br>
+ArrayBlockingQueue<br>
+AtomicBoolean<br>
+Atomic[Integer,Long]Array<br>
+Atomic[Integer,Long]<br>
+AtomicMarkableReference<br>
+AtomicReferenceArray<br>
+AtomicReference<br>
+AtomicStampedReference<br>
+ConcurrentHashMap<br>
+CopyOnWriteArray[List,Set]<br>
+CountDownLatch<br>
+CyclicBarrier<br>
+DelayQueue<br>
+Exchanger<br>
+Executors<br>
+ExecutorCompletionService<br>
+FutureTask<br>
+LinkedBlockingQueue<br>
+PriorityBlockingQueue<br>
+PriorityQueue<br>
+ReentrantLock<br>
+ReentrantReadWriteLock<br>
+ScheduledExecutor<br>
+Semaphore<br>
+SynchronousQueue<br>
+ThreadLocal<br>
+ThreadPoolExecutor<br>
+TimeUnit<br>
+<br>
+It is also important to stress out that vast proportion of this library
+<br>
+is based on source code from JSR 166 and dl.util.concurrent, both very
+<br>
+well tested. Whenever possible, the JSR 166 code was used. In cases when
+<br>
+it was infeasible (e.g. the JSR 166 code had strong dependencies on <br>
+native JVM support), the dl.util.concurrent code was adapted. The new <br>
+code was introduced only when absolutely neccessary, e.g. to make <br>
+dl.u.c. code conforming to JSR 166 interfaces and semantics.<br>
+<br>
+However, as any software, it may still contain bugs. I will conduct more
+<br>
+tests, but I would like to welcome everybody to try it out, report any
+<br>
+issues, or contribute source code. There is still a couple of things <br>
+missing (e.g. JSR 166 functionality that didn't make it to <br>
+java.util.concurrent yet, or some of things listed below), and I welcome
+<br>
+collaboration. The library is released to public domain and can be used
+<br>
+without acknowledgement and for any purpose.<br>
+<br>
+While substantial effort was made to ensure reliability and conformance
+<br>
+to specifications, the library is provided AS IS and without any express
+<br>
+or implied warranty.<br>
+<br>
+<br>
+-------------------------------------------------------------------------------------------------------------------------<br>
+The detailed explanation of what JSR 166 functionality is not supported:<br>
+<br>
+Condition:<br>
+long awaitNanos(long nanosTimeout) is not supported, since it cannot <br>
+accurately report remaining times with nanosecond precision.<br>
+boolean await(timeout) and boolean awaitUntil(Date), called on <br>
+conditions obtained from locks, may sometimes wake up spuriously. This
+<br>
+is allowed by the Condition specification. However, it causes them to <br>
+occassionally fail tck unit tests. Maybe the tests are too rigorous, or
+<br>
+maybe the semantics of conditions returned from lock classes in <br>
+java.util.concurrent are stronger than required by the specification. <br>
+Nevertheless, this implementation still conforms to the specification.<br>
+<br>
+ReentrantLock:<br>
+the following monitoring methods are not supported: boolean <br>
+hasWaiters(Condition), int getWaitQueueLength(Condition), Collection <br>
+getWaitingThreads(Condition).<br>
+the following monitoring methods are supported only for fair locks: <br>
+boolean hasQueuedThreads(), int getQueueLength(), Collection <br>
+getQueuedThreads(), boolean isQueued().<br>
+<br>
+ReentrantReadWriteLock:<br>
+this implementation is based on dl.u.c. <br>
+ReentrantWriterPreferenceReadWriteLock, and thus is a slight departure
+<br>
+from java.util.concurrent that does not specify acquisition order but <br>
+allows to enable/disable fairness. This implementation does not have a
+<br>
+single-parameter constructor allowing to specify fairness policy; it <br>
+always behaves like writer-preference lock with no fairness guarantees.<br>
+Bacause of these characteristics, this class is compliant with JSR 166
+<br>
+specification of non-fair reentrant read-write locks, while the exact <br>
+semantics of fair locks are not supported (and the appropriate <br>
+constructor is missing).<br>
+Also, the following instrumentation and status methods are not <br>
+supported: Collection getQueuedWriterThreads(), Collection <br>
+getQueuedReaderThreads(), boolean hasQueuedThreads(), boolean <br>
+hasQueuedThread(Thread), Collection getQueuedThreads(), boolean <br>
+hasWaiters(Condition), int getWaitQueueLength(Condition), Collection <br>
+getWaitingThreads(Condition).<br>
+<br>
+Semaphore:<br>
+Atomic multi-acquires: tryAcquire(int permits) and tryAcquire(int <br>
+permits, long timeout, TimeUnit unit) are not supported.<br>
+<br>
+The following platform-level functionality is unsupported: <br>
+System.nanoTime(), UncaughtExceptionHandlers<br>
+<br>
+The following low-level concurrency classes are not supported: <br>
+LockSupport, AbstractQueuedSynchronizer.<br>
+<br>
+The following &quot;atomic&quot; utilities are not supported: <br>
+Atomic[Integer,Long,Reference]FieldUpdater.<br>
+<br>
+The following collection classes are not supported: LinkedList, <br>
+ConcurrentLinkedQueue.<br>
+<br>
+Note on nanosecond precision: although nanoTime() is not supported, the
+<br>
+library strives to honor nanosecond timeouts, if such are requested, by
+<br>
+using two-parameter variant of Object.wait(). Note, however, that most
+<br>
+JVMs prior to 5.0 will round up the timeout to full milliseconds anyway.<br>
+<br>
+<br>
+I kindly ask members of JSR 166 expert group to straighten out any <br>
+inaccuracies that I may have made in the above description.<br>
+<br>
+Regards,<br>
+Dawid Kurzyniec<br>
+<br>
+<br>
+<br>
+--__--__--<br>
+<br>
+_______________________________________________<br>
+Concurrency-interest mailing list<br>
+Concurrency-interest@altair.cs.oswego.edu<br>
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest<br>
+<br>
+<br>
+End of Concurrency-interest Digest<br>
+<br>
+</tt></font>
+<br>
+--=_alternative 0077084685256F12_=--
+
+From mike@rainbow.studorg.tuwien.ac.at  Wed Sep 22 14:31:42 2004
+From: mike@rainbow.studorg.tuwien.ac.at (Michael Wildpaner)
+Date: Wed, 22 Sep 2004 15:31:42 +0200 (CEST)
+Subject: [concurrency-interest] Deadlock with PooledExecutor + BoundedLinkedQueue + waitWhenBlocked
+Message-ID: <Pine.LNX.4.58.0409201137140.4131@rainbow.studorg.tuwien.ac.at>
+
+Hi,
+
+with dl.util.concurrent, release 1.3.4, I have found that in certain
+circumstances the combination of PooledExecutor with BoundedLinkedQueue
+with a waitWhenBlocked policy can lead to deadlock:
+
+     BoundedLinkedQueue buffer = new BoundedLinkedQueue(50);
+     PooledExecutor pool = new PooledExecutor(buffer, 5);
+     pool.setMinimumPoolSize(1);
+     pool.setKeepAliveTime(60000);
+     pool.waitWhenBlocked();
+
+A number of producers submit Runnables to the pool. The pool has a number
+of executor threads that 'consume' the Runnables. Now the following
+happens:
+
+  - All 5 Executor threads have been created and are busy with Runables.
+  - Several Producers try to put Runables into the PooledExecutor
+  - The BoundedLinkedQueue is full
+
+  - Producer1: tries to pool.execute(Runnable r)
+    - locks the PooledExecutor (PooledExecutor.java:874)
+      - handOff_.offer() fails (PooledExecutor.java:885)
+    - releases the PooledExecutor
+    - calls WaitWhenBlocked.blockedAction()
+      - tries to handOff_.put() (PooledExecutor.java:798)
+        - locks putGuard_ (BoundedLinkedQueue.java:296)
+          - locks the BoundedLinkedQueue (BoundedLinkedQueue.java:299)
+          - calls wait(), which gives up the lock on the BoundedLinkedQueue
+            to wait for a put permit
+
+== State: Producer1 has locked BoundedLinkedQueue.putGuard_,
+==                  waits for notify on BoundedLinkedQueue
+
+  - Producer 2: tries to pool.execute(Runnable r)
+    - locks the PooledExecutor (PooledExecutor.java:874)
+      - tries to handOff_.offer() (PooledExecutor.java:885)
+        - blocks when trying to lock BoundedLinkedQueue.putGuard_
+          (BoundedLinkedQueue.java:326)
+
+== State: Producer1 has locked BoundedLinkedQueue.putGuard_
+==                  waits for notify on BoundedLinkedQueue
+==        Producer2 has locked PooledExecutor
+==                  blocks on BoundedLinkedQueue.putGuard_
+
+
+No further progress is made, since:
+
+  - All other Producers block on the PooledExecutor, locked by Producer2,
+    in PooledExecutor.execute() (PooledExecutor.java:874).
+
+  - Having finished their Runnables, all Executors block on the
+    PooledExecutor, locked by Producer2, in PooledExecutor.getTask()
+    (PooledExecutor.java:717).
+
+  - Producer2 waits for BoundedLinkedQueue.putGuard_, locked by Producer1
+
+  - Producer1 waits for a notify on BoundedLinkedQueue
+
+  - This notify on BoundedLinkedQueue will never happen, since all
+    Executors (which would notify in PooledExecutor.getTask() via
+    handOff_.poll() or handOff_.take() -> BoundedLinkedQueue.extract())
+    block on PooledExecutor, locked by Producer2.
+
+In short:
+
+  Other Producers + All Executors -> Producer2 -> Producer1 -> Any Executor
+
+At the moment I have switched to the "don't do that, then" solution of
+using BoundedBuffer instead of BoundedLinkedQueue. I have some very
+preliminary ideas to fix this, but have not worked anything out yet.
+
+If this combination is not important enough to fix, it might help further
+users to add a little warning to the documentation.
+
+Best wishes, Mike
+
+-- 
+Do not feel safe. The poet remembers.           DI Michael Wildpaner
+You can kill one, but another is born.                 Ph.D. Student
+The words are written down,
+the deed, the date.  (Czeslaw Milosz)
+
+From sergemasse1@yahoo.com  Sun Sep 26 19:20:49 2004
+From: sergemasse1@yahoo.com (serge masse)
+Date: Sun, 26 Sep 2004 11:20:49 -0700 (PDT)
+Subject: [concurrency-interest] Getting a Runtime ClassCastException with ConcurrentHashMap and ConcurrentLinkedQueue
+Message-ID: <20040926182049.82225.qmail@web51409.mail.yahoo.com>
+
+Using Java 5 RC 1 (jdk1.5.0) downloaded today Sept 26,
+2004:
+========== code start ===========
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
+public class RuntimeClassCastEx {
+  
+  static final String CLASSNAME = 
+    RuntimeClassCastEx.class.getName();
+  
+  static final
+ConcurrentHashMap<String,StuffInterface> 
+    map = 
+      new ConcurrentHashMap<String,StuffInterface>();
+  
+  public static void main(String[] args){
+    System.out.println(CLASSNAME+": entering...");
+    map.put("stuff1",new Stuff());
+    
+    //this causes a runtime ClassCastException,
+    ConcurrentLinkedQueue<StuffInterface> list = 
+  
+(ConcurrentLinkedQueue<StuffInterface>)map.values();
+    
+    //we don't get here.
+    
+    for(StuffInterface stuff : list ){
+      System.out.println( ""+stuff.getStuff() );
+    }
+    System.out.println(CLASSNAME+": exiting...");
+  }
+}
+
+interface StuffInterface {
+  Object getStuff();
+}
+
+class Stuff implements StuffInterface {
+  
+  Stuff(){}
+  
+  public Object getStuff(){ return this; }
+}
+========== code end ===========
+
+My current work-around is to assign map.values() into
+a Collection and not one of it's implementers. But
+when I do this I have to synchronize on the map to be
+sure I don't have concurrent defects while I iterate
+on the collection. I want to use ConcurrentLinkedQueue
+but I don't know how.
+
+Please advise.
+
+I am currently trying to complete the migration of
+Leafy API and LeafySeadragon system to Java 5 and the
+java.util.concurrent API.
+
+thanks,
+serge (sm1)
+
+https://leafy.dev.java.net/ 
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+From dl@cs.oswego.edu  Sun Sep 26 22:49:28 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sun, 26 Sep 2004 17:49:28 -0400
+Subject: [concurrency-interest] Getting a Runtime ClassCastException with ConcurrentHashMap and ConcurrentLinkedQueue
+In-Reply-To: <20040926182049.82225.qmail@web51409.mail.yahoo.com>
+References: <20040926182049.82225.qmail@web51409.mail.yahoo.com>
+Message-ID: <16727.14696.706726.754426@altair.cs.oswego.edu>
+
+>     //this causes a runtime ClassCastException,
+>     ConcurrentLinkedQueue<StuffInterface> list = 
+> (ConcurrentLinkedQueue<StuffInterface>)map.values();
+>     
+
+Right. ConcurrentHashMap.values returns a Collection.
+The values Collection is promised in spec --
+  http://gee.cs.oswego.edu/dl/concurrent/dist/docs/java/util/concurrent/ConcurrentHashMap.html#values()
+to have a weakly consistent iterator, so you can safely traverse through it
+without locks. So you don't need to do anything special. Just iterate.
+
+-Doug
+
+
+From dl@cs.oswego.edu  Sun Sep 26 23:02:00 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sun, 26 Sep 2004 18:02:00 -0400
+Subject: [concurrency-interest] Deadlock with PooledExecutor + BoundedLinkedQueue + waitWhenBlocked
+In-Reply-To: <Pine.LNX.4.58.0409201137140.4131@rainbow.studorg.tuwien.ac.at>
+References: <Pine.LNX.4.58.0409201137140.4131@rainbow.studorg.tuwien.ac.at>
+Message-ID: <16727.15448.98079.208543@altair.cs.oswego.edu>
+
+> with dl.util.concurrent, release 1.3.4, I have found that in certain
+> circumstances the combination of PooledExecutor with BoundedLinkedQueue
+> with a waitWhenBlocked policy can lead to deadlock:
+
+Thanks. This is one of several cases where WaitWhenBlocked policy
+doesn't work out. 
+
+(Predefining WaitWhenBlocked was probably the biggest mistake I made
+in dl.u.c. It is very fragile because the pool blocking can interact
+in uncontrollable ways with task queue blocking, so there is no way
+for the PooledExecutor to guarantee the policy will maintain liveness.
+In java.util.concurrent, it isn't predefined, so you have to go to
+some trouble to define and use an analogous policy, so probably very
+few people will.)
+
+> If this combination is not important enough to fix, it might help further
+> users to add a little warning to the documentation.
+
+Yes, thanks. I'll add it to the warnings.
+
+-Doug
+
+From sergemasse1@yahoo.com  Mon Sep 27 03:43:21 2004
+From: sergemasse1@yahoo.com (serge masse)
+Date: Sun, 26 Sep 2004 19:43:21 -0700 (PDT)
+Subject: [concurrency-interest] Getting a Runtime ClassCastException with ConcurrentHashMap and ConcurrentLinkedQueue
+In-Reply-To: <16727.14696.706726.754426@altair.cs.oswego.edu>
+Message-ID: <20040927024322.36885.qmail@web51409.mail.yahoo.com>
+
+Thanks Doug,
+
+This is good news. If I understood your reply
+correctly, using a Collection from map.values()
+provides an Iterator that does not require a lock.
+That's great. I wasn't sure and I did not want to risk
+it before. 
+
+Now my only and less important concern is that the
+compiler (javac) should not let this statement go by
+without a message because the ClassCastException
+occurs at runtime and this is what Java 5 is trying so
+hard to aleviate, with generics and all. It looks easy
+to me to get the compiler to detect the problem in
+question but maybe I am missing more stuff here.
+
+thanks again
+great forum
+serge - https://leafy.dev.java.net/
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+--- Doug Lea <dl@cs.oswego.edu> wrote:
+
+> >     //this causes a runtime ClassCastException,
+> >     ConcurrentLinkedQueue<StuffInterface> list = 
+> >
+> (ConcurrentLinkedQueue<StuffInterface>)map.values();
+> >     
+> 
+> Right. ConcurrentHashMap.values returns a
+> Collection.
+> The values Collection is promised in spec --
+>  
+>
+http://gee.cs.oswego.edu/dl/concurrent/dist/docs/java/util/concurrent/ConcurrentHashMap.html#values()
+> to have a weakly consistent iterator, so you can
+> safely traverse through it
+> without locks. So you don't need to do anything
+> special. Just iterate.
+> 
+> -Doug
+> 
+> 
+
+
+=====
+
+Serge
+Leafy API: https://leafy.dev.java.net/
+LeafySeadragon - c2h: http://sourceforge.net/projects/c2h/ 
+Simplequestion: https://questionnaire.dev.java.net/
+
+"The wireless telegraph is not difficult to understand. The ordinary telegraph is like a very long cat. You pull the tail in New York, and it meows in Los Angeles. The wireless is the same, only without the cat." - Albert Einstein
+
+From leou@us.ibm.com  Mon Sep 27 18:26:01 2004
+From: leou@us.ibm.com (Leo Uzcategui)
+Date: Mon, 27 Sep 2004 11:26:01 -0600
+Subject: [concurrency-interest] Leo Uzcategui/Austin/IBM is out of the office.
+Message-ID: <OF82C85B16.85709C41-ON87256F1C.005FC407-87256F1C.005FC408@us.ibm.com>
+
+--0__=08BBE58FDFCC42978f9e8a93df938690918c08BBE58FDFCC4297
+Content-type: text/plain; charset=US-ASCII
+
+
+
+
+
+I will be out of the office starting  09/24/2004 and will not return until
+10/14/2004.
+
+For assistance, please contact Robin Redden at (512) 838-1542.
+--0__=08BBE58FDFCC42978f9e8a93df938690918c08BBE58FDFCC4297
+Content-type: text/html; charset=US-ASCII
+Content-Disposition: inline
+
+<html><body>
+<p>I will be out of the office starting  09/24/2004 and will not return until 10/14/2004.<br>
+<br>
+For assistance, please contact Robin Redden at (512) 838-1542.<br>
+</body></html>
+--0__=08BBE58FDFCC42978f9e8a93df938690918c08BBE58FDFCC4297--
+
+

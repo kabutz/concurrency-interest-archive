@@ -1,0 +1,2115 @@
+From aaron.dunlop at gmail.com  Fri Apr  1 14:16:49 2011
+From: aaron.dunlop at gmail.com (Aaron Dunlop)
+Date: Fri, 1 Apr 2011 11:16:49 -0700
+Subject: [concurrency-interest] Possible deadlock in ForkJoinPool when
+	parallelism = 1 ?
+Message-ID: <AANLkTim3RL89MyVyoZxFOiZ6NGRZuc-_wokEEOPVY4or@mail.gmail.com>
+
+This is a follow-up to a similar posting at StackOverflow
+(http://stackoverflow.com/questions/5493399/forkjoinpool-parallelism-1-deadlock).
+I'm pretty new to the Fork-Join framework, so this is probably an
+obvious case of user-error, but I haven't been able to figure it out,
+and thus far, none of the comments on that post have resolved the
+issue either.
+
+I'm profiling a parallel algorithm over a range of thread-counts. My
+tasks seem to work flawlessly if I create the ForkJoinPool with
+parallelism > 1 (I've normally been running with 2-24 threads). But if
+I create the ForkJoinPool with parallelism = 1, I see deadlocks after
+an unpredictable number of iterations. And yes - setting parallelism =
+1 is a strange practice, but I want to accurately ascertain the
+overhead of the parallel implementation, which means comparing the
+serial version and the parallel version run with a single thread.
+
+Below is a simple example that illustrates the issue I'm seeing. The
+'task' is a dummy iteration over a fixed array, divided recursively
+into 16 subtasks. I chose this odd iteration simply to produce a
+memory-bound workload - it's possible the task itself interacts oddly
+with F-J or with JIT optimizations, but if so, I haven't been able to
+tease out those interactions.
+
+If run with THREADS = 2 (or more), it runs reliably to completion, but
+if run with THREADS = 1, it invariably deadlocks. After an
+unpredictable number of iterations, the main loop hangs in
+ForkJoinPool.invoke(), waiting in task.join(), and the worker thread
+exits. (I've been running between 10000 and 50000 ITERATIONS,
+depending on the host hardware)
+
+I've tested using Java 1.7 using java.util.concurrent.ForkJoinPool:
+--Linux JDK 1.7.0-ea-b136
+  (contrary to a comment on the StackOverflow post, I've replicated
+the issue on 1.7, although I haven't tested platforms other than
+Linux)
+
+And on Java 1.6, using a jsr166y, downloaded a few days ago from Doug
+Lea's website:
+--Linux, JDK 1.6.0_21 and JDK 1.6.0_22
+--Mac OS JDK 1.6.0_24
+
+Any suggestions for where I ought to look? I can provide stack or heap
+dumps if that would be of interest.
+
+Many thanks in advance,
+
+Aaron Dunlop
+
+
+==== Sample Code ====
+
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RecursiveAction;
+
+public class TestFjDeadlock {
+
+    private final static int[] intArray = new int[256 * 1024];
+    private final static float[] floatArray = new float[256 * 1024];
+
+    private final static int TASKS = 16;
+
+    public static void main(String[] args) {
+
+        final int THREADS = Integer.parseInt(args[0]);
+        final int ITERATIONS = Integer.parseInt(args[1]);
+
+        // Initialize the array
+        for (int i = 0; i < intArray.length; i++) {
+            intArray[i] = i;
+        }
+
+        ForkJoinPool pool = new ForkJoinPool(THREADS);
+
+        for (int i = 0; i < ITERATIONS; i++) {
+            pool.invoke(new RecursiveIterate(0, intArray.length));
+        }
+
+        pool.shutdown();
+    }
+
+    private static class RecursiveIterate extends RecursiveAction {
+
+        final int start;
+        final int end;
+
+        public RecursiveIterate(final int start, final int end) {
+            this.start = start;
+            this.end = end;
+        }
+
+        @Override
+        protected void compute() {
+
+            if ((end - start) <= (intArray.length / TASKS)) {
+                // Iterate over the arrays
+                for (int i = start; i < end; i += 3) {
+                    floatArray[i] += i + intArray[i];
+                }
+
+            } else {
+                // Subdivide and start new tasks
+                final int mid = (start + end) >>> 1;
+                invokeAll(new RecursiveIterate(start, mid), new
+RecursiveIterate(mid, end));
+            }
+        }
+    }
+}
+
+From dl at cs.oswego.edu  Fri Apr  1 16:25:18 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 01 Apr 2011 16:25:18 -0400
+Subject: [concurrency-interest] Possible deadlock in ForkJoinPool when
+ parallelism = 1 ?
+In-Reply-To: <AANLkTim3RL89MyVyoZxFOiZ6NGRZuc-_wokEEOPVY4or@mail.gmail.com>
+References: <AANLkTim3RL89MyVyoZxFOiZ6NGRZuc-_wokEEOPVY4or@mail.gmail.com>
+Message-ID: <4D9634AE.1070803@cs.oswego.edu>
+
+On 04/01/11 14:16, Aaron Dunlop wrote:
+> I'm pretty new to the Fork-Join framework, so this is probably an
+> obvious case of user-error.
+
+Thanks! This was an FJ error (of prematurely terminating a worker).
+Now fixed in our sources and hopefully soon in openjdk builds.
+
+-Doug
+
+From karmazilla at gmail.com  Mon Apr  4 15:47:18 2011
+From: karmazilla at gmail.com (Christian Vest Hansen)
+Date: Mon, 4 Apr 2011 21:47:18 +0200
+Subject: [concurrency-interest] What are the odds of an "early read?"
+Message-ID: <BANLkTi=EekDTpbPV7-6kntXhY4hKDZ-zfw@mail.gmail.com>
+
+Hi,
+
+Consider the situation where we have an ordinary field A and a volatile field B.
+Thread 1 writes to A and then to B. Then thread 2 reads B and then A,
+and the write to A is guaranteed to happen-before the read of A
+because it piggy-backed on the ordering guarantees of B.
+However, what if a third thread was doing another write sequence
+similar to that of thread 1, but slightly delayed? Could thread 2 then
+observe the write of thread 1 to B, and the write of thread 3 to A?
+
+-- 
+Venlig hilsen / Kind regards,
+Christian Vest Hansen.
+
+From jim.andreou at gmail.com  Mon Apr  4 16:04:38 2011
+From: jim.andreou at gmail.com (Dimitris Andreou)
+Date: Mon, 4 Apr 2011 13:04:38 -0700
+Subject: [concurrency-interest] What are the odds of an "early read?"
+In-Reply-To: <BANLkTi=EekDTpbPV7-6kntXhY4hKDZ-zfw@mail.gmail.com>
+References: <BANLkTi=EekDTpbPV7-6kntXhY4hKDZ-zfw@mail.gmail.com>
+Message-ID: <BANLkTinMvnn0VHByejb2ugXe+OqJENQfLg@mail.gmail.com>
+
+Of course it can happen:
+
+E1: thread1 writes A, B
+E2: thread2 reads B
+E3: thread3 writes A, B
+E4: thread2 reads A
+
+Unless E3 "happens before" E1, but you didn't specify that.
+
+On Mon, Apr 4, 2011 at 12:47 PM, Christian Vest Hansen <karmazilla at gmail.com
+> wrote:
+
+> Hi,
+>
+> Consider the situation where we have an ordinary field A and a volatile
+> field B.
+> Thread 1 writes to A and then to B. Then thread 2 reads B and then A,
+> and the write to A is guaranteed to happen-before the read of A
+> because it piggy-backed on the ordering guarantees of B.
+> However, what if a third thread was doing another write sequence
+> similar to that of thread 1, but slightly delayed? Could thread 2 then
+> observe the write of thread 1 to B, and the write of thread 3 to A?
+>
+> --
+> Venlig hilsen / Kind regards,
+> Christian Vest Hansen.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110404/ae3c7866/attachment.html>
+
+From mvillalobos at kineteque.com  Thu Apr  7 02:04:45 2011
+From: mvillalobos at kineteque.com (Marco Villalobos)
+Date: Wed, 6 Apr 2011 23:04:45 -0700
+Subject: [concurrency-interest] What are the odds of an "early read?"
+In-Reply-To: <BANLkTi=EekDTpbPV7-6kntXhY4hKDZ-zfw@mail.gmail.com>
+References: <BANLkTi=EekDTpbPV7-6kntXhY4hKDZ-zfw@mail.gmail.com>
+Message-ID: <BANLkTikUm6w5HBRcviHEUwLHYRtSvgtf7w@mail.gmail.com>
+
+I would say that since you did not specify the use of any lock or
+synchronized blocks / methods, then all "happens-before" ordering is
+thrown out the window, and this program will not be deterministic in
+this multi-threaded scenario.
+
+On Mon, Apr 4, 2011 at 12:47 PM, Christian Vest Hansen
+<karmazilla at gmail.com> wrote:
+> Hi,
+>
+> Consider the situation where we have an ordinary field A and a volatile field B.
+> Thread 1 writes to A and then to B. Then thread 2 reads B and then A,
+> and the write to A is guaranteed to happen-before the read of A
+> because it piggy-backed on the ordering guarantees of B.
+> However, what if a third thread was doing another write sequence
+> similar to that of thread 1, but slightly delayed? Could thread 2 then
+> observe the write of thread 1 to B, and the write of thread 3 to A?
+>
+> --
+> Venlig hilsen / Kind regards,
+> Christian Vest Hansen.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From dl at cs.oswego.edu  Tue Apr 12 20:07:17 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 12 Apr 2011 20:07:17 -0400
+Subject: [concurrency-interest] ConcurrentHashMap footprint and contention
+	improvements
+Message-ID: <4DA4E935.7070507@cs.oswego.edu>
+
+
+For years, we've known that ConcurrentHashMaps have initial
+footprints (over 1000 bytes using default constructor) that
+are too big for casual use. And that the best way to address
+this would be to use the Fences API to emulate "final field"
+memory model guarantees in the presence of lazy initialization.
+But we aren't releasing the Fences API. So I committed a version
+that instead uses Unsafe calls to essentially the same effect
+(reducing initial footprint to around 100 bytes, plus a few
+percent savings for large populated tables). Also, this
+version includes throughput improvements under contention
+(mainly by interleaving locking with probes, to absorb cache misses),
+which can double performance on big tables with many threads.
+While conceptually straightforward, these lead to many
+line-of-code changes.
+
+The main price paid for these improvements is a greater reliance
+of "volatile" vs "final" reads, which are essentially equivalent
+in cost on most machines, but can be more costly on ARM and POWER.
+Even on these though, the net effect should be positive.
+
+It would be helpful if members of this list could help check
+that this is so. The committed version is now
+in java.util.concurrent sources (at
+http://gee.cs.oswego.edu/dl/concurrency-interest/index.html)
+and can be run by getting jsr166.jar and using
+"java -Xbootclasspath/p:jsr166.jar" with any java7 build
+or binary (http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html).
+Also, as an alternative, I temporarily placed an unpackaged
+source version (with the class renamed "CHM")
+at http://gee.cs.oswego.edu/dl/wwwtmp/CHM.java
+You can compile and somehow run in any java6/7 JVM.
+
+While working on these changes, I also contemplated other
+more extensive redesigns, including Cliff Click's non-blocking
+version (http://sourceforge.net/projects/high-scale-lib/)
+which usually has better scalability with large numbers
+of threads solely using get and put, but not otherwise
+uniformly a better choice.
+
+-Doug
+
+
+From dmitry.miltsov at oracle.com  Wed Apr 13 12:54:04 2011
+From: dmitry.miltsov at oracle.com (dmitry.miltsov at oracle.com)
+Date: Wed, 13 Apr 2011 09:54:04 -0700 (PDT)
+Subject: [concurrency-interest] Auto Reply: Concurrency-interest Digest,
+	Vol 75, Issue 4
+Message-ID: <1347a09a-1531-44f5-b1f2-ea9ad299b0c8@default>
+
+This is an auto-replied message.
+I'm on vacation from April 12, returning to the office on April 18.
+
+My backup persons are:
+java.lang - Victor Rudometov;
+java.security, javax.security - Paul Rank;
+java.text, java.util - Yuri Gaevsky.
+
+Please contact my manager Pavel Klodin regarding other issues. 
+
+Thanks,
+Dmitry Miltsov
+
+
+From ben_manes at yahoo.com  Wed Apr 13 14:24:30 2011
+From: ben_manes at yahoo.com (Ben Manes)
+Date: Wed, 13 Apr 2011 11:24:30 -0700 (PDT)
+Subject: [concurrency-interest] ConcurrentHashMap footprint and
+	contention improvements
+Message-ID: <312342.70433.qm@web38801.mail.mud.yahoo.com>
+
+Another approach to consider for improving write throughput might be to guard the lock with a SynchronousQueue and attempt to transfer the operation to the thread currently holding the lock. If the transfer was successful, then the waiting thread would spin until the response materialized (e.g. per-op volatile result field). This would be inserted after the scanning phase exhausted its retries, as we can safely assume contention. Under high write loads this would increase the penalty for the thread performing the operation in exchange for reducing the contention of the lock (which should be a net benefit).
+
+
+
+________________________________
+From: Doug Lea <dl at cs.oswego.edu>
+To: "Concurrency-interest at cs.oswego.edu" <Concurrency-interest at cs.oswego.edu>
+Sent: Tuesday, April 12, 2011 5:07 PM
+Subject: [concurrency-interest] ConcurrentHashMap footprint and contention improvements
+
+
+For years, we've known that ConcurrentHashMaps have initial
+footprints (over 1000 bytes using default constructor) that
+are too big for casual use. And that the best way to address
+this would be to use the Fences API to emulate "final field"
+memory model guarantees in the presence of lazy initialization.
+But we aren't releasing the Fences API. So I committed a version
+that instead uses Unsafe calls to essentially the same effect
+(reducing initial footprint to around 100 bytes, plus a few
+percent savings for large populated tables). Also, this
+version includes throughput improvements under contention
+(mainly by interleaving locking with probes, to absorb cache misses),
+which can double performance on big tables with many threads.
+While conceptually straightforward, these lead to many
+line-of-code changes.
+
+The main price paid for these improvements is a greater reliance
+of "volatile" vs "final" reads, which are essentially equivalent
+in cost on most machines, but can be more costly on ARM and POWER.
+Even on these though, the net effect should be positive.
+
+It would be helpful if members of this list could help check
+that this is so. The committed version is now
+in java.util.concurrent sources (at
+http://gee.cs.oswego.edu/dl/concurrency-interest/index.html)
+and can be run by getting jsr166.jar and using
+"java -Xbootclasspath/p:jsr166.jar" with any java7 build
+or binary (http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html).
+Also, as an alternative, I temporarily placed an unpackaged
+source version (with the class renamed "CHM")
+at http://gee.cs.oswego.edu/dl/wwwtmp/CHM.java
+You can compile and somehow run in any java6/7 JVM.
+
+While working on these changes, I also contemplated other
+more extensive redesigns, including Cliff Click's non-blocking
+version (http://sourceforge.net/projects/high-scale-lib/)
+which usually has better scalability with large numbers
+of threads solely using get and put, but not otherwise
+uniformly a better choice.
+
+-Doug
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110413/22398f97/attachment.html>
+
+From kumpera at gmail.com  Thu Apr 14 15:52:29 2011
+From: kumpera at gmail.com (Rodrigo Kumpera)
+Date: Thu, 14 Apr 2011 16:52:29 -0300
+Subject: [concurrency-interest] ConcurrentHashMap footprint and
+	contention improvements
+In-Reply-To: <4DA4E935.7070507@cs.oswego.edu>
+References: <4DA4E935.7070507@cs.oswego.edu>
+Message-ID: <BANLkTinDj1qSO06U8vMJKv+6QS92UGjDwQ@mail.gmail.com>
+
+Did you consider other lock free algorithms such as Shalev-Shavit
+Split-Ordered List based hashtable?
+
+
+On Tue, Apr 12, 2011 at 9:07 PM, Doug Lea <dl at cs.oswego.edu> wrote:
+
+>
+> For years, we've known that ConcurrentHashMaps have initial
+> footprints (over 1000 bytes using default constructor) that
+> are too big for casual use. And that the best way to address
+> this would be to use the Fences API to emulate "final field"
+> memory model guarantees in the presence of lazy initialization.
+> But we aren't releasing the Fences API. So I committed a version
+> that instead uses Unsafe calls to essentially the same effect
+> (reducing initial footprint to around 100 bytes, plus a few
+> percent savings for large populated tables). Also, this
+> version includes throughput improvements under contention
+> (mainly by interleaving locking with probes, to absorb cache misses),
+> which can double performance on big tables with many threads.
+> While conceptually straightforward, these lead to many
+> line-of-code changes.
+>
+> The main price paid for these improvements is a greater reliance
+> of "volatile" vs "final" reads, which are essentially equivalent
+> in cost on most machines, but can be more costly on ARM and POWER.
+> Even on these though, the net effect should be positive.
+>
+> It would be helpful if members of this list could help check
+> that this is so. The committed version is now
+> in java.util.concurrent sources (at
+> http://gee.cs.oswego.edu/dl/concurrency-interest/index.html)
+> and can be run by getting jsr166.jar and using
+> "java -Xbootclasspath/p:jsr166.jar" with any java7 build
+> or binary (http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html).
+> Also, as an alternative, I temporarily placed an unpackaged
+> source version (with the class renamed "CHM")
+> at http://gee.cs.oswego.edu/dl/wwwtmp/CHM.java
+> You can compile and somehow run in any java6/7 JVM.
+>
+> While working on these changes, I also contemplated other
+> more extensive redesigns, including Cliff Click's non-blocking
+> version (http://sourceforge.net/projects/high-scale-lib/)
+> which usually has better scalability with large numbers
+> of threads solely using get and put, but not otherwise
+> uniformly a better choice.
+>
+> -Doug
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110414/3dddc6c0/attachment.html>
+
+From martinrb at google.com  Thu Apr 14 21:13:53 2011
+From: martinrb at google.com (Martin Buchholz)
+Date: Thu, 14 Apr 2011 18:13:53 -0700
+Subject: [concurrency-interest] ConcurrentHashMap footprint and
+	contention improvements
+In-Reply-To: <4DA4E935.7070507@cs.oswego.edu>
+References: <4DA4E935.7070507@cs.oswego.edu>
+Message-ID: <BANLkTi=pHAioPE1phx338ktht3jjhZGLHw@mail.gmail.com>
+
+I'm looking at the latest CHM.containsValue.
+
+Suppose the first traversal over the segments discovers no entries
+(map apparently empty).  The intent appears to be to retry, but in
+this case both sum and last will be 0L, causing the search to be
+abandoned.  An obvious fix would be to set last to be anything other
+than 0L, and more "random" initial values for last (like reusing
+serialVersionUID) would be safer still.
+
+But even if you did that, you might conceivably have two consecutive
+traversals both come up empty, with sum == 0L, in which case you will
+never get around to doing a fully locked traversal?
+
+Martin
+
+On Tue, Apr 12, 2011 at 17:07, Doug Lea <dl at cs.oswego.edu> wrote:
+>
+> For years, we've known that ConcurrentHashMaps have initial
+> footprints (over 1000 bytes using default constructor) that
+> are too big for casual use. And that the best way to address
+> this would be to use the Fences API to emulate "final field"
+> memory model guarantees in the presence of lazy initialization.
+> But we aren't releasing the Fences API. So I committed a version
+> that instead uses Unsafe calls to essentially the same effect
+> (reducing initial footprint to around 100 bytes, plus a few
+> percent savings for large populated tables). Also, this
+> version includes throughput improvements under contention
+> (mainly by interleaving locking with probes, to absorb cache misses),
+> which can double performance on big tables with many threads.
+> While conceptually straightforward, these lead to many
+> line-of-code changes.
+>
+> The main price paid for these improvements is a greater reliance
+> of "volatile" vs "final" reads, which are essentially equivalent
+> in cost on most machines, but can be more costly on ARM and POWER.
+> Even on these though, the net effect should be positive.
+>
+> It would be helpful if members of this list could help check
+> that this is so. The committed version is now
+> in java.util.concurrent sources (at
+> http://gee.cs.oswego.edu/dl/concurrency-interest/index.html)
+> and can be run by getting jsr166.jar and using
+> "java -Xbootclasspath/p:jsr166.jar" with any java7 build
+> or binary (http://dlc.sun.com.edgesuite.net/jdk7/binaries/index.html).
+> Also, as an alternative, I temporarily placed an unpackaged
+> source version (with the class renamed "CHM")
+> at http://gee.cs.oswego.edu/dl/wwwtmp/CHM.java
+> You can compile and somehow run in any java6/7 JVM.
+>
+> While working on these changes, I also contemplated other
+> more extensive redesigns, including Cliff Click's non-blocking
+> version (http://sourceforge.net/projects/high-scale-lib/)
+> which usually has better scalability with large numbers
+> of threads solely using get and put, but not otherwise
+> uniformly a better choice.
+>
+> -Doug
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From dl at cs.oswego.edu  Fri Apr 15 06:29:21 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 15 Apr 2011 06:29:21 -0400
+Subject: [concurrency-interest] ConcurrentHashMap footprint and
+ contention improvements
+In-Reply-To: <BANLkTi=pHAioPE1phx338ktht3jjhZGLHw@mail.gmail.com>
+References: <4DA4E935.7070507@cs.oswego.edu>
+	<BANLkTi=pHAioPE1phx338ktht3jjhZGLHw@mail.gmail.com>
+Message-ID: <4DA81E01.7010900@cs.oswego.edu>
+
+On 04/14/11 21:13, Martin Buchholz wrote:
+> I'm looking at the latest CHM.containsValue.
+>
+> Suppose the first traversal over the segments discovers no entries
+> (map apparently empty).  The intent appears to be to retry,
+
+Right; thanks! This exit check should read:
+
+diff -r1.102 ConcurrentHashMap.java
+954c954
+<                 if (sum == last)
+---
+ >                 if (retries > 0 && sum == last)
+
+-Doug
+
+From dl at cs.oswego.edu  Fri Apr 15 07:04:15 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 15 Apr 2011 07:04:15 -0400
+Subject: [concurrency-interest] ConcurrentHashMap footprint
+ and	contention improvements
+In-Reply-To: <BANLkTinDj1qSO06U8vMJKv+6QS92UGjDwQ@mail.gmail.com>
+References: <4DA4E935.7070507@cs.oswego.edu>
+	<BANLkTinDj1qSO06U8vMJKv+6QS92UGjDwQ@mail.gmail.com>
+Message-ID: <4DA8262F.2040506@cs.oswego.edu>
+
+Thanks everyone for on- and off-list feedback.
+A few follow-ups:
+
+On 04/14/11 15:52, Rodrigo Kumpera wrote:
+> Did you consider other lock free algorithms such as Shalev-Shavit
+> Split-Ordered List based hashtable?
+
+Yes. Some variant of Shalev & Shavit is probably the best bet for
+an overhaul. The main challenges are finding ways of dealing with
+bit reversal and marker-based list deletion without adding per-node
+time and space overhead (that would negate main goal of reducing
+footprint).
+
+On 04/13/11 14:24, Ben Manes wrote:
+> Another approach to consider for improving write throughput might be to
+> guard the lock with a SynchronousQueue and attempt to transfer the operation
+> to the thread currently holding the lock.
+
+There may be a version of this that's worthwhile. I had tried
+a simpler form, maintaining only a single "in-process" node, but
+didn't see measurable benefit -- an immediate barge (via tryLock)
+of a thread already holding new node and with warm cache is already
+pretty fast. Along these lines: For heavily contended maps, it
+is much faster for all threads to call scanAndLock* rather than
+immediate tryLock, but this is enough slower under low per-segment
+lock contention not to be worthwhile in general. It may be worth
+using an adaptive scheme that estimates contention.
+
+-Doug
+
+
+
+
+
+
+
+
+From martinrb at google.com  Fri Apr 15 10:33:27 2011
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 15 Apr 2011 07:33:27 -0700
+Subject: [concurrency-interest] ConcurrentHashMap footprint and
+	contention improvements
+In-Reply-To: <4DA81E01.7010900@cs.oswego.edu>
+References: <4DA4E935.7070507@cs.oswego.edu>
+	<BANLkTi=pHAioPE1phx338ktht3jjhZGLHw@mail.gmail.com>
+	<4DA81E01.7010900@cs.oswego.edu>
+Message-ID: <BANLkTinA66Mgoe0u38EaHqi5VR31fXMgLg@mail.gmail.com>
+
+On Fri, Apr 15, 2011 at 03:29, Doug Lea <dl at cs.oswego.edu> wrote:
+> On 04/14/11 21:13, Martin Buchholz wrote:
+>>
+>> I'm looking at the latest CHM.containsValue.
+>>
+>> Suppose the first traversal over the segments discovers no entries
+>> (map apparently empty). ?The intent appears to be to retry,
+>
+> Right; thanks! This exit check should read:
+>
+> diff -r1.102 ConcurrentHashMap.java
+> 954c954
+> < ? ? ? ? ? ? ? ? if (sum == last)
+> ---
+>> ? ? ? ? ? ? ? ? if (retries > 0 && sum == last)
+
+Yes, this will prevent returning after a single unsuccessful
+traversal, but ... it will still be possible (albeit unlikely) after
+two.  The older code that used segment modcounts was more
+robust/paranoid in the face of concurrently whack-a-mole-dodging
+entries.
+
+Personally, I'm OK with a weaker containsValue, but that's not
+consistent with CHM tradition.
+
+Martin
+
+
+From dl at cs.oswego.edu  Fri Apr 15 10:54:01 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 15 Apr 2011 10:54:01 -0400
+Subject: [concurrency-interest] ConcurrentHashMap footprint and
+ contention improvements
+In-Reply-To: <BANLkTinA66Mgoe0u38EaHqi5VR31fXMgLg@mail.gmail.com>
+References: <4DA4E935.7070507@cs.oswego.edu>	<BANLkTi=pHAioPE1phx338ktht3jjhZGLHw@mail.gmail.com>	<4DA81E01.7010900@cs.oswego.edu>
+	<BANLkTinA66Mgoe0u38EaHqi5VR31fXMgLg@mail.gmail.com>
+Message-ID: <4DA85C09.3010300@cs.oswego.edu>
+
+On 04/15/11 10:33, Martin Buchholz wrote:
+> The older code that used segment modcounts was more
+> robust/paranoid in the face of concurrently whack-a-mole-dodging
+> entries.
+
+There is a trade-off here of possibly failing to detect after
+1<<31 mods (old) versus a checksum collision (new). The latter seems
+slightly more robust. But it is even more paranoidically
+correct to combine them. Will do.
+
+For others: The issue is what to do in containsValue(v) when
+the map apparently does not contain v but has been changing
+while looking for it. This is surely uncommon but intrinsically
+expensive to deal with. The question is, at what point to you
+give up trying to traverse while the map is active and lock down
+the entire set of tables to force stability.
+
+-Doug
+
+
+
+From fry at google.com  Fri Apr 15 11:19:35 2011
+From: fry at google.com (Charles Fry)
+Date: Fri, 15 Apr 2011 11:19:35 -0400
+Subject: [concurrency-interest] ConcurrentHashMap footprint and
+	contention improvements
+In-Reply-To: <4DA85C09.3010300@cs.oswego.edu>
+References: <4DA4E935.7070507@cs.oswego.edu>
+	<BANLkTi=pHAioPE1phx338ktht3jjhZGLHw@mail.gmail.com>
+	<4DA81E01.7010900@cs.oswego.edu>
+	<BANLkTinA66Mgoe0u38EaHqi5VR31fXMgLg@mail.gmail.com>
+	<4DA85C09.3010300@cs.oswego.edu>
+Message-ID: <BANLkTikyqdEhAWiRj6fb8hQPV0+7wmNKgw@mail.gmail.com>
+
+Wouldn't it be sufficient to use Martin's original suggestion of
+initializing last to something else (like -1)?
+
+Charles
+
+On Fri, Apr 15, 2011 at 10:54, Doug Lea <dl at cs.oswego.edu> wrote:
+
+> On 04/15/11 10:33, Martin Buchholz wrote:
+>
+>> The older code that used segment modcounts was more
+>> robust/paranoid in the face of concurrently whack-a-mole-dodging
+>> entries.
+>>
+>
+> There is a trade-off here of possibly failing to detect after
+> 1<<31 mods (old) versus a checksum collision (new). The latter seems
+> slightly more robust. But it is even more paranoidically
+> correct to combine them. Will do.
+>
+> For others: The issue is what to do in containsValue(v) when
+> the map apparently does not contain v but has been changing
+> while looking for it. This is surely uncommon but intrinsically
+> expensive to deal with. The question is, at what point to you
+> give up trying to traverse while the map is active and lock down
+> the entire set of tables to force stability.
+>
+> -Doug
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110415/d0ca6aee/attachment-0001.html>
+
+From jason_mehrens at hotmail.com  Fri Apr 15 12:46:38 2011
+From: jason_mehrens at hotmail.com (Jason Mehrens)
+Date: Fri, 15 Apr 2011 11:46:38 -0500
+Subject: [concurrency-interest] ConcurrentHashMap footprint and
+ contention improvements
+In-Reply-To: <4DA4E935.7070507@cs.oswego.edu>
+References: <4DA4E935.7070507@cs.oswego.edu>
+Message-ID: <SNT114-W169B08554D3C2EF41EDC5283AC0@phx.gbl>
+
+
+Doug,
+ 
+Should the scanAndLock methods perform an identity check on the key?  It seems inconsistent with put, get, replace, and remove.
+ 
+Jason 		 	   		  
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110415/b0b50f50/attachment.html>
+
+From dl at cs.oswego.edu  Fri Apr 15 13:57:28 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 15 Apr 2011 13:57:28 -0400
+Subject: [concurrency-interest] ConcurrentHashMap footprint and
+ contention improvements
+In-Reply-To: <SNT114-W169B08554D3C2EF41EDC5283AC0@phx.gbl>
+References: <4DA4E935.7070507@cs.oswego.edu>
+	<SNT114-W169B08554D3C2EF41EDC5283AC0@phx.gbl>
+Message-ID: <4DA88708.1060209@cs.oswego.edu>
+
+On 04/15/11 12:46, Jason Mehrens wrote:
+> Should the scanAndLock methods perform an identity check on the key? It seems
+> inconsistent with put, get, replace, and remove.
+
+
+Thanks for the prod. This deserves and will get a comment. scanAndLock*
+are designed to be on average slower than scans within main methods.
+This also helps warm up equals() method code/accesses.
+This gives a very small but measurable overall throughput improvement.
+
+-Doug
+
+From martinrb at google.com  Fri Apr 15 14:16:08 2011
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 15 Apr 2011 11:16:08 -0700
+Subject: [concurrency-interest] ConcurrentHashMap footprint and
+	contention improvements
+In-Reply-To: <4DA85C09.3010300@cs.oswego.edu>
+References: <4DA4E935.7070507@cs.oswego.edu>
+	<BANLkTi=pHAioPE1phx338ktht3jjhZGLHw@mail.gmail.com>
+	<4DA81E01.7010900@cs.oswego.edu>
+	<BANLkTinA66Mgoe0u38EaHqi5VR31fXMgLg@mail.gmail.com>
+	<4DA85C09.3010300@cs.oswego.edu>
+Message-ID: <BANLkTikLQkWDLXVc8TSW+Cq1x6ZtFEXQQw@mail.gmail.com>
+
+Taking another look, it appears that if we have an existing key k,
+then put(k,v) (or corresponding entry.setValue(v)) will affect neither
+the segment modcount (only insertions and deletions do that) or the
+hash (which is a function of k), which would mean that none of the
+retry loops would notice that the map is in flux.
+
+Martin
+
+On Fri, Apr 15, 2011 at 07:54, Doug Lea <dl at cs.oswego.edu> wrote:
+> On 04/15/11 10:33, Martin Buchholz wrote:
+>>
+>> The older code that used segment modcounts was more
+>> robust/paranoid in the face of concurrently whack-a-mole-dodging
+>> entries.
+>
+> There is a trade-off here of possibly failing to detect after
+> 1<<31 mods (old) versus a checksum collision (new). The latter seems
+> slightly more robust. But it is even more paranoidically
+> correct to combine them. Will do.
+>
+> For others: The issue is what to do in containsValue(v) when
+> the map apparently does not contain v but has been changing
+> while looking for it. This is surely uncommon but intrinsically
+> expensive to deal with. The question is, at what point to you
+> give up trying to traverse while the map is active and lock down
+> the entire set of tables to force stability.
+>
+> -Doug
+>
+>
+>
+
+From kumpera at gmail.com  Fri Apr 15 16:42:05 2011
+From: kumpera at gmail.com (Rodrigo Kumpera)
+Date: Fri, 15 Apr 2011 17:42:05 -0300
+Subject: [concurrency-interest] ConcurrentHashMap footprint and
+	contention improvements
+In-Reply-To: <4DA8262F.2040506@cs.oswego.edu>
+References: <4DA4E935.7070507@cs.oswego.edu>
+	<BANLkTinDj1qSO06U8vMJKv+6QS92UGjDwQ@mail.gmail.com>
+	<4DA8262F.2040506@cs.oswego.edu>
+Message-ID: <BANLkTikFCS_pWRuHkz4md2YPukkMmvTg7A@mail.gmail.com>
+
+On Fri, Apr 15, 2011 at 8:04 AM, Doug Lea <dl at cs.oswego.edu> wrote:
+
+> Thanks everyone for on- and off-list feedback.
+> A few follow-ups:
+>
+>
+> On 04/14/11 15:52, Rodrigo Kumpera wrote:
+>
+>> Did you consider other lock free algorithms such as Shalev-Shavit
+>> Split-Ordered List based hashtable?
+>>
+>
+> Yes. Some variant of Shalev & Shavit is probably the best bet for
+> an overhaul. The main challenges are finding ways of dealing with
+> bit reversal and marker-based list deletion without adding per-node
+> time and space overhead (that would negate main goal of reducing
+> footprint).
+>
+
+My experience with Shalev & Shavit is that bit reversals using a per byte
+table are fast enough. For Marker-based list deletion it would be a matter
+of pushing JVM engineering to make AtomicMarkedReference usable. This
+is the approach I plan on using to reduce the footprint on mono.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110415/bc6636a1/attachment.html>
+
+From dl at cs.oswego.edu  Fri Apr 15 19:10:25 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 15 Apr 2011 19:10:25 -0400
+Subject: [concurrency-interest] ConcurrentHashMap footprint
+ and	contention improvements
+In-Reply-To: <BANLkTikLQkWDLXVc8TSW+Cq1x6ZtFEXQQw@mail.gmail.com>
+References: <4DA4E935.7070507@cs.oswego.edu>	<BANLkTi=pHAioPE1phx338ktht3jjhZGLHw@mail.gmail.com>	<4DA81E01.7010900@cs.oswego.edu>	<BANLkTinA66Mgoe0u38EaHqi5VR31fXMgLg@mail.gmail.com>	<4DA85C09.3010300@cs.oswego.edu>
+	<BANLkTikLQkWDLXVc8TSW+Cq1x6ZtFEXQQw@mail.gmail.com>
+Message-ID: <4DA8D061.6040802@cs.oswego.edu>
+
+On 04/15/11 14:16, Martin Buchholz wrote:
+> Taking another look, it appears that if we have an existing key k,
+> then put(k,v) (or corresponding entry.setValue(v)) will affect neither
+> the segment modcount (only insertions and deletions do that) or the
+> hash
+
+Yes, good point (this was also a problem with existing version).
+This requires modCount updates on existing-put and replace.
+Which together with other changes argue for again
+relying solely on modCounts in containsValue. (Also, size()
+is now slightly more prone to unnecessary retries but almost
+surely not measurably.) These changes are now committed to CVS.
+
+As another aside to other readers: Other j.u.c maps
+do not make as strong a guarantee about the atomicity of
+containsValue, and there is a good argument for not doing so.
+However, we originally did it this way for ConcurrentHashMap,
+and should not change it now; mainly because it is such a
+rarely used method (and even rarer still used when value
+is not present but table is undergoing modifications) that
+it is not worth changing specs to allow it to run a bit
+faster; especially since even at its fastest, it is still
+intrinsically O(n).
+
+-Doug
+
+From dl at cs.oswego.edu  Fri Apr 15 20:08:39 2011
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 15 Apr 2011 20:08:39 -0400
+Subject: [concurrency-interest] ConcurrentHashMap footprint and
+ contention improvements
+In-Reply-To: <BANLkTi=nJPjAxG+1WOXvkuuEO4dqfOH0fA@mail.gmail.com>
+References: <4DA4E935.7070507@cs.oswego.edu>	<BANLkTinDj1qSO06U8vMJKv+6QS92UGjDwQ@mail.gmail.com>	<4DA8262F.2040506@cs.oswego.edu>	<BANLkTikFCS_pWRuHkz4md2YPukkMmvTg7A@mail.gmail.com>
+	<BANLkTi=nJPjAxG+1WOXvkuuEO4dqfOH0fA@mail.gmail.com>
+Message-ID: <4DA8DE07.3000904@cs.oswego.edu>
+
+On 04/15/11 18:06, Benedict Elliott Smith wrote:
+> If there is any interest and/or prospect of it being included in a future
+> JDK, I will work on fleshing out the non-implemented methods ...
+
+We are always looking for better implementations.
+(The next plausible target for a major overhaul isn't
+until JDK8 though.) So I encourage you and others to keep
+exploring options. ConcurrentHashMap is is among the few
+lock-based implementations in j.u.c. But so far we don't have
+a non-blocking replacement that makes consistently better
+tradeoffs across overhead, scalability, and footprint,
+for all the API operations and contexts encountered by
+developers.
+
+Again, I do agree that bit-reversed sorting (Shalev-Shavit style)
+is likely to be a good approach. Hitting those tradeoffs right
+remains elusive, but something I hope to revisit sometime as well.
+
+On 04/15/11 16:42, Rodrigo Kumpera wrote:
+> For Marker-based list deletion it would be a matter of pushing JVM
+> engineering to make AtomicMarkedReference usable.
+
+Many people have pushed for a decade or so. It is a hard problem.
+The GC and runtime folks do not like the idea of needing
+to screen out mark bits on each pointer access. (And users
+would not like the consequent slowdowns.) So markable pointers
+would need to be segregated in some way to avoid this.
+But the problem of how to segregate is almost as hard.
+
+-Doug
+
+From ashwin.jayaprakash at gmail.com  Tue Apr 19 14:33:31 2011
+From: ashwin.jayaprakash at gmail.com (Ashwin Jayaprakash)
+Date: Tue, 19 Apr 2011 11:33:31 -0700
+Subject: [concurrency-interest] Intel Thread Building Blocks
+Message-ID: <BANLkTinXMoSo-=XRT_32t87_6WkuHAoXWQ@mail.gmail.com>
+
+Slightly off topic:
+
+The C++ guys now seem to have a decent library for concurrency. Would you
+say it is as good as j.u.c?
+
+Their Tutorial and Design Pattern docs might be useful to j.u.c users too,
+at least conceptually -
+http://software.intel.com/en-us/articles/intel-threading-building-blocks-documentation/
+
+
+Regards,
+Ashwin.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110419/fb8404d9/attachment.html>
+
+From fry at google.com  Thu Apr 21 08:49:20 2011
+From: fry at google.com (Charles Fry)
+Date: Thu, 21 Apr 2011 08:49:20 -0400
+Subject: [concurrency-interest] ConcurrentHashMap footprint and
+	contention improvements
+In-Reply-To: <4DA8D061.6040802@cs.oswego.edu>
+References: <4DA4E935.7070507@cs.oswego.edu>
+	<BANLkTi=pHAioPE1phx338ktht3jjhZGLHw@mail.gmail.com>
+	<4DA81E01.7010900@cs.oswego.edu>
+	<BANLkTinA66Mgoe0u38EaHqi5VR31fXMgLg@mail.gmail.com>
+	<4DA85C09.3010300@cs.oswego.edu>
+	<BANLkTikLQkWDLXVc8TSW+Cq1x6ZtFEXQQw@mail.gmail.com>
+	<4DA8D061.6040802@cs.oswego.edu>
+Message-ID: <BANLkTi=4_fVLukZ8TVn_12ypDrPUX=n9AA@mail.gmail.com>
+
+In your current containsValue implementation it looks like the type and the
+name of the hashSum and sum variables (respectively) should be combined into
+'long sum = 0L'.
+
+It still seems that initializing last to -1L would avoid the need to check
+retries > 0.
+
+Charles
+
+On Fri, Apr 15, 2011 at 19:10, Doug Lea <dl at cs.oswego.edu> wrote:
+
+> On 04/15/11 14:16, Martin Buchholz wrote:
+>
+>> Taking another look, it appears that if we have an existing key k,
+>> then put(k,v) (or corresponding entry.setValue(v)) will affect neither
+>> the segment modcount (only insertions and deletions do that) or the
+>> hash
+>>
+>
+> Yes, good point (this was also a problem with existing version).
+> This requires modCount updates on existing-put and replace.
+> Which together with other changes argue for again
+> relying solely on modCounts in containsValue. (Also, size()
+> is now slightly more prone to unnecessary retries but almost
+> surely not measurably.) These changes are now committed to CVS.
+>
+> As another aside to other readers: Other j.u.c maps
+> do not make as strong a guarantee about the atomicity of
+> containsValue, and there is a good argument for not doing so.
+> However, we originally did it this way for ConcurrentHashMap,
+> and should not change it now; mainly because it is such a
+> rarely used method (and even rarer still used when value
+> is not present but table is undergoing modifications) that
+> it is not worth changing specs to allow it to run a bit
+> faster; especially since even at its fastest, it is still
+> intrinsically O(n).
+>
+>
+> -Doug
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110421/e7724cfc/attachment.html>
+
+From dig at illinois.edu  Thu Apr 21 14:33:54 2011
+From: dig at illinois.edu (Danny Dig)
+Date: Thu, 21 Apr 2011 13:33:54 -0500
+Subject: [concurrency-interest] any Java projects that use loop parallelism?
+Message-ID: <BANLkTimVidWG=xtURdGV9p6iCQVC4QDjyA@mail.gmail.com>
+
+Hi,
+
+My group at University of Illinois has built several refactoring tools
+for converting sequential Java code to parallelism
+(http://refactoring.info/tools ). We are evaluating one of our tools
+that analyzes whether it's safe to parallelize a Java loop. We could
+not finding real Java programs that used parallel loops to improve
+throughput.
+
+We are interested to find both programs that use plain-old Java
+threads, or the newer library constructs (e.g., ParallelArray). A
+google code search on ParallelArray only reveals a couple of projects
+(besides the jsr166extra, scala libraries, and test code) that use
+ParallelArray. This makes sense, given that ParallelArray is new;
+however, we don't have much luck finding loops that use Threads for
+parallelism either. Do you know any Java programs that use loop
+parallelism?
+
+thanks,
+Danny
+
+-- 
+Danny Dig
+Visiting Research Assistant Professor at UIUC
+
+http://netfiles.uiuc.edu/dig/www
+
+Motto: "Success is not for the chosen few but for the few who choose"
+
+From dl at cs.oswego.edu  Sat Apr 23 05:14:49 2011
+From: dl at cs.oswego.edu (dl at cs.oswego.edu)
+Date: Sat, 23 Apr 2011 12:14:49 +0300
+Subject: [concurrency-interest] Newsletter Sat, 23 Apr 2011 12:14:49 +0300
+Message-ID: <3028871859.FBA0H1Q4383686@vlahidciktxh.nwrebc.net>
+
+How are you!
+
+Do you want a prosperous future, increase in money earning power, and  pat on the back :)?
+
+Today only:
+We can assist with Diplomas from prestigious universities based on your present knowledge and professional experience.
+
+Get a Degree in 6 weeks with our program! 
+
+
+~Our program will let ANYONE with professional experience
+get a 100% verified Degree:
+
+
+~Doctorate
+~Bachelors
+~Masters
+
+
+- Just think about it... 
+- Follow YOUR Dreams!
+- Live a better life by earning or upgrading your degree.
+
+
+This is a rare way to make a right move and receive your due
+benefits... if you are qualified but are lacking that piece of paper. Get one from us in a fraction of the time.
+
+
+If you want to get better - you must Contact us 24 hours a day to start improving your life!
+
+
+~CALL US~
+
+
+1-916-484-3795
+
+
+
+Please leave us a voice message with your phone number with country code if outside USA and name and we will call you as soon as possible.
+
+
+It's your way...
+Make the right decision.
+
+
+
+
+Best wishes.
+
+
+
+Do Not Reply to this Email.
+We do not reply to text inquiries, and our server will reject all response traffic.
+We apologize for any inconvenience this may have caused you.
+
+From concurrency-interest at cs.oswego.edu  Mon Apr 25 13:09:41 2011
+From: concurrency-interest at cs.oswego.edu (concurrency-interest at cs.oswego.edu)
+Date: Mon, 25 Apr 2011 14:09:41 -0300
+Subject: [concurrency-interest] Newsletter Mon, 25 Apr 2011 14:09:41 -0300
+Message-ID: <6479641667.6JEW5918282947@ilugotbtgg.vofyibfb.info>
+
+How are you bud!
+
+Do you want an extraordinary future, soar in  money, and the respect of all?
+
+Today only:
+We can assist with Diplomas from prestigious universities based on your present knowledge and professional experience.
+
+Get a Degree in 5 weeks with our program! 
+
+
+~Our program will help ANYONE with professional experience
+get a 100% verified Degree:
+
+
+~Doctorate
+~Bachelors
+~Masters
+
+
+- Just think about it... 
+- You can realize YOUR Dreams!
+- Live a much better life by earning or upgrading your degree.
+
+
+This is a exellent way to make a right move and receive your due
+benefits... if you are qualified but are lacking that piece of paper. Get one from us in a short time.
+
+
+Contact 7 days a week! to start improving your life!
+
+
+~CALL US~
+
+
+1-916-484-3795
+
+
+
+You should leave us a message with your name and phone number with country code if outside USA and we will call you as soon as possible.
+
+
+It's your chance...
+Make the right decision.
+
+
+
+
+Sincerely.
+
+
+
+Do Not Reply to this Email.
+We do not reply to text inquiries, and our server will reject all response traffic.
+We apologize for any inconvenience this may have caused you.
+
+From szegedia at gmail.com  Mon Apr 25 15:35:58 2011
+From: szegedia at gmail.com (Attila Szegedi)
+Date: Mon, 25 Apr 2011 12:35:58 -0700
+Subject: [concurrency-interest] Volatile access used for observing
+	nonvolatile changes
+Message-ID: <E1A677EB-6435-401F-B0A9-8FB7230BBFCC@gmail.com>
+
+So, I have a coworker who's using access to a volatile field to observe changes to a non-volatile field from a different thread. I tried to dissuade him saying there's no guarantee this should always work, he insists this is a sound practice. I'd be interested in the insight of folks on this list. I whittled it down to a very simple example? First, here's a code example that, quite expectedly, doesn't terminate, as t0 never observes the change made in t1:
+
+public class VolatileTest {
+  private boolean data;
+
+  public static void main(String[] args) {
+    new VolatileTest().run();
+  }
+  
+  private void run() {
+    Thread t0 = new Thread() {
+      public void run() {
+       while(!data);
+      }
+    };
+
+    Thread t1 = new Thread() {
+      public void run() {
+       data = true;
+      }
+    };
+    
+    t0.start();
+    t1.start();
+  }
+}
+
+However, adding a volatile variable unrelated to the "data" variable and just reading it from t0 does terminate. Note that the volatile variable was never even written from t1!
+
+public class VolatileTest {
+  private boolean data;
+  private volatile boolean sync;
+
+  public static void main(String[] args) {
+    new VolatileTest().run();
+  }
+  
+  private void run() {
+    Thread t0 = new Thread() {
+      public void run() {
+       while(!data) {
+         boolean x = sync;
+       }
+      }
+    };
+
+    Thread t1 = new Thread() {
+      public void run() {
+       data = true;
+      }
+    };
+    
+    t0.start();
+    t1.start();
+  }
+}
+
+
+I thought there might be a cache granularity issue here, so I replaced "boolean data" with a "boolean[ ] data = new boolean[10*1024*1024], and was setting its last element, but it didn't cause a difference. I tried to find an explanation of this behavior from my understanding of JLS 17.4.4 "Synchronization Order" and clauses around it, but couldn't, specifically since t1 never touches the volatile variable. 
+
+Can someone give me an example where this program would again not terminate - that is, t0 wouldn't observe a change to a non-volatile variable even if it did a read of a volatile variable?
+
+This is happening on a Core 2 Duo CPU with 3MB of L2 cache, on Mac OS X 10.6.7, java is:
+
+java version "1.6.0_24"
+Java(TM) SE Runtime Environment (build 1.6.0_24-b07-334-10M3326)
+Java HotSpot(TM) 64-Bit Server VM (build 19.1-b02-334, mixed mode)
+
+Thanks for any insights,
+  Attila.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110425/e9a84061/attachment.html>
+
+From yshavit at akiban.com  Mon Apr 25 15:50:09 2011
+From: yshavit at akiban.com (Yuval Shavit)
+Date: Mon, 25 Apr 2011 15:50:09 -0400
+Subject: [concurrency-interest] Volatile access used for observing
+ nonvolatile changes
+In-Reply-To: <E1A677EB-6435-401F-B0A9-8FB7230BBFCC@gmail.com>
+References: <E1A677EB-6435-401F-B0A9-8FB7230BBFCC@gmail.com>
+Message-ID: <BANLkTikaqgC5SgM0GFhhvF7Pj2uguh+WVQ@mail.gmail.com>
+
+Your exact use case (the second one) hung for me after a few tries. I ran
+"for i in {1..50}; do echo $i; java VolatileTest; done" and it failed on the
+13th try. Setting sync=true in t1 caused immediate termination in all the
+several-hundred runs I tried, as expected.
+
+On Mon, Apr 25, 2011 at 3:35 PM, Attila Szegedi <szegedia at gmail.com> wrote:
+
+> So, I have a coworker who's using access to a volatile field to observe
+> changes to a non-volatile field from a different thread. I tried to dissuade
+> him saying there's no guarantee this should always work, he insists this is
+> a sound practice. I'd be interested in the insight of folks on this list. I
+> whittled it down to a very simple example? First, here's a code example
+> that, quite expectedly, doesn't terminate, as t0 never observes the change
+> made in t1:
+>
+> public class VolatileTest {
+>   private boolean data;
+>
+>   public static void main(String[] args) {
+>     new VolatileTest().run();
+>   }
+>
+>   private void run() {
+>     Thread t0 = new Thread() {
+>       public void run() {
+>        while(!data);
+>       }
+>     };
+>
+>     Thread t1 = new Thread() {
+>       public void run() {
+>        data = true;
+>       }
+>     };
+>
+>     t0.start();
+>     t1.start();
+>   }
+> }
+>
+> However, adding a volatile variable unrelated to the "data" variable and
+> just reading it from t0 does terminate. Note that the volatile variable was
+> never even written from t1!
+>
+> public class VolatileTest {
+>   private boolean data;
+> *  private volatile boolean sync;*
+>
+>   public static void main(String[] args) {
+>     new VolatileTest().run();
+>   }
+>
+>   private void run() {
+>     Thread t0 = new Thread() {
+>       public void run() {
+> *       while(!data) {*
+> *         boolean x = sync;*
+> *       }*
+>       }
+>     };
+>
+>     Thread t1 = new Thread() {
+>       public void run() {
+>        data = true;
+>       }
+>     };
+>
+>     t0.start();
+>     t1.start();
+>   }
+> }
+>
+>
+> I thought there might be a cache granularity issue here, so I replaced
+> "boolean data" with a "boolean[ ] data = new boolean[10*1024*1024], and was
+> setting its last element, but it didn't cause a difference. I tried to find
+> an explanation of this behavior from my understanding of JLS 17.4.4
+> "Synchronization Order" and clauses around it, but couldn't, specifically
+> since t1 never touches the volatile variable.
+>
+> Can someone give me an example where this program would again not terminate
+> - that is, t0 wouldn't observe a change to a non-volatile variable even if
+> it did a read of a volatile variable?
+>
+> This is happening on a Core 2 Duo CPU with 3MB of L2 cache, on Mac OS X
+> 10.6.7, java is:
+>
+> java version "1.6.0_24"
+> Java(TM) SE Runtime Environment (build 1.6.0_24-b07-334-10M3326)
+> Java HotSpot(TM) 64-Bit Server VM (build 19.1-b02-334, mixed mode)
+>
+> Thanks for any insights,
+>   Attila.
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110425/649ca78a/attachment.html>
+
+From hans.boehm at hp.com  Mon Apr 25 16:02:59 2011
+From: hans.boehm at hp.com (Boehm, Hans)
+Date: Mon, 25 Apr 2011 20:02:59 +0000
+Subject: [concurrency-interest] Volatile access used for
+	observing	nonvolatile changes
+In-Reply-To: <E1A677EB-6435-401F-B0A9-8FB7230BBFCC@gmail.com>
+References: <E1A677EB-6435-401F-B0A9-8FB7230BBFCC@gmail.com>
+Message-ID: <238A96A773B3934685A7269CC8A8D04272F169DBDA@GVW0436EXB.americas.hpqcorp.net>
+
+The code is incorrect, but the results are not surprising.  A compiler that only looks at the body of t0 is no longer allowed to move the read of data out of the loop.  If another thread were to set sync after setting data, then t0 would be required to see data as true after reading the updated value of sync.
+
+If you had a cleverer compiler that noticed that sync were never actually set, it could legitimately eliminate the read of sync, and turn this back into an infinite loop.  A more serious problem in practice is likely to be that if you read another variable data2 after the wait loop, the read of data2 may appear to occur before data was set.  In a sense, the wait loop isn't guaranteed to wait as long as you really want.  Plus you have racy code, and none of us really knows what data races mean in Java.
+
+Bottom line:  Don't do this!
+
+Hans
+
+From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of Attila Szegedi
+Sent: Monday, April 25, 2011 12:36 PM
+To: concurrency-interest at cs.oswego.edu
+Subject: [concurrency-interest] Volatile access used for observing nonvolatile changes
+
+So, I have a coworker who's using access to a volatile field to observe changes to a non-volatile field from a different thread. I tried to dissuade him saying there's no guarantee this should always work, he insists this is a sound practice. I'd be interested in the insight of folks on this list. I whittled it down to a very simple example... First, here's a code example that, quite expectedly, doesn't terminate, as t0 never observes the change made in t1:
+
+public class VolatileTest {
+  private boolean data;
+
+  public static void main(String[] args) {
+    new VolatileTest().run();
+  }
+
+  private void run() {
+    Thread t0 = new Thread() {
+      public void run() {
+       while(!data);
+      }
+    };
+
+    Thread t1 = new Thread() {
+      public void run() {
+       data = true;
+      }
+    };
+
+    t0.start();
+    t1.start();
+  }
+}
+
+However, adding a volatile variable unrelated to the "data" variable and just reading it from t0 does terminate. Note that the volatile variable was never even written from t1!
+
+public class VolatileTest {
+  private boolean data;
+  private volatile boolean sync;
+
+  public static void main(String[] args) {
+    new VolatileTest().run();
+  }
+
+  private void run() {
+    Thread t0 = new Thread() {
+      public void run() {
+       while(!data) {
+         boolean x = sync;
+       }
+      }
+    };
+
+    Thread t1 = new Thread() {
+      public void run() {
+       data = true;
+      }
+    };
+
+    t0.start();
+    t1.start();
+  }
+}
+
+
+I thought there might be a cache granularity issue here, so I replaced "boolean data" with a "boolean[ ] data = new boolean[10*1024*1024], and was setting its last element, but it didn't cause a difference. I tried to find an explanation of this behavior from my understanding of JLS 17.4.4 "Synchronization Order" and clauses around it, but couldn't, specifically since t1 never touches the volatile variable.
+
+Can someone give me an example where this program would again not terminate - that is, t0 wouldn't observe a change to a non-volatile variable even if it did a read of a volatile variable?
+
+This is happening on a Core 2 Duo CPU with 3MB of L2 cache, on Mac OS X 10.6.7, java is:
+
+java version "1.6.0_24"
+Java(TM) SE Runtime Environment (build 1.6.0_24-b07-334-10M3326)
+Java HotSpot(TM) 64-Bit Server VM (build 19.1-b02-334, mixed mode)
+
+Thanks for any insights,
+  Attila.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110425/3facf40e/attachment-0001.html>
+
+From davidcholmes at aapt.net.au  Mon Apr 25 22:41:28 2011
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Tue, 26 Apr 2011 12:41:28 +1000
+Subject: [concurrency-interest] Volatile access used for
+	observingnonvolatile changes
+In-Reply-To: <E1A677EB-6435-401F-B0A9-8FB7230BBFCC@gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEKFIMAA.davidcholmes@aapt.net.au>
+
+It is quite common and accepted practice to use a volatile flag to signal
+that other data is ready to be read, but the pattern must be used correctly:
+
+Thread 1: write data
+               write flag
+
+Thread 2: read flag
+               read data
+
+If the flag is set then the data is valid/available. Of course it is very
+easy to use this in such a way that the inherent race conditions causes
+semantic failures but that is a different issue. It is never correct to use
+a completely unrelated volatile to "guard" access to other data - it must be
+a volatile written by the thread writing the data. Ortherwise all you
+observe at runtime are the affects of implementation mechanics for volatile
+accesses.
+
+In your errant example code, it is quite feasible that the runtime compiler
+(eg C2/server compiler in hotspot) will turn the:
+
+   while (!data) { whatever }
+
+into:
+
+  if (!data)
+     while(true) { whatever }
+
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Attila
+Szegedi
+  Sent: Tuesday, 26 April 2011 5:36 AM
+  To: concurrency-interest at cs.oswego.edu
+  Subject: [concurrency-interest] Volatile access used for
+observingnonvolatile changes
+
+
+  So, I have a coworker who's using access to a volatile field to observe
+changes to a non-volatile field from a different thread. I tried to dissuade
+him saying there's no guarantee this should always work, he insists this is
+a sound practice. I'd be interested in the insight of folks on this list. I
+whittled it down to a very simple example? First, here's a code example
+that, quite expectedly, doesn't terminate, as t0 never observes the change
+made in t1:
+
+
+  public class VolatileTest {
+    private boolean data;
+
+
+    public static void main(String[] args) {
+      new VolatileTest().run();
+    }
+
+    private void run() {
+      Thread t0 = new Thread() {
+        public void run() {
+         while(!data);
+        }
+      };
+
+
+      Thread t1 = new Thread() {
+        public void run() {
+         data = true;
+        }
+      };
+
+      t0.start();
+      t1.start();
+    }
+  }
+
+
+  However, adding a volatile variable unrelated to the "data" variable and
+just reading it from t0 does terminate. Note that the volatile variable was
+never even written from t1!
+
+
+  public class VolatileTest {
+    private boolean data;
+    private volatile boolean sync;
+
+
+    public static void main(String[] args) {
+      new VolatileTest().run();
+    }
+
+    private void run() {
+      Thread t0 = new Thread() {
+        public void run() {
+         while(!data) {
+           boolean x = sync;
+         }
+        }
+      };
+
+
+      Thread t1 = new Thread() {
+        public void run() {
+         data = true;
+        }
+      };
+
+      t0.start();
+      t1.start();
+    }
+  }
+
+
+
+
+  I thought there might be a cache granularity issue here, so I replaced
+"boolean data" with a "boolean[ ] data = new boolean[10*1024*1024], and was
+setting its last element, but it didn't cause a difference. I tried to find
+an explanation of this behavior from my understanding of JLS 17.4.4
+"Synchronization Order" and clauses around it, but couldn't, specifically
+since t1 never touches the volatile variable.
+
+
+  Can someone give me an example where this program would again not
+terminate - that is, t0 wouldn't observe a change to a non-volatile variable
+even if it did a read of a volatile variable?
+
+
+  This is happening on a Core 2 Duo CPU with 3MB of L2 cache, on Mac OS X
+10.6.7, java is:
+
+
+  java version "1.6.0_24"
+  Java(TM) SE Runtime Environment (build 1.6.0_24-b07-334-10M3326)
+  Java HotSpot(TM) 64-Bit Server VM (build 19.1-b02-334, mixed mode)
+
+
+  Thanks for any insights,
+    Attila.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110426/974927fe/attachment.html>
+
+From aleksey.shipilev at gmail.com  Tue Apr 26 15:22:52 2011
+From: aleksey.shipilev at gmail.com (Aleksey Shipilev)
+Date: Tue, 26 Apr 2011 23:22:52 +0400
+Subject: [concurrency-interest] Thread.uncaughtExceptionHandler is not
+	called in ScheduledThreadPool/ThreadPool-executors
+Message-ID: <BANLkTimPd0x8Nz8GumCzK0RySeKnPsUN8A@mail.gmail.com>
+
+Hi,
+
+I've been recently stumbled upon the issue about
+ScheduledThreadPoolExecutor. I was thinking that I can trace whether
+my scheduled task experienced some fatal exception and dump that
+exception to log. I had set my own ThreadFactory which creates the
+threads with appropriate Thread.UncaughtExceptionHandler. However,
+it's not being called when it's anticipated to.
+
+Is there anything I miss? May be this is correct behavior, and I
+should trace exceptional cases in some other way?
+I don't really want to drag my Future<?> around just to handle this
+logging case.
+
+Attached patch against jsr166 trunk contains the test cases.
+Apparently, ThreadPoolExecutor has the same issue. Both new test cases
+are failing on my machine (Ubuntu 10.10 x86 i5-520M):
+
+    [junit] Running ScheduledExecutorTest
+    [junit] Tests run: 61, Failures: 1, Errors: 0, Time elapsed: 1.221 sec
+    [junit] Test ScheduledExecutorTest FAILED
+    [junit] java version "1.6.0_24"
+    [junit] Java(TM) SE Runtime Environment (build 1.6.0_24-b07)
+    [junit] Java HotSpot(TM) Server VM (build 19.1-b02, mixed mode)
+
+    [junit] Running ThreadPoolExecutorTest
+    [junit] Tests run: 102, Failures: 1, Errors: 0, Time elapsed: 0.86 sec
+    [junit] Test ThreadPoolExecutorTest FAILED
+    [junit] java version "1.6.0_24"
+    [junit] Java(TM) SE Runtime Environment (build 1.6.0_24-b07)
+    [junit] Java HotSpot(TM) Server VM (build 19.1-b02, mixed mode)
+
+I've double-checked those tests pass when done.countDown() is being
+done before throwing exception.
+
+Thanks,
+Aleksey.
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: jsr166-unhandled-1.patch
+Type: text/x-patch
+Size: 4436 bytes
+Desc: not available
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110426/02b29c82/attachment.bin>
+
+From ariel at weisberg.ws  Tue Apr 26 16:18:56 2011
+From: ariel at weisberg.ws (Ariel Weisberg)
+Date: Tue, 26 Apr 2011 16:18:56 -0400
+Subject: [concurrency-interest] Thread.uncaughtExceptionHandler is not
+ called in ScheduledThreadPool/ThreadPool-executors
+In-Reply-To: <BANLkTimPd0x8Nz8GumCzK0RySeKnPsUN8A@mail.gmail.com>
+References: <BANLkTimPd0x8Nz8GumCzK0RySeKnPsUN8A@mail.gmail.com>
+Message-ID: <1303849136.3784.1445387877@webmail.messagingengine.com>
+
+Hi,
+
+Off the cuff I recall that this is because a future is returned and the
+exception is swallowed by the future. This is correct behavior for
+submit and schedule. See the note in
+http://download.oracle.com/javase/6/docs/api/java/util/concurrent/ThreadPoolExecutor.html#afterExecute(java.lang.Runnable,
+java.lang.Throwable)
+
+There are some cases where a thread owned by the pool will allow the
+exception to bubble up to the handler (and the thread terminates). With
+a regular TPE it will happen if you invoke execute on a Runnable. With
+STPE it will never happen (even if you invoke execute on a Runnable)
+because it is always wrapped up in a future internally even if you
+invoke execute. STPE invokes schedule internally and schedule will wrap
+the Runnable in an exception swallowing future.
+
+You can implement a base class for your Runnables or FutureTasks that do
+the necessary wrapping to get the logging or error handling behavior you
+want and pass that your executors. This will get you uniform behavior
+across all the executors (TPE, STPE) and methods (submit, schedule,
+execute).
+
+Regards,
+Ariel Weisberg
+
+On Tue, 26 Apr 2011 23:22 +0400, "Aleksey Shipilev"
+<aleksey.shipilev at gmail.com> wrote:
+> Hi,
+> 
+> I've been recently stumbled upon the issue about
+> ScheduledThreadPoolExecutor. I was thinking that I can trace whether
+> my scheduled task experienced some fatal exception and dump that
+> exception to log. I had set my own ThreadFactory which creates the
+> threads with appropriate Thread.UncaughtExceptionHandler. However,
+> it's not being called when it's anticipated to.
+> 
+> Is there anything I miss? May be this is correct behavior, and I
+> should trace exceptional cases in some other way?
+> I don't really want to drag my Future<?> around just to handle this
+> logging case.
+> 
+> Attached patch against jsr166 trunk contains the test cases.
+> Apparently, ThreadPoolExecutor has the same issue. Both new test cases
+> are failing on my machine (Ubuntu 10.10 x86 i5-520M):
+> 
+>     [junit] Running ScheduledExecutorTest
+>     [junit] Tests run: 61, Failures: 1, Errors: 0, Time elapsed: 1.221
+>     sec
+>     [junit] Test ScheduledExecutorTest FAILED
+>     [junit] java version "1.6.0_24"
+>     [junit] Java(TM) SE Runtime Environment (build 1.6.0_24-b07)
+>     [junit] Java HotSpot(TM) Server VM (build 19.1-b02, mixed mode)
+> 
+>     [junit] Running ThreadPoolExecutorTest
+>     [junit] Tests run: 102, Failures: 1, Errors: 0, Time elapsed: 0.86
+>     sec
+>     [junit] Test ThreadPoolExecutorTest FAILED
+>     [junit] java version "1.6.0_24"
+>     [junit] Java(TM) SE Runtime Environment (build 1.6.0_24-b07)
+>     [junit] Java HotSpot(TM) Server VM (build 19.1-b02, mixed mode)
+> 
+> I've double-checked those tests pass when done.countDown() is being
+> done before throwing exception.
+> 
+> Thanks,
+> Aleksey.
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+> Email had 1 attachment:
+> + jsr166-unhandled-1.patch
+>   6k (text/x-patch)
+
+From aleksey.shipilev at gmail.com  Tue Apr 26 16:25:57 2011
+From: aleksey.shipilev at gmail.com (Aleksey Shipilev)
+Date: Wed, 27 Apr 2011 00:25:57 +0400
+Subject: [concurrency-interest] Thread.uncaughtExceptionHandler is not
+ called in ScheduledThreadPool/ThreadPool-executors
+In-Reply-To: <1303849136.3784.1445387877@webmail.messagingengine.com>
+References: <BANLkTimPd0x8Nz8GumCzK0RySeKnPsUN8A@mail.gmail.com>
+	<1303849136.3784.1445387877@webmail.messagingengine.com>
+Message-ID: <BANLkTim51gmfPGC9C4LPGzzZwb2zpx1gNQ@mail.gmail.com>
+
+Ah, so this is because we reuse worker threads? Then yes, we will
+break semantics of Thread.UncaughtExceptionHandler if we propagate
+that exception down the path. Makes sense. Catching, logging, and
+rethrowing Throwable in CheckedRunnable seems to be better solution.
+
+Thanks!
+-Aleksey.
+
+On Wed, Apr 27, 2011 at 12:18 AM, Ariel Weisberg <ariel at weisberg.ws> wrote:
+> Hi,
+>
+> Off the cuff I recall that this is because a future is returned and the
+> exception is swallowed by the future. This is correct behavior for
+> submit and schedule. See the note in
+> http://download.oracle.com/javase/6/docs/api/java/util/concurrent/ThreadPoolExecutor.html#afterExecute(java.lang.Runnable,
+> java.lang.Throwable)
+>
+> There are some cases where a thread owned by the pool will allow the
+> exception to bubble up to the handler (and the thread terminates). With
+> a regular TPE it will happen if you invoke execute on a Runnable. With
+> STPE it will never happen (even if you invoke execute on a Runnable)
+> because it is always wrapped up in a future internally even if you
+> invoke execute. STPE invokes schedule internally and schedule will wrap
+> the Runnable in an exception swallowing future.
+>
+> You can implement a base class for your Runnables or FutureTasks that do
+> the necessary wrapping to get the logging or error handling behavior you
+> want and pass that your executors. This will get you uniform behavior
+> across all the executors (TPE, STPE) and methods (submit, schedule,
+> execute).
+>
+> Regards,
+> Ariel Weisberg
+>
+> On Tue, 26 Apr 2011 23:22 +0400, "Aleksey Shipilev"
+> <aleksey.shipilev at gmail.com> wrote:
+>> Hi,
+>>
+>> I've been recently stumbled upon the issue about
+>> ScheduledThreadPoolExecutor. I was thinking that I can trace whether
+>> my scheduled task experienced some fatal exception and dump that
+>> exception to log. I had set my own ThreadFactory which creates the
+>> threads with appropriate Thread.UncaughtExceptionHandler. However,
+>> it's not being called when it's anticipated to.
+>>
+>> Is there anything I miss? May be this is correct behavior, and I
+>> should trace exceptional cases in some other way?
+>> I don't really want to drag my Future<?> around just to handle this
+>> logging case.
+>>
+>> Attached patch against jsr166 trunk contains the test cases.
+>> Apparently, ThreadPoolExecutor has the same issue. Both new test cases
+>> are failing on my machine (Ubuntu 10.10 x86 i5-520M):
+>>
+>> ? ? [junit] Running ScheduledExecutorTest
+>> ? ? [junit] Tests run: 61, Failures: 1, Errors: 0, Time elapsed: 1.221
+>> ? ? sec
+>> ? ? [junit] Test ScheduledExecutorTest FAILED
+>> ? ? [junit] java version "1.6.0_24"
+>> ? ? [junit] Java(TM) SE Runtime Environment (build 1.6.0_24-b07)
+>> ? ? [junit] Java HotSpot(TM) Server VM (build 19.1-b02, mixed mode)
+>>
+>> ? ? [junit] Running ThreadPoolExecutorTest
+>> ? ? [junit] Tests run: 102, Failures: 1, Errors: 0, Time elapsed: 0.86
+>> ? ? sec
+>> ? ? [junit] Test ThreadPoolExecutorTest FAILED
+>> ? ? [junit] java version "1.6.0_24"
+>> ? ? [junit] Java(TM) SE Runtime Environment (build 1.6.0_24-b07)
+>> ? ? [junit] Java HotSpot(TM) Server VM (build 19.1-b02, mixed mode)
+>>
+>> I've double-checked those tests pass when done.countDown() is being
+>> done before throwing exception.
+>>
+>> Thanks,
+>> Aleksey.
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>> Email had 1 attachment:
+>> + jsr166-unhandled-1.patch
+>> ? 6k (text/x-patch)
+>
+
+
+From davidcholmes at aapt.net.au  Tue Apr 26 18:22:13 2011
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 27 Apr 2011 08:22:13 +1000
+Subject: [concurrency-interest] Thread.uncaughtExceptionHandler is not
+	called in ScheduledThreadPool/ThreadPool-executors
+In-Reply-To: <BANLkTim51gmfPGC9C4LPGzzZwb2zpx1gNQ@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCGEKLIMAA.davidcholmes@aapt.net.au>
+
+Aleksey Shipilev writes:
+> Ah, so this is because we reuse worker threads? 
+
+No, it is because Future's are spec'd to catch all exceptions thrown by their task, hence there is never any uncaught exception to be processed by the worker thread.
+
+David
+
+
+> Then yes, we will
+> break semantics of Thread.UncaughtExceptionHandler if we propagate
+> that exception down the path. Makes sense. Catching, logging, and
+> rethrowing Throwable in CheckedRunnable seems to be better solution.
+> 
+> Thanks!
+> -Aleksey.
+> 
+> On Wed, Apr 27, 2011 at 12:18 AM, Ariel Weisberg 
+> <ariel at weisberg.ws> wrote:
+> > Hi,
+> >
+> > Off the cuff I recall that this is because a future is returned and the
+> > exception is swallowed by the future. This is correct behavior for
+> > submit and schedule. See the note in
+> > 
+> http://download.oracle.com/javase/6/docs/api/java/util/concurrent/
+> ThreadPoolExecutor.html#afterExecute(java.lang.Runnable,
+> > java.lang.Throwable)
+> >
+> > There are some cases where a thread owned by the pool will allow the
+> > exception to bubble up to the handler (and the thread terminates). With
+> > a regular TPE it will happen if you invoke execute on a Runnable. With
+> > STPE it will never happen (even if you invoke execute on a Runnable)
+> > because it is always wrapped up in a future internally even if you
+> > invoke execute. STPE invokes schedule internally and schedule will wrap
+> > the Runnable in an exception swallowing future.
+> >
+> > You can implement a base class for your Runnables or FutureTasks that do
+> > the necessary wrapping to get the logging or error handling behavior you
+> > want and pass that your executors. This will get you uniform behavior
+> > across all the executors (TPE, STPE) and methods (submit, schedule,
+> > execute).
+> >
+> > Regards,
+> > Ariel Weisberg
+> >
+> > On Tue, 26 Apr 2011 23:22 +0400, "Aleksey Shipilev"
+> > <aleksey.shipilev at gmail.com> wrote:
+> >> Hi,
+> >>
+> >> I've been recently stumbled upon the issue about
+> >> ScheduledThreadPoolExecutor. I was thinking that I can trace whether
+> >> my scheduled task experienced some fatal exception and dump that
+> >> exception to log. I had set my own ThreadFactory which creates the
+> >> threads with appropriate Thread.UncaughtExceptionHandler. However,
+> >> it's not being called when it's anticipated to.
+> >>
+> >> Is there anything I miss? May be this is correct behavior, and I
+> >> should trace exceptional cases in some other way?
+> >> I don't really want to drag my Future<?> around just to handle this
+> >> logging case.
+> >>
+> >> Attached patch against jsr166 trunk contains the test cases.
+> >> Apparently, ThreadPoolExecutor has the same issue. Both new test cases
+> >> are failing on my machine (Ubuntu 10.10 x86 i5-520M):
+> >>
+> >>     [junit] Running ScheduledExecutorTest
+> >>     [junit] Tests run: 61, Failures: 1, Errors: 0, Time elapsed: 1.221
+> >>     sec
+> >>     [junit] Test ScheduledExecutorTest FAILED
+> >>     [junit] java version "1.6.0_24"
+> >>     [junit] Java(TM) SE Runtime Environment (build 1.6.0_24-b07)
+> >>     [junit] Java HotSpot(TM) Server VM (build 19.1-b02, mixed mode)
+> >>
+> >>     [junit] Running ThreadPoolExecutorTest
+> >>     [junit] Tests run: 102, Failures: 1, Errors: 0, Time elapsed: 0.86
+> >>     sec
+> >>     [junit] Test ThreadPoolExecutorTest FAILED
+> >>     [junit] java version "1.6.0_24"
+> >>     [junit] Java(TM) SE Runtime Environment (build 1.6.0_24-b07)
+> >>     [junit] Java HotSpot(TM) Server VM (build 19.1-b02, mixed mode)
+> >>
+> >> I've double-checked those tests pass when done.countDown() is being
+> >> done before throwing exception.
+> >>
+> >> Thanks,
+> >> Aleksey.
+> >>
+> >> _______________________________________________
+> >> Concurrency-interest mailing list
+> >> Concurrency-interest at cs.oswego.edu
+> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >>
+> >> Email had 1 attachment:
+> >> + jsr166-unhandled-1.patch
+> >>   6k (text/x-patch)
+> >
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+
+
+From sjlee0 at gmail.com  Tue Apr 26 18:30:10 2011
+From: sjlee0 at gmail.com (Sangjin Lee)
+Date: Tue, 26 Apr 2011 15:30:10 -0700
+Subject: [concurrency-interest] Thread.uncaughtExceptionHandler is not
+ called in ScheduledThreadPool/ThreadPool-executors
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCGEKLIMAA.davidcholmes@aapt.net.au>
+References: <BANLkTim51gmfPGC9C4LPGzzZwb2zpx1gNQ@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCGEKLIMAA.davidcholmes@aapt.net.au>
+Message-ID: <BANLkTimwVadro6-99+L_rbaGt+rkdPRfnw@mail.gmail.com>
+
+This is a thread on this topic on stackoverflow:
+http://stackoverflow.com/questions/3163117/how-to-use-an-uncaught-exception-handler-for-a-multi-thread-test-in-junit/
+
+Sangjin
+
+On Tue, Apr 26, 2011 at 3:22 PM, David Holmes <davidcholmes at aapt.net.au>wrote:
+
+> Aleksey Shipilev writes:
+> > Ah, so this is because we reuse worker threads?
+>
+> No, it is because Future's are spec'd to catch all exceptions thrown by
+> their task, hence there is never any uncaught exception to be processed by
+> the worker thread.
+>
+> David
+>
+>
+> > Then yes, we will
+> > break semantics of Thread.UncaughtExceptionHandler if we propagate
+> > that exception down the path. Makes sense. Catching, logging, and
+> > rethrowing Throwable in CheckedRunnable seems to be better solution.
+> >
+> > Thanks!
+> > -Aleksey.
+> >
+> > On Wed, Apr 27, 2011 at 12:18 AM, Ariel Weisberg
+> > <ariel at weisberg.ws> wrote:
+> > > Hi,
+> > >
+> > > Off the cuff I recall that this is because a future is returned and the
+> > > exception is swallowed by the future. This is correct behavior for
+> > > submit and schedule. See the note in
+> > >
+> > http://download.oracle.com/javase/6/docs/api/java/util/concurrent/
+> > ThreadPoolExecutor.html#afterExecute(java.lang.Runnable,
+> > > java.lang.Throwable)
+> > >
+> > > There are some cases where a thread owned by the pool will allow the
+> > > exception to bubble up to the handler (and the thread terminates). With
+> > > a regular TPE it will happen if you invoke execute on a Runnable. With
+> > > STPE it will never happen (even if you invoke execute on a Runnable)
+> > > because it is always wrapped up in a future internally even if you
+> > > invoke execute. STPE invokes schedule internally and schedule will wrap
+> > > the Runnable in an exception swallowing future.
+> > >
+> > > You can implement a base class for your Runnables or FutureTasks that
+> do
+> > > the necessary wrapping to get the logging or error handling behavior
+> you
+> > > want and pass that your executors. This will get you uniform behavior
+> > > across all the executors (TPE, STPE) and methods (submit, schedule,
+> > > execute).
+> > >
+> > > Regards,
+> > > Ariel Weisberg
+> > >
+> > > On Tue, 26 Apr 2011 23:22 +0400, "Aleksey Shipilev"
+> > > <aleksey.shipilev at gmail.com> wrote:
+> > >> Hi,
+> > >>
+> > >> I've been recently stumbled upon the issue about
+> > >> ScheduledThreadPoolExecutor. I was thinking that I can trace whether
+> > >> my scheduled task experienced some fatal exception and dump that
+> > >> exception to log. I had set my own ThreadFactory which creates the
+> > >> threads with appropriate Thread.UncaughtExceptionHandler. However,
+> > >> it's not being called when it's anticipated to.
+> > >>
+> > >> Is there anything I miss? May be this is correct behavior, and I
+> > >> should trace exceptional cases in some other way?
+> > >> I don't really want to drag my Future<?> around just to handle this
+> > >> logging case.
+> > >>
+> > >> Attached patch against jsr166 trunk contains the test cases.
+> > >> Apparently, ThreadPoolExecutor has the same issue. Both new test cases
+> > >> are failing on my machine (Ubuntu 10.10 x86 i5-520M):
+> > >>
+> > >>     [junit] Running ScheduledExecutorTest
+> > >>     [junit] Tests run: 61, Failures: 1, Errors: 0, Time elapsed: 1.221
+> > >>     sec
+> > >>     [junit] Test ScheduledExecutorTest FAILED
+> > >>     [junit] java version "1.6.0_24"
+> > >>     [junit] Java(TM) SE Runtime Environment (build 1.6.0_24-b07)
+> > >>     [junit] Java HotSpot(TM) Server VM (build 19.1-b02, mixed mode)
+> > >>
+> > >>     [junit] Running ThreadPoolExecutorTest
+> > >>     [junit] Tests run: 102, Failures: 1, Errors: 0, Time elapsed: 0.86
+> > >>     sec
+> > >>     [junit] Test ThreadPoolExecutorTest FAILED
+> > >>     [junit] java version "1.6.0_24"
+> > >>     [junit] Java(TM) SE Runtime Environment (build 1.6.0_24-b07)
+> > >>     [junit] Java HotSpot(TM) Server VM (build 19.1-b02, mixed mode)
+> > >>
+> > >> I've double-checked those tests pass when done.countDown() is being
+> > >> done before throwing exception.
+> > >>
+> > >> Thanks,
+> > >> Aleksey.
+> > >>
+> > >> _______________________________________________
+> > >> Concurrency-interest mailing list
+> > >> Concurrency-interest at cs.oswego.edu
+> > >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> > >>
+> > >> Email had 1 attachment:
+> > >> + jsr166-unhandled-1.patch
+> > >>   6k (text/x-patch)
+> > >
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110426/48bede8d/attachment-0001.html>
+
+From ron.pressler at gmail.com  Sat Apr 30 10:56:36 2011
+From: ron.pressler at gmail.com (Ron Pressler)
+Date: Sat, 30 Apr 2011 17:56:36 +0300
+Subject: [concurrency-interest] ForkJoin executing a task more than once?
+In-Reply-To: <BANLkTinffk0NJRCZBzp=JH-xJnqpYODHdQ@mail.gmail.com>
+References: <BANLkTikMS8uvrnL8oqTmBK6O8v6oFirA_A@mail.gmail.com>
+	<BANLkTinffk0NJRCZBzp=JH-xJnqpYODHdQ@mail.gmail.com>
+Message-ID: <BANLkTinnDYRg9ZRNa7M9itt9rnwUOCByEA@mail.gmail.com>
+
+Sorry, my bad.
+I'd missed a caught exception that resulted in a re-forking of the same task
+twice.
+
+On Fri, Apr 29, 2011 at 9:11 PM, Ron Pressler <ron.pressler at gmail.com>wrote:
+
+> Oops, a typo. I meant to say that in the older version I'd get one
+> execution by the "executeSubmission" method or something of the sort and
+> another by the "executeStolen" method, or something of the sort etc.
+>
+> It appears that sometimes a task can be executed twice, once directly from
+> the submission queue and once when it's stolen. Is this a race condition in
+> ForkJoinPool, or am I doing something wrong?
+>
+> I also forgot to mention that I'm using the pool in the asynchronous mode,
+> since I never need to join any task.
+>
+>
+> On Fri, Apr 29, 2011 at 9:05 PM, Ron Pressler <ron.pressler at gmail.com>wrote:
+>
+>> Hi.
+>> I have a ForkJoinTask that forks into subtasks, but I don't need to join
+>> any of the tasks (they have side-effects), only to wait upon the completion
+>> of the ancestor and all its offspring. To do that, I use a phaser. Before
+>> forking a sub-task, I register the phaser (for the newly forked task), and
+>> upon each task's completion, I arrive and deregister.
+>> However, I sometimes have a situation of too many phaser arrivals.
+>> With a previous version of jsr166y I used to get an IllegalStateException
+>> saying that I'm deregistering an unregistered party, and with the current
+>> version I simple arrive on a terminated phaser.
+>> Looking into the problem, I've discovered that a task may be executed more
+>> than once by the pool. In the previous version, I'd get one execution by the
+>> "executeSubmission" method or something of the sort (I don't remember its
+>> exact name), and in the current version I get two executions, each from a
+>> different call-site to "executeTask" at the ForkJoinThreadPool.scan method.
+>> What is going on?
+>>
+>> Thank you
+>>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20110430/f7478375/attachment.html>
+

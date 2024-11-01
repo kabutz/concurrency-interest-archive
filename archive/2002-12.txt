@@ -1,0 +1,4229 @@
+From Mazda.Hewitt@ubsw.com  Mon Dec  2 14:29:49 2002
+From: Mazda.Hewitt@ubsw.com (Mazda.Hewitt@ubsw.com)
+Date: Mon, 2 Dec 2002 14:29:49 -0000
+Subject: [concurrency-interest] ReentrantWriterPreferenceReadWriteLock -- Deadlock if reader releases lock more times than it aquires lock
+Message-ID: <6E1C196851FE8849B95FBE08802E31E0034DA2@NLDNC004PEX1.ubsgs.ubsgroup.net>
+
+Hi, 
+
+ReentrantWriterPreferenceReadWriteLock appears to deadlock if a reader releases the lock more times than it aquires it.  In this case the reader is releasing a lock that it doesn't own.  I understand that the number of aquires should exactly match the number of releases and you have to be careful to realease all locks that are aquired.  But as you can see in this example it is easy to accidently release the lock too many times.  It is also easy to assume that this won't matter.
+
+It also throws an ugly nullpointer exception when the release is called.
+
+Perhaps there might be a way of checking to see if the thread releasing the lock owns the lock, before it is allowed to release it.
+
+Below I have the current code, then my changed code and followed by my test program.
+
+Mazda Hewitt
+
+
+-- Code snipet from ReentrantWriterPreferenceReadWriteLock  Current code---
+
+  protected synchronized Signaller endRead() {
+    --activeReaders_;
+    Thread t = Thread.currentThread();
+    Object c = readers_.get(t);
+    if (c != IONE) { // more than one hold; decrement count
+      int h = ((Integer)(c)).intValue()-1;                 // <--c is null as thread is not in map
+      Integer ih = (h == 1)? IONE : new Integer(h);
+      readers_.put(t, ih);
+      return null;
+    }
+    else {
+      readers_.remove(t);
+    
+      if (writeHolds_ > 0) // a write lock is still held by current thread
+        return null;
+      else if (activeReaders_ == 0 && waitingWriters_ > 0)
+        return writerLock_;
+      else
+        return null;
+    }
+  }
+
+---------------------------  Proposed code : 
+
+ protected synchronized Signaller endRead() {
+    
+    Thread t = Thread.currentThread();
+    Object c = readers_.get(t);
+    if ( c != null){  // check to see if this reader owns a read lock
+      --activeReaders_;
+      if (c != IONE) { // more than one hold; decrement count
+        int h = ((Integer)(c)).intValue()-1;
+        Integer ih = (h == 1)? IONE : new Integer(h);
+        readers_.put(t, ih);
+        
+      }
+      else {
+        readers_.remove(t);
+        
+        if (writeHolds_ > 0) // a write lock is still held by current thread
+          return null;
+        else if (activeReaders_ == 0 && waitingWriters_ > 0)
+          return writerLock_;
+        
+      }
+    }
+    return null;
+  }
+
+  protected synchronized Signaller endWrite() {
+    if (activeWriter_ == Thread.currentThread()){
+      --writeHolds_;
+      if (writeHolds_ > 0)   // still being held
+        return null;
+      else {
+        activeWriter_ = null;
+        if (waitingReaders_ > 0 && allowReader())
+          return readerLock_;
+        else if (waitingWriters_ > 0)
+          return writerLock_;
+        else
+          return null;
+      }
+    }
+    return null;
+  }
+
+---------------------------
+
+---------------------------------------------------------------
+Program output:
+done Reader Thread-1 Reading
+Reader Thread-3 Failed to get lock 
+Writer Thread-4 Writing 
+Reader Thread-5 Failed to get lock
+Reader Thread-7 Failed to get lock
+Reader Thread-9 Failed to get lock 
+Reader Thread-11 Failed to get lock 
+Reader Thread-13 Failed to get lock 
+Reader Thread-15 Failed to get lock 
+Reader Thread-17 Failed to get lock 
+Reader Thread-19 Failed to get lock
+
+---------------------------------------------------------------
+import EDU.oswego.cs.dl.util.concurrent.ReentrantWriterPreferenceReadWriteLock;
+
+public class Tester {
+  static ReentrantWriterPreferenceReadWriteLock lock = new ReentrantWriterPreferenceReadWriteLock();
+  public static void main(String[] args) {
+
+    for (int i =0; i< 10; i++){
+      new Reader().start();
+      new Writer().start();
+    }
+
+    System.out.println("done");
+  }
+
+  static class Reader extends Thread{
+    public void run(){
+      try {
+        if ( lock.readLock().attempt(100)){
+          System.out.println("Reader " + getName()+" Reading");
+          sleep (2000);
+        }
+        else{
+           System.out.println("Reader " + getName()+" Failed to get lock");
+        }
+      }
+      catch (InterruptedException ex) {
+        interrupt();
+      }
+      finally{
+        lock.readLock().release();
+      }
+    }
+  }
+
+  static class Writer extends Thread{
+    public void run(){
+      try {
+        lock.writeLock().acquire();
+        System.out.println("Writer " + getName()+" Writing");
+        sleep (2000);
+      }
+      catch (InterruptedException ex) {
+        interrupt();
+      }
+      finally{
+        lock.writeLock().release();
+      }
+    }
+  }
+}
+
+Visit our website at http://www.ubswarburg.com
+
+This message contains confidential information and is intended only 
+for the individual named.  If you are not the named addressee you 
+should not disseminate, distribute or copy this e-mail.  Please 
+notify the sender immediately by e-mail if you have received this 
+e-mail by mistake and delete this e-mail from your system.
+
+E-mail transmission cannot be guaranteed to be secure or error-free 
+as information could be intercepted, corrupted, lost, destroyed, 
+arrive late or incomplete, or contain viruses.  The sender therefore 
+does not accept liability for any errors or omissions in the contents 
+of this message which arise as a result of e-mail transmission.  If 
+verification is required please request a hard-copy version.  This 
+message is provided for informational purposes and should not be 
+construed as a solicitation or offer to buy or sell any securities or 
+related financial instruments.
+
+
+
+From dholmes@dltech.com.au  Mon Dec  2 21:01:00 2002
+From: dholmes@dltech.com.au (David Holmes)
+Date: Tue, 3 Dec 2002 07:01:00 +1000
+Subject: [concurrency-interest] ReentrantWriterPreferenceReadWriteLock -- Deadlock if reader releases lock more times than it aquires lock
+In-Reply-To: <6E1C196851FE8849B95FBE08802E31E0034DA2@NLDNC004PEX1.ubsgs.ubsgroup.net>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOEDNCOAA.dholmes@dltech.com.au>
+
+Mazda Hewitt wrote:
+> ReentrantWriterPreferenceReadWriteLock appears to deadlock
+> if a reader releases the lock more times than it aquires
+> it.  In this case the reader is releasing a lock that it
+> doesn't own.  I understand that the number of aquires
+> should exactly match the number of releases and you have to
+> be careful to realease all locks that are aquired.  But as
+> you can see in this example it is easy to accidently
+> release the lock too many times.  It is also easy to assume
+> that this won't matter.
+
+Thanks for the posting.
+
+While I'm all for making misuse of these things more difficult, and
+making the consequence of misuse less drastic (assuming the price of
+that is not too high), I must emphasise the importance of the correct
+usage of the try/finally construct - it is something that a number of
+books and articles often get wrong.
+
+[The following is not a lecture to the original poster but rather a
+clarification for anyone reading the list archive at a later date.]
+
+In the example, we have:
+
+    public void run(){
+      try {
+        if ( lock.readLock().attempt(100)){
+          System.out.println("Reader " + getName()+" Reading");
+          sleep (2000);
+        }
+        else{
+           System.out.println("Reader " + getName()+" Failed to get
+lock");
+        }
+      }
+      catch (InterruptedException ex) {
+        interrupt();
+      }
+      finally{
+        lock.readLock().release();
+      }
+    }
+
+which is an incorrect usage of the try/finally construct as the
+finally clause is executed even if the Lock.attempt failed. With
+paired actions like acquire/attempt and release, it is crucial to
+remember that the first action occurs *outside* of the try block:
+
+  public void run(){
+    if ( lock.readLock().attempt(100)){
+      try {
+        System.out.println("Reader " + getName()+" Reading");
+        sleep (2000);
+      }
+      catch (InterruptedException ex) {
+        interrupt();
+      }
+      finally{
+        lock.readLock().release();
+      }
+   }
+   else{
+     System.out.println("Reader " + getName()+" Failed to get lock");
+   }
+ }
+
+Now sometimes the structure of code is such that doing try/finally
+correctly, and dealing with exceptions, can lead to awkward structure.
+In such cases you will often find the code in the finally clause
+protected by a condition - such as checking a reference to an I/O
+stream for null before closing it.
+
+<end lecture> :)
+
+David Holmes
+
+
+From Mazda.Hewitt@ubsw.com  Wed Dec  4 13:33:12 2002
+From: Mazda.Hewitt@ubsw.com (Mazda.Hewitt@ubsw.com)
+Date: Wed, 4 Dec 2002 13:33:12 -0000
+Subject: [concurrency-interest] RE: ReentrantWriterPreferenceReadWriteLock -- Deadlock if reader releases lock more times than it aquires lock
+Message-ID: <6E1C196851FE8849B95FBE08802E31E0034DA9@NLDNC004PEX1.ubsgs.ubsgroup.net>
+
+Hi, 
+
+I completly understand your point and I agree with you.  But I think that it would be better if the code gracefully dealt with the situation where the lock is released by someone who doesn't own it.  Perhaps it would be better to throw an exception when this situation occurs.  At the moment it throws an NullPointerException (which appears odd to a user unless they know the code) and then the lock is deadlocked.  It would be better if it threw an exception which was informative as to the cause and then left the lock in a workable state.  Unless there is a known perfomace problem with checking to see if the owner of the lock is the one releasing it, I don't see a problem with doing this.
+
+Mazda
+
+-----Original Message-----
+From: "David Holmes" <dholmes@dltech.com.au>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Subject: RE: [concurrency-interest] ReentrantWriterPreferenceReadWriteLock -- Deadlock if reader releases lock more times than it aquires lock
+Date: Tue, 3 Dec 2002 07:01:00 +1000
+
+Mazda Hewitt wrote:
+> ReentrantWriterPreferenceReadWriteLock appears to deadlock
+> if a reader releases the lock more times than it aquires
+> it.  In this case the reader is releasing a lock that it
+> doesn't own.  I understand that the number of aquires
+> should exactly match the number of releases and you have to
+> be careful to realease all locks that are aquired.  But as
+> you can see in this example it is easy to accidently
+> release the lock too many times.  It is also easy to assume
+> that this won't matter.
+
+Thanks for the posting.
+
+While I'm all for making misuse of these things more difficult, and
+making the consequence of misuse less drastic (assuming the price of
+that is not too high), I must emphasise the importance of the correct
+usage of the try/finally construct - it is something that a number of
+books and articles often get wrong.
+
+[The following is not a lecture to the original poster but rather a
+clarification for anyone reading the list archive at a later date.]
+
+In the example, we have:
+
+    public void run(){
+      try {
+        if ( lock.readLock().attempt(100)){
+          System.out.println("Reader " + getName()+" Reading");
+          sleep (2000);
+        }
+        else{
+           System.out.println("Reader " + getName()+" Failed to get
+lock");
+        }
+      }
+      catch (InterruptedException ex) {
+        interrupt();
+      }
+      finally{
+        lock.readLock().release();
+      }
+    }
+
+which is an incorrect usage of the try/finally construct as the
+finally clause is executed even if the Lock.attempt failed. With
+paired actions like acquire/attempt and release, it is crucial to
+remember that the first action occurs *outside* of the try block:
+
+  public void run(){
+    if ( lock.readLock().attempt(100)){
+      try {
+        System.out.println("Reader " + getName()+" Reading");
+        sleep (2000);
+      }
+      catch (InterruptedException ex) {
+        interrupt();
+      }
+      finally{
+        lock.readLock().release();
+      }
+   }
+   else{
+     System.out.println("Reader " + getName()+" Failed to get lock");
+   }
+ }
+
+Now sometimes the structure of code is such that doing try/finally
+correctly, and dealing with exceptions, can lead to awkward structure.
+In such cases you will often find the code in the finally clause
+protected by a condition - such as checking a reference to an I/O
+stream for null before closing it.
+
+<end lecture> :)
+
+David Holmes
+
+
+
+--__--__--
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+End of Concurrency-interest Digest
+
+Visit our website at http://www.ubswarburg.com
+
+This message contains confidential information and is intended only 
+for the individual named.  If you are not the named addressee you 
+should not disseminate, distribute or copy this e-mail.  Please 
+notify the sender immediately by e-mail if you have received this 
+e-mail by mistake and delete this e-mail from your system.
+
+E-mail transmission cannot be guaranteed to be secure or error-free 
+as information could be intercepted, corrupted, lost, destroyed, 
+arrive late or incomplete, or contain viruses.  The sender therefore 
+does not accept liability for any errors or omissions in the contents 
+of this message which arise as a result of e-mail transmission.  If 
+verification is required please request a hard-copy version.  This 
+message is provided for informational purposes and should not be 
+construed as a solicitation or offer to buy or sell any securities or 
+related financial instruments.
+
+
+
+From dl@cs.oswego.edu  Wed Dec  4 13:42:11 2002
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Wed, 4 Dec 2002 08:42:11 -0500
+Subject: [concurrency-interest] RE: ReentrantWriterPreferenceReadWriteLock -- Deadlock if reader releases lock more times than it aquires lock
+In-Reply-To: <6E1C196851FE8849B95FBE08802E31E0034DA9@NLDNC004PEX1.ubsgs.ubsgroup.net>
+References: <6E1C196851FE8849B95FBE08802E31E0034DA9@NLDNC004PEX1.ubsgs.ubsgroup.net>
+Message-ID: <15854.1587.409106.803133@altair.cs.oswego.edu>
+
+Mazda,
+
+Thanks for the report about dl.u.c version. I agree that it is in bad
+taste to throw NullPointerException rather than some more meaningful
+exception, and it should also completely preserve state upon
+exception. This will be in next update.
+
+The JSR-166 implementation of j.u.c.ReentrantReadWriteLock (the only
+concrete RW lock to be supplied) will be a different algorithm -- a
+variant of the one now in dl.u.c.FIFOReadWriteLock that adds
+reentrance. It will also throw nicer exceptions on misuse.
+
+-- 
+Doug Lea, Computer Science Department, SUNY Oswego, Oswego, NY 13126 USA
+dl@cs.oswego.edu 315-312-2688 FAX:315-312-5424 http://gee.cs.oswego.edu/  
+
+From Dimitre Chtilianov" <dimiter@rodopi.com  Wed Dec  4 18:19:28 2002
+From: Dimitre Chtilianov" <dimiter@rodopi.com (Dimitre Chtilianov)
+Date: Wed, 4 Dec 2002 10:19:28 -0800
+Subject: [concurrency-interest] RE: ReentrantWriterPreferenceReadWriteLock -- Deadlock if reader releases lock more times than it aquires lock
+References: <20021204170001.15179.33862.Mailman@altair.cs.oswego.edu>
+Message-ID: <030f01c29bc1$b0fe1470$dc8137d8@abac.com>
+
+Mazda has very very valid point. In such a fundamental library,
+it would make more bad than good if the library behaves
+like a mine, waiting for a programmer in a hurry.
+(as it unfortunately allways is). My personal criterion for
+a good library is whether it needs code samples in its docs.
+If there are code samples in the docs, that almost allways
+means the library needs specific pattern of use, which means
+it is not good enough. At least not general enough.
+Java's power is in its predictability, cleanness and
+openness. I would personally prefer to presrve them.
+At any price.
+
+Dimitre Chtilianov
+
+----- Original Message -----
+From: <concurrency-interest-request@cs.oswego.edu>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Wednesday, December 04, 2002 9:00 AM
+Subject: Concurrency-interest digest, Vol 1 #41 - 2 msgs
+
+
+> Send Concurrency-interest mailing list submissions to
+> concurrency-interest@altair.cs.oswego.edu
+>
+> To subscribe or unsubscribe via the World Wide Web, visit
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> or, via email, send a message with subject or body 'help' to
+> concurrency-interest-request@altair.cs.oswego.edu
+>
+> You can reach the person managing the list at
+> concurrency-interest-admin@altair.cs.oswego.edu
+>
+> When replying, please edit your Subject line so it is more specific
+> than "Re: Contents of Concurrency-interest digest..."
+>
+>
+> Today's Topics:
+>
+>    1. RE: ReentrantWriterPreferenceReadWriteLock -- Deadlock if reader
+releases lock more times than it aquires lock (Mazda.Hewitt@ubsw.com)
+>    2. Re: RE: ReentrantWriterPreferenceReadWriteLock -- Deadlock if reader
+releases lock more times than it aquires lock (Doug Lea)
+>
+> --__--__--
+>
+> Message: 1
+> From: Mazda.Hewitt@ubsw.com
+> Date: Wed, 4 Dec 2002 13:33:12 -0000
+> To: <concurrency-interest@altair.cs.oswego.edu>
+> Subject: [concurrency-interest] RE:
+ReentrantWriterPreferenceReadWriteLock -- Deadlock if reader releases lock
+more times than it aquires lock
+>
+> Hi,
+>
+> I completly understand your point and I agree with you.  But I think that
+it would be better if the code gracefully dealt with the situation where the
+lock is released by someone who doesn't own it.  Perhaps it would be better
+to throw an exception when this situation occurs.  At the moment it throws
+an NullPointerException (which appears odd to a user unless they know the
+code) and then the lock is deadlocked.  It would be better if it threw an
+exception which was informative as to the cause and then left the lock in a
+workable state.  Unless there is a known perfomace problem with checking to
+see if the owner of the lock is the one releasing it, I don't see a problem
+with doing this.
+>
+> Mazda
+>
+> -----Original Message-----
+> From: "David Holmes" <dholmes@dltech.com.au>
+> To: <concurrency-interest@altair.cs.oswego.edu>
+> Subject: RE: [concurrency-interest]
+ReentrantWriterPreferenceReadWriteLock -- Deadlock if reader releases lock
+more times than it aquires lock
+> Date: Tue, 3 Dec 2002 07:01:00 +1000
+>
+> Mazda Hewitt wrote:
+> > ReentrantWriterPreferenceReadWriteLock appears to deadlock
+> > if a reader releases the lock more times than it aquires
+> > it.  In this case the reader is releasing a lock that it
+> > doesn't own.  I understand that the number of aquires
+> > should exactly match the number of releases and you have to
+> > be careful to realease all locks that are aquired.  But as
+> > you can see in this example it is easy to accidently
+> > release the lock too many times.  It is also easy to assume
+> > that this won't matter.
+>
+> Thanks for the posting.
+>
+> While I'm all for making misuse of these things more difficult, and
+> making the consequence of misuse less drastic (assuming the price of
+> that is not too high), I must emphasise the importance of the correct
+> usage of the try/finally construct - it is something that a number of
+> books and articles often get wrong.
+>
+> [The following is not a lecture to the original poster but rather a
+> clarification for anyone reading the list archive at a later date.]
+>
+> In the example, we have:
+>
+>     public void run(){
+>       try {
+>         if ( lock.readLock().attempt(100)){
+>           System.out.println("Reader " + getName()+" Reading");
+>           sleep (2000);
+>         }
+>         else{
+>            System.out.println("Reader " + getName()+" Failed to get
+> lock");
+>         }
+>       }
+>       catch (InterruptedException ex) {
+>         interrupt();
+>       }
+>       finally{
+>         lock.readLock().release();
+>       }
+>     }
+>
+> which is an incorrect usage of the try/finally construct as the
+> finally clause is executed even if the Lock.attempt failed. With
+> paired actions like acquire/attempt and release, it is crucial to
+> remember that the first action occurs *outside* of the try block:
+>
+>   public void run(){
+>     if ( lock.readLock().attempt(100)){
+>       try {
+>         System.out.println("Reader " + getName()+" Reading");
+>         sleep (2000);
+>       }
+>       catch (InterruptedException ex) {
+>         interrupt();
+>       }
+>       finally{
+>         lock.readLock().release();
+>       }
+>    }
+>    else{
+>      System.out.println("Reader " + getName()+" Failed to get lock");
+>    }
+>  }
+>
+> Now sometimes the structure of code is such that doing try/finally
+> correctly, and dealing with exceptions, can lead to awkward structure.
+> In such cases you will often find the code in the finally clause
+> protected by a condition - such as checking a reference to an I/O
+> stream for null before closing it.
+>
+> <end lecture> :)
+>
+> David Holmes
+>
+>
+>
+> -- __--__--
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> End of Concurrency-interest Digest
+>
+> Visit our website at http://www.ubswarburg.com
+>
+> This message contains confidential information and is intended only
+> for the individual named.  If you are not the named addressee you
+> should not disseminate, distribute or copy this e-mail.  Please
+> notify the sender immediately by e-mail if you have received this
+> e-mail by mistake and delete this e-mail from your system.
+>
+> E-mail transmission cannot be guaranteed to be secure or error-free
+> as information could be intercepted, corrupted, lost, destroyed,
+> arrive late or incomplete, or contain viruses.  The sender therefore
+> does not accept liability for any errors or omissions in the contents
+> of this message which arise as a result of e-mail transmission.  If
+> verification is required please request a hard-copy version.  This
+> message is provided for informational purposes and should not be
+> construed as a solicitation or offer to buy or sell any securities or
+> related financial instruments.
+>
+>
+>
+> --__--__--
+>
+> Message: 2
+> From: Doug Lea <dl@cs.oswego.edu>
+> Date: Wed, 4 Dec 2002 08:42:11 -0500
+> To: Mazda.Hewitt@ubsw.com
+> Cc: <concurrency-interest@altair.cs.oswego.edu>
+> Subject: Re: [concurrency-interest] RE:
+ReentrantWriterPreferenceReadWriteLock -- Deadlock if reader releases lock
+more times than it aquires lock
+>
+>
+> Mazda,
+>
+> Thanks for the report about dl.u.c version. I agree that it is in bad
+> taste to throw NullPointerException rather than some more meaningful
+> exception, and it should also completely preserve state upon
+> exception. This will be in next update.
+>
+> The JSR-166 implementation of j.u.c.ReentrantReadWriteLock (the only
+> concrete RW lock to be supplied) will be a different algorithm -- a
+> variant of the one now in dl.u.c.FIFOReadWriteLock that adds
+> reentrance. It will also throw nicer exceptions on misuse.
+>
+> --
+> Doug Lea, Computer Science Department, SUNY Oswego, Oswego, NY 13126 USA
+> dl@cs.oswego.edu 315-312-2688 FAX:315-312-5424 http://gee.cs.oswego.edu/
+>
+>
+> --__--__--
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> End of Concurrency-interest Digest
+
+
+From dholmes@dltech.com.au  Wed Dec  4 23:25:01 2002
+From: dholmes@dltech.com.au (David Holmes)
+Date: Thu, 5 Dec 2002 09:25:01 +1000
+Subject: [concurrency-interest] RE: ReentrantWriterPreferenceReadWriteLock -- Deadlock if reader releases lock more times than it aquires lock
+In-Reply-To: <030f01c29bc1$b0fe1470$dc8137d8@abac.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMEFBCOAA.dholmes@dltech.com.au>
+
+Dimitre Chtilianov wrote:
+> My personal criterion for a good library is whether it needs
+> code samples in its docs.
+> If there are code samples in the docs, that almost allways
+> means the library needs specific pattern of use, which means
+> it is not good enough. At least not general enough.
+
+I don't think it is that simple. Usage examples are *good*
+documentation that are an important part of a good library. Any tool
+requires specific patterns of use - the question is whether those
+patterns are 'minimal' in the sense that the tool is as easy to use
+correctly as is feasible. Now depending on the library those usage
+patterns might be trivial - eg a math library should consist to
+independent functions whose usage is simple invocation to get a
+result. A graphics library is more complex, you have to perform
+sequences of actions in the right order to get the desired affect. A
+concurrency library is somewhere in between, I think: it's not a
+simple as one-off independent invocations because most actions are
+paired - lock/unlock, await/signal, acquire/release - but it doesn't
+have as complex usage sequences as say graphics libraries because the
+interface is narrower.
+
+The documentation has to instruct the user how to use the tool
+correctly and, sometimes, how not to use the tool.
+
+Just my 2c.
+
+David Holmes
+
+
+From blanshlu@netscape.net  Thu Dec  5 21:11:13 2002
+From: blanshlu@netscape.net (Luke Blanshard)
+Date: Thu, 05 Dec 2002 16:11:13 -0500
+Subject: [concurrency-interest] Having TimeoutException be a subclass of InterruptedException
+Message-ID: <672A87BC.299C902D.00948489@netscape.net>
+
+I have a question about having TimeoutException inherit from InterruptedException.  In the current JVM, an InterruptedException always means that the current thread has been interrupted.  I often keep track of this fact by setting a flag in the catch block for InterruptedException, and re-interrupting the thread when I've finished cleaning up after the interruption, so that outer or later code will also know that it is supposed to complete early.
+
+With this new subclass, you appear to have destroyed a useful invariant of the JVM.
+
+Any reason not to just have it be its own class?
+
+Luke
+
+__________________________________________________________________
+The NEW Netscape 7.0 browser is now available. Upgrade now! http://channels.netscape.com/ns/browsers/download.jsp 
+
+Get your own FREE, personal Netscape Mail account today at http://webmail.netscape.com/
+
+From dholmes@dltech.com.au  Thu Dec  5 22:59:03 2002
+From: dholmes@dltech.com.au (David Holmes)
+Date: Fri, 6 Dec 2002 08:59:03 +1000
+Subject: [concurrency-interest] Having TimeoutException be a subclass of InterruptedException
+In-Reply-To: <672A87BC.299C902D.00948489@netscape.net>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEFLCOAA.dholmes@dltech.com.au>
+
+Luke Blanshard wrote:
+> I have a question about having TimeoutException inherit
+> from InterruptedException.  In the current JVM, an
+> InterruptedException always means that the current thread
+> has been interrupted.  I often keep track of this fact by
+> setting a flag in the catch block for InterruptedException,
+> and re-interrupting the thread when I've finished cleaning
+> up after the interruption, so that outer or later code will
+> also know that it is supposed to complete early.
+>
+> With this new subclass, you appear to have destroyed a
+> useful invariant of the JVM.
+
+The reasons for making TimeoutException extend InterruptedException
+were:
+
+- logically a timeout can be considered an interrupt from a timer. It
+could even be implemented this way under the covers - you couldn't
+tell because the interrupt state is reset when the exception is thrown
+anyway.
+- code that doesn't want to deal with normal or timer-based interrupts
+can just declare that they throw a single exception -
+InterruptedException - rather than two different checked exceptions.
+Higher-level code doesn't need to know, and probably doesn't care
+whether the interrupt was time-out related or not. (It would be
+inconsistent for TimeoutException to not be a checked exception when
+InterruptedException is).
+- back in the old days (1.0/1.02/1.1) many people actually expected a
+timeout from wait to throw InterruptedException :)
+
+This doesn't break any existing code because the methods that can
+throw TimeoutException are all new methods. To deal with the new
+exception all you have to do is extend your current idiom with an
+additional catch clause:
+
+ try {
+   operation();
+ }
+ catch(TimeoutException te) {
+    // deal with timeout
+ }
+ catch(InterruptedException ie) {
+     // deal with general thread interruption
+ }
+
+David Holmes
+
+
+From dl@cs.oswego.edu  Fri Dec  6 11:54:32 2002
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 6 Dec 2002 06:54:32 -0500
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+Message-ID: <15856.36856.945815.748458@altair.cs.oswego.edu>
+
+Dear concurrency-interest list members,
+
+We in the expert group have been periodically arguing about the
+proposed Thread.removeAllThreadLocals method.  This method erases ALL
+of the ThreadLocals associated with a thread, so that the next time
+access of any of them is attempted, its initialValue() is returned.
+
+The main issues are:
+
+ *  Supporting removeAllThreadLocals provides an (optional) way to
+    prevent tasks run by worker Threads in Executors (i.e., mainly,
+    ThreadExecutor) from using "leftover" values of ThreadLocals from
+    previous tasks, which will likely be the source of subtle bugs.
+    Normal use here would be to call removeAllThreadLocals in one or
+    more ExecutorIntercepts methods when you'd like to prevent such
+    problems. This way, each task runs under a worker thread just like
+    it would under a new Thread, except that the thread is actually
+    the same one as used for a previous task.
+
+ *  But having such a method is otherwise a potential breach of
+    encapsulation, and could cause problems with other
+    classes/componentss expecting their ThreadLocals to forever be
+    associated with threads, even worker threads that perform many
+    unrelated tasks.
+
+The question is, which is worse, 
+  (1) unexpected reuse, 
+or 
+  (2) unexpected clearing. 
+
+Specifically, is (2) such a serious problem that removeAllThreadLocals
+shouldn't be supported, forcing people to live with (1), or to not use
+ThreadExecutors when this problem arises?
+
+To alleviate (2), if we keep the capacity for removing all
+ThreadLocals, we will probably restructure things with the net effect
+that this can be done only for worker threads within Executors, not
+for arbitrary Threads.
+
+Note that if you know of a particular problematic ThreadLocal, you can
+always either invoke ThreadLocal.set(null) or better, the new
+ThreadLocal.remove() method on it to clear it from within executor
+intercepts. The removeAllThreadLocals method differs here in that it
+also clears those ThreadLocals that the Executor does not otherwise
+know about.
+
+We'd like to collect experiences about this. (Not opinions -- we have
+equally strong "over my dead body" views on each side of this already
+in the expert group!).  If you are currently using some kind of thread
+pool (perhaps dl.u.c.PooledExecutor), and/or programs that make heavy
+use of ThreadLocals, please tell us if:
+
+   * You have encountered problems due to leftover ThreadLocals
+     spilling over across tasks performed by the same thread.
+Or
+
+   * You have code that would break if run via ThreadExecutors that
+     cleared all ThreadLocals between tasks.
+
+Or related horror stories surrounding ThreadLocals.
+
+Thanks very much!
+
+-- 
+Doug Lea, Computer Science Department, SUNY Oswego, Oswego, NY 13126 USA
+dl@cs.oswego.edu 315-312-2688 FAX:315-312-5424 http://gee.cs.oswego.edu/  
+
+From crahen@cse.Buffalo.EDU  Fri Dec  6 13:34:53 2002
+From: crahen@cse.Buffalo.EDU (Eric D Crahen)
+Date: Fri, 6 Dec 2002 08:34:53 -0500 (EST)
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+In-Reply-To: <15856.36856.945815.748458@altair.cs.oswego.edu>
+Message-ID: <Pine.SOL.4.30.0212060720010.2728-100000@hadar.cse.Buffalo.EDU>
+
+On Fri, 6 Dec 2002, Doug Lea wrote:
+
+> The question is, which is worse,
+>   (1) unexpected reuse,
+> or
+>   (2) unexpected clearing.
+
+> Specifically, is (2) such a serious problem that removeAllThreadLocals
+> shouldn't be supported, forcing people to live with (1), or to not use
+> ThreadExecutors when this problem arises?
+
+I just grepped through the JDK (.java) sources, these were some of the
+things that caught my eye. Some 3rd party libraries probably do similar
+things.
+
+The ORB (and other misc CORBA classes) supplied with JDK 1.4 use a bunch
+ThreadLocals to keep track of various information (stuff ranging from
+caching, synchronizing shutdown, debugging, to initializing things on
+client & server ends).
+
+The logging API uses ThreadLocals to keep track of assigned thread ids.
+The logging classes would end up assigning multiple id's.
+
+Anything that uses this kind of caching idiom,
+
+Object o = null;
+
+if((o == aThreadLocal.get()) == null) {
+
+  o = // something;
+  aThreadLocal.set(o);
+
+}
+
+things would have the potential break when an executor thread whose
+threadlocals have been cleared runs through the code. After a quick look,
+the CORBA classes appear to do this sort of thing.
+
+One 3rd party package that comes to mind (only because I've got the
+source sitting on this machine right now) that I know uses this sort of
+thing is JBoss. It uses this to cache security attributes and transaction
+times.
+
+In that scenario, the best case when an Executor thread whose ThreadLocals
+were wiped out runs through is that the secutiry descriptor has to be
+fetched again. So no caching is done, and you do alot of extra work
+figuring out credentials. It doesn't neccessarily break, but its bad for
+performance.
+
+In the transaction classes, ThreadLocals are used to track timeouts. If
+Executor threads are running the transactions it looks like this would
+have the potential to cause some problems there too.
+
+Anything uses ThreadLocals to initialize or keep track of data, like this,
+
+  static int counter = 0;
+
+  // ...
+
+  Integer id = null;
+  if((id = aThreadLocal.get()) == null) {
+
+    synchronized {
+      id = new Integer(counter++);
+    }
+
+    aThreadLocal.set(id);
+
+  }
+
+
+would break completely since the information kept in the ThreadLocal
+would be forever lost. The LogRecord in 1.4 is an example of a class that
+does something like this. It looks like the CORBA classes in 1.4 also do
+this sort of thing.
+
+If this method were added, one of the big consequences is that
+the ThreadLocal caching idiom would no longer work for threads. So that
+would affect performance by increasing overhead. Assuming
+that if the value isn't in the ThreadLocal its recalculated or looked up
+in some synchronized collection.
+
+Another is that anything using ThreadLocals to keep initialize or track of
+data would be broken.
+
+If a ThreadLocal can lose its value at any time because of another Thread,
+is a ThreadLocal really still useful?
+
+Not using ThreadExecutors would be one way to avoid this, but I think it
+would be a shame for the EG to have gone through all this trouble creating
+a flexible general purpose thread package if executor threads can't rely
+on ThreadLocals (and can't use the current ORB, or logging API or possibly
+not be used in implementing things that could benefit from using TLS). It
+would be very limiting when it comes to what kinds of tasks an Executor
+can run.
+
+A user would have to know alot of details about the classes a task is
+using. That might not always be obvious. I could write a task
+that uses the Logging API, or does some work with making some CORBA
+requests, and my code would either suddenly not operate properly or it
+could take a hit performance wise. Unless I have the source for whatever
+library I'm using I wouldn't know the cause of the problem, and I wouldn't
+know for sure if using that library in a task I intend to run with an
+Executor is truely safe to use with an Executor or not.
+
+I think the problem is that this solution is attempting to find a way
+to abstract resetting the ThreadLocal variables that it by making some
+assumptions about the implementations of all tasks. How those ThreadLocals
+are used are always going to be an implementation detail of a task, hidden
+away from the Executor by one or more levels of abstraction. It seems no
+matter how one decides to implement something like  clearAllThreadLocals()
+there is always going to be something it breaks because your Executor is
+just too far removed from the knowledge about the ThreadLocals.
+
+Perhaps, there is a better way to structure a task, which does have access
+to this knowledge, so that these problems can be avoided. That seems like
+a place for a solution to me. But I haven't got any suggestions right now
+:)
+
+
+- Eric
+http://www.code-foo.com/
+
+
+From crahen@cse.Buffalo.EDU  Fri Dec  6 13:46:27 2002
+From: crahen@cse.Buffalo.EDU (Eric D Crahen)
+Date: Fri, 6 Dec 2002 08:46:27 -0500 (EST)
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+In-Reply-To: <Pine.SOL.4.30.0212060720010.2728-100000@hadar.cse.Buffalo.EDU>
+Message-ID: <Pine.SOL.4.30.0212060843030.5416-100000@hadar.cse.Buffalo.EDU>
+
+On Fri, 6 Dec 2002, Eric D Crahen wrote:
+
+> Perhaps, there is a better way to structure a task, which does have access
+> to this knowledge, so that these problems can be avoided. That seems like
+> a place for a solution to me. But I haven't got any suggestions right now
+
+I just thought of one, but I'm late for something so it'll be quick ;)
+
+What if a flag were just added to the constructor of a ThreadLocal so that
+it could be marked when its created as a ThreadLocal that should be reset
+before Executors run the task. This way trying to guess which ThreadLocals
+actually are safe to be reset or not could be avoided, and the user would
+have control over when this happens & when it doesn't. Then maybe
+something like, resetTaggedThreadLocals() or something with a prettier
+name could be added instead?
+
+- Eric
+http://www.code-foo.com/
+
+
+From dl@cs.oswego.edu  Fri Dec  6 14:35:48 2002
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 6 Dec 2002 09:35:48 -0500
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+In-Reply-To: <Pine.SOL.4.30.0212060843030.5416-100000@hadar.cse.Buffalo.EDU>
+References: <Pine.SOL.4.30.0212060720010.2728-100000@hadar.cse.Buffalo.EDU>
+ <Pine.SOL.4.30.0212060843030.5416-100000@hadar.cse.Buffalo.EDU>
+Message-ID: <15856.46532.80580.648918@altair.cs.oswego.edu>
+
+Thanks for all the examples Eric!
+
+> What if a flag were just added to the constructor of a ThreadLocal so that
+> it could be marked when its created as a ThreadLocal that should be reset
+> before Executors run the task.
+
+We've considered options along these lines. My opinion (not
+necessarily shared by others on Expert Group) is that no such scheme
+would be sufficiently better than doing nothing: Thus requiring that
+application-level prgrammers create lists of those ThreadLocals that
+should be reset under particular Executors, and customizing associated
+ExecutorIntercepts to include methods that do so.
+
+-Doug
+
+From vijay@saraswat.org  Sat Dec  7 11:09:23 2002
+From: vijay@saraswat.org (Vijay Saraswat)
+Date: Sat, 07 Dec 2002 06:09:23 -0500
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+References: <15856.36856.945815.748458@altair.cs.oswego.edu>
+Message-ID: <3DF1D6E3.1030508@saraswat.org>
+
+Dear Doug and others --
+
+Here is a "use case". On a project that I was involved with (for 
+providing a servlet-based service -- it doesnt matter what the service 
+is), we used log4j for logging. Various format statements needed access 
+to the current "session" object (which had user information etc -- this 
+needed to be printed out in the logs). So we associated various 
+threadlocal variables with the Thread. This association is made 
+uniformly in doGet before application specific code is invoked. A 
+"finally" around the code invoking the app code took care to reset the 
+thread local state.
+
+Having the underlying ThreadPool implementation for the servlet runner 
+use a removeAllThreadLocals would not break this pattern.
+
+On the other hand, I can clearly see the need for the ability to 
+establish different ThreadLocal state with different extent. For 
+instance, it may be necessary to associate a Thread with state (e.g. a 
+capability to perform certain actions, e.g. access to a DB or some 
+external server) that is accessible across repeated uses of the Thread 
+within an executor. Therefore if the ThreadPool which has been given 
+this Thread tries to removeAllThreadLocals -- that would not be good. In 
+other words, there are legitimate reasons for keeping some state on a 
+Thread whose extent spans the use of the Thread to service a particular 
+task.
+
+My advice would be to strongly encourage users to use a pattern that 
+sets the ThreadLocals to be used by this piece of code at the very 
+beginning of the task (to be run by the Executor) , which then invokes 
+the rest of the code wrapped in a finally which cleans up the 
+ThreadLocal storage (for instance setting the ThreadLocal variable to null).
+
+I dont like the way ThreadLocal works in Java -- this is a place where 
+the type system should help out. Needs a redesign :-(.
+
+Best,
+Vijay
+
+
+Doug Lea wrote:
+
+>Dear concurrency-interest list members,
+>
+>We in the expert group have been periodically arguing about the
+>proposed Thread.removeAllThreadLocals method.  This method erases ALL
+>of the ThreadLocals associated with a thread, so that the next time
+>access of any of them is attempted, its initialValue() is returned.
+>
+>The main issues are:
+>
+> *  Supporting removeAllThreadLocals provides an (optional) way to
+>    prevent tasks run by worker Threads in Executors (i.e., mainly,
+>    ThreadExecutor) from using "leftover" values of ThreadLocals from
+>    previous tasks, which will likely be the source of subtle bugs.
+>    Normal use here would be to call removeAllThreadLocals in one or
+>    more ExecutorIntercepts methods when you'd like to prevent such
+>    problems. This way, each task runs under a worker thread just like
+>    it would under a new Thread, except that the thread is actually
+>    the same one as used for a previous task.
+>
+> *  But having such a method is otherwise a potential breach of
+>    encapsulation, and could cause problems with other
+>    classes/componentss expecting their ThreadLocals to forever be
+>    associated with threads, even worker threads that perform many
+>    unrelated tasks.
+>
+>The question is, which is worse, 
+>  (1) unexpected reuse, 
+>or 
+>  (2) unexpected clearing. 
+>
+>Specifically, is (2) such a serious problem that removeAllThreadLocals
+>shouldn't be supported, forcing people to live with (1), or to not use
+>ThreadExecutors when this problem arises?
+>
+>To alleviate (2), if we keep the capacity for removing all
+>ThreadLocals, we will probably restructure things with the net effect
+>that this can be done only for worker threads within Executors, not
+>for arbitrary Threads.
+>
+>Note that if you know of a particular problematic ThreadLocal, you can
+>always either invoke ThreadLocal.set(null) or better, the new
+>ThreadLocal.remove() method on it to clear it from within executor
+>intercepts. The removeAllThreadLocals method differs here in that it
+>also clears those ThreadLocals that the Executor does not otherwise
+>know about.
+>
+>We'd like to collect experiences about this. (Not opinions -- we have
+>equally strong "over my dead body" views on each side of this already
+>in the expert group!).  If you are currently using some kind of thread
+>pool (perhaps dl.u.c.PooledExecutor), and/or programs that make heavy
+>use of ThreadLocals, please tell us if:
+>
+>   * You have encountered problems due to leftover ThreadLocals
+>     spilling over across tasks performed by the same thread.
+>Or
+>
+>   * You have code that would break if run via ThreadExecutors that
+>     cleared all ThreadLocals between tasks.
+>
+>Or related horror stories surrounding ThreadLocals.
+>
+>Thanks very much!
+>
+>  
+>
+
+
+
+From joshua.bloch@sun.com  Sat Dec  7 15:50:55 2002
+From: joshua.bloch@sun.com (Joshua Bloch)
+Date: Sat, 07 Dec 2002 07:50:55 -0800
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+References: <15856.36856.945815.748458@altair.cs.oswego.edu> <3DF1D6E3.1030508@saraswat.org>
+Message-ID: <3DF218DF.6060509@sun.com>
+
+Vijay,
+
+>
+> Having the underlying ThreadPool implementation for the servlet runner 
+> use a removeAllThreadLocals would not break this pattern. 
+
+   I would put this another way: this pattern would not benefit from a 
+"service" removes all thread locals -- it has no need of such a service, 
+because it takes care of its own thread locals.
+
+   By the way, I don't really understand your beef with the current 
+thread local facility (which I happen to like much more than its 
+pthreads-era predecessors).  I understand that Java does not provide any 
+easy way to, for instance, use ThreadLocals to establish nested dynamic 
+scopes, but I think this is an orthogonal issue.
+
+             Regards,
+
+             Josh
+
+
+
+From blanshlu@netscape.net  Sat Dec  7 17:46:05 2002
+From: blanshlu@netscape.net (Luke Blanshard)
+Date: Sat, 07 Dec 2002 11:46:05 -0600
+Subject: [concurrency-interest] Having TimeoutException be a subclass
+ of InterruptedException
+References: <NFBBKALFDCPFIDBNKAPCCEFLCOAA.dholmes@dltech.com.au>
+Message-ID: <3DF233DD.1000102@netscape.net>
+
+Let me state my case constructively instead of as criticism.
+
+Once upon a time, catching an InterruptedException or an 
+InterruptedIOException always implied that the current thread had been 
+interrupted by another thread.  For those of us who tried to honor 
+thread interruption---i.e., to ensure that an interruption actually 
+interrupted the thread---this provided a simple way to maintain this 
+otherwise quite transient state of a thread.
+
+Then at some point the setSoTimeout method on Socket was added or 
+implemented, and the InterruptedIOException was thrown by the input 
+stream if a read timed out.  This was bad, because now there was no way 
+to distinguish a thread interruption from a timeout.  In 1.4, the 
+SocketTimeoutException was added to provide this distinction---and as 
+with the TimeoutException, it was made a subclass of InterruptedIOException.
+
+The problem I have with both of these choices is that they change the 
+implicit contract of their parent classes.  So here's my constructive 
+suggestion.  Let's make the contract explicit, by adding a boolean 
+wasThreadInterrupted() method to both InterruptedException and 
+InterruptedIOException.  Now any subclass must be able to tell whether 
+it was triggered by another thread interrupting this one, or by some 
+other event like a timeout; and those of us who try to maintain threads' 
+interruption statuses correctly will have again a simple pattern to 
+follow.  Best of all, this pattern won't vary depending on the call that 
+throws the interrupted exceptions.
+
+As for implementation, I would argue that the base classes should simply 
+always return true from this method, and that subclasses should override 
+with a constant false (for the two subclasses already defined) or with 
+an instance variable (for some future subclass that might be thrown in 
+either situation).
+
+Am I making a mountain out of a molehill here?
+
+Luke
+
+David Holmes wrote:
+
+>Luke Blanshard wrote:
+>  
+>
+>>I have a question about having TimeoutException inherit
+>>from InterruptedException.  In the current JVM, an
+>>InterruptedException always means that the current thread
+>>has been interrupted.  I often keep track of this fact by
+>>setting a flag in the catch block for InterruptedException,
+>>and re-interrupting the thread when I've finished cleaning
+>>up after the interruption, so that outer or later code will
+>>also know that it is supposed to complete early.
+>>
+>>With this new subclass, you appear to have destroyed a
+>>useful invariant of the JVM.
+>>    
+>>
+>
+>The reasons for making TimeoutException extend InterruptedException
+>were:
+>
+>- logically a timeout can be considered an interrupt from a timer. It
+>could even be implemented this way under the covers - you couldn't
+>tell because the interrupt state is reset when the exception is thrown
+>anyway.
+>- code that doesn't want to deal with normal or timer-based interrupts
+>can just declare that they throw a single exception -
+>InterruptedException - rather than two different checked exceptions.
+>Higher-level code doesn't need to know, and probably doesn't care
+>whether the interrupt was time-out related or not. (It would be
+>inconsistent for TimeoutException to not be a checked exception when
+>InterruptedException is).
+>- back in the old days (1.0/1.02/1.1) many people actually expected a
+>timeout from wait to throw InterruptedException :)
+>
+>This doesn't break any existing code because the methods that can
+>throw TimeoutException are all new methods. To deal with the new
+>exception all you have to do is extend your current idiom with an
+>additional catch clause:
+>
+> try {
+>   operation();
+> }
+> catch(TimeoutException te) {
+>    // deal with timeout
+> }
+> catch(InterruptedException ie) {
+>     // deal with general thread interruption
+> }
+>
+>David Holmes
+>
+>  
+>
+
+
+
+From blanshlu@netscape.net  Sun Dec  8 17:54:47 2002
+From: blanshlu@netscape.net (Luke Blanshard)
+Date: Sun, 08 Dec 2002 11:54:47 -0600
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+References: <15856.36856.945815.748458@altair.cs.oswego.edu>
+Message-ID: <3DF38767.9030504@netscape.net>
+
+  Many years ago, when I was a young programmer, an older and wiser man 
+explained one of the most important precepts of good programming to me 
+thus:  Global Variables Are Bad.
+
+  Like all such rules, this one has exceptions.  But with this precept 
+in my mind, I generally ask myself some tough questions when tempted to 
+create a static variable.  In particular: "What is it about this 
+variable that is aligned with every process that might run this code? 
+ Are you absolutely sure you will never want two different values for 
+this variable within the same process?"
+
+  The usual reason for creating a global variable is laziness.  The 
+second most usual reason is unjustified optimization.
+
+  All of this is by way of explaining why I avoid ThreadLocal like the 
+plague.  Thread-local variables are just global variables in disguise. 
+ The same tough questions apply to them, substituting "thread" for 
+"process".  And the same main reason for using them -- laziness -- also 
+applies.
+
+  In fact, thread-local variables are worse than global variables in at 
+least one respect, for exactly the issue you raise here: the same thread 
+might well be used for more than one purpose.
+
+  The thing is, this is not a new issue.  People have been using thread 
+pools in Java forever.  And have been battling the problems you discuss 
+just as long.
+
+  I have encountered those subtle bugs you describe that arise from the 
+same thread being reused but its thread-local variables not being 
+reinitialized.  They definitely happen.  The case I have in mind was a 
+servlet-based web application.  We stored database connections in 
+thread-local variables.  Problems arose when some threads needed to set 
+different parameters for these connections from others, or needed to 
+talk to a different database.  But the solution was not to reinitialize 
+everything each time.  The solution was to recognize that there was 
+nothing about a database connection that was inherently unique to a 
+thread.  As soon as we separated database connections from threads, we 
+found that many of the complicated workarounds we had written were 
+suddenly superfluous.  For example, establishing two database 
+connections had formerly required a second thread; now we simply went to 
+our cache a second time within the same thread, an enormous simplification.
+
+  So, I'm equanimous on the subject of whether ThreadLocals should be 
+cleared on each use of a thread.  I won't use them regardless.
+
+Luke
+
+Doug Lea wrote:
+
+>Dear concurrency-interest list members,
+>
+>We in the expert group have been periodically arguing about the
+>proposed Thread.removeAllThreadLocals method.  This method erases ALL
+>of the ThreadLocals associated with a thread, so that the next time
+>access of any of them is attempted, its initialValue() is returned.
+>
+>The main issues are:
+>
+> *  Supporting removeAllThreadLocals provides an (optional) way to
+>    prevent tasks run by worker Threads in Executors (i.e., mainly,
+>    ThreadExecutor) from using "leftover" values of ThreadLocals from
+>    previous tasks, which will likely be the source of subtle bugs.
+>    Normal use here would be to call removeAllThreadLocals in one or
+>    more ExecutorIntercepts methods when you'd like to prevent such
+>    problems. This way, each task runs under a worker thread just like
+>    it would under a new Thread, except that the thread is actually
+>    the same one as used for a previous task.
+>
+> *  But having such a method is otherwise a potential breach of
+>    encapsulation, and could cause problems with other
+>    classes/componentss expecting their ThreadLocals to forever be
+>    associated with threads, even worker threads that perform many
+>    unrelated tasks.
+>
+>The question is, which is worse, 
+>  (1) unexpected reuse, 
+>or 
+>  (2) unexpected clearing. 
+>
+>Specifically, is (2) such a serious problem that removeAllThreadLocals
+>shouldn't be supported, forcing people to live with (1), or to not use
+>ThreadExecutors when this problem arises?
+>
+>To alleviate (2), if we keep the capacity for removing all
+>ThreadLocals, we will probably restructure things with the net effect
+>that this can be done only for worker threads within Executors, not
+>for arbitrary Threads.
+>
+>Note that if you know of a particular problematic ThreadLocal, you can
+>always either invoke ThreadLocal.set(null) or better, the new
+>ThreadLocal.remove() method on it to clear it from within executor
+>intercepts. The removeAllThreadLocals method differs here in that it
+>also clears those ThreadLocals that the Executor does not otherwise
+>know about.
+>
+>We'd like to collect experiences about this. (Not opinions -- we have
+>equally strong "over my dead body" views on each side of this already
+>in the expert group!).  If you are currently using some kind of thread
+>pool (perhaps dl.u.c.PooledExecutor), and/or programs that make heavy
+>use of ThreadLocals, please tell us if:
+>
+>   * You have encountered problems due to leftover ThreadLocals
+>     spilling over across tasks performed by the same thread.
+>Or
+>
+>   * You have code that would break if run via ThreadExecutors that
+>     cleared all ThreadLocals between tasks.
+>
+>Or related horror stories surrounding ThreadLocals.
+>
+>Thanks very much!
+>
+>  
+>
+
+
+
+From joshua.bloch@sun.com  Sun Dec  8 18:30:35 2002
+From: joshua.bloch@sun.com (Joshua Bloch)
+Date: Sun, 08 Dec 2002 10:30:35 -0800
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+References: <15856.36856.945815.748458@altair.cs.oswego.edu> <3DF38767.9030504@netscape.net>
+Message-ID: <3DF38FCB.9070609@sun.com>
+
+Luke,
+
+<soapbox>
+
+>  Many years ago, when I was a young programmer, an older and wiser man 
+> explained one of the most important precepts of good programming to me 
+> thus:  Global Variables Are Bad.
+>
+>  Like all such rules, this one has exceptions.  But with this precept 
+> in my mind, I generally ask myself some tough questions when tempted 
+> to create a static variable.  In particular: "What is it about this 
+> variable that is aligned with every process that might run this code? 
+> Are you absolutely sure you will never want two different values for 
+> this variable within the same process?"
+>
+>  The usual reason for creating a global variable is laziness.  The 
+> second most usual reason is unjustified optimization. 
+
+   All this is true.
+
+> All of this is by way of explaining why I avoid ThreadLocal like the 
+> plague.    Thread-local variables are just global variables in disguise.
+
+   This is utter nonsense.  Jim Waldo believes (or perhaps believed) it 
+with all his heart and soul, but it's still utter nonsense.  ThreadLocal 
+variables are among the least "gloabal-like" of all variables. 
+ Thread-locality is orthongonal to other aspects of visibility: you can 
+have a ThreadLocal local variable, a ThreadLocal class variable, a 
+ThreadLocal instance variable, and so forth.  In *every* case, the 
+ThreadLocal version is more "local" (i.e., provides less information 
+sharing) than the "normal" version.
+
+>  The same tough questions apply to them, substituting "thread" for 
+> "process".  And the same main reason for using them -- laziness -- 
+> also applies.
+>
+>  In fact, thread-local variables are worse than global variables in at 
+> least one respect, for exactly the issue you raise here: the same 
+> thread might well be used for more than one purpose. 
+
+   This is a blame-the-victim mentality.  Blindly reusing a Thread for 
+more than one purpose (e.g., through thread pooling) is dangerous.  It's 
+generally done for the purpose optimization.
+
+>  The thing is, this is not a new issue.  People have been using thread 
+> pools in Java forever.  And have been battling the problems you 
+> discuss just as long. 
+
+   Yep.  Thread pools are dangerous.  ThreadLocals, on the other hand, 
+are not.
+
+>  I have encountered those subtle bugs you describe that arise from the 
+> same thread being reused but its thread-local variables not being 
+> reinitialized.  They definitely happen.  The case I have in mind was a 
+> servlet-based web application.  We stored database connections in 
+> thread-local variables.  Problems arose when some threads needed to 
+> set different parameters for these connections from others, or needed 
+> to talk to a different database.  But the solution was not to 
+> reinitialize everything each time.  The solution was to recognize that 
+> there was nothing about a database connection that was inherently 
+> unique to a thread.  As soon as we separated database connections from 
+> threads, we found that many of the complicated workarounds we had 
+> written were suddenly superfluous.  For example, establishing two 
+> database connections had formerly required a second thread; now we 
+> simply went to our cache a second time within the same thread, an 
+> enormous simplification.
+>
+>  So, I'm equanimous on the subject of whether ThreadLocals should be 
+> cleared on each use of a thread.  I won't use them regardless.
+
+  Too bad.  They're a useful tool  You can use them to keep track of 
+thread scopes.  You can use them to safe, fast lazy initialization of 
+per-instance state.  You can use them to assign unique IDs to threads. 
+ And yes, you can also use them to hold "thread singleton objects." 
+ This technique is often preferable to an instance pool (e.g. a 
+connection pool), as the pool can become an unnecessary concurrency 
+bottleneck.
+
+                            Regards,
+
+                            Josh
+
+P.S.  I added ThreadLocal to the libraries, and I had to fight hard to 
+get them in.  I have no doubt that I did the right thing when I added 
+them.  Yes, they're open to abuse, but so is everything else.
+
+</soapbox>
+
+
+
+From dawidk@mathcs.emory.edu  Sun Dec  8 18:39:44 2002
+From: dawidk@mathcs.emory.edu (Dawid Kurzyniec)
+Date: Sun, 8 Dec 2002 13:39:44 -0500
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+In-Reply-To: <3DF38767.9030504@netscape.net>
+References: <15856.36856.945815.748458@altair.cs.oswego.edu> <3DF38767.9030504@netscape.net>
+Message-ID: <200212081339.45346.dawidk@mathcs.emory.edu>
+
+On Sunday 08 December 2002 12:54 pm, Luke Blanshard wrote:
+>   Many years ago, when I was a young programmer, an older and wiser man
+> explained one of the most important precepts of good programming to me
+> thus:  Global Variables Are Bad.
+>
+> (...)
+>
+>   In fact, thread-local variables are worse than global variables in at
+> least one respect, for exactly the issue you raise here: the same thread
+> might well be used for more than one purpose.
+
+ThreadLocals do not have to be global; you can as well have thread locals that 
+are instance fields (strictly speaking, it actually _narrows_ the scope). I 
+use a construct like that to serialize asynchronous remote invocations that 
+are performed on the same remote stub from the same thread. Like most things 
+in computer programming, thread locals are useful or even irreplaceable in 
+some situations, but they may hurt you if you are using them wherever you 
+should be using something else.
+
+Regards,
+Dawid
+
+
+From blanshlu@netscape.net  Sun Dec  8 21:14:17 2002
+From: blanshlu@netscape.net (Luke Blanshard)
+Date: Sun, 08 Dec 2002 15:14:17 -0600
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+References: <15856.36856.945815.748458@altair.cs.oswego.edu> <3DF38767.9030504@netscape.net> <3DF38FCB.9070609@sun.com>
+Message-ID: <3DF3B629.2040706@netscape.net>
+
+Hi Josh,
+
+Joshua Bloch wrote:
+
+>> All of this is by way of explaining why I avoid ThreadLocal like the 
+>> plague.    Thread-local variables are just global variables in disguise.
+>
+>   This is utter nonsense.  Jim Waldo believes (or perhaps believed) it 
+> with all his heart and soul, but it's still utter nonsense.  
+> ThreadLocal variables are among the least "gloabal-like" of all 
+> variables. Thread-locality is orthongonal to other aspects of 
+> visibility: you can have a ThreadLocal local variable, a ThreadLocal 
+> class variable, a ThreadLocal instance variable, and so forth.  In 
+> *every* case, the ThreadLocal version is more "local" (i.e., provides 
+> less information sharing) than the "normal" version. 
+
+  Ouch!  I plead ignorance.  Thank you -- and Dawid Kurzyniec -- for 
+opening my eyes to the possibility of using ThreadLocal for variables 
+with non-global extents.  There are definitely times when this will be 
+useful.
+
+  However, I was talking about the "class variable," or static, use of 
+ThreadLocal -- actually, in my example we didn't use ThreadLocal at all, 
+we subclassed Thread and added instance variables to it, but it amounts 
+to the same thing.  As with process globals, there are times when this 
+is entirely appropriate.  The use in logging, associating numbers to 
+threads, is an example: the thread itself is what you want to keep track of.
+
+  But I find your assertion that thread-locals provide less information 
+sharing than normal variables a bit baffling.  I think of information 
+sharing as being orthogonal to execution path.  There is certainly no 
+less code that can share the information.  And it is still the case that 
+sharing information through globals -- even thread-local ones -- is 
+generally a bad idea, and a red flag.  Much better to explicitly pass 
+information in arguments, in 9 cases out of 10.  That's all I meant by 
+saying that (static) thread-locals are globals in disguise.
+
+>>  In fact, thread-local variables are worse than global variables in 
+>> at least one respect, for exactly the issue you raise here: the same 
+>> thread might well be used for more than one purpose. 
+>
+>   This is a blame-the-victim mentality.  Blindly reusing a Thread for 
+> more than one purpose (e.g., through thread pooling) is dangerous.  
+> It's generally done for the purpose optimization. 
+
+  I'd be thrilled if it wasn't necessary.  This is not a case of blind 
+optimization, but rather a hard-won piece of knowledge -- creating a new 
+Thread for every operation (servlet invocation, e.g.) is prohibitively 
+expensive.
+
+  But if I'm not mistaken, you guys are about to bless the concept of 
+thread pools by adding it to the core libraries?  Are we seeing signs of 
+dissension among the ranks of the experts here?
+
+  Here's a thought, completely unoriginal to me.  Why not have the JVM 
+in charge of thread pooling, multiplexing Java threads across native 
+threads as it sees fit?  Then the need for in-Java thread pools goes 
+away, and creating a new Thread object for each iteration is cheap.
+
+  And this discussion becomes moot.
+
+>>  So, I'm equanimous on the subject of whether ThreadLocals should be 
+>> cleared on each use of a thread.  I won't use them regardless. 
+>
+  Well ok, I will use them sometimes -- and more often now that I get 
+their use beyond statics.
+
+>  Too bad.  They're a useful tool  You can use them to keep track of 
+> thread scopes.  You can use them to safe, fast lazy initialization of 
+> per-instance state.  You can use them to assign unique IDs to threads. 
+> And yes, you can also use them to hold "thread singleton objects." 
+> This technique is often preferable to an instance pool (e.g. a 
+> connection pool), as the pool can become an unnecessary concurrency 
+> bottleneck. 
+
+  Color me unconvinced on this one -- at least the "often preferable" 
+part.  I'd say: first make sure you're never going to want more than one 
+such instance available to the same thread; and that you aren't going to 
+need a pool anyway because the instances are expensive to create.
+
+> P.S.  I added ThreadLocal to the libraries, and I had to fight hard to 
+> get them in.  I have no doubt that I did the right thing when I added 
+> them.  Yes, they're open to abuse, but so is everything else. 
+
+  Sorry to piss in your cornflakes!
+
+> </soapbox> 
+
+  Or your soap flakes, or whatever.
+
+Luke
+
+
+
+From dl@cs.oswego.edu  Sun Dec  8 21:47:53 2002
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sun, 8 Dec 2002 16:47:53 -0500
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+In-Reply-To: <3DF3B629.2040706@netscape.net>
+References: <15856.36856.945815.748458@altair.cs.oswego.edu>
+ <3DF38767.9030504@netscape.net>
+ <3DF38FCB.9070609@sun.com>
+ <3DF3B629.2040706@netscape.net>
+Message-ID: <15859.48649.994659.599365@altair.cs.oswego.edu>
+
+Luke wrote:
+
+>   But if I'm not mistaken, you guys are about to bless the concept of 
+> thread pools by adding it to the core libraries?  Are we seeing signs of 
+> dissension among the ranks of the experts here?
+
+I don't think so.
+
+As Josh Bloch put it, creating a new thread is like buying a new car,
+and reusing a worker thread in a pool is like buying a used car -- you
+save on the up-front depreciation, but might find some existing
+scratches. We'd like ThreadExecutor to be a top-notch used car lot
+though.  (In fact, it now offers new cars too!  See factory method
+newThreadPerTaskExecutor.)
+
+And as EG member Tim Peierls added, about ThreadLocals:
+  And ThreadLocal is an odometer. My car comes with two trip odometers,
+  complete with reset buttons, in addition to the official non-resettable
+  odometer. I don't have a "reset all trip odometers" button, and I don't
+  need one.
+
+> Why not have the JVM 
+> in charge of thread pooling, multiplexing Java threads across native 
+> threads as it sees fit? 
+
+Similar strategies have tended not to work out well in other systems
+(for example most implementations of Unix AIO) because of the lack of
+controllability. ThreadExecutor has a lot of tuning options and
+controls. Most people will never use them, but those that do will need
+them to obtain good performance.
+
+-Doug
+
+From dl@cs.oswego.edu  Sun Dec  8 22:15:55 2002
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sun, 8 Dec 2002 17:15:55 -0500
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+In-Reply-To: <3DF38FCB.9070609@sun.com>
+References: <15856.36856.945815.748458@altair.cs.oswego.edu>
+ <3DF38767.9030504@netscape.net>
+ <3DF38FCB.9070609@sun.com>
+Message-ID: <15859.50331.878753.709384@altair.cs.oswego.edu>
+
+Josh wrote:
+
+>    Yep.  Thread pools are dangerous. 
+
+I suppose I ought to put this in some perspective. Basically right out
+of sec 1.2 of CPJ2e. There's a continuum of tradeoffs of less
+isolation for less overhead for performing actions in separate ...
+
+  Machines
+  Processes 
+   (BTW, the public draft of JSR-121 Isolates, that provide process-like
+    isolation in JDK1.5, will be out next week.)
+  Threads
+  Lightweight tasks (i.e., Runnables in thread pools)
+  Events (in AWT and similar frameworks)
+  Procedures
+
+As always, there's no single right answer, but you need to be aware
+the tradeoffs.
+
+-Doug
+
+From dholmes@dltech.com.au  Mon Dec  9 02:05:23 2002
+From: dholmes@dltech.com.au (David Holmes)
+Date: Mon, 9 Dec 2002 12:05:23 +1000
+Subject: [concurrency-interest] Having TimeoutException be a subclass of InterruptedException
+In-Reply-To: <3DF233DD.1000102@netscape.net>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEHECOAA.dholmes@dltech.com.au>
+
+Luke Blanshard wrote:
+> Once upon a time, catching an InterruptedException or an
+> InterruptedIOException always implied that the current
+> thread had been interrupted by another thread.
+
+InterruptedIOException never specified the nature of the interruption.
+In fact on most systems the only time you would ever get an
+InterruptedIOException was when a socket timeout occurred because the
+interaction between Thread.interrupt and blocking I/O operations has
+never been properly specified, has never worked to any sense of
+"completeness" on any platform and has been completely abandoned - see
+the java.nio response to interrupting a blocked thread
+(ClosedByInterruptException).
+
+If you can accept that the intent was to have a range of possible
+mechanisms for "interrupting" a blocking action in a thread, does that
+make things more tenable for you?
+
+I would agree that the current specification for InterruptedException
+is too strong because it implies a direct connection with
+Thread.interrupt and doesn't seem to allow other reasons for
+interruption.
+
+> The problem I have with both of these choices is that they
+> change the implicit contract of their parent classes.
+
+For InterruptedException as currently described yes.
+
+I wish I had some really old 1.02 and 1.1 docs.
+
+> So here's my constructive suggestion.  Let's make the contract
+explicit,
+> by adding a boolean wasThreadInterrupted() method to both
+> InterruptedException and InterruptedIOException.
+
+There is no need for a boolean method to test this. The concrete type
+of the exception tells the same information:
+   try { /* ... */ }
+   catch(TimeoutException ex) { /* definitely a timeout */}
+   catch(InterruptedException ex) { /* a general interrupt */
+
+As I said previously no existing code is broken by the new exception
+because that code can't be using any of the new methods. So when you
+start using  new method you add the more selective catch clauses.
+
+David Holmes
+
+
+From dholmes@dltech.com.au  Mon Dec  9 02:31:48 2002
+From: dholmes@dltech.com.au (David Holmes)
+Date: Mon, 9 Dec 2002 12:31:48 +1000
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+In-Reply-To: <3DF1D6E3.1030508@saraswat.org>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEHFCOAA.dholmes@dltech.com.au>
+
+Vijay Saraswat wrote:
+> In other words, there are legitimate reasons for keeping some
+> state on a Thread whose extent spans the use of the Thread to
+service
+> a particular task.
+
+I think this gets to the crux of the matter: thread-local versus
+task-local. I can not imagine (other than for introspection/debugging
+purposes) a thread-local variable the value of which is *entirely*
+independent of the task being executed by the thread, and which it
+would thus be wrong to reset when commencing to execute a new task.
+
+I can easily imagine usage of thread-locals in a way that are really
+task-local and thus it would be wrong not to reset them when a new
+task commences.
+
+In between I can imagine a situation where the threads in a particular
+thread pool are not "pristine" but have been pre-initialized to
+account for the context in which they are used - and that
+pre-initialization may well involve state maintained in thread-locals
+and thus it would be wrong to reset that state upon execution of a new
+task. I would call this a "task-in-context".
+
+And probably there are other distinctions that could be made.
+
+David Holmes
+
+
+From joshua.bloch@sun.com  Mon Dec  9 05:57:15 2002
+From: joshua.bloch@sun.com (Joshua Bloch)
+Date: Sun, 08 Dec 2002 21:57:15 -0800
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+References: <15856.36856.945815.748458@altair.cs.oswego.edu> <3DF38767.9030504@netscape.net> <3DF38FCB.9070609@sun.com> <3DF3B629.2040706@netscape.net>
+Message-ID: <3DF430BB.8010305@sun.com>
+
+Luke,
+
+   Sorry for the flame.  I didn't mean to get so nasty : (   It's one of 
+those things that I've been arguing for years.
+
+>
+>  But I find your assertion that thread-locals provide less information 
+> sharing than normal variables a bit baffling.  I think of information 
+> sharing as being orthogonal to execution path.  There is certainly no 
+> less code that can share the information.
+
+   No less code, but each thread is isolated from all other threads.  If 
+you have a package-private static Integer HashMap, each thread can see 
+the changes made by other threads.  If it's a (final) ThreadLocal 
+containing a HashMap, each thread gets its own HashMap and the threads 
+are independent.
+
+>   And it is still the case that sharing information through globals -- 
+> even thread-local ones -- is generally a bad idea, and a red flag.  
+> Much better to explicitly pass information in arguments, in 9 cases 
+> out of 10.  That's all I meant by saying that (static) thread-locals 
+> are globals in disguise.
+
+   This is only true for public static ThreadLocals.  Private static 
+ThreadLocals  are generally safe as milk.
+
+>
+>>>  In fact, thread-local variables are worse than global variables in 
+>>> at least one respect, for exactly the issue you raise here: the same 
+>>> thread might well be used for more than one purpose. 
+>>
+>>
+>>   This is a blame-the-victim mentality.  Blindly reusing a Thread for 
+>> more than one purpose (e.g., through thread pooling) is dangerous.  
+>> It's generally done for the purpose optimization. 
+>
+>
+>  I'd be thrilled if it wasn't necessary.  This is not a case of blind 
+> optimization, but rather a hard-won piece of knowledge -- creating a 
+> new Thread for every operation (servlet invocation, e.g.) is 
+> prohibitively expensive. 
+
+   I'm with you.  Thread pooling is a *necessary* evil.
+
+> But if I'm not mistaken, you guys are about to bless the concept of 
+> thread pools by adding it to the core libraries?  Are we seeing signs 
+> of dissension among the ranks of the experts here? 
+
+Nope.  As Doug says, we all agree.  The one point on which there's 
+dissension is the need for Thread.removeAllThreadLocals();  I'm in the 
+"over my dead body" camp : )
+
+>  Here's a thought, completely unoriginal to me.  Why not have the JVM 
+> in charge of thread pooling, multiplexing Java threads across native 
+> threads as it sees fit?  
+
+   As Doug says, this sounds good in theory, but it's been tried and it 
+doesn't work.
+
+>
+>> P.S.  I added ThreadLocal to the libraries, and I had to fight hard 
+>> to get them in.  I have no doubt that I did the right thing when I 
+>> added them.  Yes, they're open to abuse, but so is everything else. 
+>
+>
+>  Sorry to piss in your cornflakes!
+>
+>> </soapbox> 
+>
+>
+>  Or your soap flakes, or whatever. 
+
+: )  No need to apologize.  I'm just standing up for my progeny.
+
+              Regards,
+
+              Josh
+
+
+
+From joshua.bloch@sun.com  Mon Dec  9 06:11:02 2002
+From: joshua.bloch@sun.com (Joshua Bloch)
+Date: Sun, 08 Dec 2002 22:11:02 -0800
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+References: <NFBBKALFDCPFIDBNKAPCCEHFCOAA.dholmes@dltech.com.au>
+Message-ID: <3DF433F6.6070601@sun.com>
+
+David,
+
+>I think this gets to the crux of the matter: thread-local versus
+>task-local. I can not imagine (other than for introspection/debugging
+>purposes) a thread-local variable the value of which is *entirely*
+>independent of the task being executed by the thread, and which it
+>would thus be wrong to reset when commencing to execute a new task.
+>
+   I can.  Keep in mind that the abstractions may be completely 
+unrelated.  Someone writes a little facility that uses ThreadLocal for 
+some reason or other with no thought to tasks.  Then it gets called from 
+a task.
+
+>I can easily imagine usage of thread-locals in a way that are really
+>task-local and thus it would be wrong not to reset them when a new
+>task commences.
+>
+In this sort of use, the ThreadLocal is generally updated manually in a 
+finally block so there's no need ot reset.
+
+>...
+>
+>And probably there are other distinctions that could be made.
+>
+   I actually wrote a piece taxonomizing the uses of ThreadLocal many 
+years ago when I campaigned to put them in the libraries.  I'll try to 
+dig it up.  I think it would be more than a little bit entertaining to 
+look at resets in the context of each usage.
+
+         Regards,
+
+         Josh
+
+
+From dholmes@dltech.com.au  Mon Dec  9 06:32:59 2002
+From: dholmes@dltech.com.au (David Holmes)
+Date: Mon, 9 Dec 2002 16:32:59 +1000
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+In-Reply-To: <3DF433F6.6070601@sun.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMEHMCOAA.dholmes@dltech.com.au>
+
+Josh wrote:
+> >I think this gets to the crux of the matter: thread-local versus
+> >task-local. I can not imagine (other than for
+> introspection/debugging
+> >purposes) a thread-local variable the value of which is *entirely*
+> >independent of the task being executed by the thread, and which it
+> >would thus be wrong to reset when commencing to execute a new task.
+> >
+>    I can.  Keep in mind that the abstractions may be completely
+> unrelated.  Someone writes a little facility that uses
+> ThreadLocal for some reason or other with no thought to tasks.  Then
+it
+> gets called from a task.
+
+Sorry but thats a vacuous example. What does the thread local do if it
+is totally independent of any task the thread may execute.
+
+> >I can easily imagine usage of thread-locals in a way that
+> >are really
+> >task-local and thus it would be wrong not to reset them when a new
+> >task commences.
+> >
+> In this sort of use, the ThreadLocal is generally updated
+> manually in a finally block so there's no need ot reset.
+
+You're assuming that the task knows ahead of time that it is using
+thread locals. I am considering a task that uses a library and the
+library utilises thread locals under the assumption that thread and
+task are synonymous. The library initialises the thread local the
+first time a task uses the library in that thread and then assumes
+that subsequent uses by the same thread represent the same task. It is
+an invalid assumption but the library has no way of knowing whether a
+task and a thread are synonymous. An example would be a database
+connection object, or security credentials, or customised
+"properties". If ther person writing the task knows how the libraries
+they will use themselves use thread local data then they may be able
+to deal with the re-initialization issue, but otherwise they can't.
+
+>    I actually wrote a piece taxonomizing the uses of
+> ThreadLocal many years ago when I campaigned to put them in the
+libraries.
+> I'll try to dig it up.  I think it would be more than a little bit
+> entertaining to look at resets in the context of each usage.
+
+That could be interesting.
+Thanks,
+David
+
+
+From joshua.bloch@sun.com  Mon Dec  9 06:49:41 2002
+From: joshua.bloch@sun.com (Joshua Bloch)
+Date: Sun, 08 Dec 2002 22:49:41 -0800
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+References: <NFBBKALFDCPFIDBNKAPCMEHMCOAA.dholmes@dltech.com.au>
+Message-ID: <3DF43D05.70900@sun.com>
+
+David,
+
+>Sorry but thats a vacuous example. What does the thread local do if it
+>is totally independent of any task the thread may execute.
+>
+  I already gave the logging example. Or how about a call counting 
+facility?  I agree that these aren't great, detailed examples, but I 
+*strongly* believe that the burden of proof is on those who want to add 
+the new facility.
+
+>>>I can easily imagine usage of thread-locals in a way that
+>>>are really
+>>>task-local and thus it would be wrong not to reset them when a new
+>>>task commences.
+>>>
+>>>      
+>>>
+>>In this sort of use, the ThreadLocal is generally updated
+>>manually in a finally block so there's no need ot reset.
+>>    
+>>
+>
+>You're assuming that the task knows ahead of time that it is using
+>thread locals. 
+>
+   Not necessarily.  The use of thread locals could be hidden behind a 
+library that (say) begins and ends transactions.  The transaction data 
+block would be automagically carried along by the thread.  (For what 
+it's worth, I did this at CMU and Transarc, and it works fine.)
+
+   Sorry everybody.  I realize that David and I are beating this one to 
+death.  I promise to shut up.
+
+                 Josh
+
+
+
+From dholmes@dltech.com.au  Mon Dec  9 07:06:03 2002
+From: dholmes@dltech.com.au (David Holmes)
+Date: Mon, 9 Dec 2002 17:06:03 +1000
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+In-Reply-To: <3DF43D05.70900@sun.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEHOCOAA.dholmes@dltech.com.au>
+
+>    Sorry everybody.  I realize that David and I are beating
+> this one to death.  I promise to shut up.
+
+Me too. Especially as I just realized this was on the interest list
+not the EG list - sorry.
+
+David
+
+
+From miles@milessabin.com  Mon Dec  9 09:28:42 2002
+From: miles@milessabin.com (Miles Sabin)
+Date: Mon, 9 Dec 2002 09:28:42 +0000
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+In-Reply-To: <3DF433F6.6070601@sun.com>
+References: <NFBBKALFDCPFIDBNKAPCCEHFCOAA.dholmes@dltech.com.au> <3DF433F6.6070601@sun.com>
+Message-ID: <200212090928.42781.miles@milessabin.com>
+
+Joshua Bloch wrote,
+> I actually wrote a piece taxonomizing the uses of ThreadLocal many
+> years ago when I campaigned to put them in the libraries.  I'll try
+> to dig it up.  I think it would be more than a little bit
+> entertaining to look at resets in the context of each usage.
+
+You mailed me a version of this a couple of years ago when we were 
+having a (very) minor disagreement about ThreadLocals,
+
+  Here's a list that I made when I first proposed adding the ThreadLocal
+  class:
+
+    1) Associating "genuine thread context" with a thread - The context
+       is typically temporary  (e.g., the user or transaction on whose
+       behalf a thread is currently executing, the prevailing rounding
+       mode or precision for some class of numerical computation, the
+       operative permissions).  Less frequently, there may be uses for
+       permanent thread context.
+
+    2) Performance - Some objects are, by their nature "thread singleton
+       objects": while they do not represent true thread context, a
+       given thread will never use more than one of them.  If they are
+       expensive to construct, it makes sense to permanently associate
+       one with
+       a thread the first time the thread needs such an object.  This
+       differs from case 1 in that the object doesn't maintain any
+       interesting state between uses.  An example might be an open
+       connection to a database.
+
+    3) Sleazery - Thread-local variables can be used to effectively
+       add extra parameters (in or out) to a method without changing
+       its signature.  This is not terribly good practice, and should
+       rarely, if ever, be necessary.
+
+    4) Making legacy APIs thread-safe - Back in the bad old days,
+       statics were used to hold state from  call-to-call (e.g.,
+       strtok()) or to return supplemental information (e.g., errno). 
+       Such APIs can be made thread-safe by replacing statics with
+       thread-locals. Hopefully we have no such legacy APIs in the Java
+       world.
+
+The only thing I had to add was this observation, which relates to one 
+of Lukes objections (ie. that (1) is tantamount to (3)),
+
+  (1) _could_ be dealt with by explicity representing thread context in
+  interfaces and propagating it through the call chain (which is another
+  form of TSS, natch). That's often extremely ugly, tho' and also
+  fragile if the context set can change (ie. you'd have to add/change
+  context params all along the call chain). Using TSS to avoid this is
+  perfectly legitimate: in effect it's a lightweight form of aspect
+  oriented programming.
+
+Cheers,
+
+
+Miles
+
+From richard.martin@magex.com  Mon Dec  9 09:59:37 2002
+From: richard.martin@magex.com (Richard Martin)
+Date: Mon, 09 Dec 2002 09:59:37 +0000
+Subject: [concurrency-interest] Soliciting input about
+ removeAllThreadLocals
+References: <NFBBKALFDCPFIDBNKAPCAEHOCOAA.dholmes@dltech.com.au>
+Message-ID: <3DF46989.3020802@magex.com>
+
+--------------040907070102020801000404
+Content-Type: text/plain; 
+ charset=us-ascii; 
+ format=flowed
+Content-Transfer-Encoding: 7bit
+
+Please *don't* shut up! I'm sure I am not the only person on this list 
+sitting back and following this fascinating discussion.
+
+Rich
+
+David Holmes wrote:
+
+>>   Sorry everybody.  I realize that David and I are beating
+>>this one to death.  I promise to shut up.
+>>    
+>>
+>
+>Me too. Especially as I just realized this was on the interest list
+>not the EG list - sorry.
+>
+>David
+>
+>_______________________________________________
+>Concurrency-interest mailing list
+>Concurrency-interest@altair.cs.oswego.edu
+>http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>  
+>
+
+
+==============================================================================
+This email and any files transmitted with it are confidential and intended solely for the use of the individual or entity to whom they are addressed. All information is the view of the individual and not necessarily the company. If you are not the intended recipient you are hereby notified that any dissemination, distribution, or copying of this communication and its attachments is strictly prohibited. If you have received this email in error please notify: 
+postmaster@magex.com
+
+
+==============================================================================
+
+--------------040907070102020801000404
+Content-Type: text/html; 
+ charset=us-ascii
+Content-Transfer-Encoding: 7bit
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+  <title></title>
+</head>
+<body>
+Please *don't* shut up! I'm sure I am not the only person on this list sitting
+back and following this fascinating discussion.<br>
+<br>
+Rich<br>
+<br>
+David Holmes wrote:<br>
+<blockquote type="cite"
+ cite="midNFBBKALFDCPFIDBNKAPCAEHOCOAA.dholmes@dltech.com.au">
+  <blockquote type="cite">
+    <pre wrap="">   Sorry everybody.  I realize that David and I are beating
+this one to death.  I promise to shut up.
+    </pre>
+  </blockquote>
+  <pre wrap=""><!---->
+Me too. Especially as I just realized this was on the interest list
+not the EG list - sorry.
+
+David
+
+_______________________________________________
+Concurrency-interest mailing list
+<a class="moz-txt-link-abbreviated" href="mailto:Concurrency-interest@altair.cs.oswego.edu">Concurrency-interest@altair.cs.oswego.edu</a>
+<a class="moz-txt-link-freetext" href="http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest">http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest</a>
+
+  </pre>
+</blockquote>
+<br>
+</body>
+</html>
+
+<P>==============================================================================<br>
+This email and any files transmitted with it are confidential and intended solely for the use of the individual or entity to whom they are addressed. All information is the view of the individual and not necessarily the company. If you are not the intended recipient you are hereby notified that any dissemination, distribution, or copying of this communication and its attachments is strictly prohibited. If you have received this email in error please notify: <br>
+postmaster@magex.com<br>
+<br>
+<br>
+==============================================================================<br>
+</P>
+--------------040907070102020801000404--
+
+
+From TEREKHOV@de.ibm.com  Mon Dec  9 14:37:27 2002
+From: TEREKHOV@de.ibm.com (Alexander Terekhov)
+Date: Mon, 9 Dec 2002 15:37:27 +0100
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+Message-ID: <OF9FC84103.0864D136-ONC1256C8A.005017D2-C1256C8A.00505FD1@de.ibm.com>
+
+Joshua Bloch wrote:
+[...]
+>    By the way, I don't really understand your beef with the current
+> thread local facility (which I happen to like much more than its
+> pthreads-era predecessors).
+  ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+I'm just curious: why? AFAICS, the main difference is the addition
+of an extra state [used/non-used] to support initialValue() plus
+somewhat murky [suddenly we've got parents/childs among threads]
+"inheritability" on one hand, and on the other hand, the *lack* of
+destructors/cleanupors-if-you-like invoked at thread termination
+time; and in the context of terminating thread. Oh, sure, and Java
+doesn't seem to have only-128-guaranteed limit imposed on the number
+its thread locals. But that's it, so to speak. Or am I just missing
+and/or misunderstanding something? I'd say that "language" support
+ala sort-of-upcoming C/C++'s "__thread" storage [but that would also
+work with dynamic init and would be "fully lazy"] would be much more
+fun-to-use in many [but not all] cases.
+
+Well, concerning the subject of this thread, I don't like removeAll-
+thing. I'd probably could/want-to live with an EXCEPTION that would
+kinda "renew"/"reincarnate" a thread raising it [and propagating it
+out of its thread routine]. The idea is that the same thread could
+be "re-launched" using "old" or perhaps even newly specified [via an
+exception object] thread routine{/argument(s)}. I'd personally have
+no problem if ALL thread locals would become "removed" as part of
+THAT ["exception-driven"] operation...
+
+regards,
+alexander.
+
+
+Joshua Bloch <joshua.bloch@sun.com>@cs.oswego.edu on 12/07/2002 04:50:55 PM
+
+Sent by:    concurrency-interest-admin@cs.oswego.edu
+
+
+To:    Vijay Saraswat <vijay@saraswat.org>
+cc:    Doug Lea <dl@altair.cs.oswego.edu>,
+       concurrency-interest@altair.cs.oswego.edu
+Subject:    Re: [concurrency-interest] Soliciting input about
+       removeAllThreadLocals
+
+
+Vijay,
+
+>
+> Having the underlying ThreadPool implementation for the servlet runner
+> use a removeAllThreadLocals would not break this pattern.
+
+   I would put this another way: this pattern would not benefit from a
+"service" removes all thread locals -- it has no need of such a service,
+because it takes care of its own thread locals.
+
+   By the way, I don't really understand your beef with the current
+thread local facility (which I happen to like much more than its
+pthreads-era predecessors).  I understand that Java does not provide any
+easy way to, for instance, use ThreadLocals to establish nested dynamic
+scopes, but I think this is an orthogonal issue.
+
+             Regards,
+
+             Josh
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+From vijay@saraswat.org  Mon Dec  9 15:33:52 2002
+From: vijay@saraswat.org (Vijay Saraswat)
+Date: Mon, 09 Dec 2002 10:33:52 -0500
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+References: <15856.36856.945815.748458@altair.cs.oswego.edu> <3DF1D6E3.1030508@saraswat.org> <3DF218DF.6060509@sun.com>
+Message-ID: <3DF4B7E0.5050907@saraswat.org>
+
+Joshua Bloch wrote:
+
+> Vijay,
+>
+>> Having the underlying ThreadPool implementation for the servlet 
+>> runner use a removeAllThreadLocals would not break this pattern. 
+>
+>   I would put this another way: this pattern would not benefit from a 
+> "service" removes all thread locals -- it has no need of such a 
+> service, because it takes care of its own thread locals.
+>
+>   By the way, I don't really understand your beef with the current 
+> thread local facility (which I happen to like much more than its 
+> pthreads-era predecessors).  I understand that Java does not provide 
+> any easy way to, for instance, use ThreadLocals to establish nested 
+> dynamic scopes, but I think this is an orthogonal issue.
+>
+>             Regards,
+>
+>             Josh
+
+Unfortunately I have a pressing NSF deadline on the 12th, so a fuller 
+response will have to wait for that to pass.
+
+In the meantime here are a couple of thoughts:
+
+(1) ThreadLocal should be generic:
+
+   public class ThreadLocal<A> {
+      public A get();
+      protected A initialValue();
+      public void set(A value);
+}
+(I trust there is no problem in retrofitting this.)
+
+(2) There is something really odd about ThreadLocal (an 
+implementation-related notion) showing up in the program's type-space. I 
+really would hate to see a public method return a ThreadLocal type! This 
+should somehow "stay confined" within private state of a class -- but 
+there is no linguistic structure in Java which will let the programmer 
+express this. (In some sense "being ThreadLocal" is an attribute of a 
+*variable*, shouldn't be confused with the type of the value stored in 
+that variable.)
+
+(2') And what exactly does holding a lock on a ThreadLocal accomplish? 
+(I hate the idea of locks on java.lang.Object, but that is another 
+story.) if being ThreadLocal is an attribute of a variable, this 
+question would not arise.
+
+(3) Yet another extension to the language via an API, yet another magic 
+class* :-(. I hate magic classes --- makes it really hard to get a grip 
+on the *language*. There is a lot of feature creep in Java via magic 
+classes --- Threads, References, ThreadLocals, ClassLoaders, 
+Serialization, stack crawling... If Java were being redesigned from 
+scratch, would ThreadLocal be in there the way it is today?
+
+Need to think through this more...
+
+Best,
+Vijay
+
+*A magic class is one which cannot be implemented generically for all 
+JVMs, but must be dependent on the details of the JVM implementation.
+
+PS: Twenty years, huh, since we exchanged email?
+
+-- 
+Prof Vijay Saraswat
+Department of Computer Science and Engineering
+Pond Laboratory
+University Park, Pa 16802
+
+calendar: http://calendar.yahoo.com/vjsaraswat
+homepage: http://www.cse.psu.edu/gradbroc/faculty/saraswat.html
+phone: +1.814.865.9505
+eFax: +1.973.828.0442
+mailto:saraswat@cse.psu.edu
+aim, Yahoo IM, AT&T IM: vjSaraswat
+MSN im: vijay@saraswat.org
+
+
+
+
+From david@walend.net  Mon Dec  9 16:06:58 2002
+From: david@walend.net (David Walend)
+Date: Mon, 09 Dec 2002 11:06:58 -0500
+Subject: [concurrency-interest] Re: Soliciting input about removeAllThreadLocals
+References: <20021209055800.24476.54408.Mailman@altair.cs.oswego.edu>
+Message-ID: <3DF4BFA2.2070501@walend.net>
+
+Josh,
+
+>> I'd be thrilled if it wasn't necessary.  This is not a case of blind 
+>>optimization, but rather a hard-won piece of knowledge -- creating a 
+>>new Thread for every operation (servlet invocation, e.g.) is 
+>>prohibitively expensive. 
+>>    
+>>
+>
+>   I'm with you.  Thread pooling is a *necessary* evil.
+>
+>  
+>
+>>But if I'm not mistaken, you guys are about to bless the concept of 
+>>thread pools by adding it to the core libraries?  Are we seeing signs 
+>>of dissension among the ranks of the experts here? 
+>>    
+>>
+>
+>Nope.  As Doug says, we all agree.  The one point on which there's 
+>dissension is the need for Thread.removeAllThreadLocals();  I'm in the 
+>"over my dead body" camp : )
+>  
+>
+Does this sum up the arguments for and against 
+Thread.removeAllThreadLocals(); ?
+
+---
+
+Against: ThreadLocals can have the same scope as other member variables. 
+So removing ThreadLocals that are out of scope is a violation of the 
+protected/package/private scope contract, and will lead to unwelcome 
+side effects.
+
+For: removeAllThreadLocals() makes cleaning up threads when they return 
+to thread pools possible and simple. Cleaning up will prevent unwelcome 
+side effects.
+
+---
+
+Is that it? Or is it deeper? (Or did I walk in on Act 5 of a five act play?)
+
+If that's it, how about adding a safty check to prevent others from 
+calling removeAllThreadLocals() within the method?
+
+Something like:
+
+...
+    if(isAlive())
+    {
+        throw IllegalStateException("Don't call this method while the 
+Thread is still alive, Dave.");
+    }
+...
+
+That way, the method could only be called on dead Threads, presumably 
+after they've been returned to the pool. Thread pooling becomes a 
+necessary evil, with simple clean-up supported by a state check.
+
+If the pool you're using does call removeAllThreadLocals(), you'd be 
+responsible for putting back the ones you need. If your pool doesn't 
+call removeAllThreadLocals(), you'd have to do your own clean up (which 
+is just where we'll be without that method).
+
+Does that fix the problem, or just move it somewhere else? Are there any 
+uses for accessing ThreadLocals from a dead (or dead-and-revived) Thread?
+
+Hope that adds something. Thanks,
+
+Dave
+
+-- 
+David Walend
+david@walend.net
+http://www.walend.net
+
+
+
+From blanshlu@netscape.net  Mon Dec  9 16:43:22 2002
+From: blanshlu@netscape.net (Luke Blanshard)
+Date: Mon, 09 Dec 2002 11:43:22 -0500
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+Message-ID: <35C12C5F.2878A85D.00948489@netscape.net>
+
+Joshua Bloch <joshua.bloch@sun.com> wrote:
+>   Sorry for the flame.  I didn't mean to get so nasty : (   It's one of 
+>those things that I've been arguing for years.
+
+  Don't beat yourself up.  More of a lighter than a blowtorch!
+
+>>   And it is still the case that sharing information through globals -- 
+>> even thread-local ones -- is generally a bad idea, and a red flag.  
+>> Much better to explicitly pass information in arguments, in 9 cases 
+>> out of 10.  That's all I meant by saying that (static) thread-locals 
+>> are globals in disguise.
+>
+>   This is only true for public static ThreadLocals.  Private static 
+>ThreadLocals  are generally safe as milk.
+
+  I guess we're talking at cross purposes here.  I'm not worried about thread safety, I'm worried about good design -- i.e., writing code that isn't going to have those subtle bugs that Doug was talking about.  (Though Lord knows, I probably should be worried about thread safety!  The code I've seen...)
+
+  I think Miles Sabin put my position rather well: that "genuine thread context" is often tantamount to "sleazery".  The era of the Globals Are Bad dictum was single-threaded C/C++, and he wasn't just talking about public globals, he was talking about variables of global extent.  Holding context from one call to the next -- "current rounding mode" is a good example -- is a dangerous thing to do.  A simple rearranging of code far removed can suddenly have mysterious consequences: the same call yields different results, because the current rounding mode is different here than it was two lines earlier.
+
+>...  The one point on which there's 
+>dissension is the need for Thread.removeAllThreadLocals();  I'm in the 
+>"over my dead body" camp : )
+
+  Sounds like everyone's in that camp.  But that camp is itself divided among the "we need it" and the "we don't".
+
+  I guess I'm wondering about Doug Lea's assertion that it's not worth having two flavors of ThreadLocal, one that gets reset for each "lightweight task" and one that doesn't.  Again, I think in general that it's better to explicitly pass around task-specific context than to use thread-locals for this, but I can imagine cases where I'd want to keep data under the covers, and treat each task as a separate instance.  Logging might be an example.  And likewise I can imagine cases where it's the thread itself that I want to shadow rather than the current task.  What exactly is the matter with providing both options?
+
+Luke
+
+__________________________________________________________________
+The NEW Netscape 7.0 browser is now available. Upgrade now! http://channels.netscape.com/ns/browsers/download.jsp 
+
+Get your own FREE, personal Netscape Mail account today at http://webmail.netscape.com/
+
+From joshua.bloch@sun.com  Mon Dec  9 17:54:12 2002
+From: joshua.bloch@sun.com (Joshua Bloch)
+Date: Mon, 09 Dec 2002 09:54:12 -0800
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+References: <NFBBKALFDCPFIDBNKAPCCEHFCOAA.dholmes@dltech.com.au> <3DF433F6.6070601@sun.com> <200212090928.42781.miles@milessabin.com>
+Message-ID: <3DF4D8C4.6020203@sun.com>
+
+Miles,
+
+   Thanks for digging this up.  It dates from '97(!)  Let's go down the 
+list :
+
+>    1) Associating "genuine thread context" with a thread - The context
+>       is typically temporary  (e.g., the user or transaction on whose
+>       behalf a thread is currently executing, the prevailing rounding
+>       mode or precision for some class of numerical computation, the
+>       operative permissions).
+>
+    In order to use these properly, you *must* use them with try-finally 
+blocks, e.g.:
+
+    beginTransaction();
+    try {
+        ... // do the work
+    } finally {
+        endTransaction();
+    }
+
+If you don't do this, you'll get hurt, whether or not you use thread 
+pools.  If you use the API correctly, removeAllThreadLocals would be a 
+no-op, or perhaps a minor performance loss.  If you use the API 
+incorrectly, removeAllThreadLocals would sweep the problem under the 
+rug, but I don't see this as a major win, or even a good idea.
+
+>  Less frequently, there may be used for permanent thread context.
+>
+The "unique name for the purposes of logging" example reflects this 
+usage.  removeAllThreadLocals would be actively harmful.
+
+>    2) Performance - Some objects are, by their nature "thread singleton
+>       objects": while they do not represent true thread context, a
+>       given thread will never use more than one of them.  If they are
+>       expensive to construct, it makes sense to permanently associate
+>       one with
+>       a thread the first time the thread needs such an object.  This
+>       differs from case 1 in that the object doesn't maintain any
+>       interesting state between uses.  An example might be an open
+>       connection to a database.
+>
+The example I chose was somewhat unfortunate.  I don't think it's worth 
+jamming such an expensive resource onto a thread.  But, for example, 
+StringBuffer now (as of 1.4.2) associates a scratch buffer with each 
+thread (based on extensive measurements).  The removeAllThreadLocals 
+call would negate some of the performance benefit from this usage, but 
+wouldn't cause serious problems.
+
+>
+>    3) Sleazery - Thread-local variables can be used to effectively
+>       add extra parameters (in or out) to a method without changing
+>       its signature.  This is not terribly good practice, and should
+>       rarely, if ever, be necessary.
+>
+But it is.  Unfortunately, you end up operating in worlds where you call 
+a which calls b which calls c, which is back in your class, and you 
+really need to get some information to c.  This situation is very rare, 
+but when it happens ThreadLocal can be a lifesave.  It hasn't happened 
+to me in the past five years, but it has happened to other people I 
+know.  It tends to happen in the context of overly rigid frameworks. 
+ This is a short-term use of ThreadLocal, and removeAllThreadLocals() 
+neither helps nor hurts
+
+>    4) Making legacy APIs thread-safe - Back in the bad old days,
+>       statics were used to hold state from  call-to-call (e.g.,
+>       strtok()) or to return supplemental information (e.g., errno). 
+>       Such APIs can be made thread-safe by replacing statics with
+>       thread-locals. Hopefully we have no such legacy APIs in the Java
+>       world.
+>
+I think I was correct when I said that this was irrelevant to the Java 
+platform, but the same conculsion as for 3 applies:  This is a 
+short-term use of ThreadLocal, and removeAllThreadLocals() neither helps 
+nor hurts
+
+  I think it's fair to say that in the context of this taxonomy, the 
+removeAllThreadLocals call does more harm than good.
+
+                Regards,
+
+                Josh
+
+
+From pmoore@brocade.com  Mon Dec  9 18:51:03 2002
+From: pmoore@brocade.com (Patrick Moore)
+Date: Mon, 9 Dec 2002 10:51:03 -0800
+Subject: [concurrency-interest] Soliciting input about removeAllThread
+ Locals
+Message-ID: <28E82FC5DCC2FC47801F12B3ECDE0EE20160C2A8@hq-ex-9>
+
+This message is in MIME format. Since your mail reader does not understand
+this format, some or all of this message may not be legible.
+
+------_=_NextPart_001_01C29FB3.EC97F820
+Content-Type: text/plain
+
+DON'T put this method in -- PLEASE!
+
+To me it seems like removeAllThreadLocals is a shotgun approach to a rather
+narrow problem. (And like most it seems that the consequences are messy and
+never ending)
+
+This could be buried deep in some innocent sounding method by a junior
+programmer that would cause destructive consequences far and wide. What
+happens if the method is in a method that is call both by Executor based
+methods and by the main thread. How are you going to stop abuse? As an
+architect how can I guarentee that no 3rd party code I am using is using it
+properly? I now have to abandon ThreadLocal's because I cannot rely on them
+being set correctly.
+
+On a lesser note - One of the things I have not seen discussed that to me
+seems rather useful. The ability for Executor  implementations to associate
+information about the thread using ThreadLocals. Also may be a debugger
+wants to track which Callables/Runnables ended up using which threads. This
+might be useful for discovering performance problems. 
+
+
+-Patrick Moore
+
+------_=_NextPart_001_01C29FB3.EC97F820
+Content-Type: text/html
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+<HEAD>
+<META HTTP-EQUIV=3D"Content-Type" CONTENT=3D"text/html; =
+charset=3DUS-ASCII">
+<META NAME=3D"Generator" CONTENT=3D"MS Exchange Server version =
+5.5.2653.12">
+<TITLE>RE: [concurrency-interest] Soliciting input about =
+removeAllThreadLocals</TITLE>
+</HEAD>
+<BODY>
+
+<P><FONT SIZE=3D2>DON'T put this method in -- PLEASE!</FONT>
+</P>
+
+<P><FONT SIZE=3D2>To me it seems like removeAllThreadLocals is a =
+shotgun approach to a rather narrow problem. (And like most it seems =
+that the consequences are messy and never ending)</FONT></P>
+
+<P><FONT SIZE=3D2>This could be buried deep in some innocent sounding =
+method by a junior programmer that would cause destructive consequences =
+far and wide. What happens if the method is in a method that is call =
+both by Executor based methods and by the main thread. How are you =
+going to stop abuse? As an architect how can I guarentee that no 3rd =
+party code I am using is using it properly? I now have to abandon =
+ThreadLocal's because I cannot rely on them being set =
+correctly.</FONT></P>
+
+<P><FONT SIZE=3D2>On a lesser note - One of the things I have not seen =
+discussed that to me seems rather useful. The ability for =
+Executor&nbsp; implementations to associate information about the =
+thread using ThreadLocals. Also may be a debugger wants to track which =
+Callables/Runnables ended up using which threads. This might be useful =
+for discovering performance problems. </FONT></P>
+<BR>
+
+<P><FONT SIZE=3D2>-Patrick Moore</FONT>
+</P>
+
+</BODY>
+</HTML>
+------_=_NextPart_001_01C29FB3.EC97F820--
+
+From joshua.bloch@sun.com  Mon Dec  9 22:27:33 2002
+From: joshua.bloch@sun.com (Joshua Bloch)
+Date: Mon, 09 Dec 2002 14:27:33 -0800
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+References: <OF9FC84103.0864D136-ONC1256C8A.005017D2-C1256C8A.00505FD1@de.ibm.com>
+Message-ID: <3DF518D5.7080101@sun.com>
+
+Alexander,
+
+>>   By the way, I don't really understand your beef with the current
+>>thread local facility (which I happen to like much more than its
+>>pthreads-era predecessors).
+>>    
+>>
+>  ^^^^^^^^^^^^^^^^^^^^^^^^^
+>
+>I'm just curious: why? AFAICS, the main difference is the addition
+>of an extra state [used/non-used] to support initialValue() plus
+>somewhat murky [suddenly we've got parents/childs among threads]
+>"inheritability" on one hand, and on the other hand, the *lack* of
+>destructors/cleanupors-if-you-like invoked at thread termination
+>time; and in the context of terminating thread.
+>
+Nope.  You're missing the main point.  In pthreads (and in all 5 
+home-brewed thread-local-storage solutions that I saw prior to designing 
+ThreadLocal) explicit, forgeable keys were used to acess a thread-local 
+variable.  In the case of pthread_getspecific it was the first argument 
+(pthread_key_t key).  In the case of all the home-brewed solutions I saw 
+(both inside and outside Sun!), people used strings as keys.  This is an 
+awful idea, as all hell breaks loose when two people pick the same 
+string, or when a hacker attempts to guess the key you used, to peak (or 
+poke) at the data.  A simple fix would be to use unforgeable object keys 
+(capabilities). The clever realization that makes the current design 
+nice is that there's no need for a separate key object.  (This is 
+discussed in a bit more detail on pages 152-154 of "Effective Java.")
+
+> But that's it, so to speak. Or am I just missing
+>and/or misunderstanding something? I'd say that "language" support
+>ala sort-of-upcoming C/C++'s "__thread" storage [but that would also
+>work with dynamic init and would be "fully lazy"] would be much more
+>fun-to-use in many [but not all] cases.
+>
+I suggested this in '97, but the suggestion was met with lukewarm 
+response.  The libary solution represents a compromise.
+
+>Well, concerning the subject of this thread, I don't like removeAll-
+>thing.
+>
+Glad to hear it!
+
+                  Regards,
+
+                  Josh
+
+P.S.  I admit that InheritableThreadLocal was a bit speculative but I 
+think it has proven useful to a number of people.
+
+
+From joshua.bloch@sun.com  Mon Dec  9 22:39:45 2002
+From: joshua.bloch@sun.com (Joshua Bloch)
+Date: Mon, 09 Dec 2002 14:39:45 -0800
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+References: <15856.36856.945815.748458@altair.cs.oswego.edu> <3DF1D6E3.1030508@saraswat.org> <3DF218DF.6060509@sun.com> <3DF4B7E0.5050907@saraswat.org>
+Message-ID: <3DF51BB1.6030409@sun.com>
+
+Vijay,
+
+> In the meantime here are a couple of thoughts:
+>
+> (1) ThreadLocal should be generic: 
+
+Agreed.  I think it's a darn shame that Java does not yet have generics. 
+ But this is an orthogonal issue.  ThreadLocal will be generic as soon 
+as Java supports generics (presumably Tiger).
+
+> (2) There is something really odd about ThreadLocal (an 
+> implementation-related notion) showing up in the program's type-space. 
+
+Agreed.  Recall that I originally (in '97) raised the possibility of 
+threadlocal as a first-class modifier:
+
+    threadlocal int i;
+
+If we had done that, the actual ThreadLocal object would have been 
+hidden.  But without language support, I think this is the best that you 
+can do.
+
+> (2') And what exactly does holding a lock on a ThreadLocal accomplish? 
+> (I hate the idea of locks on java.lang.Object, but that is another 
+> story.) 
+
+I think it's the same story.  It's just an object that you have your 
+hands on.  If it uses locks internally for any purpose  (which is 
+unspecified) then locking it might jam it up.  Otherwise it's just an 
+Object that happens to have a lock.  I'm in agreement with you that 
+Java's lock-object isomorphism is questionable, but that's water long 
+over the dam.
+
+> if being ThreadLocal is an attribute of a variable, this question 
+> would not arise. 
+
+Yep.  But my colleagues were stongly of the opinion that this didn't 
+justify a language change.
+
+> (3) Yet another extension to the language via an API, yet another 
+> magic class* :-(. 
+
+It's not magic.  It doesn't require VM support.  In fact, it doesn't 
+require internal access to any other system class (though performance 
+can be and is improved by putting the class "in bed" with Thread).  The 
+original implementation of ThreadLocal was written with no support from 
+Thread whatsoever.  (InheritableThreadLocal, on the other hand, does 
+require support from Thread.)
+
+> If Java were being redesigned from scratch, would ThreadLocal be in 
+> there the way it is today? 
+
+I'm not sure.  It could be a modifier, but I'm not sure if it's used 
+frequently enough to justify this.  It it weren't a modifier, my guess 
+is that we pretty much stick with what we have.
+
+         Regards,
+
+         Josh
+
+> PS: Twenty years, huh, since we exchanged email? 
+
+   Yep : )
+
+
+
+From dholmes@dltech.com.au  Mon Dec  9 23:21:59 2002
+From: dholmes@dltech.com.au (David Holmes)
+Date: Tue, 10 Dec 2002 09:21:59 +1000
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+In-Reply-To: <200212090928.42781.miles@milessabin.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEIECOAA.dholmes@dltech.com.au>
+
+This is on the interest list and BCC'ed to the EG.
+
+I'm going to sum up what I think is the position based on what others
+have recently said.
+
+The main issues:
+
+- Clearing all threadlocals is necessary to avoid unintentional reuse
+of a thread local value.
+- Clearing all threadlocals could break existing code by violating
+invariants that the code has established.
+
+removeAllThreadLocals is one of those methods that should only be used
+at very specific points in a threads life - in this context: when that
+thread is actually in a thread pool and is about to execute a new
+task. Trying to restrict the method such that it can only be used then
+is not straight forward - a security check is necessary but not
+sufficient. We can't test something like isAlive() because the pool
+thread is always alive.
+
+Defining a special type of resettable thread-local is not really an
+option as it relies on third parties doing the right thing. The
+problem is that this makes life difficult to the library users, not
+the library writers. I'd argue that anyone changing their library to
+use resetable threadlocals could probably redesign things such that
+they don't care whether the threadlocal gets reset or not.
+
+The real solution here would be a "light-weight" rebirthing mechanism
+for threads - such that it gets a new identity and hence will get new
+threadlocals anyway because it is for all intents and purposes a "new
+thread", we just didn't have to throw away all of the old thread. To
+use Josh's used-car analogy we just chiselled in a new ID number :-)
+
+But lets take a step back to see where the problem with not having
+removeAllThreadLocals could arise. It is really a narrow set of use
+cases in Category 1 of Josh's taxonomy. Not all Category 1 uses are
+encapsulated in a a library protocol where correct usage of the
+library requires you to invoke a setup method and finally invoke a
+cleanup method. In those cases resetting or not makes no difference if
+you obey the protocol and if you don't then all bets are off anyway.
+
+The situation where it would be a problem not to reset threadlocals is
+where a library uses them for thread context but in a less structured
+way. Something like "set current rounding mode" is I think a good
+example. Suppose a math library has a setRoundingMode method which
+sets the rounding mod for all subsequent math operations in the
+library and suppose it keeps that information in a thread local.
+Suppose one task is executed by a pool thread and sets the rounding
+mode to something 'special', does its work and completes. Now a second
+task is run by that same thread and it uses the library too and
+"inherits" the special rounding mode. That's not good. In this case
+the "thread-local" really needed to be "task-local" but tasks are not
+a language or library concept so we can't do that. Now obviously there
+are a few things together that make this go wrong and which could be
+fixed:
+ - the first thread could restore the rounding mode to normal when it
+is finished. This basically takes us back to the setup/cleanup
+protocol.
+ - the second thread could explicitly set the rounding mode to normal
+when it starts
+Both of these would fix things such that you don't need to clear the
+threadlocal. And both are reasonable things to do when a task does not
+assume that it always executes in its own brand new pristine thread.
+
+Someone suggested clearing all threadlocals and then putting back the
+ones that matter. Turning that around: if you know about the thread
+locals you will use then you can simply clear the ones that do matter.
+The argument for removeAllThreadLocals is to deal with the situation
+where a task does not know what threadlocals it will use as they are
+internal library details.
+
+Bottom line - for me: the situations in which it is necessary to clear
+a thread local when using a thread pool, is a very small and narrow
+set of use cases for thread locals. The majority of threadlocal usages
+would not be affected one way or the other, except perhaps for some
+performance loss. In a very small number of cases clearing the
+thread-local would cause a problem - but I'm not convinced of the
+merits of the usage in such situations (eg the logging example).
+
+But given that people have been using thread pools and thread-locals
+for some time now and they have not had removeAllThreadlocals, there
+has been no demonstrated need for it - mainly I think because most
+reasonable use cases fall in the don't care category. Consequently,
+there is no justification for adding it at this time.
+
+David Holmes
+
+
+From vijay@saraswat.org  Mon Dec  9 23:31:06 2002
+From: vijay@saraswat.org (Vijay Saraswat)
+Date: Mon, 09 Dec 2002 18:31:06 -0500
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+References: <NFBBKALFDCPFIDBNKAPCAEIECOAA.dholmes@dltech.com.au>
+Message-ID: <3DF527BA.8040803@saraswat.org>
+
+>
+>
+>But given that people have been using thread pools and thread-locals
+>for some time now and they have not had removeAllThreadlocals, there
+>has been no demonstrated need for it - mainly I think because most
+>reasonable use cases fall in the don't care category. Consequently,
+>there is no justification for adding it at this time.
+>
+>David Holmes
+>  
+>
+I'd agree with this conclusion.
+
+
+From dl@cs.oswego.edu  Mon Dec  9 23:44:59 2002
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Mon, 9 Dec 2002 18:44:59 -0500
+Subject: [Concurrency-jsr] RE: [concurrency-interest] Soliciting input about removeAllThreadLocals
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCAEIECOAA.dholmes@dltech.com.au>
+References: <200212090928.42781.miles@milessabin.com>
+ <NFBBKALFDCPFIDBNKAPCAEIECOAA.dholmes@dltech.com.au>
+Message-ID: <15861.11003.732705.442653@altair.cs.oswego.edu>
+
+> there is no justification for adding it at this time.
+
+It looks like we all all in agreement (with varying degrees of
+reluctance). 
+
+Changed. 
+
+All concurrency-interest list members who now have nothing to complain
+about are strongly encouraged to rescan APIs du jour and find
+something else they want to carefully examine and tell us what they
+don't like about it.  See
+  http://gee.cs.oswego.edu/dl/concurrent/index.html
+
+-Doug
+
+From pmoore@brocade.com  Tue Dec 10 00:02:48 2002
+From: pmoore@brocade.com (Patrick Moore)
+Date: Mon, 9 Dec 2002 16:02:48 -0800
+Subject: [concurrency-interest] 'Future' definition
+Message-ID: <28E82FC5DCC2FC47801F12B3ECDE0EE20160C2B0@hq-ex-9>
+
+This message is in MIME format. Since your mail reader does not understand
+this format, some or all of this message may not be legible.
+
+------_=_NextPart_001_01C29FDF.79451890
+Content-Type: text/plain
+
+Glad you asked.
+
+The Future interface needs to have a 'clear()' method as well as the
+'set(Object)' and setException(Throwable)'
+
+The reason for this is that in some code that I have that no 'Future' can
+control the life time of the Runnable. Essentially, I am running a thread
+that is gathering data. This data is then parcelled out to many different
+Futures. So no one Future object can control the runnable. Also this
+runnable is operating continuously. During the update period it is
+desireable to make sure that any thread trying to use the Future block
+during the refresh. Thus the need for the clear().
+
+Essentially, this is a cache that is periodically refreshed. 
+
+As a final point, setException() should really be called setThrowable() in
+keeping with it's argument.
+
+>-----Original Message-----
+>From: Doug Lea [mailto:dl@cs.oswego.edu]
+>Sent: Monday, December 09, 2002 3:45 PM
+>To: concurrency-jsr@altair.cs.oswego.edu
+>Cc: concurrency-interest@altair.cs.oswego.edu
+>Subject: Re: [Concurrency-jsr] RE: [concurrency-interest] Soliciting
+>input about removeAllThreadLocals
+>
+>All concurrency-interest list members who now have nothing to complain
+>about are strongly encouraged to rescan APIs du jour and find
+>something else they want to carefully examine and tell us what they
+>don't like about it.  See
+>  http://gee.cs.oswego.edu/dl/concurrent/index.html
+
+------_=_NextPart_001_01C29FDF.79451890
+Content-Type: text/html
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+<HEAD>
+<META HTTP-EQUIV=3D"Content-Type" CONTENT=3D"text/html; =
+charset=3DUS-ASCII">
+<META NAME=3D"Generator" CONTENT=3D"MS Exchange Server version =
+5.5.2653.12">
+<TITLE>'Future' definition</TITLE>
+</HEAD>
+<BODY>
+
+<P><FONT SIZE=3D2>Glad you asked.</FONT>
+</P>
+
+<P><FONT SIZE=3D2>The Future interface needs to have a 'clear()' method =
+as well as the 'set(Object)' and setException(Throwable)'</FONT>
+</P>
+
+<P><FONT SIZE=3D2>The reason for this is that in some code that I have =
+that no 'Future' can control the life time of the Runnable. =
+Essentially, I am running a thread that is gathering data. This data is =
+then parcelled out to many different Futures. So no one Future object =
+can control the runnable. Also this runnable is operating continuously. =
+During the update period it is desireable to make sure that any thread =
+trying to use the Future block during the refresh. Thus the need for =
+the clear().</FONT></P>
+
+<P><FONT SIZE=3D2>Essentially, this is a cache that is periodically =
+refreshed. </FONT>
+</P>
+
+<P><FONT SIZE=3D2>As a final point, setException() should really be =
+called setThrowable() in keeping with it's argument.</FONT>
+</P>
+
+<P><FONT SIZE=3D2>&gt;-----Original Message-----</FONT>
+<BR><FONT SIZE=3D2>&gt;From: Doug Lea [<A =
+HREF=3D"mailto:dl@cs.oswego.edu">mailto:dl@cs.oswego.edu</A>]</FONT>
+<BR><FONT SIZE=3D2>&gt;Sent: Monday, December 09, 2002 3:45 PM</FONT>
+<BR><FONT SIZE=3D2>&gt;To: concurrency-jsr@altair.cs.oswego.edu</FONT>
+<BR><FONT SIZE=3D2>&gt;Cc: =
+concurrency-interest@altair.cs.oswego.edu</FONT>
+<BR><FONT SIZE=3D2>&gt;Subject: Re: [Concurrency-jsr] RE: =
+[concurrency-interest] Soliciting</FONT>
+<BR><FONT SIZE=3D2>&gt;input about removeAllThreadLocals</FONT>
+<BR><FONT SIZE=3D2>&gt;</FONT>
+<BR><FONT SIZE=3D2>&gt;All concurrency-interest list members who now =
+have nothing to complain</FONT>
+<BR><FONT SIZE=3D2>&gt;about are strongly encouraged to rescan APIs du =
+jour and find</FONT>
+<BR><FONT SIZE=3D2>&gt;something else they want to carefully examine =
+and tell us what they</FONT>
+<BR><FONT SIZE=3D2>&gt;don't like about it.&nbsp; See</FONT>
+<BR><FONT SIZE=3D2>&gt;&nbsp; <A =
+HREF=3D"http://gee.cs.oswego.edu/dl/concurrent/index.html" =
+TARGET=3D"_blank">http://gee.cs.oswego.edu/dl/concurrent/index.html</A><=
+/FONT>
+</P>
+
+</BODY>
+</HTML>
+------_=_NextPart_001_01C29FDF.79451890--
+
+From dl@cs.oswego.edu  Tue Dec 10 00:31:40 2002
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Mon, 9 Dec 2002 19:31:40 -0500
+Subject: [concurrency-interest] Re: 'Future' definition
+In-Reply-To: <28E82FC5DCC2FC47801F12B3ECDE0EE20160C2B0@hq-ex-9>
+References: <28E82FC5DCC2FC47801F12B3ECDE0EE20160C2B0@hq-ex-9>
+Message-ID: <15861.13804.185579.554180@altair.cs.oswego.edu>
+
+Patrick wrote:
+> The Future interface needs to have a 'clear()' method as well as the
+> 'set(Object)' and setException(Throwable)'
+
+Note first that Set and setException are not in the Future
+interface. They are declared as protected methods in the concrete
+FutureTask class, so you need not expose them to users of Futures, but
+only to the components that do the setting.
+
+We also considered a clear/reset method, and rejected it.  Supporting
+a reset method entails some extra complexity and policy decisions that
+aren't wanted in the vast majority of uses. And in fact, different uses we
+can think of are a little different about how it should work. For example,
+is it OK to reset if/only-if/unless the previous value was obtained?
+
+Given that Future is an interface, you can make your own
+ResettableFuture and it will work fine with the rest of the
+Executor/Future framework.
+
+> As a final point, setException() should really be called setThrowable() in
+> keeping with it's argument.
+
+Thanks for the suggestion! 
+
+(This means: I think setException sounds better, but maybe consistency
+is better than connotation. We'll think about it.)
+
+-Doug
+
+
+From dholmes@dltech.com.au  Tue Dec 10 00:27:12 2002
+From: dholmes@dltech.com.au (David Holmes)
+Date: Tue, 10 Dec 2002 10:27:12 +1000
+Subject: [concurrency-interest] Please keep email on the interest list only
+In-Reply-To: <28E82FC5DCC2FC47801F12B3ECDE0EE20160C2B0@hq-ex-9>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEIHCOAA.dholmes@dltech.com.au>
+
+Folks,
+
+You may have noticed the inadvertent appearance of email addresses
+other than that of the interest list. Please ensure that you only post
+replies to the list: concurrency-interest@altair.cs.oswego.edu, or to
+individuals.
+
+Thanks.
+
+David Holmes
+
+
+From dawidk@mathcs.emory.edu  Tue Dec 10 09:24:13 2002
+From: dawidk@mathcs.emory.edu (Dawid Kurzyniec)
+Date: Tue, 10 Dec 2002 04:24:13 -0500
+Subject: [concurrency-interest] Soliciting input about removeAllThreadLocals
+In-Reply-To: <3DF518D5.7080101@sun.com>
+References: <OF9FC84103.0864D136-ONC1256C8A.005017D2-C1256C8A.00505FD1@de.ibm.com> <3DF518D5.7080101@sun.com>
+Message-ID: <200212100424.13989.dawidk@mathcs.emory.edu>
+
+> P.S.  I admit that InheritableThreadLocal was a bit speculative but I
+> think it has proven useful to a number of people.
+
+Yes, I am one of those people. In my system, code within a given JVM may be 
+executed on behalf on many users at the same time. Every thread thus runs 
+within a context of a session (containing information about the authenticated 
+principal, or owner). This session info is stored as a private static thread 
+local. If security policy permits this, threads may spawn another threads 
+that must then inherit that session info. Without inheritable thread locals, 
+implementing such a thing would be quite difficult considering the fact that 
+the code spawning a new thread may be supplied by a third party.
+
+Regards,
+Dawid
+
+
+From pmoore@brocade.com  Tue Dec 10 18:25:02 2002
+From: pmoore@brocade.com (Patrick Moore)
+Date: Tue, 10 Dec 2002 10:25:02 -0800
+Subject: [concurrency-interest] Re: 'Future' definition
+Message-ID: <28E82FC5DCC2FC47801F12B3ECDE0EE20160C2B3@hq-ex-9>
+
+This message is in MIME format. Since your mail reader does not understand
+this format, some or all of this message may not be legible.
+
+------_=_NextPart_001_01C2A079.7478DC80
+Content-Type: text/plain
+
+Hi Doug -
+
+The decision about not having a clear() method in the Future interface would
+be more tolerable if it wasn't for the fact that such a method is missing
+(even protected) from FutureTask. Since set(null) is not the same as a
+clear(), this means that I have to:
+
+1) reimplement all of FutureTask's functionality or
+2) using reflection trickery ( Method/Field.setAccessable(true) ) in a
+FutureTask subclass or 
+3) Continue to use the EDU version...
+
+I would suggest that if it is perfectly permissible and useful to have the
+set(), setThrowable(), clear() methods in the interface but define it that
+implementors of the interface may throw UnsupportedOperationException.
+(There are plenty of examples of this in the Collections as well as Iterator
+does the same.) So FutureTask may have:
+
+protected void _set(Object o){
+...}
+public void set(Object) {
+   throw new UnsupportedOperationException();
+}
+protected void _setThrowable(Throwable t) {
+...
+}
+public void setThrowable(Throwable t) {
+   throw new UnsupportedOperationException();
+}
+protected void _clear() {
+...
+}
+public void clear() {
+   throw new UnsupportedOperationException();
+}
+
+-----Original Message-----
+From: Doug Lea [mailto:dl@cs.oswego.edu]
+Sent: Monday, December 09, 2002 4:32 PM
+To: concurrency-interest@altair.cs.oswego.edu
+Subject: [concurrency-interest] Re: 'Future' definition
+
+
+
+Patrick wrote:
+> The Future interface needs to have a 'clear()' method as well as the
+> 'set(Object)' and setException(Throwable)'
+
+Note first that Set and setException are not in the Future
+interface. They are declared as protected methods in the concrete
+FutureTask class, so you need not expose them to users of Futures, but
+only to the components that do the setting.
+
+We also considered a clear/reset method, and rejected it.  Supporting
+a reset method entails some extra complexity and policy decisions that
+aren't wanted in the vast majority of uses. And in fact, different uses we
+can think of are a little different about how it should work. For example,
+is it OK to reset if/only-if/unless the previous value was obtained?
+
+Given that Future is an interface, you can make your own
+ResettableFuture and it will work fine with the rest of the
+Executor/Future framework.
+
+> As a final point, setException() should really be called setThrowable() in
+> keeping with it's argument.
+
+Thanks for the suggestion! 
+
+(This means: I think setException sounds better, but maybe consistency
+is better than connotation. We'll think about it.)
+
+-Doug
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+------_=_NextPart_001_01C2A079.7478DC80
+Content-Type: text/html
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+<HEAD>
+<META HTTP-EQUIV=3D"Content-Type" CONTENT=3D"text/html; =
+charset=3DUS-ASCII">
+<META NAME=3D"Generator" CONTENT=3D"MS Exchange Server version =
+5.5.2653.12">
+<TITLE>RE: [concurrency-interest] Re: 'Future' definition</TITLE>
+</HEAD>
+<BODY>
+
+<P><FONT SIZE=3D2>Hi Doug -</FONT>
+</P>
+
+<P><FONT SIZE=3D2>The decision about not having a clear() method in the =
+Future interface would be more tolerable if it wasn't for the fact that =
+such a method is missing (even protected) from FutureTask. Since =
+set(null) is not the same as a clear(), this means that I have =
+to:</FONT></P>
+
+<P><FONT SIZE=3D2>1) reimplement all of FutureTask's functionality =
+or</FONT>
+<BR><FONT SIZE=3D2>2) using reflection trickery ( =
+Method/Field.setAccessable(true) ) in a FutureTask subclass or </FONT>
+<BR><FONT SIZE=3D2>3) Continue to use the EDU version...</FONT>
+</P>
+
+<P><FONT SIZE=3D2>I would suggest that if it is perfectly permissible =
+and useful to have the set(), setThrowable(), clear() methods in the =
+interface but define it that implementors of the interface may throw =
+UnsupportedOperationException. (There are plenty of examples of this in =
+the Collections as well as Iterator does the same.) So FutureTask may =
+have:</FONT></P>
+
+<P><FONT SIZE=3D2>protected void _set(Object o){</FONT>
+<BR><FONT SIZE=3D2>...}</FONT>
+<BR><FONT SIZE=3D2>public void set(Object) {</FONT>
+<BR><FONT SIZE=3D2>&nbsp;&nbsp; throw new =
+UnsupportedOperationException();</FONT>
+<BR><FONT SIZE=3D2>}</FONT>
+<BR><FONT SIZE=3D2>protected void _setThrowable(Throwable t) {</FONT>
+<BR><FONT SIZE=3D2>...</FONT>
+<BR><FONT SIZE=3D2>}</FONT>
+<BR><FONT SIZE=3D2>public void setThrowable(Throwable t) {</FONT>
+<BR><FONT SIZE=3D2>&nbsp;&nbsp; throw new =
+UnsupportedOperationException();</FONT>
+<BR><FONT SIZE=3D2>}</FONT>
+<BR><FONT SIZE=3D2>protected void _clear() {</FONT>
+<BR><FONT SIZE=3D2>...</FONT>
+<BR><FONT SIZE=3D2>}</FONT>
+<BR><FONT SIZE=3D2>public void clear() {</FONT>
+<BR><FONT SIZE=3D2>&nbsp;&nbsp; throw new =
+UnsupportedOperationException();</FONT>
+<BR><FONT SIZE=3D2>}</FONT>
+</P>
+
+<P><FONT SIZE=3D2>-----Original Message-----</FONT>
+<BR><FONT SIZE=3D2>From: Doug Lea [<A =
+HREF=3D"mailto:dl@cs.oswego.edu">mailto:dl@cs.oswego.edu</A>]</FONT>
+<BR><FONT SIZE=3D2>Sent: Monday, December 09, 2002 4:32 PM</FONT>
+<BR><FONT SIZE=3D2>To: concurrency-interest@altair.cs.oswego.edu</FONT>
+<BR><FONT SIZE=3D2>Subject: [concurrency-interest] Re: 'Future' =
+definition</FONT>
+</P>
+<BR>
+<BR>
+
+<P><FONT SIZE=3D2>Patrick wrote:</FONT>
+<BR><FONT SIZE=3D2>&gt; The Future interface needs to have a 'clear()' =
+method as well as the</FONT>
+<BR><FONT SIZE=3D2>&gt; 'set(Object)' and =
+setException(Throwable)'</FONT>
+</P>
+
+<P><FONT SIZE=3D2>Note first that Set and setException are not in the =
+Future</FONT>
+<BR><FONT SIZE=3D2>interface. They are declared as protected methods in =
+the concrete</FONT>
+<BR><FONT SIZE=3D2>FutureTask class, so you need not expose them to =
+users of Futures, but</FONT>
+<BR><FONT SIZE=3D2>only to the components that do the setting.</FONT>
+</P>
+
+<P><FONT SIZE=3D2>We also considered a clear/reset method, and rejected =
+it.&nbsp; Supporting</FONT>
+<BR><FONT SIZE=3D2>a reset method entails some extra complexity and =
+policy decisions that</FONT>
+<BR><FONT SIZE=3D2>aren't wanted in the vast majority of uses. And in =
+fact, different uses we</FONT>
+<BR><FONT SIZE=3D2>can think of are a little different about how it =
+should work. For example,</FONT>
+<BR><FONT SIZE=3D2>is it OK to reset if/only-if/unless the previous =
+value was obtained?</FONT>
+</P>
+
+<P><FONT SIZE=3D2>Given that Future is an interface, you can make your =
+own</FONT>
+<BR><FONT SIZE=3D2>ResettableFuture and it will work fine with the rest =
+of the</FONT>
+<BR><FONT SIZE=3D2>Executor/Future framework.</FONT>
+</P>
+
+<P><FONT SIZE=3D2>&gt; As a final point, setException() should really =
+be called setThrowable() in</FONT>
+<BR><FONT SIZE=3D2>&gt; keeping with it's argument.</FONT>
+</P>
+
+<P><FONT SIZE=3D2>Thanks for the suggestion! </FONT>
+</P>
+
+<P><FONT SIZE=3D2>(This means: I think setException sounds better, but =
+maybe consistency</FONT>
+<BR><FONT SIZE=3D2>is better than connotation. We'll think about =
+it.)</FONT>
+</P>
+
+<P><FONT SIZE=3D2>-Doug</FONT>
+</P>
+
+<P><FONT =
+SIZE=3D2>_______________________________________________</FONT>
+<BR><FONT SIZE=3D2>Concurrency-interest mailing list</FONT>
+<BR><FONT SIZE=3D2>Concurrency-interest@altair.cs.oswego.edu</FONT>
+<BR><FONT SIZE=3D2><A =
+HREF=3D"http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interes=
+t" =
+TARGET=3D"_blank">http://altair.cs.oswego.edu/mailman/listinfo/concurren=
+cy-interest</A></FONT>
+</P>
+
+</BODY>
+</HTML>
+------_=_NextPart_001_01C2A079.7478DC80--
+
+From pmoore@brocade.com  Tue Dec 10 19:04:49 2002
+From: pmoore@brocade.com (Patrick Moore)
+Date: Tue, 10 Dec 2002 11:04:49 -0800
+Subject: [concurrency-interest] additional class suggested
+Message-ID: <28E82FC5DCC2FC47801F12B3ECDE0EE20160C2B5@hq-ex-9>
+
+This message is in MIME format. Since your mail reader does not understand
+this format, some or all of this message may not be legible.
+
+------_=_NextPart_001_01C2A07F.030ED670
+Content-Type: text/plain
+
+Hi there --
+ 
+This is a subclass that I use all the time and I would suggest that
+something equivalent needs to be in the java.util.concurrency package. This
+class is invaluable for retrofitting existing code to use Future(Result).
+ 
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import EDU.oswego.cs.dl.util.concurrent.FutureResult;
+import java.lang.reflect.Proxy;
+/**
+ * This class is useful to when retrofitting existing code that uses
+interfaces
+ * to handle future results.
+ * @author  pmoore
+ * @version
+ */
+public class ProxiedFutureResult extends FutureResult implements
+InvocationHandler {
+    private long timedGet = -1L;
+    public ProxiedFutureResult(){
+    }
+    public Object invoke(Object proxy, Method method, Object[] args) throws
+Throwable {
+        Object obj;
+        try {
+            if ( timedGet < 0 ) {
+                obj = this.get();
+            } else {
+                obj = this.timedGet(timedGet);
+            }
+        } catch(InvocationTargetException e) {
+            // since the wrapped exception is more meaningful to the
+            // code using the proxy.
+            throw e.getCause();
+        }
+        return method.invoke(obj, args);
+    }
+    public void setTimedGetTime(long msecs) {
+        this.timedGet = msecs;
+    }
+    public Object getProxy(Class[] proxyFor) {
+        return Proxy.newProxyInstance(null, proxyFor, this);
+    }
+    public Object getProxy(ClassLoader classLoader, Class[] proxyFor) {
+        return Proxy.newProxyInstance(classLoader, proxyFor, this);
+    }
+}
+
+------_=_NextPart_001_01C2A07F.030ED670
+Content-Type: text/html
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<HTML><HEAD>
+<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=US-ASCII">
+<TITLE>RE: [concurrency-interest] Re: 'Future' definition</TITLE>
+
+<META content="MSHTML 5.00.3315.2870" name=GENERATOR></HEAD>
+<BODY>
+<DIV><FONT color=#008080 face=Arial size=2><SPAN class=114570019-10122002>Hi 
+there --</SPAN></FONT></DIV>
+<DIV><FONT color=#008080 face=Arial size=2><SPAN 
+class=114570019-10122002></SPAN></FONT>&nbsp;</DIV>
+<DIV><FONT color=#008080 face=Arial size=2><SPAN class=114570019-10122002>This 
+is&nbsp;a subclass that I use all the time and I would suggest that something 
+equivalent needs to be in the java.util.concurrency package. This class is 
+invaluable for retrofitting existing code to use 
+Future(Result).</SPAN></FONT></DIV>
+<DIV><FONT color=#008080 face=Arial size=2><SPAN 
+class=114570019-10122002></SPAN></FONT>&nbsp;</DIV>
+<DIV><FONT color=#008080 face=Arial size=2><SPAN class=114570019-10122002>import 
+java.lang.reflect.InvocationHandler;<BR>import 
+java.lang.reflect.InvocationTargetException;<BR>import 
+java.lang.reflect.Method;<BR>import 
+EDU.oswego.cs.dl.util.concurrent.FutureResult;<BR>import 
+java.lang.reflect.Proxy;<BR>/**<BR>&nbsp;* This class is useful to when 
+retrofitting existing code that uses interfaces<BR>&nbsp;* to handle future 
+results.<BR>&nbsp;* @author&nbsp; pmoore<BR>&nbsp;* 
+@version<BR>&nbsp;*/<BR>public class ProxiedFutureResult extends FutureResult 
+implements InvocationHandler {<BR>&nbsp;&nbsp;&nbsp; private long timedGet = 
+-1L;<BR>&nbsp;&nbsp;&nbsp; public ProxiedFutureResult(){<BR>&nbsp;&nbsp;&nbsp; 
+}<BR>&nbsp;&nbsp;&nbsp; public Object invoke(Object proxy, Method method, 
+Object[] args) throws Throwable {<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+Object obj;<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; try 
+{<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; if ( 
+timedGet &lt; 0 ) 
+{<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+obj = 
+this.get();<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+} else 
+{<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+obj = 
+this.timedGet(timedGet);<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+}<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; } 
+catch(InvocationTargetException e) 
+{<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; // since 
+the wrapped exception is more meaningful to 
+the<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; // 
+code using the 
+proxy.<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+throw e.getCause();<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+}<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; return method.invoke(obj, 
+args);<BR>&nbsp;&nbsp;&nbsp; }<BR>&nbsp;&nbsp;&nbsp; public void 
+setTimedGetTime(long msecs) {<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 
+this.timedGet = msecs;<BR>&nbsp;&nbsp;&nbsp; }<BR>&nbsp;&nbsp;&nbsp; public 
+Object getProxy(Class[] proxyFor) 
+{<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; return 
+Proxy.newProxyInstance(null, proxyFor, this);<BR>&nbsp;&nbsp;&nbsp; 
+}<BR>&nbsp;&nbsp;&nbsp; public Object getProxy(ClassLoader classLoader, Class[] 
+proxyFor) {<BR>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; return 
+Proxy.newProxyInstance(classLoader, proxyFor, this);<BR>&nbsp;&nbsp;&nbsp; 
+}<BR>}</SPAN></FONT></DIV></BODY></HTML>
+
+------_=_NextPart_001_01C2A07F.030ED670--
+
+From dawidk@mathcs.emory.edu  Tue Dec 10 21:19:26 2002
+From: dawidk@mathcs.emory.edu (Dawid Kurzyniec)
+Date: Tue, 10 Dec 2002 16:19:26 -0500
+Subject: [concurrency-interest] Re: 'Future' definition
+In-Reply-To: <28E82FC5DCC2FC47801F12B3ECDE0EE20160C2B3@hq-ex-9>
+References: <28E82FC5DCC2FC47801F12B3ECDE0EE20160C2B3@hq-ex-9>
+Message-ID: <200212101619.27194.dawidk@mathcs.emory.edu>
+
+On Tuesday 10 December 2002 01:25 pm, Patrick Moore wrote:
+> Hi Doug -
+>
+> The decision about not having a clear() method in the Future interface
+> would be more tolerable if it wasn't for the fact that such a method is
+> missing (even protected) from FutureTask. Since set(null) is not the same
+> as a clear(), this means that I have to:
+>
+> 1) reimplement all of FutureTask's functionality or
+> 2) using reflection trickery ( Method/Field.setAccessable(true) ) in a
+> FutureTask subclass or
+> 3) Continue to use the EDU version...
+>
+> I would suggest that if it is perfectly permissible and useful to have the
+> set(), setThrowable(), clear() methods in the interface but define it that
+> implementors of the interface may throw UnsupportedOperationException.
+> (There are plenty of examples of this in the Collections as well as
+> Iterator does the same.) So FutureTask may have:
+>
+> (...)
+
+Hello Patrick,
+
+On the other side, I have been strongly arguing some time ago not only _not_ 
+to include clear and set methods in the Future interface, but even to put 
+immutability in the Future interface contract (this suggestion has been 
+rejected). I see setters and clearers as a potential breach of encapsulation: 
+anyone who has hands on your future may mess you up by changing the value or 
+clearing it; also, you can no longer assume that once you have result from 
+getResult(), it will stay the same for subsequent reads. So then you couldn't 
+safely treat futures as first-class objects and pass them around. I was 
+arguing that if you need resettable futures, you would be better off using 
+callbacks instead. You may want to check out the archives to find more 
+details. In the example you gave (the periodically refreshed cache), I don't 
+think the future is the most appropriate _abstraction_ to use. Why don't you 
+instead write your own "result handler" or "cache object" with set and clear 
+methods invoked by callbacks, without neccesarily implementing the Future 
+interface.
+
+Dawid
+ 
+
+From pmoore@brocade.com  Tue Dec 10 22:21:47 2002
+From: pmoore@brocade.com (Patrick Moore)
+Date: Tue, 10 Dec 2002 14:21:47 -0800
+Subject: [concurrency-interest] Re: 'Future' definition
+Message-ID: <28E82FC5DCC2FC47801F12B3ECDE0EE20160C2BD@hq-ex-9>
+
+This message is in MIME format. Since your mail reader does not understand
+this format, some or all of this message may not be legible.
+
+------_=_NextPart_001_01C2A09A.871B5B80
+Content-Type: text/plain;
+	charset="iso-8859-1"
+
+Hi Dawid --
+
+I can see that we are going to have an interesting conversation :-) 
+
+I don't find the discussion to which you refer in the concurrency archives.
+If this happened in the jsr mailing list please send a link as it isn't in
+the concurrency-interest archive.
+
+... 
+I don't see how being able to clear() is this huge barrier to being a first
+class object. If some code needs the value not to change during an operation
+it simply extracts the Future wrapped value. With regards to the
+immutablity, you haven't explained why a mechanism, throwing
+UnsupportedOperationException, that is used elsewhere for exactly this kind
+of situation is inadequate here. Call Future volatile if you must but the
+EDU package solves a real-world problem that this new package won't. 
+
+In response to your comment:
+"Why don't you instead write your own "result handler" or "cache object"
+with set and clear 
+methods invoked by callbacks, without necessarily implementing the Future
+interface."
+
+My answer is why? What is the significant difference? What is the contact
+that I am violating? Why should I write my own when
+EDU.oswego.cs.dl.util.concurrent.FutureResult is perfectly correct and
+adequate. The Future concept works well and fits with the behavior.
+
+If you think that having an immutable Future(Result) is important - I will
+not disagree at all with you on that. The problem I have is that now I have
+*less* functionality than I did before - which I will strongly disagree
+about.
+
+Like I indicated... not having it in there leaves me 3 choices none of them
+very correct but each is 'better' than riting my own since I leverage
+existing code.
+
+
+-----Original Message-----
+From: Dawid Kurzyniec [mailto:dawidk@mathcs.emory.edu]
+Sent: Tuesday, December 10, 2002 1:19 PM
+To: concurrency-interest@altair.cs.oswego.edu
+Subject: Re: [concurrency-interest] Re: 'Future' definition
+
+
+On Tuesday 10 December 2002 01:25 pm, Patrick Moore wrote:
+> Hi Doug -
+>
+> The decision about not having a clear() method in the Future interface
+> would be more tolerable if it wasn't for the fact that such a method is
+> missing (even protected) from FutureTask. Since set(null) is not the same
+> as a clear(), this means that I have to:
+>
+> 1) reimplement all of FutureTask's functionality or
+> 2) using reflection trickery ( Method/Field.setAccessable(true) ) in a
+> FutureTask subclass or
+> 3) Continue to use the EDU version...
+>
+> I would suggest that if it is perfectly permissible and useful to have the
+> set(), setThrowable(), clear() methods in the interface but define it that
+> implementors of the interface may throw UnsupportedOperationException.
+> (There are plenty of examples of this in the Collections as well as
+> Iterator does the same.) So FutureTask may have:
+>
+> (...)
+
+Hello Patrick,
+
+On the other side, I have been strongly arguing some time ago not only _not_
+
+to include clear and set methods in the Future interface, but even to put 
+immutability in the Future interface contract (this suggestion has been 
+rejected). I see setters and clearers as a potential breach of
+encapsulation: 
+anyone who has hands on your future may mess you up by changing the value or
+
+clearing it; also, you can no longer assume that once you have result from 
+getResult(), it will stay the same for subsequent reads. So then you
+couldn't 
+safely treat futures as first-class objects and pass them around. I was 
+arguing that if you need resettable futures, you would be better off using 
+callbacks instead. You may want to check out the archives to find more 
+details. In the example you gave (the periodically refreshed cache), I don't
+
+think the future is the most appropriate _abstraction_ to use. Why don't you
+
+instead write your own "result handler" or "cache object" with set and clear
+
+methods invoked by callbacks, without neccesarily implementing the Future 
+interface.
+
+Dawid
+ 
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+------_=_NextPart_001_01C2A09A.871B5B80
+Content-Type: text/html;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+<HEAD>
+<META HTTP-EQUIV=3D"Content-Type" CONTENT=3D"text/html; =
+charset=3Diso-8859-1">
+<META NAME=3D"Generator" CONTENT=3D"MS Exchange Server version =
+5.5.2653.12">
+<TITLE>RE: [concurrency-interest] Re: 'Future' definition</TITLE>
+</HEAD>
+<BODY>
+
+<P><FONT SIZE=3D2>Hi Dawid --</FONT>
+</P>
+
+<P><FONT SIZE=3D2>I can see that we are going to have an interesting =
+conversation :-) </FONT>
+</P>
+
+<P><FONT SIZE=3D2>I don't find the discussion to which you refer in the =
+concurrency archives. If this happened in the jsr mailing list please =
+send a link as it isn't in the concurrency-interest archive.</FONT></P>
+
+<P><FONT SIZE=3D2>... </FONT>
+<BR><FONT SIZE=3D2>I don't see how being able to clear() is this huge =
+barrier to being a first class object. If some code needs the value not =
+to change during an operation it simply extracts the Future wrapped =
+value. With regards to the immutablity, you haven't explained why a =
+mechanism, throwing UnsupportedOperationException, that is used =
+elsewhere for exactly this kind of situation is inadequate here. Call =
+Future volatile if you must but the EDU package solves a real-world =
+problem that this new package won't. </FONT></P>
+
+<P><FONT SIZE=3D2>In response to your comment:</FONT>
+<BR><FONT SIZE=3D2>&quot;Why don't you instead write your own =
+&quot;result handler&quot; or &quot;cache object&quot; with set and =
+clear </FONT>
+<BR><FONT SIZE=3D2>methods invoked by callbacks, without necessarily =
+implementing the Future interface.&quot;</FONT>
+</P>
+
+<P><FONT SIZE=3D2>My answer is why? What is the significant difference? =
+What is the contact that I am violating? Why should I write my own when =
+EDU.oswego.cs.dl.util.concurrent.FutureResult is perfectly correct and =
+adequate. The Future concept works well and fits with the =
+behavior.</FONT></P>
+
+<P><FONT SIZE=3D2>If you think that having an immutable Future(Result) =
+is important - I will not disagree at all with you on that. The problem =
+I have is that now I have *less* functionality than I did before - =
+which I will strongly disagree about.</FONT></P>
+
+<P><FONT SIZE=3D2>Like I indicated... not having it in there leaves me =
+3 choices none of them very correct but each is 'better' than riting my =
+own since I leverage existing code.</FONT></P>
+<BR>
+
+<P><FONT SIZE=3D2>-----Original Message-----</FONT>
+<BR><FONT SIZE=3D2>From: Dawid Kurzyniec [<A =
+HREF=3D"mailto:dawidk@mathcs.emory.edu">mailto:dawidk@mathcs.emory.edu</=
+A>]</FONT>
+<BR><FONT SIZE=3D2>Sent: Tuesday, December 10, 2002 1:19 PM</FONT>
+<BR><FONT SIZE=3D2>To: concurrency-interest@altair.cs.oswego.edu</FONT>
+<BR><FONT SIZE=3D2>Subject: Re: [concurrency-interest] Re: 'Future' =
+definition</FONT>
+</P>
+<BR>
+
+<P><FONT SIZE=3D2>On Tuesday 10 December 2002 01:25 pm, Patrick Moore =
+wrote:</FONT>
+<BR><FONT SIZE=3D2>&gt; Hi Doug -</FONT>
+<BR><FONT SIZE=3D2>&gt;</FONT>
+<BR><FONT SIZE=3D2>&gt; The decision about not having a clear() method =
+in the Future interface</FONT>
+<BR><FONT SIZE=3D2>&gt; would be more tolerable if it wasn't for the =
+fact that such a method is</FONT>
+<BR><FONT SIZE=3D2>&gt; missing (even protected) from FutureTask. Since =
+set(null) is not the same</FONT>
+<BR><FONT SIZE=3D2>&gt; as a clear(), this means that I have to:</FONT>
+<BR><FONT SIZE=3D2>&gt;</FONT>
+<BR><FONT SIZE=3D2>&gt; 1) reimplement all of FutureTask's =
+functionality or</FONT>
+<BR><FONT SIZE=3D2>&gt; 2) using reflection trickery ( =
+Method/Field.setAccessable(true) ) in a</FONT>
+<BR><FONT SIZE=3D2>&gt; FutureTask subclass or</FONT>
+<BR><FONT SIZE=3D2>&gt; 3) Continue to use the EDU version...</FONT>
+<BR><FONT SIZE=3D2>&gt;</FONT>
+<BR><FONT SIZE=3D2>&gt; I would suggest that if it is perfectly =
+permissible and useful to have the</FONT>
+<BR><FONT SIZE=3D2>&gt; set(), setThrowable(), clear() methods in the =
+interface but define it that</FONT>
+<BR><FONT SIZE=3D2>&gt; implementors of the interface may throw =
+UnsupportedOperationException.</FONT>
+<BR><FONT SIZE=3D2>&gt; (There are plenty of examples of this in the =
+Collections as well as</FONT>
+<BR><FONT SIZE=3D2>&gt; Iterator does the same.) So FutureTask may =
+have:</FONT>
+<BR><FONT SIZE=3D2>&gt;</FONT>
+<BR><FONT SIZE=3D2>&gt; (...)</FONT>
+</P>
+
+<P><FONT SIZE=3D2>Hello Patrick,</FONT>
+</P>
+
+<P><FONT SIZE=3D2>On the other side, I have been strongly arguing some =
+time ago not only _not_ </FONT>
+<BR><FONT SIZE=3D2>to include clear and set methods in the Future =
+interface, but even to put </FONT>
+<BR><FONT SIZE=3D2>immutability in the Future interface contract (this =
+suggestion has been </FONT>
+<BR><FONT SIZE=3D2>rejected). I see setters and clearers as a potential =
+breach of encapsulation: </FONT>
+<BR><FONT SIZE=3D2>anyone who has hands on your future may mess you up =
+by changing the value or </FONT>
+<BR><FONT SIZE=3D2>clearing it; also, you can no longer assume that =
+once you have result from </FONT>
+<BR><FONT SIZE=3D2>getResult(), it will stay the same for subsequent =
+reads. So then you couldn't </FONT>
+<BR><FONT SIZE=3D2>safely treat futures as first-class objects and pass =
+them around. I was </FONT>
+<BR><FONT SIZE=3D2>arguing that if you need resettable futures, you =
+would be better off using </FONT>
+<BR><FONT SIZE=3D2>callbacks instead. You may want to check out the =
+archives to find more </FONT>
+<BR><FONT SIZE=3D2>details. In the example you gave (the periodically =
+refreshed cache), I don't </FONT>
+<BR><FONT SIZE=3D2>think the future is the most appropriate =
+_abstraction_ to use. Why don't you </FONT>
+<BR><FONT SIZE=3D2>instead write your own &quot;result handler&quot; or =
+&quot;cache object&quot; with set and clear </FONT>
+<BR><FONT SIZE=3D2>methods invoked by callbacks, without neccesarily =
+implementing the Future </FONT>
+<BR><FONT SIZE=3D2>interface.</FONT>
+</P>
+
+<P><FONT SIZE=3D2>Dawid</FONT>
+<BR><FONT SIZE=3D2>&nbsp;</FONT>
+<BR><FONT =
+SIZE=3D2>_______________________________________________</FONT>
+<BR><FONT SIZE=3D2>Concurrency-interest mailing list</FONT>
+<BR><FONT SIZE=3D2>Concurrency-interest@altair.cs.oswego.edu</FONT>
+<BR><FONT SIZE=3D2><A =
+HREF=3D"http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interes=
+t" =
+TARGET=3D"_blank">http://altair.cs.oswego.edu/mailman/listinfo/concurren=
+cy-interest</A></FONT>
+</P>
+
+</BODY>
+</HTML>
+------_=_NextPart_001_01C2A09A.871B5B80--
+
+From dawidk@mathcs.emory.edu  Wed Dec 11 02:32:20 2002
+From: dawidk@mathcs.emory.edu (Dawid Kurzyniec)
+Date: Tue, 10 Dec 2002 21:32:20 -0500
+Subject: [concurrency-interest] Re: 'Future' definition
+In-Reply-To: <28E82FC5DCC2FC47801F12B3ECDE0EE20160C2BD@hq-ex-9>
+References: <28E82FC5DCC2FC47801F12B3ECDE0EE20160C2BD@hq-ex-9>
+Message-ID: <200212102132.20858.dawidk@mathcs.emory.edu>
+
+On Tuesday 10 December 2002 05:21 pm, Patrick Moore wrote:
+
+> I don't find the discussion to which you refer in the concurrency archives.
+> If this happened in the jsr mailing list please send a link as it isn't in
+> the concurrency-interest archive.
+
+Sorry, I should have been more specific. That thread started 10 Sep 2002; the 
+name was: "Futures, callbacks, callables, runnables, and executors once 
+again". Here is the URL to the first posting: 
+http://altair.cs.oswego.edu/pipermail/concurrency-interest/2002-September/000238.html.
+
+> ...
+> I don't see how being able to clear() is this huge barrier to being a first
+> class object. If some code needs the value not to change during an
+> operation it simply extracts the Future wrapped value. 
+
+I was referring to the situation when you want to pass around the future 
+object before it gets determined, i.e. without waiting for async operation to 
+complete.
+
+> With regards to the
+> immutablity, you haven't explained why a mechanism, throwing
+> UnsupportedOperationException, that is used elsewhere for exactly this kind
+> of situation is inadequate here. 
+
+The difference is that sets and maps are mutable by definition, and 
+immutability is for special cases. On the other hand, future is immutable *by 
+definition*. The concept is about 12 years old; the definitions I've found 
+can be described as: "future is a const with deferred binding".
+
+Now I believe that interfaces should clearly represent underlying 
+abstractions. Having set() and reset() methods in the Future interface would 
+obfuscate the abstraction, suggesting that there is a symmetry betwen get and 
+set.
+
+> Call Future volatile if you must but the
+> EDU package solves a real-world problem that this new package won't.
+
+But it saves (me, for instance) from other real-world problems that the old 
+package have been introducing (in fact, I was forced to use my own version of 
+Future exactly to avoid those problems). Please check out the archived thread 
+for much more details (e.g. point "4 iv" in my first posting).
+
+> In response to your comment:
+> "Why don't you instead write your own "result handler" or "cache object"
+> with set and clear
+> methods invoked by callbacks, without necessarily implementing the Future
+> interface."
+>
+> My answer is why? What is the significant difference? What is the contact
+> that I am violating? Why should I write my own when
+> EDU.oswego.cs.dl.util.concurrent.FutureResult is perfectly correct and
+> adequate. The Future concept works well and fits with the behavior.
+
+Well, as I said - I don't think it is adequate if it is called "future", as it 
+violates semantics of what people know and understand as a future. To me, it 
+is analogous to trying to eat soup with fork, and complaining that it leaks. 
+So there are no more non-leaking forks in the new API; there is no spoon 
+either - you simply must bring your own spoon to the party. The EG admitted 
+that in order to meet schedule they must sometimes have cut functionality for 
+the first release. It means that spoon may arrive in forthcoming versions, 
+but until it does, I think it is better to ask guests to bring their own 
+spoons than offering them multi-purpose swiss-knife forks that can also play 
+music, but for the price of making it difficult to stick them in the food.
+
+> If you think that having an immutable Future(Result) is important - I will
+> not disagree at all with you on that. The problem I have is that now I have
+> *less* functionality than I did before - which I will strongly disagree
+> about.
+>
+> Like I indicated... not having it in there leaves me 3 choices none of them
+> very correct but each is 'better' than riting my own since I leverage
+> existing code.
+
+
+I see your point, but I don't agree that it is better in this case (to wrap a 
+paper around the fork instead of making a brand-new spoon :). Let we face 
+this like men: the code of FutureTask is very simple, you actually do not 
+need all of it to implement your cache example, so the amount of code you 
+need to write is about 30-40 lines, and most of it you can take directly from 
+public-domain dl.u.c. On the other hand, if the facilities you postulate were 
+there, I would likely be forced to create special adapters to hide setters 
+and make things safe - then I would have to write that 30-40 lines. 
+
+That's true that some functionality has been removed with this change, but I 
+think that it makes the API more consistent and it simplifies things for far 
+more people that are affected by the functionality loss.
+
+Also, it seems that EG has already very strong opinion on this (since it was 
+discussed long time ago, and also considering Doug's response) and I don't 
+think they are likely to change it again.
+
+Regards,
+Dawid
+
+
+From dl@cs.oswego.edu  Thu Dec 12 21:03:57 2002
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Thu, 12 Dec 2002 16:03:57 -0500
+Subject: [concurrency-interest] EDU.oswego.cs.dl.util.concurrent 1.3.2 available
+Message-ID: <15864.63933.276848.737084@altair.cs.oswego.edu>
+
+This isn't directly related to JSR-166, but probably affects most
+people on this list. A minor bug-fix update of dl.u.c is available at
+  http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/intro.html
+Please replace your 1.3.1 or earlier versions with it.
+
+The planned next major release will be a pre-JDK1.5 full
+implementation of the JSR-166 APIs, minus those features that
+intrinsically require native support and/or changes to other java
+packages. Hopefully early next year.
+
+-- 
+Doug Lea, Computer Science Department, SUNY Oswego, Oswego, NY 13126 USA
+dl@cs.oswego.edu 315-312-2688 FAX:315-312-5424 http://gee.cs.oswego.edu/  
+
+From leou@us.ibm.com  Sat Dec 14 03:59:35 2002
+From: leou@us.ibm.com (Leo Uzcategui)
+Date: Fri, 13 Dec 2002 20:59:35 -0700
+Subject: [concurrency-interest] Leo Uzcategui/Austin/IBM is out of the office.
+Message-ID: <OF04A41A4D.28D1955B-ON87256C8F.0015EF5C-87256C8F.0015EF5C@us.ibm.com>
+
+
+
+
+I will be out of the office starting December 12, 2002 and will not return
+until January 6, 2003.
+
+For assistance, please contact Robin Redden at (512) 838-1542.
+
+
+From brian@quiotix.com  Sat Dec 14 23:20:13 2002
+From: brian@quiotix.com (Brian Goetz)
+Date: Sat, 14 Dec 2002 15:20:13 -0800
+Subject: [concurrency-interest] Leo Uzcategui/Austin/IBM is out of
+ the office.
+In-Reply-To: <OF04A41A4D.28D1955B-ON87256C8F.0015EF5C-87256C8F.0015EF5C@
+ us.ibm.com>
+Message-ID: <5.1.0.14.2.20021214151939.01bc98c0@pop.quiotix.com>
+
+>I will be out of the office starting December 12, 2002 and will not return
+>until January 6, 2003.
+>
+>For assistance, please contact Robin Redden at (512) 838-1542.
+
+For what its worth:
+
+Thieves are using information contained in 'out of office' auto-reply emails
+and cross-referencing it with publicly available personal information to
+target empty houses.  Criminals are buying huge lists of email addresses
+over the internet and sending mass-mailings in the hope of receiving 'out of
+office' auto responses from workers away on vacation.  By cross-reference
+such replies with publicly available information from online directories,
+the burglars can often discover the name, address and telephone number of
+the person on vacation.  "You wouldn't go on vacation with a note pinned to
+your door saying who you are, how long you will be away, and when you are
+coming back, so why would you put this in an email?" "Email is the most
+popular form of office communication but many people forget that the
+information contained in these messages can get into the wrong hands."
+
+
+
+--
+Brian Goetz
+Quiotix Corporation
+brian@quiotix.com           Tel: 650-843-1300            Fax: 650-324-8032
+
+http://www.quiotix.com
+
+
+From rganesan@myrealbox.com  Tue Dec 17 08:41:39 2002
+From: rganesan@myrealbox.com (Ganesan R)
+Date: 17 Dec 2002 14:11:39 +0530
+Subject: [concurrency-interest] dl.u.c 1.3.2 broken documentation
+Message-ID: <ouy96p3um4.fsf@andlx-anamika.cisco.com>
+
+Hi,
+
+Thanks for a superb piece of work with util.concurrent. I just joined the
+list and wanted to mention some problems with documentation in the latest
+version of concurrent.tar.gz. Many of the URLs don't resolve at all - for
+example the links instead of pointing to local copies instead go to the web
+site. Actually, the links don't resolve at all. Most of them look like
+http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/EDU/oswego/cs/dl/util/concurrent/...
+
+Ganesan
+
+-- 
+Ganesan R 
+
+From eric.zoerner@gemstone.com  Wed Dec 18 18:08:19 2002
+From: eric.zoerner@gemstone.com (Eric Zoerner)
+Date: Wed, 18 Dec 2002 10:08:19 -0800
+Subject: [concurrency-interest] uninterruptible acquire on Semaphore?
+Message-ID: <3E00B993.2040408@gemstone.com>
+
+Would it not make sense and be useful to have an uninterruptible version of 
+acquire on Semaphore? This method could be used in cases where you are using a 
+Semaphore as a mutual exclusion lock and you are not expecting the permit to be 
+held but briefly.
+
+This way the application would not need to throw InterruptedException from all 
+the methods that acquire the Semaphore permit. Alternatively if the exception is 
+not propagated then the application would not have to catch the 
+InterruptedException and then re-attempt to acquire the permit and then set the 
+interrupted flag. This logic could be hidden in an acquireUninterruptibly method.
+
+It could also parallel the Lock protocol where there are both lock and 
+lockInterruptibly methods.
+
+
+From dl@cs.oswego.edu  Thu Dec 19 00:16:41 2002
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Wed, 18 Dec 2002 19:16:41 -0500
+Subject: [concurrency-interest] dl.u.c 1.3.2 broken documentation
+In-Reply-To: <ouy96p3um4.fsf@andlx-anamika.cisco.com>
+References: <ouy96p3um4.fsf@andlx-anamika.cisco.com>
+Message-ID: <15873.4073.155853.726975@altair.cs.oswego.edu>
+
+Ganesan wrote:
+
+> Many of the URLs don't resolve at all - 
+
+Sorry. Rather than make a new release, I just made a bunch of symlinks
+on web server so all of the broken ones should appear unbroken :-)
+
+-Doug
+
+From rganesan@myrealbox.com  Thu Dec 19 03:41:07 2002
+From: rganesan@myrealbox.com (Ganesan R)
+Date: 19 Dec 2002 09:11:07 +0530
+Subject: [concurrency-interest] dl.u.c 1.3.2 broken documentation
+In-Reply-To: <15873.4073.155853.726975@altair.cs.oswego.edu>
+References: <ouy96p3um4.fsf@andlx-anamika.cisco.com>
+ <15873.4073.155853.726975@altair.cs.oswego.edu>
+Message-ID: <ouznr21xrg.fsf@andlx-anamika.cisco.com>
+
+>>>>> "Doug" == Doug Lea <dl@cs.oswego.edu> writes:
+
+> Ganesan wrote:
+
+>> Many of the URLs don't resolve at all - 
+
+> Sorry. Rather than make a new release, I just made a bunch of symlinks
+> on web server so all of the broken ones should appear unbroken :-)
+
+That's fine too :-). However, I am behind a relatively slow link, so prefer
+to have the documentation available locally. A couple of perl one-liners did
+the trick for me :-).
+
+Ganesan
+
+-- 
+Ganesan R
+
+
+From rganesan-l@myrealbox.com  Mon Dec 23 12:27:52 2002
+From: rganesan-l@myrealbox.com (rganesan-l@myrealbox.com)
+Date: 23 Dec 2002 17:57:52 +0530
+Subject: [concurrency-interest] ConcurrentHashMap - feature request
+In-Reply-To: <ouy96p3um4.fsf@andlx-anamika.cisco.com>
+Message-ID: <ouk7i0vs1j.fsf@andlx-anamika.cisco.com>
+
+Hi,
+
+I am building a fairly complex data structure that needs an HashMap which
+allows concurrency for both retrievals and updates. ConcurrentHashMap seems
+to fit the bill exactly except for
+
+----
+There is NOT any support for locking the entire table to prevent
+updates. This makes it imposssible, for example, to add an element only if
+it is not already present, since another thread may be in the process of
+doing the same thing. If you need such capabilities, consider instead using
+the ConcurrentReaderHashMap class. 
+----
+
+Unfortunately, adding an element only if it is not already present is
+exactly what I need. I cannot simply do a put and check for the old value
+because old value is not the same as the new value. Using the
+ConcurrentReaderHashMap is also not a viable option because there are
+concurrent updaters.
+
+It seems to be that what I need is a conditional put; something like 
+
+----
+public Object put(Object key, Object value, boolean replace)
+----
+
+When "replace" is true, this method behaves like the exiting put method;
+when it's false it leaves the old value untouched. Looking at
+ConcurrentHashMap.java, it appears that the API is quite easy to
+implement. This API seems to be a useful addition even for
+ConcurrentReaderHashMap. So, may be, what we need is a new interface 
+on top of AbstractMap; I can't think of a good name - say CheckedAbstractMap.
+Any comments?
+
+Ganesan
+
+--
+Ganesan R
+
+
+From joshua.bloch@sun.com  Mon Dec 23 16:05:37 2002
+From: joshua.bloch@sun.com (Joshua Bloch)
+Date: Mon, 23 Dec 2002 08:05:37 -0800
+Subject: [concurrency-interest] ConcurrentHashMap - feature request
+References: <ouk7i0vs1j.fsf@andlx-anamika.cisco.com>
+Message-ID: <3E073451.3020701@sun.com>
+
+Ganesan,
+
+   ConcurrentHashMap provides exactly the support you need.  It implements the ConcurrentMap implementation which consists solely of the putIfAbsent method.  See http://gee.cs.oswego.edu/dl/concurrent/dist/docs/index.html for details.  Also, it's worth noting that locking up the entire map in order to perform this operation would defeat the purpose of the class (high concurrency).
+
+              Happy holidays,
+
+              Josh
+
+
+
+
+From dl@cs.oswego.edu  Tue Dec 24 00:45:43 2002
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Mon, 23 Dec 2002 19:45:43 -0500
+Subject: [concurrency-interest] ConcurrentHashMap - feature request
+In-Reply-To: <ouk7i0vs1j.fsf@andlx-anamika.cisco.com>
+References: <ouy96p3um4.fsf@andlx-anamika.cisco.com>
+ <ouk7i0vs1j.fsf@andlx-anamika.cisco.com>
+Message-ID: <15879.44599.489065.267182@altair.cs.oswego.edu>
+
+Ganesan -
+
+What Josh said is true about JSR-166, but not true of the
+ConcurrentHashMap in dl.util.concurrent. If you need something now, I
+can send you the preliminary implementation of the JSR-166 version.
+
+-Doug
+
+
+From rganesan-l@myrealbox.com  Tue Dec 24 03:53:17 2002
+From: rganesan-l@myrealbox.com (rganesan-l@myrealbox.com)
+Date: 24 Dec 2002 09:23:17 +0530
+Subject: [concurrency-interest] ConcurrentHashMap - feature request
+In-Reply-To: <3E073451.3020701@sun.com>
+References: <ouk7i0vs1j.fsf@andlx-anamika.cisco.com>
+ <3E073451.3020701@sun.com>
+Message-ID: <ou4r94ul76.fsf@andlx-anamika.cisco.com>
+
+>>>>> "Joshua" == Joshua Bloch <joshua.bloch@sun.com> writes:
+
+> Ganesan,
+
+> ConcurrentHashMap provides exactly the support you need.  It implements
+> the ConcurrentMap implementation which consists solely of the putIfAbsent
+> method.  See http://gee.cs.oswego.edu/dl/concurrent/dist/docs/index.html
+> for details.  
+
+Joshua,
+
+I was initially confused because I was looking for exactly such a method
+in ConcurrentHashMap but couldn't find one. Then Doug's mail cleared up
+things :-). Actually, the ConcurrentMap interface is exactly what I
+needed. Talk about having your wish satisfied before you ask for it :-).
+
+> Also, it's worth noting that locking up the entire map in
+> order to perform this operation would defeat the purpose of the class
+> (high concurrency).
+
+Yes, obviously. Looking at the ConcurrentHashMap in util.concurrent, 
+locking the entire map doesn't seem to needed. Concurrency can be 
+maintained at the same level as the put method. I assume that's how
+the ConcurrentHashMap in JSR 166 implements it now.
+
+Ganesan
+
+-- 
+Ganesan R
+
+
+From rganesan-l@myrealbox.com  Tue Dec 24 03:58:59 2002
+From: rganesan-l@myrealbox.com (rganesan-l@myrealbox.com)
+Date: 24 Dec 2002 09:28:59 +0530
+Subject: [concurrency-interest] ConcurrentHashMap - feature request
+In-Reply-To: <15879.44599.489065.267182@altair.cs.oswego.edu>
+References: <ouy96p3um4.fsf@andlx-anamika.cisco.com>
+ <ouk7i0vs1j.fsf@andlx-anamika.cisco.com>
+ <15879.44599.489065.267182@altair.cs.oswego.edu>
+Message-ID: <ouznqwt6d8.fsf@andlx-anamika.cisco.com>
+
+>>>>> "Doug" == Doug Lea <dl@cs.oswego.edu> writes:
+
+> What Josh said is true about JSR-166, but not true of the
+> ConcurrentHashMap in dl.util.concurrent. 
+
+Thanks. I was confused for a moment :-). 
+
+> If you need something now, I can send you the preliminary implementation
+> of the JSR-166 version.
+
+That would be a help, thanks. Reading the current ConcurrentHashMap
+implementation, it appears that I only need modify the following inner loop 
+in the put method 
+
+-----
+      for (Entry e = first; e != null; e = e.next) {
+        if (e.hash == hash && eq(key, e.key)) {
+          Object oldValue = e.value; 
+          e.value = value;
+          return oldValue;
+        }
+      }
+-----
+
+to
+
+-----
+      for (Entry e = first; e != null; e = e.next) {
+        if (e.hash == hash && eq(key, e.key)) {
+          Object oldValue = e.value; 
+          if (oldValue == null)
+            e.value = value;
+          return oldValue;
+        }
+      }
+-----
+
+for putIfAbsent(). I did read your announcement that the next release of
+dl.util.concurrent will be a draft implementation of JSR-166. Do you have
+a time frame? Thanks again.
+
+-- 
+Ganesan R
+
+

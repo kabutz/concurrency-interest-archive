@@ -1,0 +1,4161 @@
+From cagatayk at acm.org  Mon Nov  2 11:11:02 2009
+From: cagatayk at acm.org (Cagatay Kavukcuoglu)
+Date: Mon, 2 Nov 2009 11:11:02 -0500
+Subject: [concurrency-interest] Blocking peek/await in LBQ
+In-Reply-To: <4AEC3CEB.7010501@cs.oswego.edu>
+References: <35b8f8000910282032p43f1e907n4a9d69e08e70e8e@mail.gmail.com> 
+	<4AEC3CEB.7010501@cs.oswego.edu>
+Message-ID: <35b8f8000911020811s204b49d0jffab1d0f61b48c6@mail.gmail.com>
+
+On Sat, Oct 31, 2009 at 8:34 AM, Doug Lea <dl at cs.oswego.edu> wrote:
+> Cagatay Kavukcuoglu wrote:
+>>
+>> Hi,
+>>
+>> I realize this was discussed before
+>>
+>> (http://cs.oswego.edu/pipermail/concurrency-interest/2009-June/006229.html),
+>> but I wanted to see if folks think whether there are other ways to get
+>> equivalent functionality. My particular use case is implementing a
+>> concurrent data structure that would allow the usual tuple space
+>> operations like read (blocks until a matching element exists and
+>> returns without removing), take (like read, except the element is
+>> removed) and put, where multiple values can be "queued" while being
+>> associated with a key. An "await" operation on LinkedBlockingQueue
+>> would have simplified the implementation significantly; in fact, I'm
+>> duplicating LBQ code and adding this myself at the moment. Is there a
+>> way to do this idiomatically in j.u.c that does not involve having to
+>> resort to code duplication?
+>>
+>
+> Basically, this amounts to supporting a change notification
+> scheme for the particular event of a collection (here, a queue)
+> becoming non-empty.
+>
+> Our resistance to supplying such things stems from not wanting
+> to get into the business of adding to each concurrent collection
+> all the different state-change mechanics (listeners? callbacks?
+> blocking waits?) that you could apply to all their possible events
+> (non-empty? empty? too big? insertion or removal of particular
+> elements?) ?(Other library folks are less stubborn about this.
+> I think some Apache and Google collections have some support
+> for some of these options.)
+>
+
+My personal opinion is that this is a niche feature that only becomes
+useful for a small minority and it's okay if that minority has to jump
+through hoops as long as *some* solution is feasible. I do appreciate
+the simplicity of the concurrent collections in j.u.c.
+
+> But the easy cases of doing this yourself are pretty
+> easy. For example you could use a synchronized wrapper class
+> around nearly any collection or queue, adding
+> a notifyAll on any insertion, along with an await
+> method along the lines of:
+> ?while (q.isEmpty() == null) wait();
+
+Thanks, this makes more sense than duplicating code for the blocking queue.
+
+> Although, if the single lock you'd need here for the wait/notify
+> becomes a serious scalability problem, you'd need a more
+> complicated solution.
+
+This probably will be a problem later on but I can live with the
+limitations at the moment. I was experimenting with something along
+the lines of a new synchronizer based on AQS that blocks readers until
+a value is provided (this part is easy - a bit like data
+flow/FutureTask) and can be reset (this part turns out to be hard) to
+represent the queue head. This was my first attempt at using AQS and
+lock-free primitives for coordination; it's fun to work on, but hard
+to write and test for.
+
+>
+>
+> -Doug
+>
+
+
+From sanne.grinovero at gmail.com  Sat Nov  7 06:28:18 2009
+From: sanne.grinovero at gmail.com (Sanne Grinovero)
+Date: Sat, 7 Nov 2009 12:28:18 +0100
+Subject: [concurrency-interest] Concurrent approximate LRU?
+In-Reply-To: <DE10B00CCE0DC54883734F3060AC9ED439A4B1327E@AUSP01VMBX06.collaborationhost.net>
+References: <DE10B00CCE0DC54883734F3060AC9ED439A4B1327E@AUSP01VMBX06.collaborationhost.net>
+Message-ID: <50e5f6250911070328q60f8a639yc495d25a29acbdf0@mail.gmail.com>
+
+Hi Bryan,
+I don't know the details of the implementation but Infinispan is doing
+something similar; it's LGPL, so you might want to have a look in the
+sources or ask to in the forums: www.jboss.org/infinispan
+It implements "ConcurrentHashMap" so it should be straight-forward to drop in.
+Especially related to your use case: have a look at the Hibernate
+second level cache implementation based on Infinispan.
+
+Sanne
+
+2009/10/21 Bryan Thompson <bryan at systap.com>:
+> Hello,
+>
+> We have a database with many different backing stores all of which compete to buffer ram in a shared LRU cache policy. ?We have implemented this using an outer concurrent hash map providing indirection to a collection of inner hash maps (we use LinkedHashMap here for better performance on its iterator, but we do not use its ability to impose an LRU ordering because the order must be shared across all inner cache instances). ?The keys are Long's. ?The values are elements in a double-linked list. ?If there is an LRU eviction then the record is evicted from the inner hash map corresponding to the store. ?This spreads out the memory constraint across the backing stores based on access.
+>
+> The problem with this approach is that the double-linked list is not thread-safe so we have to obtain a lock when testing the cache put adding to the cache and hold it across that operation. ?This is about a 10% performance penalty involved.
+>
+> Unfortunately, the ConcurrentHashMap does not allow us to impose an access policy, or we could use a single ConcurrentHashMap instance and use the store's identifier and the Long address of the record as a composite key and all would be good.
+>
+> I am wondering if there is a way to maintain an approximate LRU ordering across the elements in these different caches?
+>
+> Thanks in advance,
+>
+> -bryan
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From tim at peierls.net  Sat Nov  7 08:04:49 2009
+From: tim at peierls.net (Tim Peierls)
+Date: Sat, 7 Nov 2009 08:04:49 -0500
+Subject: [concurrency-interest] Concurrent approximate LRU?
+In-Reply-To: <50e5f6250911070328q60f8a639yc495d25a29acbdf0@mail.gmail.com>
+References: <DE10B00CCE0DC54883734F3060AC9ED439A4B1327E@AUSP01VMBX06.collaborationhost.net>
+	<50e5f6250911070328q60f8a639yc495d25a29acbdf0@mail.gmail.com>
+Message-ID: <63b4e4050911070504p2267caf8ua1df6185031fe5d2@mail.gmail.com>
+
+On Sat, Nov 7, 2009 at 6:28 AM, Sanne Grinovero
+<sanne.grinovero at gmail.com>wrote:
+
+> I don't know the details of the implementation but Infinispan is
+> doing something similar; ...
+> It implements "ConcurrentHashMap" so it should be straight-forward to drop
+> in.
+>
+
+Infinispan's Cache<K, V> extends ConcurrentMap<K, V>.  (ConcurrentHashMap is
+a concrete type.)
+
+--tim
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091107/c9eb83d6/attachment.html>
+
+From kevinb at google.com  Sat Nov  7 12:44:24 2009
+From: kevinb at google.com (Kevin Bourrillion)
+Date: Sat, 7 Nov 2009 09:44:24 -0800
+Subject: [concurrency-interest] Concurrent approximate LRU?
+In-Reply-To: <63b4e4050911070504p2267caf8ua1df6185031fe5d2@mail.gmail.com>
+References: <DE10B00CCE0DC54883734F3060AC9ED439A4B1327E@AUSP01VMBX06.collaborationhost.net>
+	<50e5f6250911070328q60f8a639yc495d25a29acbdf0@mail.gmail.com>
+	<63b4e4050911070504p2267caf8ua1df6185031fe5d2@mail.gmail.com>
+Message-ID: <108fcdeb0911070944m1e6fd08ew3bc5b1f979e09542@mail.gmail.com>
+
+Also, we're working actively to add support for bounded caches to MapMaker:
+
+  http://google-collections.googlecode.com/svn/trunk/javadoc/com/google/common/collect/MapMaker.html
+
+We are investigating a fuzzy-LRU strategy, as well as ClockPro, which
+seems very promising so far:
+
+  http://www.usenix.org/events/usenix05/tech/general/full_papers/jiang/jiang_html/
+
+This is a refinement of LIRS (it can help to read this one first, perhaps):
+
+  http://www.cse.ohio-state.edu/hpcs/WWW/HTML/publications/papers/TR-02-6.pdf
+
+We'd love to hear any reactions to, or particularly experience with,
+LIRS and ClockPro.
+
+
+
+On Sat, Nov 7, 2009 at 5:04 AM, Tim Peierls <tim at peierls.net> wrote:
+> On Sat, Nov 7, 2009 at 6:28 AM, Sanne Grinovero <sanne.grinovero at gmail.com>
+> wrote:
+>>
+>> I don't know the details of the implementation but Infinispan is
+>> doing?something similar; ...
+>> It implements "ConcurrentHashMap" so it should be straight-forward to drop
+>> in.
+>
+> Infinispan's Cache<K, V> extends ConcurrentMap<K, V>. ?(ConcurrentHashMap is
+> a concrete type.)
+> --tim
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+
+
+-- 
+Kevin Bourrillion @ Google
+internal:  http://go/javalibraries
+external: guava-libraries.googlecode.com
+
+
+From bryan at systap.com  Sat Nov  7 14:13:33 2009
+From: bryan at systap.com (Bryan Thompson)
+Date: Sat, 7 Nov 2009 13:13:33 -0600
+Subject: [concurrency-interest] Concurrent approximate LRU?
+In-Reply-To: <50e5f6250911070328q60f8a639yc495d25a29acbdf0@mail.gmail.com>
+References: <DE10B00CCE0DC54883734F3060AC9ED439A4B1327E@AUSP01VMBX06.collaborationhost.net>
+	<50e5f6250911070328q60f8a639yc495d25a29acbdf0@mail.gmail.com>
+Message-ID: <DE10B00CCE0DC54883734F3060AC9ED439A7EFF4B8@AUSP01VMBX06.collaborationhost.net>
+
+Sanne & Tim,
+
+I will look into this.  Thanks for pointing it out.  I've been meaning to checkout infinispan anyway.  Given the resounding silence on the list, it occurs to me that this can probably be handled with a mixture of the ConcurrentLinkedList and the ConcurrentHashMap, but I have not yet explored this possibility.  The LIRS policy looks quite interesting.
+
+You can take a look at the project that I am working on, which is http://www.bigdata.com/blog.  This is a horizontally scaled MVCC database architecture with a focus on semantic web database applications.
+
+Thanks,
+
+-bryan
+
+
+> -----Original Message-----
+> From: Sanne Grinovero [mailto:sanne.grinovero at gmail.com] 
+> Sent: Saturday, November 07, 2009 6:28 AM
+> To: Bryan Thompson
+> Cc: concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] Concurrent approximate LRU?
+> 
+> Hi Bryan,
+> I don't know the details of the implementation but Infinispan 
+> is doing something similar; it's LGPL, so you might want to 
+> have a look in the sources or ask to in the forums: 
+> www.jboss.org/infinispan It implements "ConcurrentHashMap" so 
+> it should be straight-forward to drop in.
+> Especially related to your use case: have a look at the 
+> Hibernate second level cache implementation based on Infinispan.
+> 
+> Sanne
+> 
+> 2009/10/21 Bryan Thompson <bryan at systap.com>:
+> > Hello,
+> >
+> > We have a database with many different backing stores all 
+> of which compete to buffer ram in a shared LRU cache policy. ?
+> We have implemented this using an outer concurrent hash map 
+> providing indirection to a collection of inner hash maps (we 
+> use LinkedHashMap here for better performance on its 
+> iterator, but we do not use its ability to impose an LRU 
+> ordering because the order must be shared across all inner 
+> cache instances). ?The keys are Long's. ?The values are 
+> elements in a double-linked list. ?If there is an LRU 
+> eviction then the record is evicted from the inner hash map 
+> corresponding to the store. ?This spreads out the memory 
+> constraint across the backing stores based on access.
+> >
+> > The problem with this approach is that the double-linked 
+> list is not thread-safe so we have to obtain a lock when 
+> testing the cache put adding to the cache and hold it across 
+> that operation. ?This is about a 10% performance penalty involved.
+> >
+> > Unfortunately, the ConcurrentHashMap does not allow us to 
+> impose an access policy, or we could use a single 
+> ConcurrentHashMap instance and use the store's identifier and 
+> the Long address of the record as a composite key and all 
+> would be good.
+> >
+> > I am wondering if there is a way to maintain an approximate 
+> LRU ordering across the elements in these different caches?
+> >
+> > Thanks in advance,
+> >
+> > -bryan
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> 
+
+From michael.m.spiegel at gmail.com  Sat Nov  7 15:01:07 2009
+From: michael.m.spiegel at gmail.com (Michael Spiegel)
+Date: Sat, 7 Nov 2009 15:01:07 -0500
+Subject: [concurrency-interest] PriorityBlockingQueue put() operation
+Message-ID: <1901f69e0911071201r4d85fe98lbd476450813c4a79@mail.gmail.com>
+
+Hi,
+
+I apologize if this question has been answered before of if the answer
+is trivially obvious.  The documentation for
+java.util.concurrent.PriorityBlockingQueue states that the put(E e)
+method will never block, and such claims are not made about the add(E
+e) method.  The method bodies for both methods are identical, ignoring
+the fact that one method returns boolean and the other doesn't return
+a value.  The methods body is an invocation to the offer(E e) method.
+I believe that offer() is a blocking method, since it locks the
+ReentrantLock around the data structure.  So is put() a blocking
+method? I must be missing something obvious.
+
+Thanks!
+--Michael
+
+From tim at peierls.net  Sat Nov  7 15:45:46 2009
+From: tim at peierls.net (Tim Peierls)
+Date: Sat, 7 Nov 2009 15:45:46 -0500
+Subject: [concurrency-interest] PriorityBlockingQueue put() operation
+In-Reply-To: <1901f69e0911071201r4d85fe98lbd476450813c4a79@mail.gmail.com>
+References: <1901f69e0911071201r4d85fe98lbd476450813c4a79@mail.gmail.com>
+Message-ID: <63b4e4050911071245y50d81b06i3c5d89fd91708d4d@mail.gmail.com>
+
+On Sat, Nov 7, 2009 at 3:01 PM, Michael Spiegel <michael.m.spiegel at gmail.com
+> wrote:
+
+> Hi,
+>
+> I apologize if this question has been answered before of if the answer
+> is trivially obvious.  The documentation for
+> java.util.concurrent.PriorityBlockingQueue states that the put(E e)
+> method will never block, and such claims are not made about the add(E
+> e) method.  The method bodies for both methods are identical, ignoring
+> the fact that one method returns boolean and the other doesn't return
+> a value.  The methods body is an invocation to the offer(E e) method.
+> I believe that offer() is a blocking method, since it locks the
+> ReentrantLock around the data structure.  So is put() a blocking
+> method? I must be missing something obvious.
+>
+
+Simply holding a lock doesn't necessarily make a method into a blocking
+method. A blocking method conventionally has "throws InterruptedException"
+in its signature, a sign to calling code that the method might wait (i.e.,
+block) until some condition holds, and that the caller should be prepared to
+handle the possibility of interruption while it waits.
+
+The add() method comes from java.util.Collection; it's not a blocking
+method. The (untimed) offer() method comes from java.util.Queue; it isn't a
+blocking method, either.
+
+BlockingQueue.put() *is* generally a blocking method; it waits for the queue
+to have room for the new element and throws InterruptedException if
+interrupted while waiting. But since PriorityBlockingQueue is unbounded, it
+always has room, so it never has to wait and there is no need for it to
+throw InterruptedException. So PriorityBlockingQueue.put() is not a blocking
+method.
+
+--tim
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091107/cb437e1f/attachment.html>
+
+From martinrb at google.com  Sat Nov  7 15:48:48 2009
+From: martinrb at google.com (Martin Buchholz)
+Date: Sat, 7 Nov 2009 12:48:48 -0800
+Subject: [concurrency-interest] PriorityBlockingQueue put() operation
+In-Reply-To: <1901f69e0911071201r4d85fe98lbd476450813c4a79@mail.gmail.com>
+References: <1901f69e0911071201r4d85fe98lbd476450813c4a79@mail.gmail.com>
+Message-ID: <1ccfd1c10911071248p2093c6c8ybad4b98afc1acc1c@mail.gmail.com>
+
+There is a terminology problem here.
+Since locks are used, none of the methods are "non-blocking"
+in the currently popular technical sense.
+
+I don't know how best to describe an algorithm that
+will need to acquire a lock, but once it does so,
+will be able to proceed immediately, and not have to
+wait indefinitely for some other thread to take action.
+The word "wait-free" is taken.
+
+Martin
+
+On Sat, Nov 7, 2009 at 12:01, Michael Spiegel
+<michael.m.spiegel at gmail.com>wrote:
+
+> Hi,
+>
+> I apologize if this question has been answered before of if the answer
+> is trivially obvious.  The documentation for
+> java.util.concurrent.PriorityBlockingQueue states that the put(E e)
+> method will never block, and such claims are not made about the add(E
+> e) method.  The method bodies for both methods are identical, ignoring
+> the fact that one method returns boolean and the other doesn't return
+> a value.  The methods body is an invocation to the offer(E e) method.
+> I believe that offer() is a blocking method, since it locks the
+> ReentrantLock around the data structure.  So is put() a blocking
+> method? I must be missing something obvious.
+>
+> Thanks!
+> --Michael
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091107/682a44c8/attachment.html>
+
+From tim at peierls.net  Sat Nov  7 16:32:59 2009
+From: tim at peierls.net (Tim Peierls)
+Date: Sat, 7 Nov 2009 16:32:59 -0500
+Subject: [concurrency-interest] PriorityBlockingQueue put() operation
+In-Reply-To: <1ccfd1c10911071248p2093c6c8ybad4b98afc1acc1c@mail.gmail.com>
+References: <1901f69e0911071201r4d85fe98lbd476450813c4a79@mail.gmail.com>
+	<1ccfd1c10911071248p2093c6c8ybad4b98afc1acc1c@mail.gmail.com>
+Message-ID: <63b4e4050911071332g2ae48869ocbb2dee95e8df957@mail.gmail.com>
+
+On Sat, Nov 7, 2009 at 3:48 PM, Martin Buchholz <martinrb at google.com> wrote:
+
+> There is a terminology problem here.
+> Since locks are used, none of the methods are "non-blocking"
+> in the currently popular technical sense.
+>
+
+True, but I think the term "blocking method" is more usefully (if sloppily)
+applied only to "throws IE" situations.
+
+
+
+> I don't know how best to describe an algorithm that
+> will need to acquire a lock, but once it does so,
+> will be able to proceed immediately, and not have to
+> wait indefinitely for some other thread to take action.
+> The word "wait-free" is taken.
+>
+
+"Effectively non-blocking"? "Contentious"? :-)
+
+This is not a distinction I'd want to force on people who just want to use
+j.u.c types without becoming concurrency experts.
+
+--tim
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091107/af401d6c/attachment-0001.html>
+
+From joe.bowbeer at gmail.com  Sat Nov  7 18:00:44 2009
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Sat, 7 Nov 2009 15:00:44 -0800
+Subject: [concurrency-interest] PriorityBlockingQueue put() operation
+In-Reply-To: <1901f69e0911071201r4d85fe98lbd476450813c4a79@mail.gmail.com>
+References: <1901f69e0911071201r4d85fe98lbd476450813c4a79@mail.gmail.com>
+Message-ID: <31f2a7bd0911071500m762ac6a6p8b869d617584ece4@mail.gmail.com>
+
+On Sat, Nov 7, 2009 at 12:01 PM, Michael Spiegel wrote:
+
+> Hi,
+>
+> I apologize if this question has been answered before of if the answer
+> is trivially obvious.  The documentation for
+> java.util.concurrent.PriorityBlockingQueue states that the put(E e)
+> method will never block, and such claims are not made about the add(E
+> e) method.  The method bodies for both methods are identical, ignoring
+> the fact that one method returns boolean and the other doesn't return
+> a value.  The methods body is an invocation to the offer(E e) method.
+> I believe that offer() is a blocking method, since it locks the
+> ReentrantLock around the data structure.  So is put() a blocking
+> method? I must be missing something obvious.
+>
+> Thanks!
+> --Michael
+>
+
+
+Wikipedia currently makes this distinction:
+
+  "In computer science, non-blocking synchronization ensures that threads
+competing for a shared resource do not have their execution indefinitely
+postponed by mutual exclusion. A non-blocking algorithm is lock-free if
+there is guaranteed system-wide progress; wait-free if there is also
+guaranteed per-thread progress."
+
+  http://en.wikipedia.org/wiki/Non-blocking_synchronization
+
+So non-blocking < lock-free < wait-free ?
+
+Consider old (blocking) java.io and the newer asynchronous java.nio.  They
+both use locks of some sort, but nio is non-blocking.
+
+Object.wait is typically a good indicator of  blocking.  (As is throws IE.)
+
+--Joe
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091107/8a1225ca/attachment.html>
+
+From davidcholmes at aapt.net.au  Sat Nov  7 18:12:33 2009
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Sun, 8 Nov 2009 09:12:33 +1000
+Subject: [concurrency-interest] PriorityBlockingQueue put() operation
+In-Reply-To: <31f2a7bd0911071500m762ac6a6p8b869d617584ece4@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEBJIEAA.davidcholmes@aapt.net.au>
+
+The term non-blocking here (BlockingQueue.put) is being used in a different
+sense to that of the non-blocking/wait-free/lock-free algorithms. It is an
+unfortunate terminology clash but the lock-free/wait-free/non-blocking
+terminology is only considering mutual-exclusion/atomicity related blocking
+(for want of a better term).
+
+In general any method that has to wait for a state-related condition to hold
+(space in buffer, item in buffer, data on socket, time-X-has-elapsed) is a
+blocking method, and any method that doesn't have to wait is a non-blocking
+method. And this is independent of whether locking is also involved.
+
+David
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Joe Bowbeer
+  Sent: Sunday, 8 November 2009 9:01 AM
+  To: concurrency-interest at cs.oswego.edu
+  Subject: Re: [concurrency-interest] PriorityBlockingQueue put() operation
+
+
+  On Sat, Nov 7, 2009 at 12:01 PM, Michael Spiegel wrote:
+
+    Hi,
+
+    I apologize if this question has been answered before of if the answer
+    is trivially obvious.  The documentation for
+    java.util.concurrent.PriorityBlockingQueue states that the put(E e)
+    method will never block, and such claims are not made about the add(E
+    e) method.  The method bodies for both methods are identical, ignoring
+    the fact that one method returns boolean and the other doesn't return
+    a value.  The methods body is an invocation to the offer(E e) method.
+    I believe that offer() is a blocking method, since it locks the
+    ReentrantLock around the data structure.  So is put() a blocking
+    method? I must be missing something obvious.
+
+    Thanks!
+    --Michael
+
+
+
+  Wikipedia currently makes this distinction:
+
+    "In computer science, non-blocking synchronization ensures that threads
+competing for a shared resource do not have their execution indefinitely
+postponed by mutual exclusion. A non-blocking algorithm is lock-free if
+there is guaranteed system-wide progress; wait-free if there is also
+guaranteed per-thread progress."
+
+    http://en.wikipedia.org/wiki/Non-blocking_synchronization
+
+  So non-blocking < lock-free < wait-free ?
+
+  Consider old (blocking) java.io and the newer asynchronous java.nio.  They
+both use locks of some sort, but nio is non-blocking.
+
+  Object.wait is typically a good indicator of  blocking.  (As is throws
+IE.)
+
+  --Joe
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091108/e06cdd2e/attachment.html>
+
+From martinrb at google.com  Sat Nov  7 23:37:32 2009
+From: martinrb at google.com (Martin Buchholz)
+Date: Sat, 7 Nov 2009 20:37:32 -0800
+Subject: [concurrency-interest] PriorityBlockingQueue put() operation
+In-Reply-To: <31f2a7bd0911071500m762ac6a6p8b869d617584ece4@mail.gmail.com>
+References: <1901f69e0911071201r4d85fe98lbd476450813c4a79@mail.gmail.com>
+	<31f2a7bd0911071500m762ac6a6p8b869d617584ece4@mail.gmail.com>
+Message-ID: <1ccfd1c10911072037h488c72a8v38bb68cce3d36073@mail.gmail.com>
+
+On Sat, Nov 7, 2009 at 15:00, Joe Bowbeer <joe.bowbeer at gmail.com> wrote:
+
+>
+> Wikipedia currently makes this distinction:
+>
+>   "In computer science, non-blocking synchronization ensures that threads
+> competing for a shared resource do not have their execution indefinitely
+> postponed by mutual exclusion. A non-blocking algorithm is lock-free if
+> there is guaranteed system-wide progress; wait-free if there is also
+> guaranteed per-thread progress."
+>
+>   http://en.wikipedia.org/wiki/Non-blocking_synchronization
+>
+> So non-blocking < lock-free < wait-free ?
+>
+>
+I read it a little differently.
+"lock-free" is a kind of "non-blocking synchronization",
+the weakest kind.  So:
+non-blocking <= lock-free < wait-free
+
+non-blocking synchronization cannot involve locks,
+since some thread can acquire the lock and never be scheduled again,
+causing *all* threads to
+"have their execution indefinitely postponed by mutual exclusion".
+
+Martin
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091107/f4300912/attachment.html>
+
+From Mark.Moir at Sun.COM  Sun Nov  8 21:25:02 2009
+From: Mark.Moir at Sun.COM (Mark Moir)
+Date: Sun, 08 Nov 2009 21:25:02 -0500
+Subject: [concurrency-interest] Concurrency-interest Digest, Vol 58,
+	Issue 5
+In-Reply-To: <mailman.1.1257699600.11339.concurrency-interest@cs.oswego.edu>
+References: <mailman.1.1257699600.11339.concurrency-interest@cs.oswego.edu>
+Message-ID: <4AF77D7E.4000103@sun.com>
+
+
+
+> From: Martin Buchholz <martinrb at google.com>
+> Subject: Re: [concurrency-interest] PriorityBlockingQueue put()
+> 	operation
+> To: Joe Bowbeer <joe.bowbeer at gmail.com>
+> Cc: "concurrency-interest at cs.oswego.edu"
+> 	<concurrency-interest at cs.oswego.edu>
+> Message-ID:
+> 	<1ccfd1c10911072037h488c72a8v38bb68cce3d36073 at mail.gmail.com>
+> Content-Type: text/plain; charset="iso-8859-1"
+> 
+> On Sat, Nov 7, 2009 at 15:00, Joe Bowbeer <joe.bowbeer at gmail.com> wrote:
+> 
+>> Wikipedia currently makes this distinction:
+>>
+>>   "In computer science, non-blocking synchronization ensures that threads
+>> competing for a shared resource do not have their execution indefinitely
+>> postponed by mutual exclusion. A non-blocking algorithm is lock-free if
+>> there is guaranteed system-wide progress; wait-free if there is also
+>> guaranteed per-thread progress."
+>>
+>>   http://en.wikipedia.org/wiki/Non-blocking_synchronization
+>>
+>> So non-blocking < lock-free < wait-free ?
+>>
+>>
+> I read it a little differently.
+> "lock-free" is a kind of "non-blocking synchronization",
+> the weakest kind.  So:
+> non-blocking <= lock-free < wait-free
+> 
+> non-blocking synchronization cannot involve locks,
+> since some thread can acquire the lock and never be scheduled again,
+> causing *all* threads to
+> "have their execution indefinitely postponed by mutual exclusion".
+
+
+David is right that these terms are overloaded and that the use here
+is not related to the obstruction-free/lock-free/wait-free meaning of
+non-blocking.  It would probably be useful to make this distinction in
+a clear and consistent way in the documentation.
+
+The Wikipedia entry (have we really got to the point of citing
+Wikipedia? :-)) is sort of right in spirit, but is not precise enough
+to be meaningful, and is somewhat misleading.  In particular, it is
+possible to have blocking behavior without having mutual exclusion.
+
+Furthermore, there are unstated assumptions about the system and
+system mode.  For example, a lock-free algorithm does not guarantee
+system-wide progress.  What it guarantees is that *if* some thread
+takes infinitely many steps attempting to complete an operation,
+*then* infinitely many operations complete.  If the scheduler decides
+not to run any threads, then no progress will be made, but that does
+not mean the algorithm is not lock-free.
+
+Also, a lock-free algorithm must make the guarantee it makes in a
+fully asynchronous execution model, in which the algorithm cannot make
+assumptions about the relative execution speed of different threads,
+cannot make fairness assumptions, cannot assume any thread will take
+another step, etc.  (Similarly for obstruction-free and wait-free.)
+
+Finally, it is not true that lock-freedom is the weakest form of
+non-blocking progress condition.  Obstruction-freedom is weaker: it
+guarantees progress to an operation *only* if it eventually executes
+in isolation.  A lock-free algorithm guarantees that if (exactly) two
+operations continually take steps in completing an operation, one of
+the will eventually complete.  Obstruction-freedom does not guarantee
+that.
+
+I have often thought of obstruction-freedom as "the weakest
+non-blocking progress condition" and in a deterministic system, I
+think that is true.  But others have pointed out that in a
+probabilistic model, you can have an algorithm that guarantees
+completion in isolation with high probability, but not
+deterministically.  Whether you still consider such a thing to be
+non-blocking is up to you  :-) .
+
+I hope this is helpful. 
+
+Cheers
+
+Mark
+
+From dvyukov at gmail.com  Tue Nov 10 05:57:42 2009
+From: dvyukov at gmail.com (Dmitriy V'jukov)
+Date: Tue, 10 Nov 2009 13:57:42 +0300
+Subject: [concurrency-interest] Fences APIand visibility/coherency
+In-Reply-To: <238A96A773B3934685A7269CC8A8D042577D6AD21C@GVW0436EXB.americas.hpqcorp.net>
+References: <9014da950910160528l15ea68dsa419bf34965a3e03@mail.gmail.com> 
+	<238A96A773B3934685A7269CC8A8D042577D6AD21C@GVW0436EXB.americas.hpqcorp.net>
+Message-ID: <9014da950911100257o537e2cb0qceb5c9bb721fbdcb@mail.gmail.com>
+
+On Sat, Oct 17, 2009 at 3:46 AM, Boehm, Hans <hans.boehm at hp.com> wrote:
+
+>
+>
+> > -----Original Message-----
+> > From: Dmitriy V'jukov [mailto:dvyukov at gmail.com]
+> > Sent: Friday, October 16, 2009 5:28 AM
+> > To: concurrency-interest at cs.oswego.edu;
+> > javamemorymodel-discussion at cs.umd.edu
+> > Cc: Doug Lea; Boehm, Hans; davidcholmes at aapt.net.au; Adam Morrison
+> > Subject: Fences APIand visibility/coherency
+> >
+> > > Date: Thu, 15 Oct 2009 18:18:48 +0000
+> > > From: "Boehm, Hans" <hans.boehm at hp.com>
+> > > Subject: Re: [concurrency-interest] [Javamemorymodel-discussion]
+> > >        Fences APIand visibility/coherency
+> >
+> > > I'm not sure we have a real disagreement here about how
+> > implementations should behave.  But I think we're running
+> > into a limitation of language specifications in general:
+> > They can only specify the allowable behavior of a program,
+> > not the details of the implementation.  Once we agree that
+> > our example program is allowed not to terminate (because we
+> > want to allow dumb schedulers), the implementation is allowed
+> > to produce that nonterminating behavior in any way it wants.
+> >
+> > Hans,
+> >
+> > I understand what you are talking about, and this makes
+> > sense. However here is some thoughts on this.
+> >
+> > Is it why "synchronization order must be a countable set"
+> > removed in favor of "Java does not require fair scheduler"
+> > (providing both statements is contradicting)?
+> As I said in my last message, I don't think the intent was to remove it,
+> just to restate it.  See the section on observable behavior.
+> >
+> > As far as I understand, what you are saying effectively
+> > implying that volatile and plain vars are basically  the same
+> > (ordering aside). I.e.
+> > assume I am in your team and write "signaling on a flag" with
+> > flag declared as plain var. You say to me: Hey, Dmitry, you
+> > have to declare flag as volatile. Me: But why, Hans? They
+> > both may work, and neither guaranteed to work. So what's the
+> > distinction? What will you answer to me?
+> The volatile flag will guarantee partial correctness; If you see the flag
+> set, you will see prior state updates by the thread setting the flag.  The
+> ordinary variable one won't guarantee that.
+>
+> As a practical matter, the volatile flag will work as far as termination
+> properties are concerned, the other one may well not.  I believe the
+> volatile flag is guaranteed to do the right thing for applications that work
+> no matter what the scheduler does.
+>
+
+Hi Hans, concurrency-interest, javamemorymodel-discussion,
+
+Sorry for delay, it took some time to form consistent reasoning on the
+topic. Here is how I understand the problem now.
+
+JLS does not provide strict guarantees regarding propagation of changes
+between threads. So most Java programs have to rely on quality and sanity of
+language implementation. But it's Ok, because they most likely do it anyway.
+There are 1000 and 1 way how "bad" language implementation can break
+reasonable programs while staying 100% conforming. For example,
+implementation can allow allocation of at most 4 bytes of dynamic memory, or
+give zero stack space, or allow creation of at most 1 thread, or make every
+volatile assignment (or any other operation) take 10^10 years of wall clock
+time (i.e. visible hang of all programs, even single-threaded), etc, etc.
+Language standard can't specify exactly how much dynamic memory
+implementation must guarantee, however we all understand that implementation
+will do it's best to provide as much dynamic memory as possible. "Good"
+language implementation handles everything in a best-effort way,
+particularly it tries to make volatile stores visible to other threads as
+soon as possible.
+So the only formal guarantee that makes sense in such an environment is -
+program must work correctly or does not work at all. And that's what
+guaranteed for volatiles.
+Hope I get it in the right way now.
+
+p.s. I still see some possible practical problem with Fences.orderWrites()
+because it relies on plain store, so I do not quite see why even "good"
+language implementation will prevent it from sinking below an infinite loop
+or something like that. Is it intended that compiler must specifically
+handle assignment after an Fences.orderWrites()?
+I would expect ordering of writes and the store be combined into a single
+operation, so that compiler will be able to ensure correct code generation.
+I.e.orderReads(O) actually means getAndOrderReads(O), i.e. the load is a
+part of the operations. This allows an implementation to emit actual load
+from main memory and prevent all reorderings on compiler level. This is
+enough to ensure useful guarantees. In order to be consistent,
+orderWrites(O) must have a form of orderWritesAndSet(X, O), so that the
+store is a part of the operation. This will allow an implementation to emit
+actual write to main memory and prevent all reorderings on compiler level.
+As a side effect such form will be consistent with C++0x's
+std::atomic::store(memory_order_release), and C#'s Thread.VolatileWrite().
+
+--
+Dmitriy V'jukov
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091110/b385b09c/attachment.html>
+
+From dl at cs.oswego.edu  Sun Nov 15 09:10:38 2009
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 15 Nov 2009 09:10:38 -0500
+Subject: [concurrency-interest] jsr166y classes now in jdk7m5
+Message-ID: <4B000BDE.1080802@cs.oswego.edu>
+
+ForkJoin, Phasers, and TransferQueues are now incorporated
+in package java.util.concurrent in the latest JDK7 snapshots,
+downloadable at http://download.java.net/jdk7/m5/
+
+Please try these out and let us know of any problems.
+
+We will still maintain JDK6-compatible versions
+for the indefinite future in package jsr166y (see
+http://gee.cs.oswego.edu/dl/concurrency-interest/index.html)
+This should also make it easier for those using these
+classes from other languages and frameworks. You can
+rely on jsr166y versions until JDK7 release, although at
+that point you'll probably need to make a visible
+switch-over to j.u.c versions. Further, it is likely
+that at some point we will make changes that
+rely on other JDK7 features.
+
+Especially during this transition, please be careful
+with "import" statements in sources --
+avoiding "*" imports from either jsr166y or
+java.util.concurrent, to avoid compile-time
+or run-time errors about name clashes by users
+running JDK7 snapshots.
+
+In general, changes show up in our jsr166y
+and j.u.c CVS before they appear in openjdk or
+Sun JDK7 snapshot releases.
+There already a few small improvements there vs
+jdk7m5 versions. We plan to occasionally commit
+small batches of them into openjdk.
+
+We don't have plans for JDK5 backports. There
+are a couple of performance-critical constructions
+in these classes that rely on JDK6 intrinsics.
+They are costly to emulate in JDK5, so it is
+not clear how useful they would be.
+This also impacts current IBM Java (J9) users even in
+JDK6, because it doesn't support some of the
+hotspot intrinsics. I understand that this will
+be addressed in an IBM JDK6 update.
+More generally, we are hoping to find a way to
+ensure compatibility in the future across JVMs for
+these JDK-internal non-public APIs (that have
+escaped standardization), to avoid future problems
+along these lines.
+
+The main known remaining jsr166-related task for JDK7 is
+to try to make good on schemes that avoid the need
+for the controversial Fences API by improving
+AtomicXUpdater APIs and somehow removing their overhead.
+
+-Doug
+
+
+
+
+From alexdmiller at yahoo.com  Sun Nov 15 15:26:08 2009
+From: alexdmiller at yahoo.com (Alex Miller)
+Date: Sun, 15 Nov 2009 12:26:08 -0800 (PST)
+Subject: [concurrency-interest] jsr166y classes now in jdk7m5
+In-Reply-To: <mailman.1.1258304400.5695.concurrency-interest@cs.oswego.edu>
+References: <mailman.1.1258304400.5695.concurrency-interest@cs.oswego.edu>
+Message-ID: <554927.5702.qm@web32205.mail.mud.yahoo.com>
+
+Glad to see stuff hitting the JDK 7 repo.  I'm guessing from this message that stuff like ConcurrentReferenceHashMap / MapMaker or the concurrent LRU work won't make it into JDK 7?
+
+Alex
+
+
+
+----- Original Message ----
+> From: "concurrency-interest-request at cs.oswego.edu" <concurrency-interest-request at cs.oswego.edu>
+> To: concurrency-interest at cs.oswego.edu
+> Sent: Sun, November 15, 2009 11:00:00 AM
+> Subject: Concurrency-interest Digest, Vol 58, Issue 8
+> 
+> Send Concurrency-interest mailing list submissions to
+>     concurrency-interest at cs.oswego.edu
+> 
+> To subscribe or unsubscribe via the World Wide Web, visit
+>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> or, via email, send a message with subject or body 'help' to
+>     concurrency-interest-request at cs.oswego.edu
+> 
+> You can reach the person managing the list at
+>     concurrency-interest-owner at cs.oswego.edu
+> 
+> When replying, please edit your Subject line so it is more specific
+> than "Re: Contents of Concurrency-interest digest..."
+> 
+> 
+> Today's Topics:
+> 
+>    1. jsr166y classes now in jdk7m5 (Doug Lea)
+> 
+> 
+> ----------------------------------------------------------------------
+> 
+> Message: 1
+> Date: Sun, 15 Nov 2009 09:10:38 -0500
+> From: Doug Lea 
+> Subject: [concurrency-interest] jsr166y classes now in jdk7m5
+> To: "concurrency-interest at cs.oswego.edu"
+>     
+> Message-ID: <4B000BDE.1080802 at cs.oswego.edu>
+> Content-Type: text/plain; charset=ISO-8859-1; format=flowed
+> 
+> ForkJoin, Phasers, and TransferQueues are now incorporated
+> in package java.util.concurrent in the latest JDK7 snapshots,
+> downloadable at http://download.java.net/jdk7/m5/
+> 
+> Please try these out and let us know of any problems.
+> 
+> We will still maintain JDK6-compatible versions
+> for the indefinite future in package jsr166y (see
+> http://gee.cs.oswego.edu/dl/concurrency-interest/index.html)
+> This should also make it easier for those using these
+> classes from other languages and frameworks. You can
+> rely on jsr166y versions until JDK7 release, although at
+> that point you'll probably need to make a visible
+> switch-over to j.u.c versions. Further, it is likely
+> that at some point we will make changes that
+> rely on other JDK7 features.
+> 
+> Especially during this transition, please be careful
+> with "import" statements in sources --
+> avoiding "*" imports from either jsr166y or
+> java.util.concurrent, to avoid compile-time
+> or run-time errors about name clashes by users
+> running JDK7 snapshots.
+> 
+> In general, changes show up in our jsr166y
+> and j.u.c CVS before they appear in openjdk or
+> Sun JDK7 snapshot releases.
+> There already a few small improvements there vs
+> jdk7m5 versions. We plan to occasionally commit
+> small batches of them into openjdk.
+> 
+> We don't have plans for JDK5 backports. There
+> are a couple of performance-critical constructions
+> in these classes that rely on JDK6 intrinsics.
+> They are costly to emulate in JDK5, so it is
+> not clear how useful they would be.
+> This also impacts current IBM Java (J9) users even in
+> JDK6, because it doesn't support some of the
+> hotspot intrinsics. I understand that this will
+> be addressed in an IBM JDK6 update.
+> More generally, we are hoping to find a way to
+> ensure compatibility in the future across JVMs for
+> these JDK-internal non-public APIs (that have
+> escaped standardization), to avoid future problems
+> along these lines.
+> 
+> The main known remaining jsr166-related task for JDK7 is
+> to try to make good on schemes that avoid the need
+> for the controversial Fences API by improving
+> AtomicXUpdater APIs and somehow removing their overhead.
+> 
+> -Doug
+> 
+> 
+> 
+> 
+> 
+> ------------------------------
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+> 
+> End of Concurrency-interest Digest, Vol 58, Issue 8
+> ***************************************************
+
+
+From dl at cs.oswego.edu  Sun Nov 15 16:51:43 2009
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 15 Nov 2009 16:51:43 -0500
+Subject: [concurrency-interest] jsr166y classes now in jdk7m5
+In-Reply-To: <554927.5702.qm@web32205.mail.mud.yahoo.com>
+References: <mailman.1.1258304400.5695.concurrency-interest@cs.oswego.edu>
+	<554927.5702.qm@web32205.mail.mud.yahoo.com>
+Message-ID: <4B0077EF.1050808@cs.oswego.edu>
+
+Alex Miller wrote:
+> I'm guessing from this message
+> that stuff like ConcurrentReferenceHashMap / MapMaker or the concurrent LRU
+> work won't make it into JDK 7?
+> 
+
+Hard to say, since we don't know how far out Java7/JDK7 will
+be. The two main concerns are:
+* Most caches would benefit from dependent weak reference
+(aka ephemeron) JVM support, which is not currently planned.
+* I don't think we have much consensus yet on which replacement
+policies (pseudo-LRU etc) are amenable to standardized
+library support and/or how to allow plugging in more
+specialized forms like those that Bob Lee, Kevin Bourrillion,
+and friends have been working on for Google collections.
+
+In some analogous situations, we've settled on
+the idea that providing something is better than nothing.
+But in this case just putting out something hits various
+API design controversies, like should a "cached function"
+act more like a Map or a Function. Oh, wait, we don't
+even have a Function API and may never want/need one if
+Java ever supports function-types. And several more along
+these lines. So for the time being I'm hoping that
+people will be content to continue to use pre-standardized
+cache components out there until some of these various JVM,
+algorithmic, and API issues become better resolved.
+
+-Doug
+
+
+
+
+From dl at cs.oswego.edu  Sun Nov 15 17:37:39 2009
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 15 Nov 2009 17:37:39 -0500
+Subject: [concurrency-interest] ParallelArrays via Relooper
+Message-ID: <4B0082B3.6000200@cs.oswego.edu>
+
+
+Continuing some overdue notes related to what will,
+might, and won't ship in JDK7...
+
+We aren't currently planning to release
+extra166y.ParallelArray and friends as part of JKD7,
+although they will continue to be available and hopefully
+improved, and possibly extended with Map (vs Array) support.
+
+People who would like to use ForkJoin processing in
+higher-level constructions than supported at the plain
+ForkJoinTask level might be interested in the Relooper
+tool by Danny Dig and friends at University of Illinois. See
+   https://netfiles.uiuc.edu/dig/RefactoringInfo/tools/ReLooper/
+This is an Eclipse-based refactoring tool that helps
+automate creation of some ParallelArray constructions,
+including automated definition of various little
+function-objects etc. (The need for which is (only one)
+of the reasons for not including ParallelArray in JDK7).
+Relooper also guides choices among aggregate operations.
+
+I was very impressed when Danny demoed it
+a few weeks ago at OOPSLA. Some of the sample
+refactored programs are realistic enough
+that I expect it will be useful to just about anyone
+interested in exploring these forms of parallelization.
+
+(There are also existing or planned frameworks in
+other languages that run on JVMs for parallel
+aggregate (i.e., array, collection, and/or map)
+operations that might rely on ParallelArray etc
+or variants of them.)
+
+-Doug
+
+From martinrb at google.com  Sun Nov 15 21:14:01 2009
+From: martinrb at google.com (Martin Buchholz)
+Date: Sun, 15 Nov 2009 18:14:01 -0800
+Subject: [concurrency-interest] jsr166y classes now in jdk7m5
+In-Reply-To: <4B0077EF.1050808@cs.oswego.edu>
+References: <mailman.1.1258304400.5695.concurrency-interest@cs.oswego.edu>
+	<554927.5702.qm@web32205.mail.mud.yahoo.com>
+	<4B0077EF.1050808@cs.oswego.edu>
+Message-ID: <1ccfd1c10911151814u32ab9ea6t2333b8cc1d44a6dd@mail.gmail.com>
+
+On Sun, Nov 15, 2009 at 13:51, Doug Lea <dl at cs.oswego.edu> wrote:
+
+> Alex Miller wrote:
+>
+>> I'm guessing from this message
+>> that stuff like ConcurrentReferenceHashMap / MapMaker or the concurrent
+>> LRU
+>> work won't make it into JDK 7?
+>>
+>>
+> * I don't think we have much consensus yet on which replacement
+> policies (pseudo-LRU etc) are amenable to standardized
+> library support and/or how to allow plugging in more
+> specialized forms like those that Bob Lee, Kevin Bourrillion,
+> and friends have been working on for Google collections.
+>
+
+Caching is hard to get right, and the Google classes are still in
+development.
+There definitely will be solutions for everyone to use,
+but they will be part of a third-party package from Google.
+I agree with Doug that it seems too early to try to standardize them now.
+Integrating them into JDK8 seems more realistic.
+
+Martin
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091115/341887da/attachment.html>
+
+From alexdmiller at yahoo.com  Sun Nov 15 22:16:27 2009
+From: alexdmiller at yahoo.com (Alex Miller)
+Date: Sun, 15 Nov 2009 19:16:27 -0800 (PST)
+Subject: [concurrency-interest] jsr166y classes now in jdk7m5
+In-Reply-To: <1ccfd1c10911151814u32ab9ea6t2333b8cc1d44a6dd@mail.gmail.com>
+References: <mailman.1.1258304400.5695.concurrency-interest@cs.oswego.edu>
+	<554927.5702.qm@web32205.mail.mud.yahoo.com>
+	<4B0077EF.1050808@cs.oswego.edu>
+	<1ccfd1c10911151814u32ab9ea6t2333b8cc1d44a6dd@mail.gmail.com>
+Message-ID: <612579.5731.qm@web32203.mail.mud.yahoo.com>
+
+Makes sense to me.  We've definitely felt the need for the CRHM stuff at Terracotta and usually have either used MapMaker or rolled our own. I'd love to have something like that in the JDK, but I know how these software things go...
+
+It definitely seems challenging to me to build a concurrent LRU that is flexible enough to cover the range of common use cases while not turning it into a full-fledged cache ala Ehcache.  
+
+Alex
+
+
+
+>
+>From: Martin Buchholz <martinrb at google.com>
+>To: Doug Lea <dl at cs.oswego.edu>
+>Cc: Alex Miller <alexdmiller at yahoo.com>; concurrency-interest at cs.oswego.edu
+>Sent: Sun, November 15, 2009 8:14:01 PM
+>Subject: Re: [concurrency-interest] jsr166y classes now in jdk7m5
+>
+>
+>
+>
+>On Sun, Nov 15, 2009 at 13:51, Doug Lea <dl at cs.oswego.edu> wrote:
+>
+>Alex Miller wrote:
+>>
+>>>>>I'm guessing from this message
+>>>>>>that stuff like ConcurrentReferenceHashMap / MapMaker or the concurrent LRU
+>>>>>>work won't make it into JDK 7?
+>>>
+>>>
+>>
+>>* I don't think we have much consensus yet on which replacement
+>>>>policies (pseudo-LRU etc) are amenable to standardized
+>>>>library support and/or how to allow plugging in more
+>>>>specialized forms like those that Bob Lee, Kevin Bourrillion,
+>>>>and friends have been working on for Google collections.
+>>
+>Caching is hard to get right, and the Google classes are still in development.
+>There definitely will be solutions for everyone to use, 
+>>but they will be part of a third-party package from Google.
+>I agree with Doug that it seems too early to try to standardize them now.
+>Integrating them into JDK8 seems more realistic.
+>
+>Martin
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091115/a9126774/attachment.html>
+
+From crazybob at crazybob.org  Mon Nov 16 11:07:10 2009
+From: crazybob at crazybob.org (Bob Lee)
+Date: Mon, 16 Nov 2009 08:07:10 -0800
+Subject: [concurrency-interest] jsr166y classes now in jdk7m5
+In-Reply-To: <612579.5731.qm@web32203.mail.mud.yahoo.com>
+References: <mailman.1.1258304400.5695.concurrency-interest@cs.oswego.edu>
+	<554927.5702.qm@web32205.mail.mud.yahoo.com>
+	<4B0077EF.1050808@cs.oswego.edu>
+	<1ccfd1c10911151814u32ab9ea6t2333b8cc1d44a6dd@mail.gmail.com>
+	<612579.5731.qm@web32203.mail.mud.yahoo.com>
+Message-ID: <a74683f90911160807v268cdf0awf29c0f945287ee9d@mail.gmail.com>
+
+Alex,
+
+I've been working on MapMaker full time for the past 2 weeks and do hope to
+get it into JDK 7. It will have simple LRU-based (possibly combined w/
+LFU-based) eviction. You won't be able to plug in custom eviction
+algorithms, but it will make a for an effective, fast, concurrent,
+general-purpose, in-memory cache that will improve upon soft references
+without sacrificing ease of use. I liken it to LinkedHashMap.removeEldest().
+
+I understand that the JDK 7 schedule is kind of up in the air at the moment,
+but Doug and Martin are right--if MapMaker doesn't make it in, it's not the
+end of the world. We can just continue to import Google Collections.
+
+Bob
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091116/372432bb/attachment.html>
+
+From alexdmiller at yahoo.com  Mon Nov 16 11:25:57 2009
+From: alexdmiller at yahoo.com (Alex Miller)
+Date: Mon, 16 Nov 2009 08:25:57 -0800 (PST)
+Subject: [concurrency-interest] jsr166y classes now in jdk7m5
+In-Reply-To: <a74683f90911160807v268cdf0awf29c0f945287ee9d@mail.gmail.com>
+References: <mailman.1.1258304400.5695.concurrency-interest@cs.oswego.edu>
+	<554927.5702.qm@web32205.mail.mud.yahoo.com>
+	<4B0077EF.1050808@cs.oswego.edu>
+	<1ccfd1c10911151814u32ab9ea6t2333b8cc1d44a6dd@mail.gmail.com>
+	<612579.5731.qm@web32203.mail.mud.yahoo.com>
+	<a74683f90911160807v268cdf0awf29c0f945287ee9d@mail.gmail.com>
+Message-ID: <940509.28129.qm@web32202.mail.mud.yahoo.com>
+
+Sounds very cool.  I'm sure my team would love to take a look at it if you wanted any review (not that you have any lack of expert reviewers, I'm sure :).  
+
+
+>
+>From: Bob Lee <crazybob at crazybob.org>
+>To: Alex Miller <alexdmiller at yahoo.com>
+>Cc: Martin Buchholz <martinrb at google.com>; Doug Lea <dl at cs.oswego.edu>; concurrency-interest at cs.oswego.edu
+>Sent: Mon, November 16, 2009 10:07:10 AM
+>Subject: Re: [concurrency-interest] jsr166y classes now in jdk7m5
+>
+>Alex,
+>
+>
+>I've been working on MapMaker full time for the past 2 weeks and do hope to get it into JDK 7. It will have simple LRU-based (possibly combined w/ LFU-based) eviction. You won't be able to plug in custom eviction algorithms, but it will make a for an effective, fast, concurrent, general-purpose, in-memory cache that will improve upon soft references without sacrificing ease of use. I liken it to LinkedHashMap.removeEldest().
+>
+>
+>I understand that the JDK 7 schedule is kind of up in the air at the moment, but Doug and Martin are right--if MapMaker doesn't make it in, it's not the end of the world. We can just continue to import Google Collections.
+>
+>
+>Bob
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091116/7042d435/attachment-0001.html>
+
+From crazybob at crazybob.org  Mon Nov 16 11:28:16 2009
+From: crazybob at crazybob.org (Bob Lee)
+Date: Mon, 16 Nov 2009 08:28:16 -0800
+Subject: [concurrency-interest] jsr166y classes now in jdk7m5
+In-Reply-To: <940509.28129.qm@web32202.mail.mud.yahoo.com>
+References: <mailman.1.1258304400.5695.concurrency-interest@cs.oswego.edu>
+	<554927.5702.qm@web32205.mail.mud.yahoo.com>
+	<4B0077EF.1050808@cs.oswego.edu>
+	<1ccfd1c10911151814u32ab9ea6t2333b8cc1d44a6dd@mail.gmail.com>
+	<612579.5731.qm@web32203.mail.mud.yahoo.com>
+	<a74683f90911160807v268cdf0awf29c0f945287ee9d@mail.gmail.com>
+	<940509.28129.qm@web32202.mail.mud.yahoo.com>
+Message-ID: <a74683f90911160828m5252c072p1e7ad3fdd8a217c4@mail.gmail.com>
+
+On Mon, Nov 16, 2009 at 8:25 AM, Alex Miller <alexdmiller at yahoo.com> wrote:
+
+> Sounds very cool.  I'm sure my team would love to take a look at it if you
+> wanted any review (not that you have any lack of expert reviewers, I'm sure
+> :).
+>
+
+Thanks for the offer! I'll ping you when I check it in.
+
+Bob
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091116/08ddb9a3/attachment.html>
+
+From bryan at systap.com  Mon Nov 16 12:02:06 2009
+From: bryan at systap.com (Bryan Thompson)
+Date: Mon, 16 Nov 2009 11:02:06 -0600
+Subject: [concurrency-interest] jsr166y classes now in jdk7m5
+In-Reply-To: <a74683f90911160807v268cdf0awf29c0f945287ee9d@mail.gmail.com>
+References: <mailman.1.1258304400.5695.concurrency-interest@cs.oswego.edu>
+	<554927.5702.qm@web32205.mail.mud.yahoo.com>
+	<4B0077EF.1050808@cs.oswego.edu>
+	<1ccfd1c10911151814u32ab9ea6t2333b8cc1d44a6dd@mail.gmail.com>
+	<612579.5731.qm@web32203.mail.mud.yahoo.com>
+	<a74683f90911160807v268cdf0awf29c0f945287ee9d@mail.gmail.com>
+Message-ID: <DE10B00CCE0DC54883734F3060AC9ED439A92E2C45@AUSP01VMBX06.collaborationhost.net>
+
+Bob,
+
+I posted a little while ago looking for a concurrent LRU (or similar eviction policy).  I am looking at the 1.0-rc4 download of the google collections[1].  Looking at MapMaker, I see support for time-based eviction.  However, what we really want is support for access-based eviction orders which are triggered based on the RAM utilized by the cache so we can manage the cache size in terms of the percentage of the heap which is dedicated to buffering data.  Our application is a clustered database.   There is really no reason to evict records from the cache just because they are old since the cache would just become "cold".  Instead, we would like to preserve records in the cache and evict them when the cache would exceed a configured memory limit.
+
+I've done several implementations of this, but none of them are based on striped locking or non-blocking operations which limits their potential concurrency.  I've improved performance of a blocking cache implementation significantly by doing many evictions at once when the cache is full (cheap hack to reduce the lock contention), but I would really love to find a high performance concurrent cache with a pluggable eviction policy.  Am I just missing how to do this with MapMaker?  If I can do this with MapMaker, I would definately be happy to provide feedback on the implementation and its performance.
+
+Thanks,
+
+-bryan
+
+[1] http://code.google.com/p/google-collections/
+
+________________________________
+From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of Bob Lee
+Sent: Monday, November 16, 2009 11:07 AM
+To: Alex Miller
+Cc: Martin Buchholz; Doug Lea; concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] jsr166y classes now in jdk7m5
+
+Alex,
+
+I've been working on MapMaker full time for the past 2 weeks and do hope to get it into JDK 7. It will have simple LRU-based (possibly combined w/ LFU-based) eviction. You won't be able to plug in custom eviction algorithms, but it will make a for an effective, fast, concurrent, general-purpose, in-memory cache that will improve upon soft references without sacrificing ease of use. I liken it to LinkedHashMap.removeEldest().
+
+I understand that the JDK 7 schedule is kind of up in the air at the moment, but Doug and Martin are right--if MapMaker doesn't make it in, it's not the end of the world. We can just continue to import Google Collections.
+
+Bob
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091116/16cec22d/attachment.html>
+
+From raghuram.nidagal at gmail.com  Tue Nov 17 23:34:29 2009
+From: raghuram.nidagal at gmail.com (raghuram nidagal)
+Date: Wed, 18 Nov 2009 10:04:29 +0530
+Subject: [concurrency-interest] Question on compareAndSet
+Message-ID: <7874b1f60911172034l2fe87ba1j8de47d2f21d15e1f@mail.gmail.com>
+
+Hi,
+The documentation says "The compareAndSet method is not a general
+replacement for locking. It applies only when critical updates for an object
+are confined to a* single* variable"
+Can someone explain what this means? What are the scenarios where
+compareAndSet cannot be used for locking?
+Thanks
+Raghu
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091118/08479d3b/attachment.html>
+
+From davidcholmes at aapt.net.au  Tue Nov 17 23:44:51 2009
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 18 Nov 2009 14:44:51 +1000
+Subject: [concurrency-interest] Question on compareAndSet
+In-Reply-To: <7874b1f60911172034l2fe87ba1j8de47d2f21d15e1f@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEDIIEAA.davidcholmes@aapt.net.au>
+
+Hi Raghu,
+
+compareAndSet can only update a single variable, whereas locking can enforce
+an atomic action over as many variables as you like. Using multiple
+compareAndSets across different variables does not give you atomicity over
+the set actions.
+
+For example suppose you have a class Point:
+
+  class Point {
+     int x, y;
+     void move(int newX, int newY) {
+       x = newX;
+       y = newY;
+     }
+  }
+
+For move(a,b) to be an atomic operation you need to use locking - eg
+synchronize the move() method. If you instead tried to do seperate CAS
+operations on x and y, you could end up with an x from one move() and a y
+from a distinct move() and that would violate the property of the Point,
+that it can only exist in an x,y position to which it has been moved.
+
+HTH
+
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of raghuram
+nidagal
+  Sent: Wednesday, 18 November 2009 2:34 PM
+  To: concurrency-interest at cs.oswego.edu
+  Subject: [concurrency-interest] Question on compareAndSet
+
+
+  Hi,
+  The documentation says "The compareAndSet method is not a general
+replacement for locking. It applies only when critical updates for an object
+are confined to a single variable"
+  Can someone explain what this means? What are the scenarios where
+compareAndSet cannot be used for locking?
+  Thanks
+  Raghu
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091118/fa92f550/attachment.html>
+
+From raghuram.nidagal at gmail.com  Wed Nov 18 00:29:11 2009
+From: raghuram.nidagal at gmail.com (raghuram nidagal)
+Date: Wed, 18 Nov 2009 10:59:11 +0530
+Subject: [concurrency-interest] Question on compareAndSet
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCCEDIIEAA.davidcholmes@aapt.net.au>
+References: <7874b1f60911172034l2fe87ba1j8de47d2f21d15e1f@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCCEDIIEAA.davidcholmes@aapt.net.au>
+Message-ID: <7874b1f60911172129t6c5a7c93odaba7fcb341d61c4@mail.gmail.com>
+
+Thanks David.
+I assume compareAndSet on a single variable by itself can be used to provide
+locking functionality though..
+while(notDone){
+if(x.compareAndSet(true,false)){
+//do something
+notDone=false;
+x.set(false);
+}
+else{
+sleep..
+}
+}
+is that different from synchronized except that this code does not block
+trying to acquire the lock whereas synchronized would block ?
+
+On Wed, Nov 18, 2009 at 10:14 AM, David Holmes <davidcholmes at aapt.net.au>wrote:
+
+>  Hi Raghu,
+>
+> compareAndSet can only update a single variable, whereas locking can
+> enforce an atomic action over as many variables as you like. Using multiple
+> compareAndSets across different variables does not give you atomicity over
+> the set actions.
+>
+> For example suppose you have a class Point:
+>
+>   class Point {
+>      int x, y;
+>      void move(int newX, int newY) {
+>        x = newX;
+>        y = newY;
+>      }
+>   }
+>
+> For move(a,b) to be an atomic operation you need to use locking - eg
+> synchronize the move() method. If you instead tried to do seperate CAS
+> operations on x and y, you could end up with an x from one move() and a y
+> from a distinct move() and that would violate the property of the Point,
+> that it can only exist in an x,y position to which it has been moved.
+>
+> HTH
+>
+> David Holmes
+>
+> -----Original Message-----
+> *From:* concurrency-interest-bounces at cs.oswego.edu [mailto:
+> concurrency-interest-bounces at cs.oswego.edu]*On Behalf Of *raghuram nidagal
+> *Sent:* Wednesday, 18 November 2009 2:34 PM
+> *To:* concurrency-interest at cs.oswego.edu
+> *Subject:* [concurrency-interest] Question on compareAndSet
+>
+> Hi,
+> The documentation says "The compareAndSet method is not a general
+> replacement for locking. It applies only when critical updates for an object
+> are confined to a* single* variable"
+> Can someone explain what this means? What are the scenarios where
+> compareAndSet cannot be used for locking?
+> Thanks
+> Raghu
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091118/48dce124/attachment.html>
+
+From davidcholmes at aapt.net.au  Wed Nov 18 00:36:00 2009
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 18 Nov 2009 15:36:00 +1000
+Subject: [concurrency-interest] Question on compareAndSet
+In-Reply-To: <7874b1f60911172129t6c5a7c93odaba7fcb341d61c4@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEDJIEAA.davidcholmes@aapt.net.au>
+
+You can build a lock out of compareAndSet - though to do it properly (no
+busy-waiting, no time-based polling) you also need LockSupport.park. See how
+ReentrantLock is implemented in terms of AbstractQueuedSynchronizer.
+
+But the CAS documentation was not referring to the ability to build locks
+out of CAS.
+
+Cheers,
+David
+  -----Original Message-----
+  From: raghuram nidagal [mailto:raghuram.nidagal at gmail.com]
+  Sent: Wednesday, 18 November 2009 3:29 PM
+  To: dholmes at ieee.org
+  Cc: concurrency-interest at cs.oswego.edu
+  Subject: Re: [concurrency-interest] Question on compareAndSet
+
+
+  Thanks David.
+  I assume compareAndSet on a single variable by itself can be used to
+provide locking functionality though..
+  while(notDone){
+  if(x.compareAndSet(true,false)){
+  //do something
+  notDone=false;
+  x.set(false);
+  }
+  else{
+  sleep..
+  }
+  }
+  is that different from synchronized except that this code does not block
+trying to acquire the lock whereas synchronized would block ?
+
+  On Wed, Nov 18, 2009 at 10:14 AM, David Holmes <davidcholmes at aapt.net.au>
+wrote:
+
+    Hi Raghu,
+
+    compareAndSet can only update a single variable, whereas locking can
+enforce an atomic action over as many variables as you like. Using multiple
+compareAndSets across different variables does not give you atomicity over
+the set actions.
+
+    For example suppose you have a class Point:
+
+      class Point {
+         int x, y;
+         void move(int newX, int newY) {
+           x = newX;
+           y = newY;
+         }
+      }
+
+    For move(a,b) to be an atomic operation you need to use locking - eg
+synchronize the move() method. If you instead tried to do seperate CAS
+operations on x and y, you could end up with an x from one move() and a y
+from a distinct move() and that would violate the property of the Point,
+that it can only exist in an x,y position to which it has been moved.
+
+    HTH
+
+    David Holmes
+      -----Original Message-----
+      From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of raghuram
+nidagal
+      Sent: Wednesday, 18 November 2009 2:34 PM
+      To: concurrency-interest at cs.oswego.edu
+      Subject: [concurrency-interest] Question on compareAndSet
+
+
+      Hi,
+      The documentation says "The compareAndSet method is not a general
+replacement for locking. It applies only when critical updates for an object
+are confined to a single variable"
+      Can someone explain what this means? What are the scenarios where
+compareAndSet cannot be used for locking?
+      Thanks
+      Raghu
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091118/b786af79/attachment-0001.html>
+
+From raghuram.nidagal at gmail.com  Wed Nov 18 00:41:43 2009
+From: raghuram.nidagal at gmail.com (raghuram nidagal)
+Date: Wed, 18 Nov 2009 11:11:43 +0530
+Subject: [concurrency-interest] Question on compareAndSet
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCAEDJIEAA.davidcholmes@aapt.net.au>
+References: <7874b1f60911172129t6c5a7c93odaba7fcb341d61c4@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCAEDJIEAA.davidcholmes@aapt.net.au>
+Message-ID: <7874b1f60911172141r539f482cwdf8002d0b65f4a8e@mail.gmail.com>
+
+Thanks David
+
+On Wed, Nov 18, 2009 at 11:06 AM, David Holmes <davidcholmes at aapt.net.au>wrote:
+
+>  You can build a lock out of compareAndSet - though to do it properly (no
+> busy-waiting, no time-based polling) you also need LockSupport.park. See how
+> ReentrantLock is implemented in terms of AbstractQueuedSynchronizer.
+>
+> But the CAS documentation was not referring to the ability to build locks
+> out of CAS.
+>
+> Cheers,
+> David
+>
+> -----Original Message-----
+> *From:* raghuram nidagal [mailto:raghuram.nidagal at gmail.com]
+> *Sent:* Wednesday, 18 November 2009 3:29 PM
+> *To:* dholmes at ieee.org
+> *Cc:* concurrency-interest at cs.oswego.edu
+> *Subject:* Re: [concurrency-interest] Question on compareAndSet
+>
+> Thanks David.
+> I assume compareAndSet on a single variable by itself can be used to
+> provide locking functionality though..
+> while(notDone){
+> if(x.compareAndSet(true,false)){
+> //do something
+> notDone=false;
+> x.set(false);
+> }
+> else{
+> sleep..
+> }
+> }
+> is that different from synchronized except that this code does not block
+> trying to acquire the lock whereas synchronized would block ?
+>
+> On Wed, Nov 18, 2009 at 10:14 AM, David Holmes <davidcholmes at aapt.net.au>wrote:
+>
+>>  Hi Raghu,
+>>
+>> compareAndSet can only update a single variable, whereas locking can
+>> enforce an atomic action over as many variables as you like. Using multiple
+>> compareAndSets across different variables does not give you atomicity over
+>> the set actions.
+>>
+>> For example suppose you have a class Point:
+>>
+>>   class Point {
+>>      int x, y;
+>>      void move(int newX, int newY) {
+>>        x = newX;
+>>        y = newY;
+>>      }
+>>   }
+>>
+>> For move(a,b) to be an atomic operation you need to use locking - eg
+>> synchronize the move() method. If you instead tried to do seperate CAS
+>> operations on x and y, you could end up with an x from one move() and a y
+>> from a distinct move() and that would violate the property of the Point,
+>> that it can only exist in an x,y position to which it has been moved.
+>>
+>> HTH
+>>
+>> David Holmes
+>>
+>> -----Original Message-----
+>> *From:* concurrency-interest-bounces at cs.oswego.edu [mailto:
+>> concurrency-interest-bounces at cs.oswego.edu]*On Behalf Of *raghuram
+>> nidagal
+>> *Sent:* Wednesday, 18 November 2009 2:34 PM
+>> *To:* concurrency-interest at cs.oswego.edu
+>> *Subject:* [concurrency-interest] Question on compareAndSet
+>>
+>> Hi,
+>> The documentation says "The compareAndSet method is not a general
+>> replacement for locking. It applies only when critical updates for an object
+>> are confined to a* single* variable"
+>> Can someone explain what this means? What are the scenarios where
+>> compareAndSet cannot be used for locking?
+>> Thanks
+>> Raghu
+>>
+>>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091118/8de9132b/attachment.html>
+
+From jed at atlassian.com  Wed Nov 18 22:43:12 2009
+From: jed at atlassian.com (Jed Wesley-Smith)
+Date: Thu, 19 Nov 2009 14:43:12 +1100
+Subject: [concurrency-interest] Question on compareAndSet
+In-Reply-To: <7874b1f60911172129t6c5a7c93odaba7fcb341d61c4@mail.gmail.com>
+References: <7874b1f60911172034l2fe87ba1j8de47d2f21d15e1f@mail.gmail.com>	<NFBBKALFDCPFIDBNKAPCCEDIIEAA.davidcholmes@aapt.net.au>
+	<7874b1f60911172129t6c5a7c93odaba7fcb341d61c4@mail.gmail.com>
+Message-ID: <4B04BED0.7090000@atlassian.com>
+
+raghuram,
+
+You are implementing what is known as a TestAndSet (TAS) lock. Such an 
+algorithm is quite efficient in the uncontended case, but can have 
+absolutely dreadful performance degradation as the rate of contention 
+goes up. For a detailed description of why see "The Art of 
+Multiprocessor Programming" (Herlihy, Shavit) pg 144-146.
+
+cheers,
+jed.
+
+raghuram nidagal wrote:
+> Thanks David.
+> I assume compareAndSet on a single variable by itself can be used to 
+> provide locking functionality though..
+> while(notDone){
+> if(x.compareAndSet(true,false)){
+> //do something
+> notDone=false;
+> x.set(false);
+> }
+> else{
+> sleep..
+> }
+> }
+> is that different from synchronized except that this code does not 
+> block trying to acquire the lock whereas synchronized would block ?
+>  
+> On Wed, Nov 18, 2009 at 10:14 AM, David Holmes 
+> <davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au>> wrote:
+>
+>     Hi Raghu,
+>      
+>     compareAndSet can only update a single variable, whereas locking
+>     can enforce an atomic action over as many variables as you like.
+>     Using multiple compareAndSets across different variables does not
+>     give you atomicity over the set actions.
+>      
+>     For example suppose you have a class Point:
+>      
+>       class Point {
+>          int x, y;
+>          void move(int newX, int newY) {
+>            x = newX;
+>            y = newY;
+>          }
+>       }
+>      
+>     For move(a,b) to be an atomic operation you need to use locking -
+>     eg synchronize the move() method. If you instead tried to do
+>     seperate CAS operations on x and y, you could end up with an x
+>     from one move() and a y from a distinct move() and that would
+>     violate the property of the Point, that it can only exist in an
+>     x,y position to which it has been moved.
+>      
+>     HTH
+>      
+>     David Holmes   
+>
+>         -----Original Message-----
+>         *From:* concurrency-interest-bounces at cs.oswego.edu
+>         <mailto:concurrency-interest-bounces at cs.oswego.edu>
+>         [mailto:concurrency-interest-bounces at cs.oswego.edu
+>         <mailto:concurrency-interest-bounces at cs.oswego.edu>]*On Behalf
+>         Of *raghuram nidagal
+>         *Sent:* Wednesday, 18 November 2009 2:34 PM
+>         *To:* concurrency-interest at cs.oswego.edu
+>         <mailto:concurrency-interest at cs.oswego.edu>
+>         *Subject:* [concurrency-interest] Question on compareAndSet
+>
+>         Hi,
+>         The documentation says "The compareAndSet method is not a
+>         general replacement for locking. It applies only when critical
+>         updates for an object are confined to a/ single/ variable"
+>         Can someone explain what this means? What are the scenarios
+>         where compareAndSet cannot be used for locking?
+>         Thanks
+>         Raghu
+>
+>
+> ------------------------------------------------------------------------
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>   
+
+
+From jed at atlassian.com  Wed Nov 18 23:07:24 2009
+From: jed at atlassian.com (Jed Wesley-Smith)
+Date: Thu, 19 Nov 2009 15:07:24 +1100
+Subject: [concurrency-interest] Question on compareAndSet
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCCEDIIEAA.davidcholmes@aapt.net.au>
+References: <NFBBKALFDCPFIDBNKAPCCEDIIEAA.davidcholmes@aapt.net.au>
+Message-ID: <4B04C47C.2080104@atlassian.com>
+
+You can though get atomic updates by making a composite value for the 
+point (by value I mean an immutable class of immutable members) and 
+using that. To reuse the example:
+
+class Point {
+  final AtomicReference<Location> location = new 
+AtomicReference<Location>(new Location(0, 0));
+  boolean move(Location from, Location to) {
+    return location.compareAndSet(from, to);
+  }
+ 
+  Location at() {return location.get();}
+}
+
+class Location {
+  final int x, y;
+  Location(final int x, final int y) {
+    this.x = x;
+    this.y = y;
+  }
+}
+
+(of course, Point should really be immutable anyway, Things move around 
+from point to point, but that's another topic entirely, see Are we there 
+yet from Rich Hickey: 
+http://www.infoq.com/presentations/Are-We-There-Yet-Rich-Hickey or, 
+there is no such thing as a mutable value!
+
+cheers,
+jed.
+
+David Holmes wrote:
+> Hi Raghu,
+>  
+> compareAndSet can only update a single variable, whereas locking can 
+> enforce an atomic action over as many variables as you like. Using 
+> multiple compareAndSets across different variables does not give you 
+> atomicity over the set actions.
+>  
+> For example suppose you have a class Point:
+>  
+>   class Point {
+>      int x, y;
+>      void move(int newX, int newY) {
+>        x = newX;
+>        y = newY;
+>      }
+>   }
+>  
+> For move(a,b) to be an atomic operation you need to use locking - eg 
+> synchronize the move() method. If you instead tried to do seperate CAS 
+> operations on x and y, you could end up with an x from one move() and 
+> a y from a distinct move() and that would violate the property of the 
+> Point, that it can only exist in an x,y position to which it has been 
+> moved.
+>  
+> HTH
+>  
+> David Holmes   
+>
+>     -----Original Message-----
+>     *From:* concurrency-interest-bounces at cs.oswego.edu
+>     [mailto:concurrency-interest-bounces at cs.oswego.edu]*On Behalf Of
+>     *raghuram nidagal
+>     *Sent:* Wednesday, 18 November 2009 2:34 PM
+>     *To:* concurrency-interest at cs.oswego.edu
+>     *Subject:* [concurrency-interest] Question on compareAndSet
+>
+>     Hi,
+>     The documentation says "The compareAndSet method is not a general
+>     replacement for locking. It applies only when critical updates for
+>     an object are confined to a/ single/ variable"
+>     Can someone explain what this means? What are the scenarios where
+>     compareAndSet cannot be used for locking?
+>     Thanks
+>     Raghu
+>
+> ------------------------------------------------------------------------
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>   
+
+
+From raghuram.nidagal at gmail.com  Wed Nov 18 23:07:28 2009
+From: raghuram.nidagal at gmail.com (raghuram nidagal)
+Date: Thu, 19 Nov 2009 09:37:28 +0530
+Subject: [concurrency-interest] Question on compareAndSet
+In-Reply-To: <4B04BED0.7090000@atlassian.com>
+References: <7874b1f60911172034l2fe87ba1j8de47d2f21d15e1f@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCCEDIIEAA.davidcholmes@aapt.net.au>
+	<7874b1f60911172129t6c5a7c93odaba7fcb341d61c4@mail.gmail.com>
+	<4B04BED0.7090000@atlassian.com>
+Message-ID: <7874b1f60911182007t47e5f5f1ubb60403a75cb2e4f@mail.gmail.com>
+
+Thanks Jed. I will take a look.
+
+On Thu, Nov 19, 2009 at 9:13 AM, Jed Wesley-Smith <jed at atlassian.com> wrote:
+
+> raghuram,
+>
+> You are implementing what is known as a TestAndSet (TAS) lock. Such an
+> algorithm is quite efficient in the uncontended case, but can have
+> absolutely dreadful performance degradation as the rate of contention goes
+> up. For a detailed description of why see "The Art of Multiprocessor
+> Programming" (Herlihy, Shavit) pg 144-146.
+>
+> cheers,
+> jed.
+>
+> raghuram nidagal wrote:
+>
+>> Thanks David.
+>> I assume compareAndSet on a single variable by itself can be used to
+>> provide locking functionality though..
+>> while(notDone){
+>> if(x.compareAndSet(true,false)){
+>> //do something
+>> notDone=false;
+>> x.set(false);
+>> }
+>> else{
+>> sleep..
+>> }
+>> }
+>> is that different from synchronized except that this code does not block
+>> trying to acquire the lock whereas synchronized would block ?
+>>   On Wed, Nov 18, 2009 at 10:14 AM, David Holmes <
+>> davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au>> wrote:
+>>
+>>    Hi Raghu,
+>>        compareAndSet can only update a single variable, whereas locking
+>>    can enforce an atomic action over as many variables as you like.
+>>    Using multiple compareAndSets across different variables does not
+>>    give you atomicity over the set actions.
+>>        For example suppose you have a class Point:
+>>          class Point {
+>>         int x, y;
+>>         void move(int newX, int newY) {
+>>           x = newX;
+>>           y = newY;
+>>         }
+>>      }
+>>        For move(a,b) to be an atomic operation you need to use locking -
+>>    eg synchronize the move() method. If you instead tried to do
+>>    seperate CAS operations on x and y, you could end up with an x
+>>    from one move() and a y from a distinct move() and that would
+>>    violate the property of the Point, that it can only exist in an
+>>    x,y position to which it has been moved.
+>>        HTH
+>>        David Holmes
+>>        -----Original Message-----
+>>        *From:* concurrency-interest-bounces at cs.oswego.edu
+>>        <mailto:concurrency-interest-bounces at cs.oswego.edu>
+>>        [mailto:concurrency-interest-bounces at cs.oswego.edu
+>>        <mailto:concurrency-interest-bounces at cs.oswego.edu>]*On Behalf
+>>        Of *raghuram nidagal
+>>        *Sent:* Wednesday, 18 November 2009 2:34 PM
+>>        *To:* concurrency-interest at cs.oswego.edu
+>>        <mailto:concurrency-interest at cs.oswego.edu>
+>>        *Subject:* [concurrency-interest] Question on compareAndSet
+>>
+>>        Hi,
+>>        The documentation says "The compareAndSet method is not a
+>>        general replacement for locking. It applies only when critical
+>>        updates for an object are confined to a/ single/ variable"
+>>        Can someone explain what this means? What are the scenarios
+>>        where compareAndSet cannot be used for locking?
+>>        Thanks
+>>        Raghu
+>>
+>>
+>> ------------------------------------------------------------------------
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091119/01410322/attachment.html>
+
+From normelton at gmail.com  Wed Nov 18 23:46:16 2009
+From: normelton at gmail.com (Norman Elton)
+Date: Wed, 18 Nov 2009 23:46:16 -0500
+Subject: [concurrency-interest] Performance of ReentrantReadWriteLock
+Message-ID: <6b3a7f010911182046n3b8a3a69mcc9521d6a1ed223d@mail.gmail.com>
+
+I've done some very basic testing of a ReentrantReadWriteLock vs.
+synchronized. I fired up five threads, each of which is accessing a
+shared Map<Integer,Integer>. At first, I did 99% read operations, then
+100% read operations. Initial testing, with no locking or
+synchronization, proved about 8M operations per second per thread.
+Super.
+
+Then I tested synchronizing the get() and put() methods. Performance
+dropped to about 700K operations per second. Synchronization obviously
+has a large overhead.
+
+Strange thing is, the ReentrantReadWriteLock performed just about as
+well. Even in a 100% read environment, where I would think threads
+would never have to block for one another.
+
+Am I missing something here? Shouldn't I be seeing significantly
+better numbers for the ReentrantReadWriteLock? Presumably, it's
+allowing multiple threads to hit the hash at the same time. I would
+expect numbers somewhere between the synchronizing hash and the
+completely untouched HashMap.
+
+Thoughts? Thanks!
+
+Norman
+
+From david.lloyd at redhat.com  Thu Nov 19 00:01:41 2009
+From: david.lloyd at redhat.com (David M. Lloyd)
+Date: Wed, 18 Nov 2009 23:01:41 -0600
+Subject: [concurrency-interest] Performance of ReentrantReadWriteLock
+In-Reply-To: <6b3a7f010911182046n3b8a3a69mcc9521d6a1ed223d@mail.gmail.com>
+References: <6b3a7f010911182046n3b8a3a69mcc9521d6a1ed223d@mail.gmail.com>
+Message-ID: <4B04D135.9030002@redhat.com>
+
+At a guess, I'd hazard that two things are taking effect.
+
+1) *Lock are significantly faster than synchronization in your environment, 
+across the board.  I believe this was the case for most or all Sun Java 5 
+JVM releases on Intel, though I could be mistaken there.
+2) Map operations are so short that there's no significant contention for 
+the lock anyway.  If you were holding the lock across, say, 50 to 100 
+operations maybe there'd be a bigger difference.
+
+ From my experience, a RWLock is only a win when the operations are 
+relatively long-lasting *and* it's a mostly-read situation.  But often when 
+you're in the almost-all-reads situation, using a copy-on-write methodology 
+can be even better (no lock on the read path at all, plus in many cases you 
+can easily achieve cool snapshot semantics too).
+
+- DML
+
+On 11/18/2009 10:46 PM, Norman Elton wrote:
+> I've done some very basic testing of a ReentrantReadWriteLock vs.
+> synchronized. I fired up five threads, each of which is accessing a
+> shared Map<Integer,Integer>. At first, I did 99% read operations, then
+> 100% read operations. Initial testing, with no locking or
+> synchronization, proved about 8M operations per second per thread.
+> Super.
+>
+> Then I tested synchronizing the get() and put() methods. Performance
+> dropped to about 700K operations per second. Synchronization obviously
+> has a large overhead.
+>
+> Strange thing is, the ReentrantReadWriteLock performed just about as
+> well. Even in a 100% read environment, where I would think threads
+> would never have to block for one another.
+>
+> Am I missing something here? Shouldn't I be seeing significantly
+> better numbers for the ReentrantReadWriteLock? Presumably, it's
+> allowing multiple threads to hit the hash at the same time. I would
+> expect numbers somewhere between the synchronizing hash and the
+> completely untouched HashMap.
+>
+> Thoughts? Thanks!
+>
+> Norman
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From bronee at gmail.com  Thu Nov 19 00:09:17 2009
+From: bronee at gmail.com (Brian S O'Neill)
+Date: Wed, 18 Nov 2009 21:09:17 -0800
+Subject: [concurrency-interest] Performance of ReentrantReadWriteLock
+In-Reply-To: <6b3a7f010911182046n3b8a3a69mcc9521d6a1ed223d@mail.gmail.com>
+References: <6b3a7f010911182046n3b8a3a69mcc9521d6a1ed223d@mail.gmail.com>
+Message-ID: <4B04D2FD.8030804@gmail.com>
+
+Lock implementations have a quick check step to see if there's no 
+contention. Since you have only one thread in both tests, there is no 
+contention at all. The "synchronized" monitor and the read write lock 
+both need to do the same work for this quick check. The read write lock 
+is not designed to be /necessarily/ faster at lock acquisition, but it 
+is designed to allow multiple reads without the lock being released. For 
+applications which hold the lock only briefly, use of "synchronized" 
+will do fine.
+
+Norman Elton wrote:
+> I've done some very basic testing of a ReentrantReadWriteLock vs.
+> synchronized. I fired up five threads, each of which is accessing a
+> shared Map<Integer,Integer>. At first, I did 99% read operations, then
+> 100% read operations. Initial testing, with no locking or
+> synchronization, proved about 8M operations per second per thread.
+> Super.
+>
+> Then I tested synchronizing the get() and put() methods. Performance
+> dropped to about 700K operations per second. Synchronization obviously
+> has a large overhead.
+>
+> Strange thing is, the ReentrantReadWriteLock performed just about as
+> well. Even in a 100% read environment, where I would think threads
+> would never have to block for one another.
+>
+> Am I missing something here? Shouldn't I be seeing significantly
+> better numbers for the ReentrantReadWriteLock? Presumably, it's
+> allowing multiple threads to hit the hash at the same time. I would
+> expect numbers somewhere between the synchronizing hash and the
+> completely untouched HashMap.
+>
+> Thoughts? Thanks!
+>
+> Norman
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>   
+
+From bronee at gmail.com  Thu Nov 19 00:13:08 2009
+From: bronee at gmail.com (Brian S O'Neill)
+Date: Wed, 18 Nov 2009 21:13:08 -0800
+Subject: [concurrency-interest] Performance of ReentrantReadWriteLock
+In-Reply-To: <4B04D2FD.8030804@gmail.com>
+References: <6b3a7f010911182046n3b8a3a69mcc9521d6a1ed223d@mail.gmail.com>
+	<4B04D2FD.8030804@gmail.com>
+Message-ID: <4B04D3E4.3060808@gmail.com>
+
+Oops... misread that. You do have multiple threads. I guess the question 
+to ask would be, how fast is the map, and how many processors do you 
+have? The operations might finish before another thread gets scheduled 
+to execute.
+
+Brian S O'Neill wrote:
+> Lock implementations have a quick check step to see if there's no 
+> contention. Since you have only one thread in both tests, there is no 
+> contention at all. The "synchronized" monitor and the read write lock 
+> both need to do the same work for this quick check. The read write 
+> lock is not designed to be /necessarily/ faster at lock acquisition, 
+> but it is designed to allow multiple reads without the lock being 
+> released. For applications which hold the lock only briefly, use of 
+> "synchronized" will do fine.
+>
+> Norman Elton wrote:
+>> I've done some very basic testing of a ReentrantReadWriteLock vs.
+>> synchronized. I fired up five threads, each of which is accessing a
+>> shared Map<Integer,Integer>. At first, I did 99% read operations, then
+>> 100% read operations. Initial testing, with no locking or
+>> synchronization, proved about 8M operations per second per thread.
+>> Super.
+>>
+>> Then I tested synchronizing the get() and put() methods. Performance
+>> dropped to about 700K operations per second. Synchronization obviously
+>> has a large overhead.
+>>
+>> Strange thing is, the ReentrantReadWriteLock performed just about as
+>> well. Even in a 100% read environment, where I would think threads
+>> would never have to block for one another.
+>>
+>> Am I missing something here? Shouldn't I be seeing significantly
+>> better numbers for the ReentrantReadWriteLock? Presumably, it's
+>> allowing multiple threads to hit the hash at the same time. I would
+>> expect numbers somewhere between the synchronizing hash and the
+>> completely untouched HashMap.
+>>
+>> Thoughts? Thanks!
+>>
+>> Norman
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>   
+>
+
+From dev at davidsoergel.com  Thu Nov 19 00:39:42 2009
+From: dev at davidsoergel.com (David Soergel)
+Date: Wed, 18 Nov 2009 21:39:42 -0800
+Subject: [concurrency-interest] Conja-- an accidental jsr166y alternative
+Message-ID: <6A620512-FFD1-41A6-86F6-DF64EA4773E7@davidsoergel.com>
+
+Hi all,
+
+I wrote a Java concurrency library a while back before I knew about jsr166y, and finally got around to writing up how it works.  I realize I'm very late to the party here, but still I hope some of the ideas I implemented may interest you. 
+
+The main advantage of my library that I see at the moment is that it hides all the hard stuff behind syntactic sugar, and so should be very easy for a novice to adopt.  I suspect it would be straightforward to provide a similarly easy-to-use wrapper around the jsr166y internals.  I haven't yet done a detailed comparison though, so it may well be that jsr166y provides functionality that Conja lacks.
+
+The project home page is at http://dev.davidsoergel.com/trac/conja/, and the most important design issues are described briefly at 
+http://dev.davidsoergel.com/trac/conja/wiki/PrinciplesOfOperation
+
+A couple of those issues are: 1) I schedule nested tasks in depth-first order, with advantages much like work stealing; 2) I employ various strategies to conserve memory (primarily by not leaving tasks waiting around in queues); and 3) I construct Runnables lazily and concurrently from an iterator of task inputs.  One consequence is that "pipelines" consisting of nested mapping iterators (i.e., iterators that apply a function to elements from an underlying iterator) can be used to provide the inputs, in which case the mappings are computed lazily and concurrently.
+
+I've been using this for some time with excellent performance, so I think it works at least :)
+
+Looking forward to any feedback you may have,
+
+-ds
+
+
+_______________________________________________________
+David Soergel                            (650) 303-5324
+dev at davidsoergel.com        http://www.davidsoergel.com
+_______________________________________________________
+
+
+
+
+From davidcholmes at aapt.net.au  Thu Nov 19 01:04:10 2009
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Thu, 19 Nov 2009 16:04:10 +1000
+Subject: [concurrency-interest] Conja-- an accidental jsr166y alternative
+In-Reply-To: <6A620512-FFD1-41A6-86F6-DF64EA4773E7@davidsoergel.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMEDOIEAA.davidcholmes@aapt.net.au>
+
+David,
+
+Looks very F# like :)
+
+One thing (and I was just browsing) your DepthFirstThreadPoolExecutor
+lifecycle management is not thread-safe. You can leak instances; there's no
+sync or volatile to ensure visibility of the newly created instance, or of
+updated cpu counts. There's no sync between shutting down and recreating. Is
+the expectation that this will not be used directly but only from other
+library internals which ensures a single-thread manages the executor? If not
+then you need synchronization in various places.
+
+Cheers,
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of David
+> Soergel
+> Sent: Thursday, 19 November 2009 3:40 PM
+> To: concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] Conja-- an accidental jsr166y
+> alternative
+>
+>
+> Hi all,
+>
+> I wrote a Java concurrency library a while back before I knew
+> about jsr166y, and finally got around to writing up how it works.
+>  I realize I'm very late to the party here, but still I hope some
+> of the ideas I implemented may interest you.
+>
+> The main advantage of my library that I see at the moment is that
+> it hides all the hard stuff behind syntactic sugar, and so should
+> be very easy for a novice to adopt.  I suspect it would be
+> straightforward to provide a similarly easy-to-use wrapper around
+> the jsr166y internals.  I haven't yet done a detailed comparison
+> though, so it may well be that jsr166y provides functionality
+> that Conja lacks.
+>
+> The project home page is at
+> http://dev.davidsoergel.com/trac/conja/, and the most important
+> design issues are described briefly at
+> http://dev.davidsoergel.com/trac/conja/wiki/PrinciplesOfOperation
+>
+> A couple of those issues are: 1) I schedule nested tasks in
+> depth-first order, with advantages much like work stealing; 2) I
+> employ various strategies to conserve memory (primarily by not
+> leaving tasks waiting around in queues); and 3) I construct
+> Runnables lazily and concurrently from an iterator of task
+> inputs.  One consequence is that "pipelines" consisting of nested
+> mapping iterators (i.e., iterators that apply a function to
+> elements from an underlying iterator) can be used to provide the
+> inputs, in which case the mappings are computed lazily and concurrently.
+>
+> I've been using this for some time with excellent performance, so
+> I think it works at least :)
+>
+> Looking forward to any feedback you may have,
+>
+> -ds
+>
+>
+> _______________________________________________________
+> David Soergel                            (650) 303-5324
+> dev at davidsoergel.com        http://www.davidsoergel.com
+> _______________________________________________________
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From dev at davidsoergel.com  Thu Nov 19 01:19:44 2009
+From: dev at davidsoergel.com (David Soergel)
+Date: Wed, 18 Nov 2009 22:19:44 -0800
+Subject: [concurrency-interest] Conja-- an accidental jsr166y alternative
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCMEDOIEAA.davidcholmes@aapt.net.au>
+References: <NFBBKALFDCPFIDBNKAPCMEDOIEAA.davidcholmes@aapt.net.au>
+Message-ID: <CBB4457E-55E9-4169-9743-6159A684377F@davidsoergel.com>
+
+Hi David,
+
+I'm not familiar with F# specifically, but you're right that using a functional programming style is the idea here :)
+
+Regarding the DepthFirstThreadPoolExecutor, my expectation is that it's only used internally.  I didn't just make it private since I figured it might come in handy in some other context, but in fact I've only ever used it from within the Parallel class.  Still, I should synchronize it properly just in case. Thanks for catching that!
+
+-ds
+
+
+On Nov 18, 2009, at 10:04 PM, David Holmes wrote:
+
+> David,
+> 
+> Looks very F# like :)
+> 
+> One thing (and I was just browsing) your DepthFirstThreadPoolExecutor
+> lifecycle management is not thread-safe. You can leak instances; there's no
+> sync or volatile to ensure visibility of the newly created instance, or of
+> updated cpu counts. There's no sync between shutting down and recreating. Is
+> the expectation that this will not be used directly but only from other
+> library internals which ensures a single-thread manages the executor? If not
+> then you need synchronization in various places.
+> 
+> Cheers,
+> David Holmes
+> 
+>> -----Original Message-----
+>> From: concurrency-interest-bounces at cs.oswego.edu
+>> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of David
+>> Soergel
+>> Sent: Thursday, 19 November 2009 3:40 PM
+>> To: concurrency-interest at cs.oswego.edu
+>> Subject: [concurrency-interest] Conja-- an accidental jsr166y
+>> alternative
+>> 
+>> 
+>> Hi all,
+>> 
+>> I wrote a Java concurrency library a while back before I knew
+>> about jsr166y, and finally got around to writing up how it works.
+>> I realize I'm very late to the party here, but still I hope some
+>> of the ideas I implemented may interest you.
+>> 
+>> The main advantage of my library that I see at the moment is that
+>> it hides all the hard stuff behind syntactic sugar, and so should
+>> be very easy for a novice to adopt.  I suspect it would be
+>> straightforward to provide a similarly easy-to-use wrapper around
+>> the jsr166y internals.  I haven't yet done a detailed comparison
+>> though, so it may well be that jsr166y provides functionality
+>> that Conja lacks.
+>> 
+>> The project home page is at
+>> http://dev.davidsoergel.com/trac/conja/, and the most important
+>> design issues are described briefly at
+>> http://dev.davidsoergel.com/trac/conja/wiki/PrinciplesOfOperation
+>> 
+>> A couple of those issues are: 1) I schedule nested tasks in
+>> depth-first order, with advantages much like work stealing; 2) I
+>> employ various strategies to conserve memory (primarily by not
+>> leaving tasks waiting around in queues); and 3) I construct
+>> Runnables lazily and concurrently from an iterator of task
+>> inputs.  One consequence is that "pipelines" consisting of nested
+>> mapping iterators (i.e., iterators that apply a function to
+>> elements from an underlying iterator) can be used to provide the
+>> inputs, in which case the mappings are computed lazily and concurrently.
+>> 
+>> I've been using this for some time with excellent performance, so
+>> I think it works at least :)
+>> 
+>> Looking forward to any feedback you may have,
+>> 
+>> -ds
+>> 
+>> 
+>> _______________________________________________________
+>> David Soergel                            (650) 303-5324
+>> dev at davidsoergel.com        http://www.davidsoergel.com
+>> _______________________________________________________
+>> 
+>> 
+>> 
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+
+_______________________________________________________
+David Soergel                            (650) 303-5324
+dev at davidsoergel.com        http://www.davidsoergel.com
+_______________________________________________________
+
+
+
+From i30817 at gmail.com  Thu Nov 19 01:38:06 2009
+From: i30817 at gmail.com (Paulo Levi)
+Date: Thu, 19 Nov 2009 06:38:06 +0000
+Subject: [concurrency-interest] Conja-- an accidental jsr166y alternative
+In-Reply-To: <CBB4457E-55E9-4169-9743-6159A684377F@davidsoergel.com>
+References: <NFBBKALFDCPFIDBNKAPCMEDOIEAA.davidcholmes@aapt.net.au> 
+	<CBB4457E-55E9-4169-9743-6159A684377F@davidsoergel.com>
+Message-ID: <212322090911182238t37f6f797l3bcd2494e1c576d4@mail.gmail.com>
+
+You have cool ideas.
+I "made" (copied most of the concepts) these (terrible) classes for
+scheduling/composing Callables. One of the situations i've found is exactly
+the one you describe in the profileration of executors example you give,
+however i needed to have the requirement that the subtask was only run once
+at a time (huuuuuge memory sink). So i composed my composable callables
+(terrible outdated name it has now) and sent it to a 1 thread executor just
+for that subtask. How would your library handle things like that?
+
+How about scheduling problems? (i'm having that too - one of my task runs
+the subtask with the huuuuuugee memory requirement, in a LIFO order (with a
+executor from Threads there, however another task - that doesn't know
+anything about the first - also runs a slightly different version of the
+same task/function -> things explode).
+I don't see how could you keep the different Priorities consistent in the
+same Executor (all those task + some that i might execute later should run
+LIFO or FIFO and another should run as soon as possible) or other out there
+combinations.
+
+http://code.google.com/p/bookjar-utils/source/browse/BookJar-utils/src/util/ChainRunnable.java
+http://code.google.com/p/bookjar-utils/source/browse/BookJar-utils/src/util/Threads.java
+
+On Thu, Nov 19, 2009 at 6:19 AM, David Soergel <dev at davidsoergel.com> wrote:
+
+> Hi David,
+>
+> I'm not familiar with F# specifically, but you're right that using a
+> functional programming style is the idea here :)
+>
+> Regarding the DepthFirstThreadPoolExecutor, my expectation is that it's
+> only used internally.  I didn't just make it private since I figured it
+> might come in handy in some other context, but in fact I've only ever used
+> it from within the Parallel class.  Still, I should synchronize it properly
+> just in case. Thanks for catching that!
+>
+> -ds
+>
+>
+> On Nov 18, 2009, at 10:04 PM, David Holmes wrote:
+>
+> > David,
+> >
+> > Looks very F# like :)
+> >
+> > One thing (and I was just browsing) your DepthFirstThreadPoolExecutor
+> > lifecycle management is not thread-safe. You can leak instances; there's
+> no
+> > sync or volatile to ensure visibility of the newly created instance, or
+> of
+> > updated cpu counts. There's no sync between shutting down and recreating.
+> Is
+> > the expectation that this will not be used directly but only from other
+> > library internals which ensures a single-thread manages the executor? If
+> not
+> > then you need synchronization in various places.
+> >
+> > Cheers,
+> > David Holmes
+> >
+> >> -----Original Message-----
+> >> From: concurrency-interest-bounces at cs.oswego.edu
+> >> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of David
+> >> Soergel
+> >> Sent: Thursday, 19 November 2009 3:40 PM
+> >> To: concurrency-interest at cs.oswego.edu
+> >> Subject: [concurrency-interest] Conja-- an accidental jsr166y
+> >> alternative
+> >>
+> >>
+> >> Hi all,
+> >>
+> >> I wrote a Java concurrency library a while back before I knew
+> >> about jsr166y, and finally got around to writing up how it works.
+> >> I realize I'm very late to the party here, but still I hope some
+> >> of the ideas I implemented may interest you.
+> >>
+> >> The main advantage of my library that I see at the moment is that
+> >> it hides all the hard stuff behind syntactic sugar, and so should
+> >> be very easy for a novice to adopt.  I suspect it would be
+> >> straightforward to provide a similarly easy-to-use wrapper around
+> >> the jsr166y internals.  I haven't yet done a detailed comparison
+> >> though, so it may well be that jsr166y provides functionality
+> >> that Conja lacks.
+> >>
+> >> The project home page is at
+> >> http://dev.davidsoergel.com/trac/conja/, and the most important
+> >> design issues are described briefly at
+> >> http://dev.davidsoergel.com/trac/conja/wiki/PrinciplesOfOperation
+> >>
+> >> A couple of those issues are: 1) I schedule nested tasks in
+> >> depth-first order, with advantages much like work stealing; 2) I
+> >> employ various strategies to conserve memory (primarily by not
+> >> leaving tasks waiting around in queues); and 3) I construct
+> >> Runnables lazily and concurrently from an iterator of task
+> >> inputs.  One consequence is that "pipelines" consisting of nested
+> >> mapping iterators (i.e., iterators that apply a function to
+> >> elements from an underlying iterator) can be used to provide the
+> >> inputs, in which case the mappings are computed lazily and concurrently.
+> >>
+> >> I've been using this for some time with excellent performance, so
+> >> I think it works at least :)
+> >>
+> >> Looking forward to any feedback you may have,
+> >>
+> >> -ds
+> >>
+> >>
+> >> _______________________________________________________
+> >> David Soergel                            (650) 303-5324
+> >> dev at davidsoergel.com        http://www.davidsoergel.com
+> >> _______________________________________________________
+> >>
+> >>
+> >>
+> >> _______________________________________________
+> >> Concurrency-interest mailing list
+> >> Concurrency-interest at cs.oswego.edu
+> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+>
+>
+> _______________________________________________________
+> David Soergel                            (650) 303-5324
+> dev at davidsoergel.com        http://www.davidsoergel.com
+> _______________________________________________________
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091119/3cc52ab0/attachment-0001.html>
+
+From dev at davidsoergel.com  Thu Nov 19 02:46:40 2009
+From: dev at davidsoergel.com (David Soergel)
+Date: Wed, 18 Nov 2009 23:46:40 -0800
+Subject: [concurrency-interest] Conja-- an accidental jsr166y alternative
+In-Reply-To: <212322090911182238t37f6f797l3bcd2494e1c576d4@mail.gmail.com>
+References: <NFBBKALFDCPFIDBNKAPCMEDOIEAA.davidcholmes@aapt.net.au>
+	<CBB4457E-55E9-4169-9743-6159A684377F@davidsoergel.com>
+	<212322090911182238t37f6f797l3bcd2494e1c576d4@mail.gmail.com>
+Message-ID: <B0D3C685-9704-4D6C-A3CA-B6F637AB098E@davidsoergel.com>
+
+Hi Paulo,
+
+I'm sorry I don't entirely understand your questions... in the first case, given that the tasks need to run one at a time for memory reasons, what are you trying to accomplish by running them in a separate thread?
+
+I think your second question asks whether you can exert fine-grained control over the task scheduling, i.e. by explicitly giving different tasks different priorities.  Conja doesn't provide for that.  It assumes that the tasks are independent of one another (that's what I mean by "functional style"), so there should be no need to impose scheduling constraints among them.  In practice, Conja executes the tasks in a given batch in FIFO order.  The trick is that nested tasks essentially inherit their priority; this helps tasks finish faster and thus get out of the way in terms of memory.  If there is one task somewhere in the call tree that requires a lot of memory, Conja has no way of knowing that in advance, so it will continue to run other tasks on the rest of its worker threads concurrently.  It sounds like you'd like to be able to a) postpone a task when you can predict that there's not enough memory currently available to finish it, and b) tell the executor to pause (i.e., finish running tasks but not start any new ones) in hopes of freeing up some memory so that the postponed task can run.  These are interesting ideas... am I getting the gist of your problem?
+
+-ds 
+
+
+
+On Nov 18, 2009, at 10:38 PM, Paulo Levi wrote:
+
+> You have cool ideas.
+> I "made" (copied most of the concepts) these (terrible) classes for
+> scheduling/composing Callables. One of the situations i've found is exactly
+> the one you describe in the profileration of executors example you give,
+> however i needed to have the requirement that the subtask was only run once
+> at a time (huuuuuge memory sink). So i composed my composable callables
+> (terrible outdated name it has now) and sent it to a 1 thread executor just
+> for that subtask. How would your library handle things like that?
+> 
+> How about scheduling problems? (i'm having that too - one of my task runs
+> the subtask with the huuuuuugee memory requirement, in a LIFO order (with a
+> executor from Threads there, however another task - that doesn't know
+> anything about the first - also runs a slightly different version of the
+> same task/function -> things explode).
+> I don't see how could you keep the different Priorities consistent in the
+> same Executor (all those task + some that i might execute later should run
+> LIFO or FIFO and another should run as soon as possible) or other out there
+> combinations.
+> 
+> http://code.google.com/p/bookjar-utils/source/browse/BookJar-utils/src/util/ChainRunnable.java
+> http://code.google.com/p/bookjar-utils/source/browse/BookJar-utils/src/util/Threads.java
+> 
+> On Thu, Nov 19, 2009 at 6:19 AM, David Soergel <dev at davidsoergel.com> wrote:
+> 
+>> Hi David,
+>> 
+>> I'm not familiar with F# specifically, but you're right that using a
+>> functional programming style is the idea here :)
+>> 
+>> Regarding the DepthFirstThreadPoolExecutor, my expectation is that it's
+>> only used internally.  I didn't just make it private since I figured it
+>> might come in handy in some other context, but in fact I've only ever used
+>> it from within the Parallel class.  Still, I should synchronize it properly
+>> just in case. Thanks for catching that!
+>> 
+>> -ds
+>> 
+>> 
+>> On Nov 18, 2009, at 10:04 PM, David Holmes wrote:
+>> 
+>>> David,
+>>> 
+>>> Looks very F# like :)
+>>> 
+>>> One thing (and I was just browsing) your DepthFirstThreadPoolExecutor
+>>> lifecycle management is not thread-safe. You can leak instances; there's
+>> no
+>>> sync or volatile to ensure visibility of the newly created instance, or
+>> of
+>>> updated cpu counts. There's no sync between shutting down and recreating.
+>> Is
+>>> the expectation that this will not be used directly but only from other
+>>> library internals which ensures a single-thread manages the executor? If
+>> not
+>>> then you need synchronization in various places.
+>>> 
+>>> Cheers,
+>>> David Holmes
+>>> 
+>>>> -----Original Message-----
+>>>> From: concurrency-interest-bounces at cs.oswego.edu
+>>>> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of David
+>>>> Soergel
+>>>> Sent: Thursday, 19 November 2009 3:40 PM
+>>>> To: concurrency-interest at cs.oswego.edu
+>>>> Subject: [concurrency-interest] Conja-- an accidental jsr166y
+>>>> alternative
+>>>> 
+>>>> 
+>>>> Hi all,
+>>>> 
+>>>> I wrote a Java concurrency library a while back before I knew
+>>>> about jsr166y, and finally got around to writing up how it works.
+>>>> I realize I'm very late to the party here, but still I hope some
+>>>> of the ideas I implemented may interest you.
+>>>> 
+>>>> The main advantage of my library that I see at the moment is that
+>>>> it hides all the hard stuff behind syntactic sugar, and so should
+>>>> be very easy for a novice to adopt.  I suspect it would be
+>>>> straightforward to provide a similarly easy-to-use wrapper around
+>>>> the jsr166y internals.  I haven't yet done a detailed comparison
+>>>> though, so it may well be that jsr166y provides functionality
+>>>> that Conja lacks.
+>>>> 
+>>>> The project home page is at
+>>>> http://dev.davidsoergel.com/trac/conja/, and the most important
+>>>> design issues are described briefly at
+>>>> http://dev.davidsoergel.com/trac/conja/wiki/PrinciplesOfOperation
+>>>> 
+>>>> A couple of those issues are: 1) I schedule nested tasks in
+>>>> depth-first order, with advantages much like work stealing; 2) I
+>>>> employ various strategies to conserve memory (primarily by not
+>>>> leaving tasks waiting around in queues); and 3) I construct
+>>>> Runnables lazily and concurrently from an iterator of task
+>>>> inputs.  One consequence is that "pipelines" consisting of nested
+>>>> mapping iterators (i.e., iterators that apply a function to
+>>>> elements from an underlying iterator) can be used to provide the
+>>>> inputs, in which case the mappings are computed lazily and concurrently.
+>>>> 
+>>>> I've been using this for some time with excellent performance, so
+>>>> I think it works at least :)
+>>>> 
+>>>> Looking forward to any feedback you may have,
+>>>> 
+>>>> -ds
+>>>> 
+>>>> 
+>>>> _______________________________________________________
+>>>> David Soergel                            (650) 303-5324
+>>>> dev at davidsoergel.com        http://www.davidsoergel.com
+>>>> _______________________________________________________
+>>>> 
+>>>> 
+>>>> 
+>>>> _______________________________________________
+>>>> Concurrency-interest mailing list
+>>>> Concurrency-interest at cs.oswego.edu
+>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>> 
+>> 
+>> 
+>> _______________________________________________________
+>> David Soergel                            (650) 303-5324
+>> dev at davidsoergel.com        http://www.davidsoergel.com
+>> _______________________________________________________
+>> 
+>> 
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>> 
+
+
+_______________________________________________________
+David Soergel                            (650) 303-5324
+dev at davidsoergel.com        http://www.davidsoergel.com
+_______________________________________________________
+
+
+
+From i30817 at gmail.com  Thu Nov 19 03:18:14 2009
+From: i30817 at gmail.com (Paulo Levi)
+Date: Thu, 19 Nov 2009 08:18:14 +0000
+Subject: [concurrency-interest] Conja-- an accidental jsr166y alternative
+In-Reply-To: <B0D3C685-9704-4D6C-A3CA-B6F637AB098E@davidsoergel.com>
+References: <NFBBKALFDCPFIDBNKAPCMEDOIEAA.davidcholmes@aapt.net.au> 
+	<CBB4457E-55E9-4169-9743-6159A684377F@davidsoergel.com>
+	<212322090911182238t37f6f797l3bcd2494e1c576d4@mail.gmail.com> 
+	<B0D3C685-9704-4D6C-A3CA-B6F637AB098E@davidsoergel.com>
+Message-ID: <212322090911190018u5a9587e7v368b1410617fa68@mail.gmail.com>
+
+It's not all of the tasks. As i can compose Callables i offload getting a
+image to some services implemented as task. If one fails it tries the other
+right?
+So i composed the code that should be 1 threaded (including that one huge
+one). If that fails i want to run another alternative, but that alternative
+is not memory intensive so i can run many threads of that (concurrently
+while the first awaits right).
+Basically a way to say that tasks of a certain set of type should only
+should run on a n? of threads concurrently (a number probably could be
+derived from max memory and expected maximum memory use - that is, if you
+want to go that way). Your idea of pausing the executor until the others
+complete could have the same effect maybe if we just annotated the expected
+memory consumption of that task.
+
+For the second case not to complicate too much (its actually used in
+conjunction with the first) i'm interested in 2 main things
+1) As your library appears to use a singleton executor hidden by a static
+method, was there any support at all for different queuing strategies (LIFO
+i use), inclusevely across different calls. For example i have a problem in
+my app that one of my Executors is FIFO (that contains the huge memory
+task), but another functionality (in the main UI thread) calls a Executor
+(single-threaded) that calls that task too. What is stumping me in just
+having a shared executor like you is - well that new singleThreaded task
+should execute as fast as possible (LIFO), but that conflicts with the FIFO
+queue i already am using.
+
+On Thu, Nov 19, 2009 at 7:46 AM, David Soergel <dev at davidsoergel.com> wrote:
+
+> Hi Paulo,
+>
+> I'm sorry I don't entirely understand your questions... in the first case,
+> given that the tasks need to run one at a time for memory reasons, what are
+> you trying to accomplish by running them in a separate thread?
+>
+> I think your second question asks whether you can exert fine-grained
+> control over the task scheduling, i.e. by explicitly giving different tasks
+> different priorities.  Conja doesn't provide for that.  It assumes that the
+> tasks are independent of one another (that's what I mean by "functional
+> style"), so there should be no need to impose scheduling constraints among
+> them.  In practice, Conja executes the tasks in a given batch in FIFO order.
+>  The trick is that nested tasks essentially inherit their priority; this
+> helps tasks finish faster and thus get out of the way in terms of memory.
+>  If there is one task somewhere in the call tree that requires a lot of
+> memory, Conja has no way of knowing that in advance, so it will continue to
+> run other tasks on the rest of its worker threads concurrently.  It sounds
+> like you'd like to be able to a) postpone a task when you can predict that
+> there's not enough memory currently available to finish it, and b) tell the
+> executor to pause (i.e., finish running tasks but not start any new ones) in
+> hopes of freeing up some memory so that the postponed task can run.  These
+> are interesting ideas... am I getting the gist of your problem?
+>
+> -ds
+>
+>
+>
+> On Nov 18, 2009, at 10:38 PM, Paulo Levi wrote:
+>
+> > You have cool ideas.
+> > I "made" (copied most of the concepts) these (terrible) classes for
+> > scheduling/composing Callables. One of the situations i've found is
+> exactly
+> > the one you describe in the profileration of executors example you give,
+> > however i needed to have the requirement that the subtask was only run
+> once
+> > at a time (huuuuuge memory sink). So i composed my composable callables
+> > (terrible outdated name it has now) and sent it to a 1 thread executor
+> just
+> > for that subtask. How would your library handle things like that?
+> >
+> > How about scheduling problems? (i'm having that too - one of my task runs
+> > the subtask with the huuuuuugee memory requirement, in a LIFO order (with
+> a
+> > executor from Threads there, however another task - that doesn't know
+> > anything about the first - also runs a slightly different version of the
+> > same task/function -> things explode).
+> > I don't see how could you keep the different Priorities consistent in the
+> > same Executor (all those task + some that i might execute later should
+> run
+> > LIFO or FIFO and another should run as soon as possible) or other out
+> there
+> > combinations.
+> >
+> >
+> http://code.google.com/p/bookjar-utils/source/browse/BookJar-utils/src/util/ChainRunnable.java
+> >
+> http://code.google.com/p/bookjar-utils/source/browse/BookJar-utils/src/util/Threads.java
+> >
+> > On Thu, Nov 19, 2009 at 6:19 AM, David Soergel <dev at davidsoergel.com>
+> wrote:
+> >
+> >> Hi David,
+> >>
+> >> I'm not familiar with F# specifically, but you're right that using a
+> >> functional programming style is the idea here :)
+> >>
+> >> Regarding the DepthFirstThreadPoolExecutor, my expectation is that it's
+> >> only used internally.  I didn't just make it private since I figured it
+> >> might come in handy in some other context, but in fact I've only ever
+> used
+> >> it from within the Parallel class.  Still, I should synchronize it
+> properly
+> >> just in case. Thanks for catching that!
+> >>
+> >> -ds
+> >>
+> >>
+> >> On Nov 18, 2009, at 10:04 PM, David Holmes wrote:
+> >>
+> >>> David,
+> >>>
+> >>> Looks very F# like :)
+> >>>
+> >>> One thing (and I was just browsing) your DepthFirstThreadPoolExecutor
+> >>> lifecycle management is not thread-safe. You can leak instances;
+> there's
+> >> no
+> >>> sync or volatile to ensure visibility of the newly created instance, or
+> >> of
+> >>> updated cpu counts. There's no sync between shutting down and
+> recreating.
+> >> Is
+> >>> the expectation that this will not be used directly but only from other
+> >>> library internals which ensures a single-thread manages the executor?
+> If
+> >> not
+> >>> then you need synchronization in various places.
+> >>>
+> >>> Cheers,
+> >>> David Holmes
+> >>>
+> >>>> -----Original Message-----
+> >>>> From: concurrency-interest-bounces at cs.oswego.edu
+> >>>> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of David
+> >>>> Soergel
+> >>>> Sent: Thursday, 19 November 2009 3:40 PM
+> >>>> To: concurrency-interest at cs.oswego.edu
+> >>>> Subject: [concurrency-interest] Conja-- an accidental jsr166y
+> >>>> alternative
+> >>>>
+> >>>>
+> >>>> Hi all,
+> >>>>
+> >>>> I wrote a Java concurrency library a while back before I knew
+> >>>> about jsr166y, and finally got around to writing up how it works.
+> >>>> I realize I'm very late to the party here, but still I hope some
+> >>>> of the ideas I implemented may interest you.
+> >>>>
+> >>>> The main advantage of my library that I see at the moment is that
+> >>>> it hides all the hard stuff behind syntactic sugar, and so should
+> >>>> be very easy for a novice to adopt.  I suspect it would be
+> >>>> straightforward to provide a similarly easy-to-use wrapper around
+> >>>> the jsr166y internals.  I haven't yet done a detailed comparison
+> >>>> though, so it may well be that jsr166y provides functionality
+> >>>> that Conja lacks.
+> >>>>
+> >>>> The project home page is at
+> >>>> http://dev.davidsoergel.com/trac/conja/, and the most important
+> >>>> design issues are described briefly at
+> >>>> http://dev.davidsoergel.com/trac/conja/wiki/PrinciplesOfOperation
+> >>>>
+> >>>> A couple of those issues are: 1) I schedule nested tasks in
+> >>>> depth-first order, with advantages much like work stealing; 2) I
+> >>>> employ various strategies to conserve memory (primarily by not
+> >>>> leaving tasks waiting around in queues); and 3) I construct
+> >>>> Runnables lazily and concurrently from an iterator of task
+> >>>> inputs.  One consequence is that "pipelines" consisting of nested
+> >>>> mapping iterators (i.e., iterators that apply a function to
+> >>>> elements from an underlying iterator) can be used to provide the
+> >>>> inputs, in which case the mappings are computed lazily and
+> concurrently.
+> >>>>
+> >>>> I've been using this for some time with excellent performance, so
+> >>>> I think it works at least :)
+> >>>>
+> >>>> Looking forward to any feedback you may have,
+> >>>>
+> >>>> -ds
+> >>>>
+> >>>>
+> >>>> _______________________________________________________
+> >>>> David Soergel                            (650) 303-5324
+> >>>> dev at davidsoergel.com        http://www.davidsoergel.com
+> >>>> _______________________________________________________
+> >>>>
+> >>>>
+> >>>>
+> >>>> _______________________________________________
+> >>>> Concurrency-interest mailing list
+> >>>> Concurrency-interest at cs.oswego.edu
+> >>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >>>
+> >>
+> >>
+> >> _______________________________________________________
+> >> David Soergel                            (650) 303-5324
+> >> dev at davidsoergel.com        http://www.davidsoergel.com
+> >> _______________________________________________________
+> >>
+> >>
+> >> _______________________________________________
+> >> Concurrency-interest mailing list
+> >> Concurrency-interest at cs.oswego.edu
+> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >>
+>
+>
+> _______________________________________________________
+> David Soergel                            (650) 303-5324
+> dev at davidsoergel.com        http://www.davidsoergel.com
+> _______________________________________________________
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091119/8683fb03/attachment-0001.html>
+
+From i30817 at gmail.com  Thu Nov 19 03:19:16 2009
+From: i30817 at gmail.com (Paulo Levi)
+Date: Thu, 19 Nov 2009 08:19:16 +0000
+Subject: [concurrency-interest] Conja-- an accidental jsr166y alternative
+In-Reply-To: <212322090911190018u5a9587e7v368b1410617fa68@mail.gmail.com>
+References: <NFBBKALFDCPFIDBNKAPCMEDOIEAA.davidcholmes@aapt.net.au> 
+	<CBB4457E-55E9-4169-9743-6159A684377F@davidsoergel.com>
+	<212322090911182238t37f6f797l3bcd2494e1c576d4@mail.gmail.com> 
+	<B0D3C685-9704-4D6C-A3CA-B6F637AB098E@davidsoergel.com>
+	<212322090911190018u5a9587e7v368b1410617fa68@mail.gmail.com>
+Message-ID: <212322090911190019p4f3b8c0qe9ca933ed980f6b0@mail.gmail.com>
+
+One main thing obviously. Sorry about the misinformation.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091119/31048544/attachment.html>
+
+From z8sbk at yahoo.com.ar  Thu Nov 19 18:34:32 2009
+From: z8sbk at yahoo.com.ar (Safe P.)
+Date: Thu, 19 Nov 2009 15:34:32 -0800 (PST)
+Subject: [concurrency-interest] [CPU Affinity] ThreadPoolExecutor to improve
+	"O.S Scheduler" ?
+Message-ID: <119231.18710.qm@web111104.mail.gq1.yahoo.com>
+
+Hi,
+I'm very new to concurrent programming and I couldn't find anywhere if this is an issue or just a limitation.
+?
+I'm running several instances of a java process like "process.sh & process.sh & process.sh ..." in an HP-UX that runs over a 12-core machine. 
+
+When I use sar, top, and other utilities I can see that HP-UX is using just 1 core. It doesn't manage to assign one processor per process. 
+?
+Can I get this using ThreadPoolExecutor (like one System.Runtime.exec() per thread)? 
+?
+Unfortunately, this machine is a production server so I can't get access to it in order to do some test and verify that, and of course, if this make a significant time improvement.
+
+Thank you very much in advanced.
+--Matias
+
+
+      Yahoo! Cocina
+
+Encontra las mejores recetas con Yahoo! Cocina.
+
+
+http://ar.mujer.yahoo.com/cocina/
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091119/e0f5b207/attachment.html>
+
+From davidcholmes at aapt.net.au  Thu Nov 19 18:45:22 2009
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Fri, 20 Nov 2009 09:45:22 +1000
+Subject: [concurrency-interest] [CPU Affinity] ThreadPoolExecutor to
+	improve"O.S Scheduler" ?
+In-Reply-To: <119231.18710.qm@web111104.mail.gq1.yahoo.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEEDIEAA.davidcholmes@aapt.net.au>
+
+Matias,
+
+I'm not really understanding your problem/issue, but most systems have some
+notion of processing domains that let you allocate resources (memory and
+CPU) to a domain and then run specific processes in specific domains. On
+Solaris this is done with processor sets, while on Linux there are CPU-sets.
+I don't know what HP-UX has.
+
+There are no Java API's to control thread or process affinity (other than by
+exec'ing OS utilities to do it, or calling your own native code routines.
+
+Normally, absent any domains, all processes (and all their threads) can run
+on any available processor/core.
+
+HTH.
+
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Safe P.
+  Sent: Friday, 20 November 2009 9:35 AM
+  To: concurrency-interest at cs.oswego.edu
+  Subject: [concurrency-interest] [CPU Affinity] ThreadPoolExecutor to
+improve"O.S Scheduler" ?
+
+
+        Hi,
+        I'm very new to concurrent programming and I couldn't find anywhere
+if this is an issue or just a limitation.
+
+        I'm running several instances of a java process like "process.sh &
+process.sh & process.sh ..." in an HP-UX that runs over a 12-core machine.
+
+        When I use sar, top, and other utilities I can see that HP-UX is
+using just 1 core. It doesn't manage to assign one processor per process.
+
+        Can I get this using ThreadPoolExecutor (like one
+System.Runtime.exec() per thread)?
+
+        Unfortunately, this machine is a production server so I can't get
+access to it in order to do some test and verify that, and of course, if
+this make a significant time improvement.
+
+        Thank you very much in advanced.
+        --Matias
+
+
+----------------------------------------------------------------------------
+--
+
+  Encontra las mejores recetas con Yahoo! Cocina.
+  http://ar.mujer.yahoo.com/cocina/
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091120/ac58083b/attachment.html>
+
+From aph at redhat.com  Fri Nov 20 12:46:52 2009
+From: aph at redhat.com (Andrew Haley)
+Date: Fri, 20 Nov 2009 17:46:52 +0000
+Subject: [concurrency-interest] park and unpark low-level details
+Message-ID: <4B06D60C.2020005@redhat.com>
+
+Something I've been wondering about.
+
+In "The java.util.concurrent Synchronizer Framework" Doug writes:
+
+<< This simple mechanism is similar to those used, at some level, in
+the Solaris-9 thread library [11], in WIN32 "consumable events", and
+in the Linux NPTL thread library, and so maps efficiently to each of
+these on the most common platforms Java runs on.  (However, the
+current Sun Hotspot JVM reference implementation on Solaris and Linux
+actually uses a pthread condvar in order to fit into the existing
+runtime design.) >>
+
+What do you man by this?  I guess there's a nice way to map park and
+unpark onto low-level NPTL primitives (futexes, perhaps?)  Did you
+have a sketch of a design for that?
+
+It probably doesn't much matter, given that pthread mutex and conndvar
+signal a fairly thin wrappers over futexes, but unparking a blocked
+thread requires three pthread_ calls:
+
+     int status = pthread_mutex_lock(_mutex);
+
+     AnyWaiters = _nParked ;
+
+     status = pthread_mutex_unlock(_mutex);
+
+     if (AnyWaiters != 0) {
+        status = pthread_cond_signal(_cond);
+     }
+
+(I realize that the mutex is necessary to prevent a race when signalling
+a thread that's parking.  I just wondered if you'd had another design in
+mind.)
+
+Thanks,
+Andrew.
+
+From aph at redhat.com  Fri Nov 20 13:41:48 2009
+From: aph at redhat.com (Andrew Haley)
+Date: Fri, 20 Nov 2009 18:41:48 +0000
+Subject: [concurrency-interest] park and unpark low-level details
+In-Reply-To: <3D323829-DF05-41EE-A5E2-B9311C02CEEE@sun.com>
+References: <4B06D60C.2020005@redhat.com>
+	<3D323829-DF05-41EE-A5E2-B9311C02CEEE@sun.com>
+Message-ID: <4B06E2EC.2050301@redhat.com>
+
+Dave Dice wrote:
+> On 2009-11-20, at 12:46 PM, Andrew Haley wrote:
+>
+>> Something I've been wondering about.
+>>
+>> In "The java.util.concurrent Synchronizer Framework" Doug writes:
+>>
+>> << This simple mechanism is similar to those used, at some level, in
+>> the Solaris-9 thread library [11], in WIN32 "consumable events", and
+>> in the Linux NPTL thread library, and so maps efficiently to each of
+>> these on the most common platforms Java runs on.  (However, the
+>> current Sun Hotspot JVM reference implementation on Solaris and Linux
+>> actually uses a pthread condvar in order to fit into the existing
+>> runtime design.) >>
+>>
+>> What do you man by this?  I guess there's a nice way to map park and
+>> unpark onto low-level NPTL primitives (futexes, perhaps?)  Did you
+>> have a sketch of a design for that?
+>
+
+> We preferred to use more standardized interfaces.  I experimented
+> with using futexes instead of the usual condvar-mutex-flag tuple but
+> it wasn't particularly better.
+
+I'm not surprised.  I did some profiling, and even with quite heavily
+contended locks the time spent in park and unpark is often down in
+the noise.  Amazing, really.  :-)
+
+> (Likewise, Solaris has low-level __lwp_park and __lwp_park
+> interfaces that also work nicely, but they aren't officially exposed
+> and subject change from release to release).
+
+> One of the more interesting approaches is to use pipe pairs.  (I
+> left comments in the code that explain this in more detail).
+> Perversely, this is one of the best implementations for Solaris and
+> Linux, except that it can consume excessive number of file
+> descriptors, which is why we're not using it.
+
+Yes, I read that.  I guess you'd use open() with O_NONBLOCK and
+select() with a timeout for timed waits.  This does have a really nice
+feel to it; it's a shame file descriptors turn out to be such a scarce
+resource.
+
+>> It probably doesn't much matter, given that pthread mutex and conndvar
+>> signal a fairly thin wrappers over futexes, but unparking a blocked
+>> thread requires three pthread_ calls:
+>>
+>>     int status = pthread_mutex_lock(_mutex);
+>>
+>>     AnyWaiters = _nParked ;
+>>
+>>     status = pthread_mutex_unlock(_mutex);
+>>
+>>     if (AnyWaiters != 0) {
+>>        status = pthread_cond_signal(_cond);
+>>     }
+>
+
+> You're apparently looking at the PlatformEvent:: implementation and
+> not Parker::.  PlatformEvent:: is used by the built-in
+> synchronization primitives and native C++ JVM internal mutexes and
+> monitors, whereas Parker:: is infrastructure used by LockSupport.
+> They're similar -- and someday should be reconciled -- but have
+> slightly different semantics.
+
+Ah, my mistake.  However, exactly the same is true of Parker::park:
+
+  status = pthread_mutex_lock(_mutex);
+  s = _counter;
+  _counter = 1;
+  if (s < 1) {
+        status = pthread_mutex_unlock(_mutex);
+        status = pthread_cond_signal (_cond) ;
+     }
+  } else {
+    pthread_mutex_unlock(_mutex);
+  }
+
+I suppose this question is more to do with the fact that it doesn't
+quite feel right (to me) to be using all these pthread calls in the
+lowest-level Java primitives, rather than anything real to do with
+performance.
+
+Thanks,
+Andrew.
+
+
+From z8sbk at yahoo.com.ar  Fri Nov 20 14:35:07 2009
+From: z8sbk at yahoo.com.ar (Safe P.)
+Date: Fri, 20 Nov 2009 11:35:07 -0800 (PST)
+Subject: [concurrency-interest] [CPU Affinity] ThreadPoolExecutor to
+	improve"O.S Scheduler" ?
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCEEEDIEAA.davidcholmes@aapt.net.au>
+Message-ID: <761766.25527.qm@web111110.mail.gq1.yahoo.com>
+
+David, thank you for your answer.
+
+The problem is exactly this:
+
+when I run? java -cp . MyProcess & java -cp .MyProcess & ... in a 12-core machine that runs HP-UX, all processes are assign to one processor.
+
+That means that an instance must wait until the end of the previous instance to start. I want to run all instances in parallel, using all 12 processors. Is this possibly? Maybe using ThreadPoolExecutor to execute each instance of this "java -cp .."?
+
+Thank you very much in advance!
+
+
+--- El jue 19-nov-09, David Holmes <davidcholmes at aapt.net.au> escribi?:
+
+De: David Holmes <davidcholmes at aapt.net.au>
+Asunto: RE: [concurrency-interest] [CPU Affinity] ThreadPoolExecutor to improve"O.S Scheduler" ?
+Para: "Safe P." <z8sbk at yahoo.com.ar>, concurrency-interest at cs.oswego.edu
+Fecha: jueves, 19 de noviembre de 2009, 9:45 pm
+
+
+
+ 
+Matias,
+?
+I'm not really understanding your problem/issue, but most systems have 
+some notion of processing domains that let you allocate resources (memory and 
+CPU) to a domain and then run specific processes in specific domains. On Solaris 
+this is done with processor sets, while on Linux there are CPU-sets. I don't 
+know what HP-UX has.
+?
+There are no Java API's to control thread or process affinity (other than 
+by exec'ing OS utilities to do it, or calling your own native code 
+routines.
+?
+Normally, absent any domains, all processes (and all their threads) can 
+run on any available processor/core.
+?
+HTH.
+?
+David Holmes
+
+  -----Original Message-----
+From: 
+  concurrency-interest-bounces at cs.oswego.edu 
+  [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Safe 
+  P.
+Sent: Friday, 20 November 2009 9:35 AM
+To: 
+  concurrency-interest at cs.oswego.edu
+Subject: [concurrency-interest] 
+  [CPU Affinity] ThreadPoolExecutor to improve"O.S Scheduler" 
+  ?
+
+
+  
+    
+    
+      
+        Hi,
+I'm very new to concurrent programming and I couldn't find 
+        anywhere if this is an issue or just a limitation.
+        ?
+        I'm running several instances of a java process like "process.sh 
+        & process.sh & process.sh ..." in an HP-UX that runs over a 
+        12-core machine. 
+        
+When I use sar, top, and other utilities I can see that HP-UX 
+        is using just 1 core. It doesn't manage to assign one processor per 
+        process. 
+        ?
+        Can I get this using ThreadPoolExecutor (like one 
+        System.Runtime.exec() per thread)? 
+        ?
+        Unfortunately, this machine is a production server so I can't get 
+        access to it in order to do some test and verify that, and of course, if 
+        this make a significant time improvement.
+        
+Thank you very much in 
+  advanced.
+--Matias
+
+  
+  
+Encontra las mejores recetas con Yahoo! Cocina. 
+  
+http://ar.mujer.yahoo.com/cocina/
+
+
+      Yahoo! Cocina
+
+Encontra las mejores recetas con Yahoo! Cocina.
+
+
+http://ar.mujer.yahoo.com/cocina/
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091120/5360b8ff/attachment.html>
+
+From david.lloyd at redhat.com  Fri Nov 20 14:45:05 2009
+From: david.lloyd at redhat.com (David M. Lloyd)
+Date: Fri, 20 Nov 2009 13:45:05 -0600
+Subject: [concurrency-interest] [CPU Affinity] ThreadPoolExecutor
+ to	improve"O.S Scheduler" ?
+In-Reply-To: <761766.25527.qm@web111110.mail.gq1.yahoo.com>
+References: <761766.25527.qm@web111110.mail.gq1.yahoo.com>
+Message-ID: <4B06F1C1.8010100@redhat.com>
+
+He's saying it's probably a config issue with your OS, not a Java problem.
+
+- DML
+
+On 11/20/2009 01:35 PM, Safe P. wrote:
+> David, thank you for your answer.
+>
+> The problem is exactly this:
+>
+> when I run java -cp . MyProcess & java -cp .MyProcess & ... in a 12-core
+> machine that runs HP-UX, all processes are assign to one processor.
+>
+> That means that an instance must wait until the end of the previous
+> instance to start. I want to run all instances in parallel, using all 12
+> processors. Is this possibly? Maybe using ThreadPoolExecutor to execute
+> each instance of this "java -cp .."?
+>
+> Thank you very much in advance!
+>
+>
+> --- El *jue 19-nov-09, David Holmes /<davidcholmes at aapt.net.au>/* escribi?:
+>
+>
+>     De: David Holmes <davidcholmes at aapt.net.au>
+>     Asunto: RE: [concurrency-interest] [CPU Affinity] ThreadPoolExecutor
+>     to improve"O.S Scheduler" ?
+>     Para: "Safe P." <z8sbk at yahoo.com.ar>, concurrency-interest at cs.oswego.edu
+>     Fecha: jueves, 19 de noviembre de 2009, 9:45 pm
+>
+>     Matias,
+>     I'm not really understanding your problem/issue, but most systems
+>     have some notion of processing domains that let you allocate
+>     resources (memory and CPU) to a domain and then run specific
+>     processes in specific domains. On Solaris this is done with
+>     processor sets, while on Linux there are CPU-sets. I don't know what
+>     HP-UX has.
+>     There are no Java API's to control thread or process affinity (other
+>     than by exec'ing OS utilities to do it, or calling your own native
+>     code routines.
+>     Normally, absent any domains, all processes (and all their threads)
+>     can run on any available processor/core.
+>     HTH.
+>     David Holmes
+>
+>         -----Original Message-----
+>         *From:* concurrency-interest-bounces at cs.oswego.edu
+>         [mailto:concurrency-interest-bounces at cs.oswego.edu]*On Behalf Of
+>         *Safe P.
+>         *Sent:* Friday, 20 November 2009 9:35 AM
+>         *To:* concurrency-interest at cs.oswego.edu
+>         *Subject:* [concurrency-interest] [CPU Affinity]
+>         ThreadPoolExecutor to improve"O.S Scheduler" ?
+>
+>         Hi,
+>         I'm very new to concurrent programming and I couldn't find
+>         anywhere if this is an issue or just a limitation.
+>         I'm running several instances of a java process like "process.sh
+>         & process.sh & process.sh ..." in an HP-UX that runs over a
+>         12-core machine.
+>
+>         When I use sar, top, and other utilities I can see that HP-UX is
+>         using just 1 core. It doesn't manage to assign one processor per
+>         process.
+>         Can I get this using ThreadPoolExecutor (like one
+>         System.Runtime.exec() per thread)?
+>         Unfortunately, this machine is a production server so I can't
+>         get access to it in order to do some test and verify that, and
+>         of course, if this make a significant time improvement.
+>
+>         Thank you very much in advanced.
+>         --Matias
+>
+>
+>         ------------------------------------------------------------------------
+>
+>         Encontra las mejores recetas con Yahoo! Cocina.
+>         http://ar.mujer.yahoo.com/cocina/
+>
+>
+> ------------------------------------------------------------------------
+>
+> Encontra las mejores recetas con Yahoo! Cocina.
+> http://ar.mujer.yahoo.com/cocina/
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From rsk at moocat.org  Fri Nov 20 14:45:42 2009
+From: rsk at moocat.org (R Samuel Klatchko)
+Date: Fri, 20 Nov 2009 11:45:42 -0800
+Subject: [concurrency-interest] [CPU Affinity] ThreadPoolExecutor to
+	improve"O.S Scheduler" ?
+In-Reply-To: <761766.25527.qm@web111110.mail.gq1.yahoo.com>
+References: <NFBBKALFDCPFIDBNKAPCEEEDIEAA.davidcholmes@aapt.net.au>
+	<761766.25527.qm@web111110.mail.gq1.yahoo.com>
+Message-ID: <8eddd5030911201145l6a2c32acm34135b4202e817d7@mail.gmail.com>
+
+Does this only happen with Java or does it happen with other processes as
+well?
+
+Try running multiple copies of some other long lived process and see if they
+are all running on a single processor.  If they are, you are running into an
+issue with the OS (most likely a configuration limiting your user to a
+single processor).
+
+samuel
+
+
+
+On Fri, Nov 20, 2009 at 11:35 AM, Safe P. <z8sbk at yahoo.com.ar> wrote:
+
+> David, thank you for your answer.
+>
+> The problem is exactly this:
+>
+> when I run  java -cp . MyProcess & java -cp .MyProcess & ... in a 12-core
+> machine that runs HP-UX, all processes are assign to one processor.
+>
+> That means that an instance must wait until the end of the previous
+> instance to start. I want to run all instances in parallel, using all 12
+> processors. Is this possibly? Maybe using ThreadPoolExecutor to execute each
+> instance of this "java -cp .."?
+>
+> Thank you very much in advance!
+>
+>
+> --- El *jue 19-nov-09, David Holmes <davidcholmes at aapt.net.au>* escribi?:
+>
+>
+> De: David Holmes <davidcholmes at aapt.net.au>
+> Asunto: RE: [concurrency-interest] [CPU Affinity] ThreadPoolExecutor to
+> improve"O.S Scheduler" ?
+> Para: "Safe P." <z8sbk at yahoo.com.ar>, concurrency-interest at cs.oswego.edu
+> Fecha: jueves, 19 de noviembre de 2009, 9:45 pm
+>
+> Matias,
+>
+> I'm not really understanding your problem/issue, but most systems have some
+> notion of processing domains that let you allocate resources (memory and
+> CPU) to a domain and then run specific processes in specific domains. On
+> Solaris this is done with processor sets, while on Linux there are CPU-sets.
+> I don't know what HP-UX has.
+>
+> There are no Java API's to control thread or process affinity (other than
+> by exec'ing OS utilities to do it, or calling your own native code routines.
+>
+> Normally, absent any domains, all processes (and all their threads) can run
+> on any available processor/core.
+>
+> HTH.
+>
+> David Holmes
+>
+> -----Original Message-----
+> *From:* concurrency-interest-bounces at cs.oswego.edu [mailto:
+> concurrency-interest-bounces at cs.oswego.edu]*On Behalf Of *Safe P.
+> *Sent:* Friday, 20 November 2009 9:35 AM
+> *To:* concurrency-interest at cs.oswego.edu
+> *Subject:* [concurrency-interest] [CPU Affinity] ThreadPoolExecutor to
+> improve"O.S Scheduler" ?
+>
+>   Hi,
+> I'm very new to concurrent programming and I couldn't find anywhere if this
+> is an issue or just a limitation.
+>
+> I'm running several instances of a java process like "process.sh &
+> process.sh & process.sh ..." in an HP-UX that runs over a 12-core machine.
+>
+> When I use sar, top, and other utilities I can see that HP-UX is using just
+> 1 core. It doesn't manage to assign one processor per process.
+>
+> Can I get this using ThreadPoolExecutor (like one System.Runtime.exec() per
+> thread)?
+>
+> Unfortunately, this machine is a production server so I can't get access to
+> it in order to do some test and verify that, and of course, if this make a
+> significant time improvement.
+>
+> Thank you very much in advanced.
+> --Matias
+>
+> ------------------------------
+>
+> Encontra las mejores recetas con Yahoo! Cocina.
+> http://ar.mujer.yahoo.com/cocina/
+>
+>
+> ------------------------------
+>
+> Encontra las mejores recetas con Yahoo! Cocina.
+> http://ar.mujer.yahoo.com/cocina/
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091120/8128d541/attachment-0001.html>
+
+From normelton at gmail.com  Sat Nov 21 22:54:15 2009
+From: normelton at gmail.com (Norman Elton)
+Date: Sat, 21 Nov 2009 22:54:15 -0500
+Subject: [concurrency-interest] Concurrent Bidirectional Map
+Message-ID: <6b3a7f010911211954q7f1a6155ka4cefceb9eaf963f@mail.gmail.com>
+
+Let me start by saying that I am, by no means, a concurrency guru. But
+I did have a use for a concurrent bidirectional map, one that
+maintains key-to-value and value-to-key uniqueness. I whipped up a
+quick implementation of ConcurrentBiMap built around two
+ConcurrentHashMaps. The BiMap implements Map<K,V>, with the single
+extra method inverse(), which returns a Map<V,K>.
+
+I basically synchronized all the modifying methods (clear, put,
+remove, etc) so that I could safely change both maps atomically. All
+other methods are unsynchronized. The methods that would normally
+return modifiable Sets (entrySet, values, keySet) return unmodifiable
+versions of their "normal" values, since I have not yet come up with a
+way to allow the user to atomically remove a value from such a set.
+
+I'll attach both the code and a fairly extensive JUnit test case. A
+few questions remain:
+
+- Have I reinvented the wheel? Is there already a good / better
+implementation of a ConcurrentBiMap?
+
+- Is there a good way to test the atomicity of code? I could fire up
+multiple threads and let them simultaneously hammer away at a shared
+hash, but I'm not sure this would be a good reproducible test case.
+
+- Can anyone think of a way to allow the three Set methods (entrySet,
+keySet, values) to return modifiable values? That is, if you remove an
+item from them, they atomically affect the original BiMap.
+
+Thanks for any pointers,
+
+Norman
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: ConcurrentBiMap.java
+Type: application/octet-stream
+Size: 4630 bytes
+Desc: not available
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091121/8e98f3e2/attachment.obj>
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: ConcurrentBiMapTests.java
+Type: application/octet-stream
+Size: 6561 bytes
+Desc: not available
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091121/8e98f3e2/attachment-0001.obj>
+
+From dhanji at gmail.com  Sat Nov 21 23:28:28 2009
+From: dhanji at gmail.com (Dhanji R. Prasanna)
+Date: Sun, 22 Nov 2009 15:28:28 +1100
+Subject: [concurrency-interest] Concurrent Bidirectional Map
+In-Reply-To: <6b3a7f010911211954q7f1a6155ka4cefceb9eaf963f@mail.gmail.com>
+References: <6b3a7f010911211954q7f1a6155ka4cefceb9eaf963f@mail.gmail.com>
+Message-ID: <aa067ea10911212028s1d330276s640f8f7dc1e2ffb2@mail.gmail.com>
+
+Unfortunately, if you synchronize put() and remove() you lose the
+concurrency benefits of CHM. All threads will serialize behind the put lock.
+Also, in your implementation, in order for the bi-map-put to be perceived
+atomically, you would have to synchronize the get method as well =(
+
+It is an interesting use case, however.
+my 2c.
+
+Dhanji.
+
+On Sun, Nov 22, 2009 at 2:54 PM, Norman Elton <normelton at gmail.com> wrote:
+
+> Let me start by saying that I am, by no means, a concurrency guru. But
+> I did have a use for a concurrent bidirectional map, one that
+> maintains key-to-value and value-to-key uniqueness. I whipped up a
+> quick implementation of ConcurrentBiMap built around two
+> ConcurrentHashMaps. The BiMap implements Map<K,V>, with the single
+> extra method inverse(), which returns a Map<V,K>.
+>
+> I basically synchronized all the modifying methods (clear, put,
+> remove, etc) so that I could safely change both maps atomically. All
+> other methods are unsynchronized. The methods that would normally
+> return modifiable Sets (entrySet, values, keySet) return unmodifiable
+> versions of their "normal" values, since I have not yet come up with a
+> way to allow the user to atomically remove a value from such a set.
+>
+> I'll attach both the code and a fairly extensive JUnit test case. A
+> few questions remain:
+>
+> - Have I reinvented the wheel? Is there already a good / better
+> implementation of a ConcurrentBiMap?
+>
+> - Is there a good way to test the atomicity of code? I could fire up
+> multiple threads and let them simultaneously hammer away at a shared
+> hash, but I'm not sure this would be a good reproducible test case.
+>
+> - Can anyone think of a way to allow the three Set methods (entrySet,
+> keySet, values) to return modifiable values? That is, if you remove an
+> item from them, they atomically affect the original BiMap.
+>
+> Thanks for any pointers,
+>
+> Norman
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091122/948dd166/attachment.html>
+
+From martinrb at google.com  Sun Nov 22 12:36:25 2009
+From: martinrb at google.com (Martin Buchholz)
+Date: Sun, 22 Nov 2009 09:36:25 -0800
+Subject: [concurrency-interest] park and unpark low-level details
+In-Reply-To: <4B06E2EC.2050301@redhat.com>
+References: <4B06D60C.2020005@redhat.com>
+	<3D323829-DF05-41EE-A5E2-B9311C02CEEE@sun.com>
+	<4B06E2EC.2050301@redhat.com>
+Message-ID: <1ccfd1c10911220936i5ee476dt3c46fe1cfd4e3081@mail.gmail.com>
+
+On Fri, Nov 20, 2009 at 10:41, Andrew Haley <aph at redhat.com> wrote:
+
+> Dave Dice wrote:
+>
+> >> What do you man by this?  I guess there's a nice way to map park and
+> >> unpark onto low-level NPTL primitives (futexes, perhaps?)  Did you
+> >> have a sketch of a design for that?
+> >
+>
+> > We preferred to use more standardized interfaces.  I experimented
+> > with using futexes instead of the usual condvar-mutex-flag tuple but
+> > it wasn't particularly better.
+>
+> I'm not surprised.  I did some profiling, and even with quite heavily
+> contended locks the time spent in park and unpark is often down in
+> the noise.  Amazing, really.  :-)
+>
+
+Coincidentally, there's an article on futexes here:
+
+http://lwn.net/Articles/360699/
+
+Regarding using standard interfaces:
+
+---
+Man pages: The current man pages do not include some of the new futex
+operations. They suggest a policy for the value of the futex which has led
+to some confusion regarding usage of futexes. Worst of all, the user space
+futex() definition has been removed from /usr/include/linux/futex.h,
+rendering the man pages not only incomplete, but also inaccurate. Users of
+futexes must use the syscall interface directly.
+---
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091122/361fa38c/attachment.html>
+
+From normelton at gmail.com  Sun Nov 22 14:54:28 2009
+From: normelton at gmail.com (Norman Elton)
+Date: Sun, 22 Nov 2009 14:54:28 -0500
+Subject: [concurrency-interest] Concurrent Bidirectional Map
+In-Reply-To: <aa067ea10911212028s1d330276s640f8f7dc1e2ffb2@mail.gmail.com>
+References: <6b3a7f010911211954q7f1a6155ka4cefceb9eaf963f@mail.gmail.com>
+	<aa067ea10911212028s1d330276s640f8f7dc1e2ffb2@mail.gmail.com>
+Message-ID: <6b3a7f010911221154o216b6c4craa77f2fd52ec9f56@mail.gmail.com>
+
+Dhanji,
+
+Thanks for dedicating some brain-cells to looking at this.
+
+> Unfortunately, if you synchronize put() and remove() you lose the
+> concurrency benefits of CHM. All threads will serialize behind the put lock.
+
+Yep. My application is 99% reads and 1% writes, so I can tolerate
+single-threading put() and remove() operations. One major benefit that
+does remain; however, is that I don't have to worry about concurrent
+modification exceptions when iterating through the map members.
+
+I would love someone with more concurrency kung-fu to implement a real
+BiMap, so that I wouldn't have to rely on synchronization.
+
+> Also, in your implementation, in order for the bi-map-put to be perceived
+> atomically, you would have to synchronize the get method as well =(
+
+This is where I'm a little perplexed. I've synchronized any write
+methods, so that the two CHMs stay "in synch". Any read operations, as
+I see it, should be safe to fall through to the primary CHM without
+extra synchronization. If one thread is updating the map while another
+is reading, the reading thread will either get the new or the old
+value, but we shouldn't get any exceptions or end up with inconsistent
+CHMs.
+
+Or am I misunderstanding something?
+
+Thanks again,
+
+Norman
+
+From davidcholmes at aapt.net.au  Sun Nov 22 17:52:52 2009
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Mon, 23 Nov 2009 08:52:52 +1000
+Subject: [concurrency-interest] Concurrent Bidirectional Map
+In-Reply-To: <6b3a7f010911221154o216b6c4craa77f2fd52ec9f56@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEEJIEAA.davidcholmes@aapt.net.au>
+
+Norman,
+
+Norman Elton writes:
+> Dhanji R. Prasanna writes:
+> > Also, in your implementation, in order for the bi-map-put to be
+> > perceived atomically, you would have to synchronize the get
+> > method as well =(
+>
+> This is where I'm a little perplexed. I've synchronized any write
+> methods, so that the two CHMs stay "in synch". Any read operations, as
+> I see it, should be safe to fall through to the primary CHM without
+> extra synchronization. If one thread is updating the map while another
+> is reading, the reading thread will either get the new or the old
+> value, but we shouldn't get any exceptions or end up with inconsistent
+> CHMs.
+>
+> Or am I misunderstanding something?
+
+Your reader thread can access the map while only one of the associations is
+in effect. Whether that can cause a problem in practice depends on the exact
+semantics of the bi-map and how it is used. If you add the value->key
+mapping before the key->value mapping (and remove in opposite order) then it
+will mitigate the ability to see inconsistency - assuming you always lookup
+by key, not value.
+
+David Holmes
+
+> Thanks again,
+>
+> Norman
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From jed at atlassian.com  Sun Nov 22 18:40:04 2009
+From: jed at atlassian.com (Jed Wesley-Smith)
+Date: Mon, 23 Nov 2009 10:40:04 +1100
+Subject: [concurrency-interest] Concurrent Bidirectional Map
+In-Reply-To: <6b3a7f010911221154o216b6c4craa77f2fd52ec9f56@mail.gmail.com>
+References: <6b3a7f010911211954q7f1a6155ka4cefceb9eaf963f@mail.gmail.com>	<aa067ea10911212028s1d330276s640f8f7dc1e2ffb2@mail.gmail.com>
+	<6b3a7f010911221154o216b6c4craa77f2fd52ec9f56@mail.gmail.com>
+Message-ID: <4B09CBD4.6000707@atlassian.com>
+
+Norman,
+
+I have found that for this kind of application (read-mostly) a 
+copy-on-write approach can work very well (depending on the size of the 
+structure as the write is O(n)). We use a CopyOnWriteMap[1] that follows 
+a similar scheme to the j.u.c CopyOnWriteArrayList and have found that 
+its read performance in highly contended reads is excellent as it is 
+completely lock-free, whereas CHM will still do some locking on its 
+internal buckets.
+
+Implementing something similar for google-collections BiMap would not be 
+difficult (the algorithm is very simple), the only problem being that 
+the g.c. Immutable*.Builder implementations don't support removal[2] 
+unfortunately, making a COW* implementation that uses them internally 
+require two copies per write in the remove/replace cases.
+
+cheers,
+jed.
+
+[1] 
+https://labs.atlassian.com/source/browse/CONCURRENT/trunk/src/main/java/com/atlassian/util/concurrent/CopyOnWriteMap.java?r=2602
+[2] http://code.google.com/p/google-collections/issues/detail?id=279
+
+Norman Elton wrote:
+> Dhanji,
+>
+> Thanks for dedicating some brain-cells to looking at this.
+>
+>   
+>> Unfortunately, if you synchronize put() and remove() you lose the
+>> concurrency benefits of CHM. All threads will serialize behind the put lock.
+>>     
+>
+> Yep. My application is 99% reads and 1% writes, so I can tolerate
+> single-threading put() and remove() operations. One major benefit that
+> does remain; however, is that I don't have to worry about concurrent
+> modification exceptions when iterating through the map members.
+>
+> I would love someone with more concurrency kung-fu to implement a real
+> BiMap, so that I wouldn't have to rely on synchronization.
+>
+>   
+>> Also, in your implementation, in order for the bi-map-put to be perceived
+>> atomically, you would have to synchronize the get method as well =(
+>>     
+>
+> This is where I'm a little perplexed. I've synchronized any write
+> methods, so that the two CHMs stay "in synch". Any read operations, as
+> I see it, should be safe to fall through to the primary CHM without
+> extra synchronization. If one thread is updating the map while another
+> is reading, the reading thread will either get the new or the old
+> value, but we shouldn't get any exceptions or end up with inconsistent
+> CHMs.
+>
+> Or am I misunderstanding something?
+>
+> Thanks again,
+>
+> Norman
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>   
+
+
+From dhanji at gmail.com  Sun Nov 22 18:11:57 2009
+From: dhanji at gmail.com (Dhanji R. Prasanna)
+Date: Sun, 22 Nov 2009 15:11:57 -0800
+Subject: [concurrency-interest] Concurrent Bidirectional Map
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCAEEJIEAA.davidcholmes@aapt.net.au>
+References: <6b3a7f010911221154o216b6c4craa77f2fd52ec9f56@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCAEEJIEAA.davidcholmes@aapt.net.au>
+Message-ID: <aa067ea10911221511r35a899e7mc44b70eaf6d6c50d@mail.gmail.com>
+
+On Sun, Nov 22, 2009 at 2:52 PM, David Holmes <davidcholmes at aapt.net.au>wrote:
+
+> Norman,
+>
+> Norman Elton writes:
+> > Dhanji R. Prasanna writes:
+> > > Also, in your implementation, in order for the bi-map-put to be
+> > > perceived atomically, you would have to synchronize the get
+> > > method as well =(
+> >
+> > This is where I'm a little perplexed. I've synchronized any write
+> > methods, so that the two CHMs stay "in synch". Any read operations, as
+> > I see it, should be safe to fall through to the primary CHM without
+> > extra synchronization. If one thread is updating the map while another
+> > is reading, the reading thread will either get the new or the old
+> > value, but we shouldn't get any exceptions or end up with inconsistent
+> > CHMs.
+> >
+> > Or am I misunderstanding something?
+>
+> Your reader thread can access the map while only one of the associations is
+> in effect.
+>
+
+Yea, the update to both maps is not atomic because reader threads can
+interleave between writes to either map. Technically, you won't corrupt the
+map (unlike in the case of a regular HashMap), but that depends on what your
+definition of corruption is (as David says). A read from the value->key map
+can be inconsistent with a put to the key->value map.
+
+Dhanji.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091122/c7f08ba9/attachment.html>
+
+From normelton at gmail.com  Sun Nov 22 20:19:18 2009
+From: normelton at gmail.com (Norman Elton)
+Date: Sun, 22 Nov 2009 20:19:18 -0500
+Subject: [concurrency-interest] Concurrent Bidirectional Map
+In-Reply-To: <aa067ea10911221511r35a899e7mc44b70eaf6d6c50d@mail.gmail.com>
+References: <6b3a7f010911221154o216b6c4craa77f2fd52ec9f56@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCAEEJIEAA.davidcholmes@aapt.net.au>
+	<aa067ea10911221511r35a899e7mc44b70eaf6d6c50d@mail.gmail.com>
+Message-ID: <6b3a7f010911221719s7271de1fx74206f8a9b2f705@mail.gmail.com>
+
+> Yea, the update to both maps is not atomic because reader threads can
+> interleave between writes to either map. Technically, you won't corrupt the
+> map (unlike in the case of a regular HashMap), but that depends on what your
+> definition of corruption is (as David says). A read from the value->key map
+> can be inconsistent with a put to the key->value map.
+
+Thanks David & Dhanji for your thinking on this.
+
+I realize that if two threads hit the map at the same time, one doing
+a look-by-key and another doing a lookup-by-value, while a third
+thread is doing an update, it is possible the two readers will see
+different pairings. But, is this a problem? They are two separate
+threads. How should they expect to be simultaneously seeing the same
+"state" of the map?
+
+Likewise, a single thread that does a lookup-by-key, followed by a
+lookup-by-value, should expect to get two different results, since
+it's entirely feasible that another thread updates the map between the
+two reads.
+
+My implementation of the BiMap doesn't have any unsynchronized methods
+(I think!) that refer to both maps. All of the reader methods use a
+single of the two CHMs, which represent a valid "snapshot" of the map
+when referenced.
+
+Thanks again, all, for your help on this! Let me know if my reasoning
+is flawed, I've enjoyed thinking though this :-).
+
+Norman
+
+From davidcholmes at aapt.net.au  Sun Nov 22 20:30:29 2009
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Mon, 23 Nov 2009 11:30:29 +1000
+Subject: [concurrency-interest] Concurrent Bidirectional Map
+In-Reply-To: <6b3a7f010911221719s7271de1fx74206f8a9b2f705@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIEEKIEAA.davidcholmes@aapt.net.au>
+
+Norman,
+
+>From how you describe it, it sounds like there is no consistency issue. If
+no thread can ever expect to find that:
+
+v->k => k->v
+
+then the fact that the above can fail to hold during a modification to the
+bi-map seems of little consequence.
+
+Cheers,
+David
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Norman
+> Elton
+> Sent: Monday, 23 November 2009 11:19 AM
+> To: concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] Concurrent Bidirectional Map
+>
+>
+> > Yea, the update to both maps is not atomic because reader threads can
+> > interleave between writes to either map. Technically, you won't
+> corrupt the
+> > map (unlike in the case of a regular HashMap), but that depends
+> on what your
+> > definition of corruption is (as David says). A read from the
+> value->key map
+> > can be inconsistent with a put to the key->value map.
+>
+> Thanks David & Dhanji for your thinking on this.
+>
+> I realize that if two threads hit the map at the same time, one doing
+> a look-by-key and another doing a lookup-by-value, while a third
+> thread is doing an update, it is possible the two readers will see
+> different pairings. But, is this a problem? They are two separate
+> threads. How should they expect to be simultaneously seeing the same
+> "state" of the map?
+>
+> Likewise, a single thread that does a lookup-by-key, followed by a
+> lookup-by-value, should expect to get two different results, since
+> it's entirely feasible that another thread updates the map between the
+> two reads.
+>
+> My implementation of the BiMap doesn't have any unsynchronized methods
+> (I think!) that refer to both maps. All of the reader methods use a
+> single of the two CHMs, which represent a valid "snapshot" of the map
+> when referenced.
+>
+> Thanks again, all, for your help on this! Let me know if my reasoning
+> is flawed, I've enjoyed thinking though this :-).
+>
+> Norman
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From normelton at gmail.com  Sun Nov 22 21:37:36 2009
+From: normelton at gmail.com (Norman Elton)
+Date: Sun, 22 Nov 2009 21:37:36 -0500
+Subject: [concurrency-interest] Concurrent Bidirectional Map
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCIEEKIEAA.davidcholmes@aapt.net.au>
+References: <6b3a7f010911221719s7271de1fx74206f8a9b2f705@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCIEEKIEAA.davidcholmes@aapt.net.au>
+Message-ID: <6b3a7f010911221837o7037f09fve5ce526af93a368b@mail.gmail.com>
+
+> From how you describe it, it sounds like there is no consistency issue. If
+> no thread can ever expect to find that:
+>
+> v->k => k->v
+>
+> then the fact that the above can fail to hold during a modification to the
+> bi-map seems of little consequence.
+
+Just to clarify... yes, at any given instant, k -> v does imply v ->
+k. But there is no way, that I can see, to atomically access both
+get(k) and get(v).
+
+Thanks all,
+
+Norman
+
+From dhanji at gmail.com  Sun Nov 22 21:53:27 2009
+From: dhanji at gmail.com (Dhanji R. Prasanna)
+Date: Sun, 22 Nov 2009 18:53:27 -0800
+Subject: [concurrency-interest] Concurrent Bidirectional Map
+In-Reply-To: <6b3a7f010911221837o7037f09fve5ce526af93a368b@mail.gmail.com>
+References: <6b3a7f010911221719s7271de1fx74206f8a9b2f705@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCIEEKIEAA.davidcholmes@aapt.net.au>
+	<6b3a7f010911221837o7037f09fve5ce526af93a368b@mail.gmail.com>
+Message-ID: <aa067ea10911221853r34a26f82v10b62c7a5b26763c@mail.gmail.com>
+
+Fwiw, I also endorse the view that a Copy-on-write wrapper around
+guava-libraries BiMap would be more performant (and simpler to write too).
+
+Dhanji.
+
+On Sun, Nov 22, 2009 at 6:37 PM, Norman Elton <normelton at gmail.com> wrote:
+
+> > From how you describe it, it sounds like there is no consistency issue.
+> If
+> > no thread can ever expect to find that:
+> >
+> > v->k => k->v
+> >
+> > then the fact that the above can fail to hold during a modification to
+> the
+> > bi-map seems of little consequence.
+>
+> Just to clarify... yes, at any given instant, k -> v does imply v ->
+> k. But there is no way, that I can see, to atomically access both
+> get(k) and get(v).
+>
+> Thanks all,
+>
+> Norman
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20091122/4514fc1a/attachment.html>
+
+From martinrb at google.com  Sun Nov 22 22:53:51 2009
+From: martinrb at google.com (Martin Buchholz)
+Date: Sun, 22 Nov 2009 19:53:51 -0800
+Subject: [concurrency-interest] Performance of ReentrantReadWriteLock
+In-Reply-To: <6b3a7f010911182046n3b8a3a69mcc9521d6a1ed223d@mail.gmail.com>
+References: <6b3a7f010911182046n3b8a3a69mcc9521d6a1ed223d@mail.gmail.com>
+Message-ID: <1ccfd1c10911221953k40ab9985x37657d36c25841ac@mail.gmail.com>
+
+Some thoughts:
+
+RRWL has a bunch of overhead related to
+keeping track of read hold state, that could
+be removed to get something faster but less
+debuggable.  I've wanted to do something
+in this area.
+
+I'd be interested in perf results when you have
+lots of writes.  What's the overhead of RRWL
+over RL when only the writelock is ever acquired?
+
+Do you actually have enough processors to keep
+your 5 threads busy?
+
+writing micro-benchmarks is known to be hard,
+and for concurrency primitives especially so.
+Perhaps you could share your micro-benchmark?
+
+RRWL has seen some implementation improvements
+post-JDK6.  Try the JDK7, JDK6, JDK5 implementations
+with a jdk7 hotspot, perhaps.
+
+Martin
+
+On Wed, Nov 18, 2009 at 20:46, Norman Elton <normelton at gmail.com> wrote:
+> I've done some very basic testing of a ReentrantReadWriteLock vs.
+> synchronized. I fired up five threads, each of which is accessing a
+> shared Map<Integer,Integer>. At first, I did 99% read operations, then
+> 100% read operations. Initial testing, with no locking or
+> synchronization, proved about 8M operations per second per thread.
+> Super.
+>
+> Then I tested synchronizing the get() and put() methods. Performance
+> dropped to about 700K operations per second. Synchronization obviously
+> has a large overhead.
+>
+> Strange thing is, the ReentrantReadWriteLock performed just about as
+> well. Even in a 100% read environment, where I would think threads
+> would never have to block for one another.
+>
+> Am I missing something here? Shouldn't I be seeing significantly
+> better numbers for the ReentrantReadWriteLock? Presumably, it's
+> allowing multiple threads to hit the hash at the same time. I would
+> expect numbers somewhere between the synchronizing hash and the
+> completely untouched HashMap.
+>
+> Thoughts? Thanks!
+>
+> Norman
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From martinrb at google.com  Sun Nov 22 23:01:07 2009
+From: martinrb at google.com (Martin Buchholz)
+Date: Sun, 22 Nov 2009 20:01:07 -0800
+Subject: [concurrency-interest] Concurrent Bidirectional Map
+In-Reply-To: <6b3a7f010911221837o7037f09fve5ce526af93a368b@mail.gmail.com>
+References: <6b3a7f010911221719s7271de1fx74206f8a9b2f705@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCIEEKIEAA.davidcholmes@aapt.net.au>
+	<6b3a7f010911221837o7037f09fve5ce526af93a368b@mail.gmail.com>
+Message-ID: <1ccfd1c10911222001u3a50463br571b5e83f424ebdc@mail.gmail.com>
+
+On Sun, Nov 22, 2009 at 18:37, Norman Elton <normelton at gmail.com> wrote:
+>> From how you describe it, it sounds like there is no consistency issue. If
+>> no thread can ever expect to find that:
+>>
+>> v->k => k->v
+>>
+>> then the fact that the above can fail to hold during a modification to the
+>> bi-map seems of little consequence.
+>
+> Just to clarify... yes, at any given instant, k -> v does imply v ->
+> k. But there is no way, that I can see, to atomically access both
+> get(k) and get(v).
+
+Suppose
+thread 1 is trying to set k -> v1
+while
+thread 2 is trying to set k -> v2
+
+Because the updates of the two maps are independent,
+and you can't control the scheduler, there is a risk of
+ending up with
+k -> v1
+in the first map, and
+v2 -> k
+in the reverse map
+in the quiescent state.
+
+Martin
+
+From normelton at gmail.com  Sun Nov 22 23:25:50 2009
+From: normelton at gmail.com (Norman Elton)
+Date: Sun, 22 Nov 2009 23:25:50 -0500
+Subject: [concurrency-interest] Concurrent Bidirectional Map
+In-Reply-To: <1ccfd1c10911222001u3a50463br571b5e83f424ebdc@mail.gmail.com>
+References: <6b3a7f010911221719s7271de1fx74206f8a9b2f705@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCIEEKIEAA.davidcholmes@aapt.net.au>
+	<6b3a7f010911221837o7037f09fve5ce526af93a368b@mail.gmail.com>
+	<1ccfd1c10911222001u3a50463br571b5e83f424ebdc@mail.gmail.com>
+Message-ID: <6b3a7f010911222025u564ae3d0gdd00a2b6118e3848@mail.gmail.com>
+
+> Suppose
+> thread 1 is trying to set k -> v1
+> while
+> thread 2 is trying to set k -> v2
+>
+> Because the updates of the two maps are independent,
+> and you can't control the scheduler, there is a risk of
+> ending up with
+> k -> v1
+> in the first map, and
+> v2 -> k
+> in the reverse map
+> in the quiescent state.
+
+I've synchronized the put() methods in both directions back to a
+single lock object, so one thread would block while the other
+completes its update. Correct me if I'm wrong, this is definitely my
+knowledge of the inner workings synchronization starts to get fuzzy.
+
+Norman
+
+From martinrb at google.com  Mon Nov 23 00:28:58 2009
+From: martinrb at google.com (Martin Buchholz)
+Date: Sun, 22 Nov 2009 21:28:58 -0800
+Subject: [concurrency-interest] Concurrent Bidirectional Map
+In-Reply-To: <6b3a7f010911222025u564ae3d0gdd00a2b6118e3848@mail.gmail.com>
+References: <6b3a7f010911221719s7271de1fx74206f8a9b2f705@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCIEEKIEAA.davidcholmes@aapt.net.au>
+	<6b3a7f010911221837o7037f09fve5ce526af93a368b@mail.gmail.com>
+	<1ccfd1c10911222001u3a50463br571b5e83f424ebdc@mail.gmail.com>
+	<6b3a7f010911222025u564ae3d0gdd00a2b6118e3848@mail.gmail.com>
+Message-ID: <1ccfd1c10911222128v4604dfd3od27356b002cc6d5f@mail.gmail.com>
+
+On Sun, Nov 22, 2009 at 20:25, Norman Elton <normelton at gmail.com> wrote:
+>> Suppose
+>> thread 1 is trying to set k -> v1
+>> while
+>> thread 2 is trying to set k -> v2
+>>
+>> Because the updates of the two maps are independent,
+>> and you can't control the scheduler, there is a risk of
+>> ending up with
+>> k -> v1
+>> in the first map, and
+>> v2 -> k
+>> in the reverse map
+>> in the quiescent state.
+>
+> I've synchronized the put() methods in both directions back to a
+> single lock object, so one thread would block while the other
+> completes its update. Correct me if I'm wrong, this is definitely my
+> knowledge of the inner workings synchronization starts to get fuzzy.
+
+OK, I think you're mostly fine.
+An observer might be able to see an "impossible"
+sequence, but users are unlikely to care.
+
+E.g. Perhaps it's an invariant that some key is
+only ever modified by having its value incremented,
+perhaps by calls to replace(key, value, value+1).
+but another thread can observe apparent violations
+of monotonicity
+k -> 0
+k -> 1
+reverse map 0 -> k
+
+Martin
+

@@ -1,0 +1,3257 @@
+From jean.morissette666@videotron.ca  Sat Oct  2 02:04:08 2004
+From: jean.morissette666@videotron.ca (Jean Morissette)
+Date: Fri, 01 Oct 2004 21:04:08 -0400
+Subject: [concurrency-interest] Adding interfaces Sink and Source?
+Message-ID: <415DFE88.10803@videotron.ca>
+
+Hi all,
+I think that it could be usefull, in a future java release, to add 2 
+interfaces, Sink and Source, such a way that a Queue extend these two 
+interfaces.
+
+SEDA project at http://www.eecs.harvard.edu/~mdw/proj/seda/ is a good 
+exemple of what I mean.
+
+Thank
+Jean Morissette
+
+From dl@cs.oswego.edu  Sat Oct  2 15:31:54 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sat, 2 Oct 2004 10:31:54 -0400
+Subject: [concurrency-interest] Adding interfaces Sink and Source?
+In-Reply-To: <415DFE88.10803@videotron.ca>
+References: <415DFE88.10803@videotron.ca>
+Message-ID: <16734.48090.734898.958780@altair.cs.oswego.edu>
+
+> I think that it could be usefull, in a future java release, to add 2 
+> interfaces, Sink and Source, such a way that a Queue extend these two 
+> interfaces.
+> 
+> SEDA project at http://www.eecs.harvard.edu/~mdw/proj/seda/ is a good 
+> exemple of what I mean.
+
+We discussed this a lot in the expert group and interest list,
+especially since the predecessor of J2SE5.0 Queue, dl.u.c versions of
+"Channel", does have Puttable and Takable superinterfaces. Even though
+several of you out there probably still think it was a mistake for us
+to omit these, it still seems to be the most defensible decision:
+
+Unlike dl.u.c.Channel, J2SE5.0 Queue and BlockingQueue are
+Collections, that you can for example, iterate though. Lack of support
+for Collection operations was a frequently-complained about limitation
+of Channel. To support this and still allow the blander usages
+envisioned for Channel, and additionally keep the useful new
+distinction of blocking vs plain queues would have required us to
+define four new mixin-style interfaces (Offerable, Pollable, Puttable,
+Takable) plus give names to various combinations of those supporting
+Collection operations or not.  This would add a lot of "surface area"
+to the package. If there were a really good reason to do this, we
+might have done it anyway. But most usages of Puttable (and similarly
+for others) that don't involve Queues usually have different
+semantics, so don't unify nicely. For example, in lot of cases, they
+involve messaging or IO, so can throw different kinds of Exceptions or
+return status indicators.
+
+The way we left it, it is still possible for individual developers
+to unify usages themselves by adding a bit of glue. For example:
+
+interface Puttable<E> { void put(E x) throws Exception; }
+class MyLinkedQueue<E> extends LinkedQueue<E> implements Puttable<E> {
+  ...
+}
+
+This is annoying to do, but considering how few people will want 
+or need to, it still seems like the best compromise.
+
+-Doug
+
+From tim@peierls.net  Sun Oct  3 02:38:10 2004
+From: tim@peierls.net (Tim Peierls)
+Date: Sat, 02 Oct 2004 21:38:10 -0400
+Subject: [concurrency-interest] Adding interfaces Sink and Source?
+In-Reply-To: <16734.48090.734898.958780@altair.cs.oswego.edu>
+References: <415DFE88.10803@videotron.ca>
+ <16734.48090.734898.958780@altair.cs.oswego.edu>
+Message-ID: <415F5802.5050903@peierls.net>
+
+Doug Lea wrote:
+> The way we left it, it is still possible for individual developers
+> to unify usages themselves by adding a bit of glue. For example:
+> 
+> interface Puttable<E> { void put(E x) throws Exception; }
+> class MyLinkedQueue<E> extends LinkedQueue<E> implements Puttable<E> {
+>   ...
+> }
+
+Expanding on this a bit, it might be convenient to use wrapper factories
+that convert BlockingQueues to custom Puttable and Takable interfaces.
+
+class QUtil {
+   static Puttable<E> asPuttable(final BlockingQueue<E> q) {
+     return new Puttable<E>() {
+       public void put(E e) throws InterruptedException { q.put(e); }
+     }
+   }
+   static Takable<E> asTakable(final BlockingQueue<E> q) {
+     return new Takable<E>() {
+       public E take() throws InterruptedException { return q.take(); }
+     }
+   }
+
+But if the only reason you miss Puttable and Takable is the way that they
+prevented consumers from accidentally or maliciously accessing producer
+methods and vice versa, then a simple way to achieve the same effect without
+introducing new interfaces is via a factory that creates wrapped blocking
+queues that throw UOE on all but a subset of the queue methods:
+
+class QUtil {
+   static BlockingQueue<E> putOnlyBlockingQueue(final BlockingQueue<E> q) {
+     return new BlockingQueue<E>() {
+       public void put(E e) throws InterruptedException { q.put(e); }
+       // similarly for all "put"-like methods that you want to support
+
+       public E take() { throw new UnsupportedOperationException(); }
+       // similarly for all "take"-like methods and anything else you
+       // don't want to support
+     };
+   }
+
+   static BlockingQueue<E> takeOnlyBlockingQueue(final BlockingQueue<E> q) {
+     return new BlockingQueue<E>() {
+       public E take() throws InterruptedException { return q.take(); }
+       // similarly for all "take"-like methods that you want to support
+
+       public void put(E e) { throw new UnsupportedOperationException(); }
+       // similarly for all "put"-like methods and anything else you
+       // don't want to support
+     };
+   }
+}
+
+Use this utility to wrap a queue before handing it over to producers and
+consumers. For example,
+
+   interface Producer {
+     public void produceTo(BlockingQueue<Foo> putOnlyQueue);
+   }
+
+   interface Consumer {
+     public void consumeFrom(BlockingQueue<Foo> takeOnlyQueue);
+   }
+
+   void start(Collection<Producer> producers,
+              Collection<Consumer> consumers,
+              BlockingQueue<Foo> fooq) {
+
+     for (Producer producer : producers)
+       producer.produceTo(QUtil.putOnlyBlockingQueue(fooq));
+
+     for (Consumer consumer : consumers)
+       consumer.consumeFrom(QUtil.takeOnlyBlockingQueue(fooq));
+   }
+
+Now malicious or broken producers and consumers can't touch the "wrong"
+end of the queue. This approach trades away compile time type information
+in favor of a smaller set of interfaces and run time checking, roughly
+analogous to the design tradeoff whose resolution in the Collections
+framework resulted in the Collections.unmodifiableXXX static methods.
+
+--tim
+
+
+From josh@bloch.us  Sun Oct  3 18:18:13 2004
+From: josh@bloch.us (Joshua Bloch)
+Date: Sun, 3 Oct 2004 10:18:13 -0700
+Subject: [concurrency-interest] Adding interfaces Sink and Source?
+In-Reply-To: <415F5802.5050903@peierls.net>
+References: <415DFE88.10803@videotron.ca>
+ <16734.48090.734898.958780@altair.cs.oswego.edu>
+ <415F5802.5050903@peierls.net>
+Message-ID: <b097ac5104100310183fa32263@mail.gmail.com>
+
+Folks,
+
+Vaguely related to this, here's a cool pattern for use when you want
+to do several forwarding wrappers of the same interface.  I learned
+about this pattern from Neal, after I wrote my book.  Had I known
+about it earlier, it would probably be in the book.  The basic idea is
+to make a helper wrapper class that does nothing but forwarding:
+
+public class ForwardingQueue<E> extends Queue<E> {
+    private final Queue<E> queue;
+
+    ForwardingQueue(Queue<E> queue) { this.queue = queue; }
+
+    boolean offer(E o) { return queue.offer(o);  }
+    E poll()           { return queue.poll();    }
+    E remove();        { return queue.remove();  }
+    E peek();          { return queue.peek();    }
+    E element();       { return queue.element(); }
+
+    ... // add Collections methods or (much better) extend forwardingCollection
+}
+
+Then you can make specialized wrappers by overriding only the methods
+where you want to do something other than vanilla forwarding, e.g.:
+
+public class Collections {
+    public static <E> Queue<E> putOnlyQueue(Queue<? super E> queue) {
+        return new ForwardingQueue<E>() {
+            E poll();    { throw new UnsupportedOperation(); }
+            E remove();  { throw new UnsupportedOperation(); }
+            E peek();    { throw new UnsupportedOperation(); }
+            E element(); { throw new UnsupportedOperation(); }
+            ... // Eliminate some collections ops also
+        };
+    }
+
+    pubic static <E> Queue<E> takeOnlyQueue(Queue<? extends E> queue) {
+        return new ForwardingQueue<E>() {
+            boolean offer(E o) { throw new UnsupportedOperation(); }
+            ... // Eliminate some collections ops also
+        };
+    }
+
+    ...
+}
+
+You get the idea.  I have never actually used this pattern in
+practice, but that's only because I learned about it too late.  I
+think it's a good idea.
+
+            Josh
+
+On Sat, 02 Oct 2004 21:38:10 -0400, Tim Peierls <tim@peierls.net> wrote:
+> Doug Lea wrote:
+> > The way we left it, it is still possible for individual developers
+> > to unify usages themselves by adding a bit of glue. For example:
+> >
+> > interface Puttable<E> { void put(E x) throws Exception; }
+> > class MyLinkedQueue<E> extends LinkedQueue<E> implements Puttable<E> {
+> >   ...
+> > }
+> 
+> Expanding on this a bit, it might be convenient to use wrapper factories
+> that convert BlockingQueues to custom Puttable and Takable interfaces.
+> 
+> class QUtil {
+>   static Puttable<E> asPuttable(final BlockingQueue<E> q) {
+>     return new Puttable<E>() {
+>       public void put(E e) throws InterruptedException { q.put(e); }
+>     }
+>   }
+>   static Takable<E> asTakable(final BlockingQueue<E> q) {
+>     return new Takable<E>() {
+>       public E take() throws InterruptedException { return q.take(); }
+>     }
+>   }
+> 
+> But if the only reason you miss Puttable and Takable is the way that they
+> prevented consumers from accidentally or maliciously accessing producer
+> methods and vice versa, then a simple way to achieve the same effect without
+> introducing new interfaces is via a factory that creates wrapped blocking
+> queues that throw UOE on all but a subset of the queue methods:
+> 
+> class QUtil {
+>   static BlockingQueue<E> putOnlyBlockingQueue(final BlockingQueue<E> q) {
+>     return new BlockingQueue<E>() {
+>       public void put(E e) throws InterruptedException { q.put(e); }
+>       // similarly for all "put"-like methods that you want to support
+> 
+>       public E take() { throw new UnsupportedOperationException(); }
+>       // similarly for all "take"-like methods and anything else you
+>       // don't want to support
+>     };
+>   }
+> 
+>   static BlockingQueue<E> takeOnlyBlockingQueue(final BlockingQueue<E> q) {
+>     return new BlockingQueue<E>() {
+>       public E take() throws InterruptedException { return q.take(); }
+>       // similarly for all "take"-like methods that you want to support
+> 
+>       public void put(E e) { throw new UnsupportedOperationException(); }
+>       // similarly for all "put"-like methods and anything else you
+>       // don't want to support
+>     };
+>   }
+> }
+> 
+> Use this utility to wrap a queue before handing it over to producers and
+> consumers. For example,
+> 
+>   interface Producer {
+>     public void produceTo(BlockingQueue<Foo> putOnlyQueue);
+>   }
+> 
+>   interface Consumer {
+>     public void consumeFrom(BlockingQueue<Foo> takeOnlyQueue);
+>   }
+> 
+>   void start(Collection<Producer> producers,
+>              Collection<Consumer> consumers,
+>              BlockingQueue<Foo> fooq) {
+> 
+>     for (Producer producer : producers)
+>       producer.produceTo(QUtil.putOnlyBlockingQueue(fooq));
+> 
+>     for (Consumer consumer : consumers)
+>       consumer.consumeFrom(QUtil.takeOnlyBlockingQueue(fooq));
+>   }
+> 
+> Now malicious or broken producers and consumers can't touch the "wrong"
+> end of the queue. This approach trades away compile time type information
+> in favor of a smaller set of interfaces and run time checking, roughly
+> analogous to the design tradeoff whose resolution in the Collections
+> framework resulted in the Collections.unmodifiableXXX static methods.
+> 
+> --tim
+> 
+> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From eqmel@comcast.net  Tue Oct  5 02:04:28 2004
+From: eqmel@comcast.net (Ron Bense)
+Date: Mon, 04 Oct 2004 20:04:28 -0500
+Subject: [concurrency-interest] Adding interfaces Sink and Source?
+In-Reply-To: <b097ac5104100310183fa32263@mail.gmail.com>
+References: <415DFE88.10803@videotron.ca>	 <16734.48090.734898.958780@altair.cs.oswego.edu>	 <415F5802.5050903@peierls.net> <b097ac5104100310183fa32263@mail.gmail.com>
+Message-ID: <4161F31C.40903@comcast.net>
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+  <meta content="text/html;charset=ISO-8859-1" http-equiv="Content-Type">
+  <title></title>
+</head>
+<body bgcolor="#ffffff" text="#000000">
+Check the Decorator pattern:<br>
+<br>
+Generic reasonable explanation which mentions the oft overlooked I/O
+implementation:<br>
+<a class="moz-txt-link-freetext" href="http://www.exciton.cs.rice.edu/JavaResources/DesignPatterns/DecoratorPattern.htm">http://www.exciton.cs.rice.edu/JavaResources/DesignPatterns/DecoratorPattern.htm</a><br>
+<br>
+and everyone's favorite SWING based examples:<br>
+<a class="moz-txt-link-freetext" href="http://www.onjava.com/pub/a/onjava/2003/02/05/decorator.html">http://www.onjava.com/pub/a/onjava/2003/02/05/decorator.html</a><br>
+<br>
+Ron.<br>
+<br>
+Joshua Bloch wrote:<br>
+<blockquote cite="midb097ac5104100310183fa32263@mail.gmail.com"
+ type="cite">
+  <pre wrap="">Folks,
+
+Vaguely related to this, here's a cool pattern for use when you want
+to do several forwarding wrappers of the same interface.  I learned
+about this pattern from Neal, after I wrote my book.  Had I known
+about it earlier, it would probably be in the book.  The basic idea is
+to make a helper wrapper class that does nothing but forwarding:
+
+public class ForwardingQueue&lt;E&gt; extends Queue&lt;E&gt; {
+    private final Queue&lt;E&gt; queue;
+
+    ForwardingQueue(Queue&lt;E&gt; queue) { this.queue = queue; }
+
+    boolean offer(E o) { return queue.offer(o);  }
+    E poll()           { return queue.poll();    }
+    E remove();        { return queue.remove();  }
+    E peek();          { return queue.peek();    }
+    E element();       { return queue.element(); }
+
+    ... // add Collections methods or (much better) extend forwardingCollection
+}
+
+Then you can make specialized wrappers by overriding only the methods
+where you want to do something other than vanilla forwarding, e.g.:
+
+public class Collections {
+    public static &lt;E&gt; Queue&lt;E&gt; putOnlyQueue(Queue&lt;? super E&gt; queue) {
+        return new ForwardingQueue&lt;E&gt;() {
+            E poll();    { throw new UnsupportedOperation(); }
+            E remove();  { throw new UnsupportedOperation(); }
+            E peek();    { throw new UnsupportedOperation(); }
+            E element(); { throw new UnsupportedOperation(); }
+            ... // Eliminate some collections ops also
+        };
+    }
+
+    pubic static &lt;E&gt; Queue&lt;E&gt; takeOnlyQueue(Queue&lt;? extends E&gt; queue) {
+        return new ForwardingQueue&lt;E&gt;() {
+            boolean offer(E o) { throw new UnsupportedOperation(); }
+            ... // Eliminate some collections ops also
+        };
+    }
+
+    ...
+}
+
+You get the idea.  I have never actually used this pattern in
+practice, but that's only because I learned about it too late.  I
+think it's a good idea.
+
+            Josh
+
+On Sat, 02 Oct 2004 21:38:10 -0400, Tim Peierls <a class="moz-txt-link-rfc2396E" href="mailto:tim@peierls.net">&lt;tim@peierls.net&gt;</a> wrote:
+  </pre>
+  <blockquote type="cite">
+    <pre wrap="">Doug Lea wrote:
+    </pre>
+    <blockquote type="cite">
+      <pre wrap="">The way we left it, it is still possible for individual developers
+to unify usages themselves by adding a bit of glue. For example:
+
+interface Puttable&lt;E&gt; { void put(E x) throws Exception; }
+class MyLinkedQueue&lt;E&gt; extends LinkedQueue&lt;E&gt; implements Puttable&lt;E&gt; {
+  ...
+}
+      </pre>
+    </blockquote>
+    <pre wrap="">Expanding on this a bit, it might be convenient to use wrapper factories
+that convert BlockingQueues to custom Puttable and Takable interfaces.
+
+class QUtil {
+  static Puttable&lt;E&gt; asPuttable(final BlockingQueue&lt;E&gt; q) {
+    return new Puttable&lt;E&gt;() {
+      public void put(E e) throws InterruptedException { q.put(e); }
+    }
+  }
+  static Takable&lt;E&gt; asTakable(final BlockingQueue&lt;E&gt; q) {
+    return new Takable&lt;E&gt;() {
+      public E take() throws InterruptedException { return q.take(); }
+    }
+  }
+
+But if the only reason you miss Puttable and Takable is the way that they
+prevented consumers from accidentally or maliciously accessing producer
+methods and vice versa, then a simple way to achieve the same effect without
+introducing new interfaces is via a factory that creates wrapped blocking
+queues that throw UOE on all but a subset of the queue methods:
+
+class QUtil {
+  static BlockingQueue&lt;E&gt; putOnlyBlockingQueue(final BlockingQueue&lt;E&gt; q) {
+    return new BlockingQueue&lt;E&gt;() {
+      public void put(E e) throws InterruptedException { q.put(e); }
+      // similarly for all "put"-like methods that you want to support
+
+      public E take() { throw new UnsupportedOperationException(); }
+      // similarly for all "take"-like methods and anything else you
+      // don't want to support
+    };
+  }
+
+  static BlockingQueue&lt;E&gt; takeOnlyBlockingQueue(final BlockingQueue&lt;E&gt; q) {
+    return new BlockingQueue&lt;E&gt;() {
+      public E take() throws InterruptedException { return q.take(); }
+      // similarly for all "take"-like methods that you want to support
+
+      public void put(E e) { throw new UnsupportedOperationException(); }
+      // similarly for all "put"-like methods and anything else you
+      // don't want to support
+    };
+  }
+}
+
+Use this utility to wrap a queue before handing it over to producers and
+consumers. For example,
+
+  interface Producer {
+    public void produceTo(BlockingQueue&lt;Foo&gt; putOnlyQueue);
+  }
+
+  interface Consumer {
+    public void consumeFrom(BlockingQueue&lt;Foo&gt; takeOnlyQueue);
+  }
+
+  void start(Collection&lt;Producer&gt; producers,
+             Collection&lt;Consumer&gt; consumers,
+             BlockingQueue&lt;Foo&gt; fooq) {
+
+    for (Producer producer : producers)
+      producer.produceTo(QUtil.putOnlyBlockingQueue(fooq));
+
+    for (Consumer consumer : consumers)
+      consumer.consumeFrom(QUtil.takeOnlyBlockingQueue(fooq));
+  }
+
+Now malicious or broken producers and consumers can't touch the "wrong"
+end of the queue. This approach trades away compile time type information
+in favor of a smaller set of interfaces and run time checking, roughly
+analogous to the design tradeoff whose resolution in the Collections
+framework resulted in the Collections.unmodifiableXXX static methods.
+
+--tim
+
+
+
+_______________________________________________
+Concurrency-interest mailing list
+<a class="moz-txt-link-abbreviated" href="mailto:Concurrency-interest@altair.cs.oswego.edu">Concurrency-interest@altair.cs.oswego.edu</a>
+<a class="moz-txt-link-freetext" href="http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest">http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest</a>
+
+    </pre>
+  </blockquote>
+  <pre wrap=""><!---->_______________________________________________
+Concurrency-interest mailing list
+<a class="moz-txt-link-abbreviated" href="mailto:Concurrency-interest@altair.cs.oswego.edu">Concurrency-interest@altair.cs.oswego.edu</a>
+<a class="moz-txt-link-freetext" href="http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest">http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest</a>
+
+  </pre>
+</blockquote>
+<br>
+</body>
+</html>
+
+From josh@bloch.us  Tue Oct  5 02:58:35 2004
+From: josh@bloch.us (Joshua Bloch)
+Date: Mon, 4 Oct 2004 18:58:35 -0700
+Subject: [concurrency-interest] Adding interfaces Sink and Source?
+In-Reply-To: <4161F31C.40903@comcast.net>
+References: <415DFE88.10803@videotron.ca>
+ <16734.48090.734898.958780@altair.cs.oswego.edu>
+ <415F5802.5050903@peierls.net>
+ <b097ac5104100310183fa32263@mail.gmail.com>
+ <4161F31C.40903@comcast.net>
+Message-ID: <b097ac51041004185831421d7e@mail.gmail.com>
+
+Yep, I know it's the decorator pattern (and did when I designed the
+Collection wrappers in '97).  Neal's observation is that providing
+"generic forwarder" classes makes a nice basis for writing custom
+decorators.  Another interesting option is linguistic support for
+forwarding.
+
+          Josh
+
+
+----- Original Message -----
+From: Ron Bense <eqmel@comcast.net>
+Date: Mon, 04 Oct 2004 20:04:28 -0500
+Subject: Re: [concurrency-interest] Adding interfaces Sink and Source?
+To: josh@bloch.us
+Cc: concurrency-interest@altair.cs.oswego.edu
+
+Check the Decorator pattern:
+
+Generic reasonable explanation which mentions the oft overlooked I/O
+implementation:
+http://www.exciton.cs.rice.edu/JavaResources/DesignPatterns/DecoratorPattern.htm
+
+and everyone's favorite SWING based examples:
+http://www.onjava.com/pub/a/onjava/2003/02/05/decorator.html
+
+Ron.
+
+Joshua Bloch wrote:
+
+
+
+Folks, Vaguely related to this, here's a cool pattern for use when you
+want to do several forwarding wrappers of the same interface. I
+learned about this pattern from Neal, after I wrote my book. Had I
+known about it earlier, it would probably be in the book. The basic
+idea is to make a helper wrapper class that does nothing but
+forwarding: public class ForwardingQueue<E> extends Queue<E> { private
+final Queue<E> queue; ForwardingQueue(Queue<E> queue) { this.queue =
+queue; } boolean offer(E o) { return queue.offer(o); } E poll() {
+return queue.poll(); } E remove(); { return queue.remove(); } E
+peek(); { return queue.peek(); } E element(); { return
+queue.element(); } ... // add Collections methods or (much better)
+extend forwardingCollection } Then you can make specialized wrappers
+by overriding only the methods where you want to do something other
+than vanilla forwarding, e.g.: public class Collections { public
+static <E> Queue<E> putOnlyQueue(Queue<? super E> queue) { return new
+ForwardingQueue<E>() { E poll(); { throw new UnsupportedOperation(); }
+E remove(); { throw new UnsupportedOperation(); } E peek(); { throw
+new UnsupportedOperation(); } E element(); { throw new
+UnsupportedOperation(); } ... // Eliminate some collections ops also
+}; } pubic static <E> Queue<E> takeOnlyQueue(Queue<? extends E> queue)
+{ return new ForwardingQueue<E>() { boolean offer(E o) { throw new
+UnsupportedOperation(); } ... // Eliminate some collections ops also
+}; } ... } You get the idea. I have never actually used this pattern
+in practice, but that's only because I learned about it too late. I
+think it's a good idea. Josh On Sat, 02 Oct 2004 21:38:10 -0400, Tim
+Peierls <tim@peierls.net> wrote:
+Doug Lea wrote: 
+The way we left it, it is still possible for individual developers to
+unify usages themselves by adding a bit of glue. For example:
+interface Puttable<E> { void put(E x) throws Exception; } class
+MyLinkedQueue<E> extends LinkedQueue<E> implements Puttable<E> { ... }
+Expanding on this a bit, it might be convenient to use wrapper
+factories that convert BlockingQueues to custom Puttable and Takable
+interfaces. class QUtil { static Puttable<E> asPuttable(final
+BlockingQueue<E> q) { return new Puttable<E>() { public void put(E e)
+throws InterruptedException { q.put(e); } } } static Takable<E>
+asTakable(final BlockingQueue<E> q) { return new Takable<E>() { public
+E take() throws InterruptedException { return q.take(); } } } But if
+the only reason you miss Puttable and Takable is the way that they
+prevented consumers from accidentally or maliciously accessing
+producer methods and vice versa, then a simple way to achieve the same
+effect without introducing new interfaces is via a factory that
+creates wrapped blocking queues that throw UOE on all but a subset of
+the queue methods: class QUtil { static BlockingQueue<E>
+putOnlyBlockingQueue(final BlockingQueue<E> q) { return new
+BlockingQueue<E>() { public void put(E e) throws InterruptedException
+{ q.put(e); } // similarly for all "put"-like methods that you want to
+support public E take() { throw new UnsupportedOperationException(); }
+// similarly for all "take"-like methods and anything else you //
+don't want to support }; } static BlockingQueue<E>
+takeOnlyBlockingQueue(final BlockingQueue<E> q) { return new
+BlockingQueue<E>() { public E take() throws InterruptedException {
+return q.take(); } // similarly for all "take"-like methods that you
+want to support public void put(E e) { throw new
+UnsupportedOperationException(); } // similarly for all "put"-like
+methods and anything else you // don't want to support }; } } Use this
+utility to wrap a queue before handing it over to producers and
+consumers. For example, interface Producer { public void
+produceTo(BlockingQueue<Foo> putOnlyQueue); } interface Consumer {
+public void consumeFrom(BlockingQueue<Foo> takeOnlyQueue); } void
+start(Collection<Producer> producers, Collection<Consumer> consumers,
+BlockingQueue<Foo> fooq) { for (Producer producer : producers)
+producer.produceTo(QUtil.putOnlyBlockingQueue(fooq)); for (Consumer
+consumer : consumers)
+consumer.consumeFrom(QUtil.takeOnlyBlockingQueue(fooq)); } Now
+malicious or broken producers and consumers can't touch the "wrong"
+end of the queue. This approach trades away compile time type
+information in favor of a smaller set of interfaces and run time
+checking, roughly analogous to the design tradeoff whose resolution in
+the Collections framework resulted in the Collections.unmodifiableXXX
+static methods. --tim _______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+_______________________________________________ Concurrency-interest
+mailing list Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+_______________________________________________ Concurrency-interest
+mailing list Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From unmesh_joshi@hotmail.com  Tue Oct  5 13:14:20 2004
+From: unmesh_joshi@hotmail.com (Unmesh joshi)
+Date: Tue, 05 Oct 2004 12:14:20 +0000
+Subject: [concurrency-interest] RE: Concurrency-interest digest, Vol 1 #299 - 1 msg
+Message-ID: <BAY8-F75MHIUv9nDqUV0001093d@hotmail.com>
+
+The ForwardingQueue looks similar to this pattern that I found,
+http://www.cs.luc.edu/laufer/teaching/473/handouts/AbstractSubclasses.html/view 
+which simulates Mixin functionality with composition.
+
+The stuff being discussed here sounds similar to "Negative Variability" 
+discussed by Jim Coplien.
+We can achieve it with interface segregation (making separate interfaces 
+like Putable, Takable etc) or using Inheritance with cancellation.
+
+Just my $0.01
+
+
+
+
+
+>From: concurrency-interest-request@cs.oswego.edu
+>Reply-To: concurrency-interest@cs.oswego.edu
+>To: concurrency-interest@altair.cs.oswego.edu
+>Subject: Concurrency-interest digest, Vol 1 #299 - 1 msg
+>Date: Mon, 04 Oct 2004 12:00:01 -0400
+>
+>Send Concurrency-interest mailing list submissions to
+>	concurrency-interest@altair.cs.oswego.edu
+>
+>To subscribe or unsubscribe via the World Wide Web, visit
+>	http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>or, via email, send a message with subject or body 'help' to
+>	concurrency-interest-request@altair.cs.oswego.edu
+>
+>You can reach the person managing the list at
+>	concurrency-interest-admin@altair.cs.oswego.edu
+>
+>When replying, please edit your Subject line so it is more specific
+>than "Re: Contents of Concurrency-interest digest..."
+>
+>
+>Today's Topics:
+>
+>    1. Re: Adding interfaces Sink and Source? (Joshua Bloch)
+>
+>--__--__--
+>
+>Message: 1
+>Date: Sun, 3 Oct 2004 10:18:13 -0700
+>From: Joshua Bloch <jbloch@gmail.com>
+>Reply-To: josh@bloch.us
+>To: concurrency-interest@altair.cs.oswego.edu
+>Subject: Re: [concurrency-interest] Adding interfaces Sink and Source?
+>
+>Folks,
+>
+>Vaguely related to this, here's a cool pattern for use when you want
+>to do several forwarding wrappers of the same interface.  I learned
+>about this pattern from Neal, after I wrote my book.  Had I known
+>about it earlier, it would probably be in the book.  The basic idea is
+>to make a helper wrapper class that does nothing but forwarding:
+>
+>public class ForwardingQueue<E> extends Queue<E> {
+>     private final Queue<E> queue;
+>
+>     ForwardingQueue(Queue<E> queue) { this.queue = queue; }
+>
+>     boolean offer(E o) { return queue.offer(o);  }
+>     E poll()           { return queue.poll();    }
+>     E remove();        { return queue.remove();  }
+>     E peek();          { return queue.peek();    }
+>     E element();       { return queue.element(); }
+>
+>     ... // add Collections methods or (much better) extend 
+>forwardingCollection
+>}
+>
+>Then you can make specialized wrappers by overriding only the methods
+>where you want to do something other than vanilla forwarding, e.g.:
+>
+>public class Collections {
+>     public static <E> Queue<E> putOnlyQueue(Queue<? super E> queue) {
+>         return new ForwardingQueue<E>() {
+>             E poll();    { throw new UnsupportedOperation(); }
+>             E remove();  { throw new UnsupportedOperation(); }
+>             E peek();    { throw new UnsupportedOperation(); }
+>             E element(); { throw new UnsupportedOperation(); }
+>             ... // Eliminate some collections ops also
+>         };
+>     }
+>
+>     pubic static <E> Queue<E> takeOnlyQueue(Queue<? extends E> queue) {
+>         return new ForwardingQueue<E>() {
+>             boolean offer(E o) { throw new UnsupportedOperation(); }
+>             ... // Eliminate some collections ops also
+>         };
+>     }
+>
+>     ...
+>}
+>
+>You get the idea.  I have never actually used this pattern in
+>practice, but that's only because I learned about it too late.  I
+>think it's a good idea.
+>
+>             Josh
+>
+>On Sat, 02 Oct 2004 21:38:10 -0400, Tim Peierls <tim@peierls.net> wrote:
+> > Doug Lea wrote:
+> > > The way we left it, it is still possible for individual developers
+> > > to unify usages themselves by adding a bit of glue. For example:
+> > >
+> > > interface Puttable<E> { void put(E x) throws Exception; }
+> > > class MyLinkedQueue<E> extends LinkedQueue<E> implements Puttable<E> {
+> > >   ...
+> > > }
+> >
+> > Expanding on this a bit, it might be convenient to use wrapper factories
+> > that convert BlockingQueues to custom Puttable and Takable interfaces.
+> >
+> > class QUtil {
+> >   static Puttable<E> asPuttable(final BlockingQueue<E> q) {
+> >     return new Puttable<E>() {
+> >       public void put(E e) throws InterruptedException { q.put(e); }
+> >     }
+> >   }
+> >   static Takable<E> asTakable(final BlockingQueue<E> q) {
+> >     return new Takable<E>() {
+> >       public E take() throws InterruptedException { return q.take(); }
+> >     }
+> >   }
+> >
+> > But if the only reason you miss Puttable and Takable is the way that 
+>they
+> > prevented consumers from accidentally or maliciously accessing producer
+> > methods and vice versa, then a simple way to achieve the same effect 
+>without
+> > introducing new interfaces is via a factory that creates wrapped 
+>blocking
+> > queues that throw UOE on all but a subset of the queue methods:
+> >
+> > class QUtil {
+> >   static BlockingQueue<E> putOnlyBlockingQueue(final BlockingQueue<E> q) 
+>{
+> >     return new BlockingQueue<E>() {
+> >       public void put(E e) throws InterruptedException { q.put(e); }
+> >       // similarly for all "put"-like methods that you want to support
+> >
+> >       public E take() { throw new UnsupportedOperationException(); }
+> >       // similarly for all "take"-like methods and anything else you
+> >       // don't want to support
+> >     };
+> >   }
+> >
+> >   static BlockingQueue<E> takeOnlyBlockingQueue(final BlockingQueue<E> 
+>q) {
+> >     return new BlockingQueue<E>() {
+> >       public E take() throws InterruptedException { return q.take(); }
+> >       // similarly for all "take"-like methods that you want to support
+> >
+> >       public void put(E e) { throw new UnsupportedOperationException(); 
+>}
+> >       // similarly for all "put"-like methods and anything else you
+> >       // don't want to support
+> >     };
+> >   }
+> > }
+> >
+> > Use this utility to wrap a queue before handing it over to producers and
+> > consumers. For example,
+> >
+> >   interface Producer {
+> >     public void produceTo(BlockingQueue<Foo> putOnlyQueue);
+> >   }
+> >
+> >   interface Consumer {
+> >     public void consumeFrom(BlockingQueue<Foo> takeOnlyQueue);
+> >   }
+> >
+> >   void start(Collection<Producer> producers,
+> >              Collection<Consumer> consumers,
+> >              BlockingQueue<Foo> fooq) {
+> >
+> >     for (Producer producer : producers)
+> >       producer.produceTo(QUtil.putOnlyBlockingQueue(fooq));
+> >
+> >     for (Consumer consumer : consumers)
+> >       consumer.consumeFrom(QUtil.takeOnlyBlockingQueue(fooq));
+> >   }
+> >
+> > Now malicious or broken producers and consumers can't touch the "wrong"
+> > end of the queue. This approach trades away compile time type 
+>information
+> > in favor of a smaller set of interfaces and run time checking, roughly
+> > analogous to the design tradeoff whose resolution in the Collections
+> > framework resulted in the Collections.unmodifiableXXX static methods.
+> >
+> > --tim
+> >
+> >
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest@altair.cs.oswego.edu
+> > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+>
+>
+>--__--__--
+>
+>_______________________________________________
+>Concurrency-interest mailing list
+>Concurrency-interest@altair.cs.oswego.edu
+>http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>End of Concurrency-interest Digest
+
+_________________________________________________________________
+1 Paisa Auction with no reserve price. 
+http://ads2.baazee.com/cgi-bin/banners/redirect.pl?id=2563 Steal a Deal - 
+Nokia phones.
+
+
+From adam@bea.com  Wed Oct  6 18:44:15 2004
+From: adam@bea.com (Adam Messinger)
+Date: Wed, 6 Oct 2004 10:44:15 -0700
+Subject: [concurrency-interest] Adding interfaces Sink and Source?
+Message-ID: <82447314F99FB04EB45A98AF96FD7F17083205D1@ussfex01.bea.com>
+
+Josh,
+
+We make use of this pattern in our utility classes in the WebLogic
+Server product, though we've tended to call a class which like this a
+DelegatingFoo, rather than a ForwardingFoo.  We have delegating versions
+of all of the collections and associated types including Iterator and
+Map, as well as delegating versions of streams and readers and of many
+internal interfaces as well.  We've found them to be quite useful.  
+
+I agree that it would be a good addition to your book - maybe for a
+later edition?
+
+Cheers!
+
+Adam
+
+> -----Original Message-----
+> From: concurrency-interest-admin@cs.oswego.edu 
+> [mailto:concurrency-interest-admin@cs.oswego.edu] On Behalf 
+> Of Joshua Bloch
+> Sent: Sunday, October 03, 2004 10:18 AM
+> To: concurrency-interest@altair.cs.oswego.edu
+> Subject: Re: [concurrency-interest] Adding interfaces Sink and Source?
+> 
+> Folks,
+> 
+> Vaguely related to this, here's a cool pattern for use when 
+> you want to do several forwarding wrappers of the same 
+> interface.  I learned about this pattern from Neal, after I 
+> wrote my book.  Had I known about it earlier, it would 
+> probably be in the book.  The basic idea is to make a helper 
+> wrapper class that does nothing but forwarding:
+> 
+> public class ForwardingQueue<E> extends Queue<E> {
+>     private final Queue<E> queue;
+> 
+>     ForwardingQueue(Queue<E> queue) { this.queue = queue; }
+> 
+>     boolean offer(E o) { return queue.offer(o);  }
+>     E poll()           { return queue.poll();    }
+>     E remove();        { return queue.remove();  }
+>     E peek();          { return queue.peek();    }
+>     E element();       { return queue.element(); }
+> 
+>     ... // add Collections methods or (much better) extend 
+> forwardingCollection }
+> 
+> Then you can make specialized wrappers by overriding only the 
+> methods where you want to do something other than vanilla 
+> forwarding, e.g.:
+> 
+> public class Collections {
+>     public static <E> Queue<E> putOnlyQueue(Queue<? super E> queue) {
+>         return new ForwardingQueue<E>() {
+>             E poll();    { throw new UnsupportedOperation(); }
+>             E remove();  { throw new UnsupportedOperation(); }
+>             E peek();    { throw new UnsupportedOperation(); }
+>             E element(); { throw new UnsupportedOperation(); }
+>             ... // Eliminate some collections ops also
+>         };
+>     }
+> 
+>     pubic static <E> Queue<E> takeOnlyQueue(Queue<? extends 
+> E> queue) {
+>         return new ForwardingQueue<E>() {
+>             boolean offer(E o) { throw new UnsupportedOperation(); }
+>             ... // Eliminate some collections ops also
+>         };
+>     }
+> 
+>     ...
+> }
+> 
+> You get the idea.  I have never actually used this pattern in 
+> practice, but that's only because I learned about it too 
+> late.  I think it's a good idea.
+> 
+>             Josh
+> 
+> On Sat, 02 Oct 2004 21:38:10 -0400, Tim Peierls 
+> <tim@peierls.net> wrote:
+> > Doug Lea wrote:
+> > > The way we left it, it is still possible for individual 
+> developers 
+> > > to unify usages themselves by adding a bit of glue. For example:
+> > >
+> > > interface Puttable<E> { void put(E x) throws Exception; } class 
+> > > MyLinkedQueue<E> extends LinkedQueue<E> implements Puttable<E> {
+> > >   ...
+> > > }
+> > 
+> > Expanding on this a bit, it might be convenient to use wrapper 
+> > factories that convert BlockingQueues to custom Puttable 
+> and Takable interfaces.
+> > 
+> > class QUtil {
+> >   static Puttable<E> asPuttable(final BlockingQueue<E> q) {
+> >     return new Puttable<E>() {
+> >       public void put(E e) throws InterruptedException { q.put(e); }
+> >     }
+> >   }
+> >   static Takable<E> asTakable(final BlockingQueue<E> q) {
+> >     return new Takable<E>() {
+> >       public E take() throws InterruptedException { return 
+> q.take(); }
+> >     }
+> >   }
+> > 
+> > But if the only reason you miss Puttable and Takable is the 
+> way that 
+> > they prevented consumers from accidentally or maliciously accessing 
+> > producer methods and vice versa, then a simple way to 
+> achieve the same 
+> > effect without introducing new interfaces is via a factory that 
+> > creates wrapped blocking queues that throw UOE on all but a 
+> subset of the queue methods:
+> > 
+> > class QUtil {
+> >   static BlockingQueue<E> putOnlyBlockingQueue(final 
+> BlockingQueue<E> q) {
+> >     return new BlockingQueue<E>() {
+> >       public void put(E e) throws InterruptedException { q.put(e); }
+> >       // similarly for all "put"-like methods that you want 
+> to support
+> > 
+> >       public E take() { throw new UnsupportedOperationException(); }
+> >       // similarly for all "take"-like methods and anything else you
+> >       // don't want to support
+> >     };
+> >   }
+> > 
+> >   static BlockingQueue<E> takeOnlyBlockingQueue(final 
+> BlockingQueue<E> q) {
+> >     return new BlockingQueue<E>() {
+> >       public E take() throws InterruptedException { return 
+> q.take(); }
+> >       // similarly for all "take"-like methods that you want to 
+> > support
+> > 
+> >       public void put(E e) { throw new 
+> UnsupportedOperationException(); }
+> >       // similarly for all "put"-like methods and anything else you
+> >       // don't want to support
+> >     };
+> >   }
+> > }
+> > 
+> > Use this utility to wrap a queue before handing it over to 
+> producers 
+> > and consumers. For example,
+> > 
+> >   interface Producer {
+> >     public void produceTo(BlockingQueue<Foo> putOnlyQueue);
+> >   }
+> > 
+> >   interface Consumer {
+> >     public void consumeFrom(BlockingQueue<Foo> takeOnlyQueue);
+> >   }
+> > 
+> >   void start(Collection<Producer> producers,
+> >              Collection<Consumer> consumers,
+> >              BlockingQueue<Foo> fooq) {
+> > 
+> >     for (Producer producer : producers)
+> >       producer.produceTo(QUtil.putOnlyBlockingQueue(fooq));
+> > 
+> >     for (Consumer consumer : consumers)
+> >       consumer.consumeFrom(QUtil.takeOnlyBlockingQueue(fooq));
+> >   }
+> > 
+> > Now malicious or broken producers and consumers can't touch 
+> the "wrong"
+> > end of the queue. This approach trades away compile time type 
+> > information in favor of a smaller set of interfaces and run time 
+> > checking, roughly analogous to the design tradeoff whose 
+> resolution in 
+> > the Collections framework resulted in the 
+> Collections.unmodifiableXXX static methods.
+> > 
+> > --tim
+> > 
+> > 
+> > 
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest@altair.cs.oswego.edu
+> > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+
+From Martin.Buchholz@Sun.COM  Thu Oct  7 06:16:57 2004
+From: Martin.Buchholz@Sun.COM (Martin Buchholz)
+Date: Wed, 06 Oct 2004 22:16:57 -0700
+Subject: [concurrency-interest] Re: Question about Hashtable and ConcurrentHashMap.
+In-Reply-To: <20041007000158.GU24720@binog.sfbay.sun.com>
+References: <20041007000158.GU24720@binog.sfbay.sun.com>
+Message-ID: <4164D149.7020709@Sun.COM>
+
+Bino, I've taken the liberty of forwarding your question to the
+Experts.
+
+In my opinion... they are not compatible *enough*, and the
+performance advantage is probably only significant when
+concurrency is high.
+
+Martin
+
+Bino George wrote:
+> Hi Folks,
+>           I have been reading that ConcurrentHashMap is compatible
+> with Hashtable and is mush faster than Hashtable. So is there any reason
+> why we could not replace the implementation of Hashtable with that of
+> ConcurrentHashMap ? Obviously there must be a reason why it was not
+> done ? Can you tell me what the reason is ?
+> 
+> Thanks,
+> Bino.
+> 
+
+
+
+From jozart@blarg.net  Thu Oct  7 07:22:52 2004
+From: jozart@blarg.net (Joe Bowbeer)
+Date: Wed, 6 Oct 2004 23:22:52 -0700
+Subject: [concurrency-interest] Re: Question about Hashtable and ConcurrentHashMap.
+References: <20041007000158.GU24720@binog.sfbay.sun.com> <4164D149.7020709@Sun.COM>
+Message-ID: <02bd01c4ac36$136d05e0$0200a8c0@REPLICANT2>
+
+I successfully waged a campaign against a drop-in replacement.
+
+My campaign was based on fear.
+
+Fear that replacing "synchronized" Hashtable with ConcurrentHashMap would 
+break the 1000's of synchronized Hashtable subclasses in subtle ways.
+
+For example, googling for ["extends Hashtable" + synchronized] turns up over 
+300 hits.  I estimate there must be at least 100x that many beyond google's 
+reach.
+
+Some instances on the web follow.  They all add and/or override 
+synchronized" methods.
+
+http://www.acme.com/java/software/Acme.LruHashtable.html
+
+CacheTable class in this JavaWorld article:
+http://www.javaworld.com/javaworld/jw-06-1999/jw-06-cooltools.html
+
+http://www.cs.cornell.edu/home/bba/doc/JavaGroups.DistributedHashtable.html
+
+http://www-sldnt.slac.stanford.edu/jas/help/current/api/jas/jas.util.OrderedHashtable.html
+
+http://www.cs.man.ac.uk/~alanw/CS3111/Examples/Lecture9-Examples/CountServer.java
+
+http://www.novocode.de/prod/nf/manual/doc/api/novocode.netforge.http.filter.FilterManager.html
+
+http://www.novocode.de/prod/nf/manual/doc/api/novocode.netforge.backend.BackendManager.html
+
+http://www.roguewave.com/support/docs/hppdocs/tprapi/com.roguewave.tools.v2-0.HashDictionary.html
+
+
+Here are some examples in Sun's code:
+
+http://java.sun.com/j2se/1.4.1/docs/api/java/util/Properties.html
+
+Note synchronized (this)
+http://java.sun.com/j2se/1.4.1/docs/api/javax/swing/UIDefaults.html
+
+Also see repositoryidcache*.java in com.sun.corba.se.internal.util and 
+orbutil
+
+
+Furthermore, a google for "extends Properties" + "synchronized" turns up 
+many more:
+
+This one, for example:
+
+  http://www.w3.org/Jigsaw/User/api/w3c.util.ObservableProperties.html
+
+And then there's java.security.Provider (abstract) and all of its 
+subclasses:
+
+  http://java.sun.com/j2se/1.4.1/docs/api/java/security/Provider.html
+
+
+Also, it's not uncommon for Java programmers to "synchronize" the hashtable
+object when they want to temp. lock the hashtable:
+
+  synchronized (hashtable) {
+    hashtable.get ...
+    hashtable.put ...
+    // etc
+  }
+
+A lot of this code was written by early adopters (gotta love 'em), and a lot 
+of this code is still running today.
+
+
+
+----- Original Message ----- 
+From: "Martin Buchholz" <Martin.Buchholz@Sun.COM>
+To: <Bino.George@Sun.COM>; <concurrency-interest@altair.cs.oswego.edu>
+Cc: <tl-dev@Sun.COM>; <Kenneth.Russell@Sun.COM>; <Jeannette.Hung@Sun.COM>
+Sent: Wednesday, October 06, 2004 10:16 PM
+Subject: [concurrency-interest] Re: Question about Hashtable and 
+ConcurrentHashMap.
+
+
+Bino, I've taken the liberty of forwarding your question to the
+Experts.
+
+In my opinion... they are not compatible *enough*, and the
+performance advantage is probably only significant when
+concurrency is high.
+
+Martin
+
+Bino George wrote:
+> Hi Folks,
+>           I have been reading that ConcurrentHashMap is compatible
+> with Hashtable and is mush faster than Hashtable. So is there any reason
+> why we could not replace the implementation of Hashtable with that of
+> ConcurrentHashMap ? Obviously there must be a reason why it was not
+> done ? Can you tell me what the reason is ?
+>
+> Thanks,
+> Bino.
+>
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+From paul@kungfoocoder.org  Thu Oct  7 07:58:40 2004
+From: paul@kungfoocoder.org (Paul Wagland)
+Date: Thu,  7 Oct 2004 08:58:40 +0200
+Subject: [concurrency-interest] Re: Question about Hashtable and
+ ConcurrentHashMap.
+In-Reply-To: <02bd01c4ac36$136d05e0$0200a8c0@REPLICANT2>
+References: <20041007000158.GU24720@binog.sfbay.sun.com>
+ <4164D149.7020709@Sun.COM> <02bd01c4ac36$136d05e0$0200a8c0@REPLICANT2>
+Message-ID: <20041007085840.yocfr3f457cc8w0w@www.wagland.net>
+
+This message is in MIME format and has been PGP signed.
+
+--=_513whgh6tkw0
+Content-Type: text/plain; charset=UTF-8; format="flowed"
+Content-Disposition: inline
+Content-Transfer-Encoding: 7bit
+
+On Thu 07 Oct 2004 08:22:52 AM CEST, Joe Bowbeer wrote:
+
+> I successfully waged a campaign against a drop-in replacement.
+>
+> My campaign was based on fear.
+>
+> Fear that replacing "synchronized" Hashtable with ConcurrentHashMap would
+> break the 1000's of synchronized Hashtable subclasses in subtle ways.
+
+This I think is a valid fear, people are allowed to rely on documented
+behaviours :-)
+
+[--- snip of examples ---]
+
+However, the following I am not sure is a reason... Surely though the 
+concurrent
+classes would not break the following? I mean, one can argue about the 
+style if
+desired, but replacing Hashtable with ConcurrentHashMap should not break this
+code? Or is there something really fundamental that I am missing?
+
+> Also, it's not uncommon for Java programmers to "synchronize" the hashtable
+> object when they want to temp. lock the hashtable:
+>
+>   synchronized (hashtable) {
+>     hashtable.get ...
+>     hashtable.put ...
+>     // etc
+>   }
+>
+> A lot of this code was written by early adopters (gotta love 'em), and a lot
+> of this code is still running today.
+
+Cheers,
+Paul
+
+> ----- Original Message -----
+> From: "Martin Buchholz" <Martin.Buchholz@Sun.COM>
+> To: <Bino.George@Sun.COM>; <concurrency-interest@altair.cs.oswego.edu>
+> Cc: <tl-dev@Sun.COM>; <Kenneth.Russell@Sun.COM>; <Jeannette.Hung@Sun.COM>
+> Sent: Wednesday, October 06, 2004 10:16 PM
+> Subject: [concurrency-interest] Re: Question about Hashtable and
+> ConcurrentHashMap.
+>
+>
+> Bino, I've taken the liberty of forwarding your question to the
+> Experts.
+>
+> In my opinion... they are not compatible *enough*, and the
+> performance advantage is probably only significant when
+> concurrency is high.
+>
+> Martin
+>
+> Bino George wrote:
+>> Hi Folks,
+>>           I have been reading that ConcurrentHashMap is compatible
+>> with Hashtable and is mush faster than Hashtable. So is there any reason
+>> why we could not replace the implementation of Hashtable with that of
+>> ConcurrentHashMap ? Obviously there must be a reason why it was not
+>> done ? Can you tell me what the reason is ?
+>>
+>> Thanks,
+>> Bino.
+>>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+--=_513whgh6tkw0
+Content-Type: application/pgp-signature
+Content-Description: PGP Digital Signature
+Content-Disposition: inline
+Content-Transfer-Encoding: 7bit
+
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.5 (GNU/Linux)
+
+iD8DBQBBZOkgtch0EvEFvxURAkRgAJ4j9ooAO0VAaKyHBfRi2UidhkgTMgCeMEjJ
+RfAW2+mxJEYa6xEIDKUObQU=
+=4apa
+-----END PGP SIGNATURE-----
+
+--=_513whgh6tkw0--
+
+From matthias.ernst@coremedia.com  Thu Oct  7 08:08:48 2004
+From: matthias.ernst@coremedia.com (Ernst, Matthias)
+Date: Thu, 7 Oct 2004 09:08:48 +0200
+Subject: AW: [concurrency-interest] Re: Question about Hashtable andConcurrentHashMap.
+Message-ID: <F34C8A704C489B46B9E9FBDBD1B91D5F860A62@MARS.coremedia.com>
+
+Paul: 
+> However, the following I am not sure is a reason... Surely 
+> though the concurrent classes would not break the following? 
+> I mean, one can argue about the style if desired, but 
+> replacing Hashtable with ConcurrentHashMap should not break 
+> this code? Or is there something really fundamental that I am missing?
+> 
+> > Also, it's not uncommon for Java programmers to "synchronize" the 
+> > hashtable object when they want to temp. lock the hashtable:
+> >
+> >   synchronized (hashtable) {
+> >     hashtable.get ...
+> >     hashtable.put ...
+> >     // etc
+> >   }
+
+There may be other code that does, say, a put without synchronization,
+_knowing_, that all hashtable operations are synchronized on the table
+object. ConcurrentHashMap would break that contract. So a put could slip
+in between the two operations up there.
+
+
+Matthias
+
+
+From dholmes@dltech.com.au  Thu Oct  7 08:17:37 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Thu, 7 Oct 2004 17:17:37 +1000
+Subject: [concurrency-interest] Re: Question about Hashtable andConcurrentHashMap.
+In-Reply-To: <20041007085840.yocfr3f457cc8w0w@www.wagland.net>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCENGENAA.dholmes@dltech.com.au>
+
+<trimmed the cc to the interest group only>
+
+> Paul Wagland writes:
+> However, the following I am not sure is a reason... Surely though the 
+> concurrent classes would not break the following? I mean, one can argue 
+> about the style if desired, but replacing Hashtable with ConcurrentHashMap
+> should not break this code? Or is there something really fundamental that 
+> I am missing?
+> 
+> > Also, it's not uncommon for Java programmers to "synchronize" 
+> > the hashtable object when they want to temp. lock the hashtable:
+> >
+> >   synchronized (hashtable) {
+> >     hashtable.get ...
+> >     hashtable.put ...
+> >     // etc
+> >   }
+
+The code assumes that any individual method invocations by other threads are locked out for the duration of the synchronized block, so that the group of method invocations are applied atomically. That is not the case with ConcurrentHashMap which would allow any other method invocations to proceed concurrently, unless the caller also tried to lock the map first.
+
+David Holmes
+
+
+
+From Scott.Seligman@Sun.COM  Thu Oct  7 06:21:23 2004
+From: Scott.Seligman@Sun.COM (Scott Seligman)
+Date: Wed, 06 Oct 2004 22:21:23 -0700
+Subject: [concurrency-interest] Re: Question about Hashtable and ConcurrentHashMap.
+In-Reply-To: "Your message of Wed, 06 Oct 2004 22:16:57 PDT."
+ <4164D149.7020709@Sun.COM>
+Message-ID: <200410070521.i975LNrS017643@spin.SFBay.Sun.COM>
+
+>In my opinion... they are not compatible *enough*
+
+Yes.  In the javadoc for ConcurrentHashMap, note the "but":
+
+    This class is fully interoperable with Hashtable in programs that rely
+    on its thread safety but not on its synchronization details.
+
+
+Scott
+
+From Jonathan.Gibbons@Sun.COM  Thu Oct  7 18:31:10 2004
+From: Jonathan.Gibbons@Sun.COM (Jonathan Gibbons)
+Date: Thu, 07 Oct 2004 10:31:10 -0700
+Subject: [concurrency-interest] Re: Question about Hashtable and ConcurrentHashMap.
+References: <200410070521.i975LNrS017643@spin.SFBay.Sun.COM>
+Message-ID: <41657D5E.6030403@Sun.COM>
+
+--Boundary_(ID_2xWBi9QYZjIw6b9EWLrInA)
+Content-type: text/plain; charset=us-ascii; format=flowed
+Content-transfer-encoding: 7BIT
+
+Note also that Hashtable extends Dictionary, whereas ConcurrentHashMap 
+does not,
+so one can not always replace Hashtable by ConcurrentHashMap.
+
+-- Jon
+
+Scott Seligman wrote:
+
+>>In my opinion... they are not compatible *enough*
+>>    
+>>
+>
+>Yes.  In the javadoc for ConcurrentHashMap, note the "but":
+>
+>    This class is fully interoperable with Hashtable in programs that rely
+>    on its thread safety but not on its synchronization details.
+>
+>
+>Scott
+>  
+>
+
+-- 
+Jonathan Gibbons	
+mailto:jonathan.gibbons@sun.com   Phone: +1 (408)276-7432 (Internal: x17432)  
+Sun Microsystems, Inc. USCA22-323 4220 Network Circle, Santa Clara, CA 95054
+
+
+
+--Boundary_(ID_2xWBi9QYZjIw6b9EWLrInA)
+Content-type: text/html; charset=us-ascii
+Content-transfer-encoding: 7BIT
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+  <title></title>
+</head>
+<body>
+Note also that Hashtable extends Dictionary, whereas ConcurrentHashMap does
+not,<br>
+so one can not always replace Hashtable by ConcurrentHashMap.<br>
+<br>
+-- Jon<br>
+<br>
+Scott Seligman wrote:<br>
+<blockquote type="cite"
+ cite="mid200410070521.i975LNrS017643@spin.SFBay.Sun.COM">
+  <blockquote type="cite">
+    <pre wrap="">In my opinion... they are not compatible *enough*
+    </pre>
+  </blockquote>
+  <pre wrap=""><!---->
+Yes.  In the javadoc for ConcurrentHashMap, note the "but":
+
+    This class is fully interoperable with Hashtable in programs that rely
+    on its thread safety but not on its synchronization details.
+
+
+Scott
+  </pre>
+</blockquote>
+<br>
+<pre class="moz-signature" cols="$mailwrapcol">-- 
+Jonathan Gibbons	
+<a class="moz-txt-link-freetext" href="mailto:jonathan.gibbons@sun.com">mailto:jonathan.gibbons@sun.com</a>   Phone: +1 (408)276-7432 (Internal: x17432)  
+Sun Microsystems, Inc. USCA22-323 4220 Network Circle, Santa Clara, CA 95054
+</pre>
+<br>
+</body>
+</html>
+
+--Boundary_(ID_2xWBi9QYZjIw6b9EWLrInA)--
+
+From josh@bloch.us  Thu Oct  7 18:48:02 2004
+From: josh@bloch.us (Joshua Bloch)
+Date: Thu, 7 Oct 2004 10:48:02 -0700
+Subject: [concurrency-interest] Re: Question about Hashtable and ConcurrentHashMap.
+In-Reply-To: <41657D5E.6030403@Sun.COM>
+References: <200410070521.i975LNrS017643@spin.SFBay.Sun.COM>
+ <41657D5E.6030403@Sun.COM>
+Message-ID: <b097ac5104100710484b9d5d9b@mail.gmail.com>
+
+On Thu, 07 Oct 2004 10:31:10 -0700, Jonathan Gibbons
+<jonathan.gibbons@sun.com> wrote:
+> Note also that Hashtable extends Dictionary, whereas ConcurrentHashMap does
+> not,
+
+Thank God:)
+
+           Josh
+
+P.S.  Dictionary is not one of my favorite classes.
+
+From jean.morissette666@videotron.ca  Fri Oct  8 23:08:39 2004
+From: jean.morissette666@videotron.ca (Jean Morissette)
+Date: Fri, 08 Oct 2004 18:08:39 -0400
+Subject: [concurrency-interest] Exception throw but not speficied in the method contract of its
+ interface
+Message-ID: <41670FE7.8030502@videotron.ca>
+
+Hi all,
+the method add(Object) of class AbstractQueue can throw an 
+IllegalStateException that is not specified in the contract of its 
+interface Collection.  Is-it normal?
+-Jean
+
+From hanson_char@yahoo.com  Sat Oct  9 01:36:35 2004
+From: hanson_char@yahoo.com (Hanson Char)
+Date: Sat, 9 Oct 2004 10:36:35 +1000
+Subject: [concurrency-interest] Exception throw but not speficied in the method contract of its interface
+In-Reply-To: <41670FE7.8030502@videotron.ca>
+Message-ID: <000601c4ad98$08ca81e0$72fdcecb@twogig>
+
+In general Runtime exceptions such as IllegalStateException are considered
+"unchecked" exceptions, and therefore can always be thrown without being
+specified in the interface.
+
+H
+
+-----Original Message-----
+From: concurrency-interest-admin@cs.oswego.edu
+[mailto:concurrency-interest-admin@cs.oswego.edu]On Behalf Of Jean
+Morissette
+Sent: Saturday, 9 October 2004 8:09 AM
+To: concurrency-interest@altair.cs.oswego.edu
+Subject: [concurrency-interest] Exception throw but not speficied in the
+method contract of its interface
+
+
+Hi all, the method add(Object) of class AbstractQueue can throw an
+IllegalStateException that is not specified in the contract of its
+interface Collection.  Is-it normal? -Jean
+_______________________________________________ Concurrency-interest mailing
+list Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From jozart@blarg.net  Sat Oct  9 05:10:50 2004
+From: jozart@blarg.net (Joe Bowbeer)
+Date: Fri, 8 Oct 2004 21:10:50 -0700
+Subject: [concurrency-interest] Exception throw but not speficied in the method contract of its interface
+References: <000601c4ad98$08ca81e0$72fdcecb@twogig>
+Message-ID: <010b01c4adb5$f63b8c40$0200a8c0@REPLICANT2>
+
+Jean,
+
+Adding to what Hanson wrote:
+
+The guideline for an unchecked exception is to declare it in the javadoc, as 
+it is, but not in the source code (as there's no record in the classfile 
+anyway).
+
+See http://java.sun.com/j2se/javadoc/writingdoccomments/#throwstag
+
+
+Implementations are prone to NullPointerException and IllegalStateException 
+and other runtime exceptions, whereas an interface like Collection is not...
+
+
+Joe.
+
+
+----- Original Message ----- 
+From: "Hanson Char" <hanson_char@yahoo.com>
+To: "'Jean Morissette'" <jean.morissette666@videotron.ca>; 
+<concurrency-interest@altair.cs.oswego.edu>
+Sent: Friday, October 08, 2004 5:36 PM
+Subject: RE: [concurrency-interest] Exception throw but not speficied in the 
+method contract of its interface
+
+
+In general Runtime exceptions such as IllegalStateException are considered
+"unchecked" exceptions, and therefore can always be thrown without being
+specified in the interface.
+
+H
+
+-----Original Message-----
+From: concurrency-interest-admin@cs.oswego.edu
+[mailto:concurrency-interest-admin@cs.oswego.edu]On Behalf Of Jean 
+Morissette
+Sent: Saturday, 9 October 2004 8:09 AM
+To: concurrency-interest@altair.cs.oswego.edu
+Subject: [concurrency-interest] Exception throw but not speficied in the 
+method contract of its interface
+
+Hi all, the method add(Object) of class AbstractQueue can throw an
+IllegalStateException that is not specified in the contract of its
+interface Collection.  Is-it normal? -Jean
+
+
+From jozart@blarg.net  Sat Oct  9 16:27:29 2004
+From: jozart@blarg.net (Joe Bowbeer)
+Date: Sat, 9 Oct 2004 08:27:29 -0700
+Subject: [concurrency-interest] Exception throw but not speficied in the method contract of its interface
+References: <000601c4ad98$08ca81e0$72fdcecb@twogig> <010b01c4adb5$f63b8c40$0200a8c0@REPLICANT2>
+Message-ID: <018701c4ae14$7de9f4c0$0200a8c0@REPLICANT2>
+
+On second thought, I think I may have misunderstood your question.
+
+You're not asking about the exception declaration in Queue.add but asking 
+instead about the presence of this extra exception-on-add, that could cause 
+a Queue to behave badly when used as a Collection?
+
+This is covered in Queue's class description javadoc.  See the discussion of 
+offer vs add.
+
+In practice, the exception can happen normally when trying to add to a 
+bounded queue.  The javadoc recommends using the "offer" method in this 
+case.
+
+
+----- Original Message ----- 
+From: "Joe Bowbeer" <jozart@blarg.net>
+To: "Hanson Char" <hanson_char@yahoo.com>; "'Jean Morissette'" 
+<jean.morissette666@videotron.ca>; 
+<concurrency-interest@altair.cs.oswego.edu>
+Sent: Friday, October 08, 2004 9:10 PM
+Subject: Re: [concurrency-interest] Exception throw but not speficied in the 
+method contract of its interface
+
+
+Jean,
+
+Adding to what Hanson wrote:
+
+The guideline for an unchecked exception is to declare it in the javadoc, as
+it is, but not in the source code (as there's no record in the classfile
+anyway).
+
+See http://java.sun.com/j2se/javadoc/writingdoccomments/#throwstag
+
+
+Implementations are prone to NullPointerException and IllegalStateException
+and other runtime exceptions, whereas an interface like Collection is not...
+
+
+Joe.
+
+
+----- Original Message ----- 
+From: "Hanson Char" <hanson_char@yahoo.com>
+To: "'Jean Morissette'" <jean.morissette666@videotron.ca>;
+<concurrency-interest@altair.cs.oswego.edu>
+Sent: Friday, October 08, 2004 5:36 PM
+Subject: RE: [concurrency-interest] Exception throw but not speficied in the
+method contract of its interface
+
+
+In general Runtime exceptions such as IllegalStateException are considered
+"unchecked" exceptions, and therefore can always be thrown without being
+specified in the interface.
+
+H
+
+-----Original Message-----
+From: concurrency-interest-admin@cs.oswego.edu
+[mailto:concurrency-interest-admin@cs.oswego.edu]On Behalf Of Jean
+Morissette
+Sent: Saturday, 9 October 2004 8:09 AM
+To: concurrency-interest@altair.cs.oswego.edu
+Subject: [concurrency-interest] Exception throw but not speficied in the
+method contract of its interface
+
+Hi all, the method add(Object) of class AbstractQueue can throw an
+IllegalStateException that is not specified in the contract of its
+interface Collection.  Is-it normal? -Jean
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+From dholmes@dltech.com.au  Sun Oct 10 23:49:59 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Mon, 11 Oct 2004 08:49:59 +1000
+Subject: [concurrency-interest] Exception throw but not speficied in the method contract of its interface
+In-Reply-To: <41670FE7.8030502@videotron.ca>
+Message-ID: <NFBBKALFDCPFIDBNKAPCGEPNENAA.dholmes@dltech.com.au>
+
+> Jean Morissette writes:
+>
+> the method add(Object) of class AbstractQueue can throw an
+> IllegalStateException that is not specified in the contract of its
+> interface Collection.  Is-it normal?
+
+If you look at the specification for Collection.add it states:
+
+"If a collection refuses to add a particular element for any reason other
+than that it already contains the element, it must throw an exception
+(rather than returning false). "
+
+And this is exactly what AbstractQueue does - and what AbstractQueue
+documents that it does.
+
+While unchecked exceptions can always be thrown by an implementation, that
+doesn't give an implementation the right to throw any unchecked exception
+under any circumstance - proper subtyping requires adherence to the contract
+of the supertype. But in this case the supertype explicitly allows for an
+exception to be thrown, it just doesn't specify exactly what kind.
+
+David Holmes
+
+
+From dholmes@dltech.com.au  Mon Oct 11 03:06:41 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Mon, 11 Oct 2004 12:06:41 +1000
+Subject: [concurrency-interest] Exception throw but not speficied in the method contract of its interface
+In-Reply-To: <41670FE7.8030502@videotron.ca>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIEAEEOAA.dholmes@dltech.com.au>
+
+> the method add(Object) of class AbstractQueue can throw an
+> IllegalStateException that is not specified in the contract of its
+> interface Collection.  Is-it normal?
+
+I should also point out that AbstractQueue was written to support the
+concrete queue implementations in JDK 5.0, which includes the BlockingQueue
+implementations. But as the docs say, as long as offer() succeeds then add()
+will succeed too - so a subclass that will never cause offer() to fail will
+never generate the IllegalStateException - and so that subclass can, and
+should, override add() to document this and just invoke super.add as its
+implementation.
+
+David Holmes
+
+
+From hanson_char@yahoo.com  Mon Oct 11 03:13:18 2004
+From: hanson_char@yahoo.com (Hanson Char)
+Date: Sun, 10 Oct 2004 19:13:18 -0700 (PDT)
+Subject: [concurrency-interest] Exception throw but not speficied in the method contract of its interface
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCGEPNENAA.dholmes@dltech.com.au>
+Message-ID: <20041011021318.46125.qmail@web12210.mail.yahoo.com>
+
+--0-1274512958-1097460798=:45844
+Content-Type: text/plain; charset=us-ascii
+
+>...the supertype explicitly allows for an
+>exception to be thrown, it just doesn't specify exactly what kind.
+ 
+Doesn't the contract in such case imply a kind of Runtime (ie unchecked) exception  to be thrown ?
+
+H
+
+David Holmes <dholmes@dltech.com.au> wrote:
+> Jean Morissette writes:
+>
+> the method add(Object) of class AbstractQueue can throw an
+> IllegalStateException that is not specified in the contract of its
+> interface Collection. Is-it normal?
+
+If you look at the specification for Collection.add it states:
+
+"If a collection refuses to add a particular element for any reason other
+than that it already contains the element, it must throw an exception
+(rather than returning false). "
+
+And this is exactly what AbstractQueue does - and what AbstractQueue
+documents that it does.
+
+While unchecked exceptions can always be thrown by an implementation, that
+doesn't give an implementation the right to throw any unchecked exception
+under any circumstance - proper subtyping requires adherence to the contract
+of the supertype. But in this case the supertype explicitly allows for an
+exception to be thrown, it just doesn't specify exactly what kind.
+
+David Holmes
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+		
+---------------------------------
+Do you Yahoo!?
+vote.yahoo.com - Register online to vote today!
+--0-1274512958-1097460798=:45844
+Content-Type: text/html; charset=us-ascii
+
+<DIV>&gt;...the supertype explicitly allows for an</DIV>
+<DIV>&gt;exception to be thrown, it just doesn't specify exactly what kind.</DIV>
+<DIV>&nbsp;</DIV>
+<DIV>Doesn't the contract in such case imply a kind of Runtime (ie unchecked) exception&nbsp; to be thrown ?<BR></DIV>
+<DIV>H<BR><BR><B><I>David Holmes &lt;dholmes@dltech.com.au&gt;</I></B> wrote:</DIV>
+<BLOCKQUOTE class=replbq style="PADDING-LEFT: 5px; MARGIN-LEFT: 5px; BORDER-LEFT: #1010ff 2px solid">&gt; Jean Morissette writes:<BR>&gt;<BR>&gt; the method add(Object) of class AbstractQueue can throw an<BR>&gt; IllegalStateException that is not specified in the contract of its<BR>&gt; interface Collection. Is-it normal?<BR><BR>If you look at the specification for Collection.add it states:<BR><BR>"If a collection refuses to add a particular element for any reason other<BR>than that it already contains the element, it must throw an exception<BR>(rather than returning false). "<BR><BR>And this is exactly what AbstractQueue does - and what AbstractQueue<BR>documents that it does.<BR><BR>While unchecked exceptions can always be thrown by an implementation, that<BR>doesn't give an implementation the right to throw any unchecked exception<BR>under any circumstance - proper subtyping requires adherence to the contract<BR>of the supertype. But in this case the supertype explicitly allows
+ for an<BR>exception to be thrown, it just doesn't specify exactly what kind.<BR><BR>David Holmes<BR><BR>_______________________________________________<BR>Concurrency-interest mailing list<BR>Concurrency-interest@altair.cs.oswego.edu<BR>http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest<BR></BLOCKQUOTE><p>
+		<hr size=1>Do you Yahoo!?<br><a
+href="http://vote.yahoo.com">vote.yahoo.com</a> - Register online to vote today!
+--0-1274512958-1097460798=:45844--
+
+From dholmes@dltech.com.au  Mon Oct 11 03:27:11 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Mon, 11 Oct 2004 12:27:11 +1000
+Subject: [concurrency-interest] Exception throw but not speficied in the method contract of its interface
+In-Reply-To: <20041011021318.46125.qmail@web12210.mail.yahoo.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEAFEOAA.dholmes@dltech.com.au>
+
+This is a multi-part message in MIME format.
+
+------=_NextPart_000_0094_01C4AF8D.A1F7AEF0
+Content-Type: text/plain;
+	charset="us-ascii"
+Content-Transfer-Encoding: 7bit
+
+Yes - implicitly, it must be an unchecked exception. The language rules
+prevent it from being a checked exception.
+
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-admin@cs.oswego.edu
+[mailto:concurrency-interest-admin@cs.oswego.edu]On Behalf Of Hanson Char
+  Sent: Monday, 11 October 2004 12:13 PM
+  To: concurrency-interest@altair.cs.oswego.edu
+  Subject: RE: [concurrency-interest] Exception throw but not speficied in
+the method contract of its interface
+
+
+  >...the supertype explicitly allows for an
+  >exception to be thrown, it just doesn't specify exactly what kind.
+
+  Doesn't the contract in such case imply a kind of Runtime (ie unchecked)
+exception  to be thrown ?
+
+  H
+
+  David Holmes <dholmes@dltech.com.au> wrote:
+    > Jean Morissette writes:
+    >
+    > the method add(Object) of class AbstractQueue can throw an
+    > IllegalStateException that is not specified in the contract of its
+    > interface Collection. Is-it normal?
+
+    If you look at the specification for Collection.add it states:
+
+    "If a collection refuses to add a particular element for any reason
+other
+    than that it already contains the element, it must throw an exception
+    (rather than returning false). "
+
+    And this is exactly what AbstractQueue does - and what AbstractQueue
+    documents that it does.
+
+    While unchecked exceptions can always be thrown by an implementation,
+that
+    doesn't give an implementation the right to throw any unchecked
+exception
+    under any circumstance - proper subtyping requires adherence to the
+contract
+    of the supertype. But in this case the supertype explicitly ! allows for
+an
+    exception to be thrown, it just doesn't specify exactly what kind.
+
+    David Holmes
+
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest@altair.cs.oswego.edu
+    http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+----------------------------------------------------------------------------
+--
+  Do you Yahoo!?
+  vote.yahoo.com - Register online to vote today!
+
+------=_NextPart_000_0094_01C4AF8D.A1F7AEF0
+Content-Type: text/html;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<HTML><HEAD>
+<META http-equiv=3DContent-Type content=3D"text/html; =
+charset=3Dus-ascii">
+<META content=3D"MSHTML 6.00.2800.1458" name=3DGENERATOR></HEAD>
+<BODY>
+<DIV><SPAN class=3D096252602-11102004><FONT face=3D"Courier New" =
+color=3D#0000ff=20
+size=3D2>Yes - implicitly, it must be an unchecked exception. The =
+language rules=20
+prevent it from being a checked exception.</FONT></SPAN></DIV>
+<DIV><SPAN class=3D096252602-11102004><FONT face=3D"Courier New" =
+color=3D#0000ff=20
+size=3D2></FONT></SPAN>&nbsp;</DIV>
+<DIV><SPAN class=3D096252602-11102004><FONT face=3D"Courier New" =
+color=3D#0000ff=20
+size=3D2>David Holmes</FONT></SPAN></DIV>
+<BLOCKQUOTE=20
+style=3D"PADDING-LEFT: 5px; MARGIN-LEFT: 5px; BORDER-LEFT: #0000ff 2px =
+solid">
+  <DIV class=3DOutlookMessageHeader dir=3Dltr align=3Dleft><FONT =
+face=3DTahoma=20
+  size=3D2>-----Original Message-----<BR><B>From:</B>=20
+  concurrency-interest-admin@cs.oswego.edu=20
+  [mailto:concurrency-interest-admin@cs.oswego.edu]<B>On Behalf Of =
+</B>Hanson=20
+  Char<BR><B>Sent:</B> Monday, 11 October 2004 12:13 PM<BR><B>To:</B>=20
+  concurrency-interest@altair.cs.oswego.edu<BR><B>Subject:</B> RE:=20
+  [concurrency-interest] Exception throw but not speficied in the method =
+
+  contract of its interface<BR><BR></FONT></DIV>
+  <DIV>&gt;...the supertype explicitly allows for an</DIV>
+  <DIV>&gt;exception to be thrown, it just doesn't specify exactly what=20
+  kind.</DIV>
+  <DIV>&nbsp;</DIV>
+  <DIV>Doesn't the contract in such case imply a kind of Runtime (ie =
+unchecked)=20
+  exception&nbsp; to be thrown ?<BR></DIV>
+  <DIV>H<BR><BR><B><I>David Holmes &lt;dholmes@dltech.com.au&gt;</I></B> =
+
+  wrote:</DIV>
+  <BLOCKQUOTE class=3Dreplbq=20
+  style=3D"PADDING-LEFT: 5px; MARGIN-LEFT: 5px; BORDER-LEFT: #1010ff 2px =
+solid">&gt;=20
+    Jean Morissette writes:<BR>&gt;<BR>&gt; the method add(Object) of =
+class=20
+    AbstractQueue can throw an<BR>&gt; IllegalStateException that is not =
+
+    specified in the contract of its<BR>&gt; interface Collection. Is-it =
+
+    normal?<BR><BR>If you look at the specification for Collection.add =
+it=20
+    states:<BR><BR>"If a collection refuses to add a particular element =
+for any=20
+    reason other<BR>than that it already contains the element, it must =
+throw an=20
+    exception<BR>(rather than returning false). "<BR><BR>And this is =
+exactly=20
+    what AbstractQueue does - and what AbstractQueue<BR>documents that =
+it=20
+    does.<BR><BR>While unchecked exceptions can always be thrown by an=20
+    implementation, that<BR>doesn't give an implementation the right to =
+throw=20
+    any unchecked exception<BR>under any circumstance - proper subtyping =
+
+    requires adherence to the contract<BR>of the supertype. But in this =
+case the=20
+    supertype explicitly ! allows for an<BR>exception to be thrown, it =
+just=20
+    doesn't specify exactly what kind.<BR><BR>David=20
+    =
+Holmes<BR><BR>_______________________________________________<BR>Concurre=
+ncy-interest=20
+    mailing=20
+    =
+list<BR>Concurrency-interest@altair.cs.oswego.edu<BR>http://altair.cs.osw=
+ego.edu/mailman/listinfo/concurrency-interest<BR></BLOCKQUOTE>
+  <P>
+  <HR SIZE=3D1>
+  Do you Yahoo!?<BR><A href=3D"http://vote.yahoo.com">vote.yahoo.com</A> =
+-=20
+  Register online to vote today!</BLOCKQUOTE></BODY></HTML>
+
+------=_NextPart_000_0094_01C4AF8D.A1F7AEF0--
+
+
+From jean.morissette666@videotron.ca  Thu Oct 14 00:02:31 2004
+From: jean.morissette666@videotron.ca (Jean Morissette)
+Date: Wed, 13 Oct 2004 19:02:31 -0400
+Subject: [concurrency-interest] private field
+Message-ID: <416DB407.7070102@videotron.ca>
+
+Hi,
+Why fields in classes java.util.concurrent.* like LinkedBlockingQueue 
+are declared private instead of protected ?  It's very annoying.
+Thank
+-Jean
+
+From dholmes@dltech.com.au  Thu Oct 14 00:23:49 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Thu, 14 Oct 2004 09:23:49 +1000
+Subject: [concurrency-interest] private field
+In-Reply-To: <416DB407.7070102@videotron.ca>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOEFCEOAA.dholmes@dltech.com.au>
+
+> Why fields in classes java.util.concurrent.* like LinkedBlockingQueue
+> are declared private instead of protected ?  It's very annoying.
+
+If the fields were protected then we'd be defining a subclassing contract
+that we would be forced to honor forever. fields should be internal
+implementation details.
+
+So in general you won't find protected fields in library classes. Though in
+the absence of a security manager, I believe you can access private fields
+reflectively anyway.
+
+What specifically do you want to achieve? There may be an alternative
+approach.
+
+David Holmes
+
+
+From jean.morissette666@videotron.ca  Thu Oct 14 02:03:28 2004
+From: jean.morissette666@videotron.ca (Jean Morissette)
+Date: Wed, 13 Oct 2004 21:03:28 -0400
+Subject: [concurrency-interest] private field
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCOEFCEOAA.dholmes@dltech.com.au>
+References: <NFBBKALFDCPFIDBNKAPCOEFCEOAA.dholmes@dltech.com.au>
+Message-ID: <416DD060.20808@videotron.ca>
+
+Thank for your reply.
+
+David Holmes wrote:
+>>Why fields in classes java.util.concurrent.* like LinkedBlockingQueue
+>>are declared private instead of protected ?  It's very annoying.
+> 
+> 
+> If the fields were protected then we'd be defining a subclassing contract
+> that we would be forced to honor forever. fields should be internal
+> implementation details.
+
+I understand.
+
+> So in general you won't find protected fields in library classes. Though in
+> the absence of a security manager, I believe you can access private fields
+> reflectively anyway.
+
+I want to create a subclass for performance reason; using reflection 
+will probably slow down performance, so it's not an option.
+
+> What specifically do you want to achieve? There may be an alternative
+> approach.
+
+I want to use very fast queue for the SEDA framework.  One 
+performance-critical method is to move all elements of the queue in a 
+array.  A possible implementation could be:
+
+public QueueElement[] drainToArray()
+   synchronized (queue) {
+     int qs = queue.size();
+     if (qs == 0) return null;
+
+     QueueElement[] result = new QueueElement[qs];
+     for (int i = 0; i < qs; i++)
+       result[i] = (QueueElementIF) queue.poll();
+     }
+     return result;
+   }
+}
+
+This exemple is not efficient because we block the queue during the 
+removal of the elements.  Here is another possibility:
+
+public QueueElement[] drainToArray()
+   Collection<QueueElement> c = new ArrayList<QueueElement>();
+   queue.drainTo(c);
+   return (QueueElement[]) c.toArray();
+}
+
+The method drainTo from LinkedBlockingQueue block only for a short 
+amount of time.  So, if variable 'queue' is a LinkedBlockingQueue, this 
+code provide very good concurrency. But, the problems are that we have 
+to create a List each time, method toArray is time-consumming and 
+finally, we don't know exactly the size of the queue, so it's possible 
+that my ArrayList have to resize its underlying array (thus create an 
+array and copy elements).
+
+Imagine now if we could subclass LinkedBlockingQueue:
+
+public Object[] drainToArray(Class arrayType) {
+
+   Node first;
+   fullyLock();
+   try {
+     int size = count.get();
+     first = head.next;
+     head.next = null;
+     if (count.getAndSet(0) == capacity)
+       notFull.signalAll();
+     } finally {
+       fullyUnlock();
+     }
+
+     // Transfer the elements outside of locks
+     Object[] a = java.lang.reflect.Array.newInstance
+                     (arrayType.getComponentType(), size);
+     int n = 0;
+     for (Node<E> p = first; p != null; p = p.next) {
+       a[n] = p.item;
+       p.item = null;
+       ++n;
+     }
+     return a;
+}
+
+Here, we have all we want: concurrency, performance and low memory 
+consumption.  I don't know how to achieve that without subclassing. Advice?
+
+> David Holmes
+
+
+From dholmes@dltech.com.au  Thu Oct 14 05:07:02 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Thu, 14 Oct 2004 14:07:02 +1000
+Subject: [concurrency-interest] private field
+In-Reply-To: <416DD060.20808@videotron.ca>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEFGEOAA.dholmes@dltech.com.au>
+
+Jean,
+
+> Here, we have all we want: concurrency, performance and low memory
+> consumption.
+
+Ah I see. My gut reaction is that we should have had a drainTo(T[] ta)
+method. :( I guess the thinking was that draining to a collection was more
+generally useful and you can use an ArrayList to then get to an array.
+
+Otherwise your requirements for fast, concurrent and low-memory usage seem
+to only be pair-wise compatible:
+
+- fast & concurrent -> needs the extra ArrayList to drain to (though I guess
+you could try and reuse this?)
+
+- fast & low-memory -> needs more locking
+
+Plus the need for atomic removal precludes other potential solutions, such
+as iterating through and removing (not to mention that the iterator has a
+lot of locking), or a simple polling loop.
+
+Maybe someone else can think of something.
+
+Cheers,
+David Holmes
+
+
+From dl@cs.oswego.edu  Thu Oct 14 12:42:16 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Thu, 14 Oct 2004 07:42:16 -0400
+Subject: [concurrency-interest] private field
+In-Reply-To: <416DD060.20808@videotron.ca>
+References: <NFBBKALFDCPFIDBNKAPCOEFCEOAA.dholmes@dltech.com.au>
+ <416DD060.20808@videotron.ca>
+Message-ID: <16750.26136.84328.635097@altair.cs.oswego.edu>
+
+>>Why fields in classes java.util.concurrent.* like LinkedBlockingQueue
+>>are declared private instead of protected ?  It's very annoying.
+
+As David said, the main reason is that JDK library classes really must
+be written in a way that allows internals to be ripped out and
+completely rewritten. (This happens fairly regularly, for example,
+twice for the java.lang.ThreadLocal class.)
+
+But it seems to me that you want a specialized version of ArrayList,
+not LinkedBlockingQueue.
+
+> I want to use very fast queue for the SEDA framework.  One 
+> performance-critical method is to move all elements of the queue in a 
+> array. 
+
+Do you really nead an array? If you instead use ArrayList, it ought to
+be acceptable to do:
+
+  ArrayList c = new ArrayList(q.size());
+  q.drainTo(c);
+
+I suspect the performance difference between this and a custom
+solution would be negligible.  The ArrayList will only occasionally
+need to resize. To further reduce the likelihood at the expense of
+some space overhead, you could create it with say 2*q.size() capacity.
+
+The second array copy that would otherwise be needed for c.toArray()
+is the main inefficiency here. If you really do need raw arrays, an
+alternative is to make your own specialized version of ArrayList, say:
+
+class TempArrayList extends AbstractCollection { // non-generic for simplicity
+   Object[] elements;
+   int count;
+   TempArrayList(int size) { elements = new Object[size]; }
+   boolean add(Object x) {
+     if (count >= elements.length) resize();
+     elements[count++] = x;
+     return true;
+   }
+  Object[] getArray() { return elements; }
+  // etc (not bothering to implement most optional Collection methods)
+}
+
+Where the getArray method returns the underlying array without
+copying.  (You would need to be careful to use only the elements up
+through elements[count], not the entire array though.)  You could also
+make a constructor that accepts an existing array, so you can recyle
+it.   Such a class would of course not otherwise be very useful,
+but might avoid the need to make a custom queue subclass.
+
+=Doug
+
+From Vitaliy Geraymovych <vitaliy.home@gmail.com>  Thu Oct 14 15:53:44 2004
+From: Vitaliy Geraymovych <vitaliy.home@gmail.com> (Vitaliy Geraymovych)
+Date: Thu, 14 Oct 2004 10:53:44 -0400
+Subject: [concurrency-interest] PooledExecutor question
+Message-ID: <c0d9a60204101407534bcaf4c@mail.gmail.com>
+
+Hi All,
+
+I am having problems using PooledExecutor. After submitting Runnables
+into the pool I need to wait until all of them are completed. Call to
+shutdownAfterProcessingCurrentlyQueuedTasks after submitting all tasks
+doesn't seem to help.
+
+Problem is happening when I am running JUnit . JUnit terminates before
+all tasks are completed and as the result several tasks remain
+unfinished.
+
+Is there a way to wait until PooledExecutor finishes all tasks
+submitted into the queue?
+
+Thanks,
+Vitaliy
+
+From jean.morissette666@videotron.ca  Thu Oct 14 16:44:53 2004
+From: jean.morissette666@videotron.ca (Jean Morissette)
+Date: Thu, 14 Oct 2004 11:44:53 -0400
+Subject: [concurrency-interest] private field
+In-Reply-To: <16750.26136.84328.635097@altair.cs.oswego.edu>
+References: <NFBBKALFDCPFIDBNKAPCOEFCEOAA.dholmes@dltech.com.au>
+ <416DD060.20808@videotron.ca> <16750.26136.84328.635097@altair.cs.oswego.edu>
+Message-ID: <416E9EF5.5020209@videotron.ca>
+
+Thank for your reply.
+
+Doug Lea wrote:
+>>I want to use very fast queue for the SEDA framework.  One 
+>>performance-critical method is to move all elements of the queue in a 
+>>array. 
+> 
+>
+> Do you really nead an array? If you instead use ArrayList, it ought to
+> be acceptable to do:
+> 
+>   ArrayList c = new ArrayList(q.size());
+>   q.drainTo(c);
+> 
+> I suspect the performance difference between this and a custom
+> solution would be negligible.  The ArrayList will only occasionally
+> need to resize. To further reduce the likelihood at the expense of
+> some space overhead, you could create it with say 2*q.size() capacity.
+
+I like your suggestion of using an ArrayList to drain my 
+LinkedBlockingQueue.  I will change my specification to expose 
+Collection instead of raw array.  Also, with some refactoring, I can 
+reuse the ArrayList (like David Holmes have suggested), so performance 
+will be improved.
+
+
+
+But, is-it possible to improve performance one step farther?  I am 
+worried about memory allocation and garbage collection; maybe we can 
+improve performance by reusing LinkedBlockingQueue.Node?
+
+Here is what I mean:
+
+PooledLinkedBlockingQueue extends AbstractQueue implements BlockingQueue {
+
+   private Node[] pool = new Node[POOL_SIZE];
+
+   private addToPool(Node n) {
+     ...
+   }
+
+   // Get a queue that return their Nodes in the pool
+   // instead of droping it.
+   public Queue getQueue() {
+     return new QueueImpl(this);
+   }
+
+   // A simple non-blocking and non-thread-safe Queue like LinkedList
+   // that use the same Node than it's outer class.
+   private class QueueImpl implements Queue {
+     PooledLinkedBlockingQueue outerQueue;
+     public QueueImpl(PooledLinkedBlockingQueue outerQueue) {
+       this.outerQueue = outerQueue;
+     }
+
+     public Object poll() {
+       removedNode = ...
+       outerQueue.addToPool(removedNode);
+       ...
+     }
+   }
+
+   // drainTo is really fast when c is QueueImpl
+   public int drainTo(Collection<? super E> c) {
+     ...
+     if (c.getClass().equals(QueueImpl.class)) {
+       Node first;
+       fullyLock();
+       try {
+         int size = count.get();
+         first = head.next;
+         head.next = null;
+         if (count.getAndSet(0) == capacity)
+           notFull.signalAll();
+       } finally {
+         fullyUnlock();
+       }
+
+       // Transfer the elements outside of locks.
+       // The time here is O(1) instead of O(n).
+       ((QueueImpl) c).last = first;
+       return size;
+
+     } else { ... }
+   }
+}
+
+Now drainTo method requires O(1) instead of O(n) time.  Also, I can use 
+QueueImpl instead of ArrayList and reuse Node (and don't use memory for 
+array), so memory allocation and garbage collection will appear less 
+frequently, improving performance.
+
+But, I am wondering about node pool synchronization.  I'm not sure if I 
+need synchronization and if yes, what are the impact on the performance? 
+  Advice?
+
+Thank
+-Jean
+
+
+
+
+
+
+
+
+
+From larryr@saturn.sdsu.edu  Thu Oct 14 19:39:33 2004
+From: larryr@saturn.sdsu.edu (Larry Riedel)
+Date: 14 Oct 2004 18:39:33 -0000
+Subject: [concurrency-interest] private field
+In-Reply-To: <416E9EF5.5020209@videotron.ca>
+Message-ID: <20041014183933.16335.qmail@home19.riedel.org>
+
+> But, is-it possible to improve performance one step
+> farther?  I am worried about memory allocation and garbage
+> collection; maybe we can improve performance by reusing
+> LinkedBlockingQueue.Node? [...]
+> 
+> Now drainTo method requires O(1) instead of O(n) time.
+> Also, I can use QueueImpl instead of ArrayList and reuse
+> Node (and don't use memory for array), so memory allocation
+> and garbage collection will appear less frequently,
+> improving performance.
+> 
+> But, I am wondering about node pool synchronization.  I'm   
+> not sure if I need synchronization and if yes, what are the 
+> impact on the performance?                                  
+
+I wish the JVM spec would provide for objects to be resurrected
+more than once.  It seems like it would make implementing pools
+efficiently more easy.  The dotNET CLR has ReRegisterForFinalize,
+which allows objects to be resurrected indefinitely.  I hope the
+JVM spec will get this feature someday, or does it already?
+
+
+Larry
+
+
+From jozart@blarg.net  Thu Oct 14 20:03:04 2004
+From: jozart@blarg.net (Joe Bowbeer)
+Date: Thu, 14 Oct 2004 12:03:04 -0700
+Subject: [concurrency-interest] PooledExecutor question
+References: <c0d9a60204101407534bcaf4c@mail.gmail.com>
+Message-ID: <00e801c4b220$6f078d40$0200a8c0@REPLICANT2>
+
+Have you tried java.util.concurrent.ThreadPoolExecutor?
+
+To shutdown a thread pool and await termination, you would:
+
+  threadPool.shutdown();
+  threadPool.awaitTermination(timeout, timeUnit);
+
+Same problem different class?  Or does this work for you?
+
+
+----- Original Message ----- 
+From: "Vitaliy Geraymovych" <vitaliy.home@gmail.com>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Thursday, October 14, 2004 7:53 AM
+Subject: [concurrency-interest] PooledExecutor question
+
+
+Hi All,
+
+I am having problems using PooledExecutor. After submitting Runnables
+into the pool I need to wait until all of them are completed. Call to
+shutdownAfterProcessingCurrentlyQueuedTasks after submitting all tasks
+doesn't seem to help.
+
+Problem is happening when I am running JUnit . JUnit terminates before
+all tasks are completed and as the result several tasks remain
+unfinished.
+
+Is there a way to wait until PooledExecutor finishes all tasks
+submitted into the queue?
+
+Thanks,
+Vitaliy
+
+
+From jozart@blarg.net  Thu Oct 14 20:05:49 2004
+From: jozart@blarg.net (Joe Bowbeer)
+Date: Thu, 14 Oct 2004 12:05:49 -0700
+Subject: [concurrency-interest] PooledExecutor question
+Message-ID: <00ed01c4b220$d16a2ab0$0200a8c0@REPLICANT2>
+
+PS -
+
+After refreshing my memory on the old stuff, it occurs to me that you may be 
+missing a call to
+
+   awaitTerminationAfterShutdown
+
+
+----- Original Message ----- 
+From: "Joe Bowbeer" <jozart@blarg.net>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Thursday, October 14, 2004 12:03 PM
+Subject: Re: [concurrency-interest] PooledExecutor question
+
+
+Have you tried java.util.concurrent.ThreadPoolExecutor?
+
+To shutdown a thread pool and await termination, you would:
+
+  threadPool.shutdown();
+  threadPool.awaitTermination(timeout, timeUnit);
+
+Same problem different class?  Or does this work for you?
+
+
+----- Original Message ----- 
+From: "Vitaliy Geraymovych" <vitaliy.home@gmail.com>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Thursday, October 14, 2004 7:53 AM
+Subject: [concurrency-interest] PooledExecutor question
+
+
+Hi All,
+
+I am having problems using PooledExecutor. After submitting Runnables
+into the pool I need to wait until all of them are completed. Call to
+shutdownAfterProcessingCurrentlyQueuedTasks after submitting all tasks
+doesn't seem to help.
+
+Problem is happening when I am running JUnit . JUnit terminates before
+all tasks are completed and as the result several tasks remain
+unfinished.
+
+Is there a way to wait until PooledExecutor finishes all tasks
+submitted into the queue?
+
+Thanks,
+Vitaliy
+
+
+From Vitaliy Geraymovych <vitaliy.home@gmail.com>  Thu Oct 14 20:13:47 2004
+From: Vitaliy Geraymovych <vitaliy.home@gmail.com> (Vitaliy Geraymovych)
+Date: Thu, 14 Oct 2004 15:13:47 -0400
+Subject: [concurrency-interest] PooledExecutor question
+In-Reply-To: <00e801c4b220$6f078d40$0200a8c0@REPLICANT2>
+References: <c0d9a60204101407534bcaf4c@mail.gmail.com>
+ <00e801c4b220$6f078d40$0200a8c0@REPLICANT2>
+Message-ID: <c0d9a602041014121372a7e0a6@mail.gmail.com>
+
+I am still checking but it seems that
+e.awaitTerminationAfterShutdown() does the trick.
+
+Thanks,
+Vitaliy
+
+
+On Thu, 14 Oct 2004 12:03:04 -0700, Joe Bowbeer <jozart@blarg.net> wrote:
+> Have you tried java.util.concurrent.ThreadPoolExecutor?
+> 
+> To shutdown a thread pool and await termination, you would:
+> 
+>   threadPool.shutdown();
+>   threadPool.awaitTermination(timeout, timeUnit);
+> 
+> Same problem different class?  Or does this work for you?
+> 
+> 
+> 
+> 
+> ----- Original Message -----
+> From: "Vitaliy Geraymovych" <vitaliy.home@gmail.com>
+> To: <concurrency-interest@altair.cs.oswego.edu>
+> Sent: Thursday, October 14, 2004 7:53 AM
+> Subject: [concurrency-interest] PooledExecutor question
+> 
+> Hi All,
+> 
+> I am having problems using PooledExecutor. After submitting Runnables
+> into the pool I need to wait until all of them are completed. Call to
+> shutdownAfterProcessingCurrentlyQueuedTasks after submitting all tasks
+> doesn't seem to help.
+> 
+> Problem is happening when I am running JUnit . JUnit terminates before
+> all tasks are completed and as the result several tasks remain
+> unfinished.
+> 
+> Is there a way to wait until PooledExecutor finishes all tasks
+> submitted into the queue?
+> 
+> Thanks,
+> Vitaliy
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From dl@cs.oswego.edu  Fri Oct 15 00:19:27 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Thu, 14 Oct 2004 19:19:27 -0400
+Subject: [concurrency-interest] private field
+In-Reply-To: <416E9EF5.5020209@videotron.ca>
+References: <NFBBKALFDCPFIDBNKAPCOEFCEOAA.dholmes@dltech.com.au>
+ <416DD060.20808@videotron.ca>
+ <16750.26136.84328.635097@altair.cs.oswego.edu>
+ <416E9EF5.5020209@videotron.ca>
+Message-ID: <16751.2431.310117.617402@altair.cs.oswego.edu>
+
+> But, is-it possible to improve performance one step farther?  I am 
+> worried about memory allocation and garbage collection; maybe we can 
+> improve performance by reusing LinkedBlockingQueue.Node?
+
+I don't think this is a performance concern.  In micro-benchmarks,
+LinkedBlockingQueue usually has better concurrent scalability than
+ArrayBlockQueue, which doesn't do any dynamic allocation.
+It's hard to predict how well either of these will work in
+any given application, which is why we supply both. But I don't
+think that in-between solutions work out too well, although please
+feel free to prove to me otherwise :-)
+
+(Digressing: In lock-free data structures like
+jsr166x.ConcurrentSkipListMap, dynamic allocation is sometimes used to
+avoid needing locks, which wins big even considering GC overhead. See
+the internal documentation in
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/jsr166x/ConcurrentSkipListMap.java
+for some discussion of this. The moral here is that it is often better
+to exploit, rather than evade GC in performance-sensitive code.)
+
+-Doug
+
+From dholmes@dltech.com.au  Fri Oct 15 04:11:24 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Fri, 15 Oct 2004 13:11:24 +1000
+Subject: [concurrency-interest] private field
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCEEFGEOAA.dholmes@dltech.com.au>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEGEEOAA.dholmes@dltech.com.au>
+
+I wrote:
+> Ah I see. My gut reaction is that we should have had a drainTo(T[] ta)
+> method.
+
+Actually that would be a bit more awkward implement than it might seem. If
+the array size is determined a priori then it may not match the collection
+size when the actual drainTo occurs. If the array is too small a naive
+implementation of drainTo would result in the excess contents being lost.
+But even if drainTo tries to be clever and re-insert the excess contents
+back into the collection, you then have the problem that a contains(x) query
+could fail even though x is in the collection and will still be there after
+the drainTo.
+
+Bottom line: you must be able to guarantee that everything in the collection
+at the time drainTo is invoked, can be stored in the object your are
+draining into so that nothing can be lost, or disappear and reappear.
+
+David Holmes
+
+
+From iksrazal@yahoo.com  Fri Oct 15 16:10:13 2004
+From: iksrazal@yahoo.com (trebor iksrazal)
+Date: Fri, 15 Oct 2004 08:10:13 -0700 (PDT)
+Subject: [concurrency-interest] PooledExecutor question
+In-Reply-To: <c0d9a602041014121372a7e0a6@mail.gmail.com>
+Message-ID: <20041015151013.26302.qmail@web52607.mail.yahoo.com>
+
+You could alternatively use the semaphore class. Init
+the semaphore to the same size as the thread pool,
+check out a permit before submitting a runnable, and
+then release the permit in the runnables finally. Then
+do a loop after the threads are started, checking to
+see if the semaphore permits size reach max, then
+break out of the loop knowing that the threads
+completed.
+
+--- Vitaliy Geraymovych <vitaliy.home@gmail.com>
+wrote:
+
+> I am still checking but it seems that
+> e.awaitTerminationAfterShutdown() does the trick.
+> 
+> Thanks,
+> Vitaliy
+> 
+> 
+> On Thu, 14 Oct 2004 12:03:04 -0700, Joe Bowbeer
+> <jozart@blarg.net> wrote:
+> > Have you tried
+> java.util.concurrent.ThreadPoolExecutor?
+> > 
+> > To shutdown a thread pool and await termination,
+> you would:
+> > 
+> >   threadPool.shutdown();
+> >   threadPool.awaitTermination(timeout, timeUnit);
+> > 
+> > Same problem different class?  Or does this work
+> for you?
+> > 
+> > 
+> > 
+> > 
+> > ----- Original Message -----
+> > From: "Vitaliy Geraymovych"
+> <vitaliy.home@gmail.com>
+> > To: <concurrency-interest@altair.cs.oswego.edu>
+> > Sent: Thursday, October 14, 2004 7:53 AM
+> > Subject: [concurrency-interest] PooledExecutor
+> question
+> > 
+> > Hi All,
+> > 
+> > I am having problems using PooledExecutor. After
+> submitting Runnables
+> > into the pool I need to wait until all of them are
+> completed. Call to
+> > shutdownAfterProcessingCurrentlyQueuedTasks after
+> submitting all tasks
+> > doesn't seem to help.
+> > 
+> > Problem is happening when I am running JUnit .
+> JUnit terminates before
+> > all tasks are completed and as the result several
+> tasks remain
+> > unfinished.
+> > 
+> > Is there a way to wait until PooledExecutor
+> finishes all tasks
+> > submitted into the queue?
+> > 
+> > Thanks,
+> > Vitaliy
+> > 
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest@altair.cs.oswego.edu
+> >
+>
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+>
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+
+
+		
+__________________________________
+Do you Yahoo!?
+Yahoo! Mail Address AutoComplete - You start. We finish.
+http://promotions.yahoo.com/new_mail 
+
+From ziba@summa-tech.com  Sat Oct 16 14:09:26 2004
+From: ziba@summa-tech.com (Eduardo Issao Ito)
+Date: Sat, 16 Oct 2004 10:09:26 -0300
+Subject: [concurrency-interest] private field
+In-Reply-To: <416E9EF5.5020209@videotron.ca>
+References: <NFBBKALFDCPFIDBNKAPCOEFCEOAA.dholmes@dltech.com.au> <416DD060.20808@videotron.ca> <16750.26136.84328.635097@altair.cs.oswego.edu> <416E9EF5.5020209@videotron.ca>
+Message-ID: <41711D86.5060000@summa-tech.com>
+
+Jean Morissette wrote:
+> But, is-it possible to improve performance one step farther?  I am 
+> worried about memory allocation and garbage collection; maybe we can 
+> improve performance by reusing LinkedBlockingQueue.Node?
+
+Dont forget: "Premature optimization is the root of all evil..."
+
+-- 
+<Eduardo Issao Ito/>
+<Summa Technologies/>
+
+“The ideal project is one where people don't have meetings, they have 
+lunch.” — Bill Joy
+
+From jean.morissette666@videotron.ca  Tue Oct 26 23:57:17 2004
+From: jean.morissette666@videotron.ca (Jean Morissette)
+Date: Tue, 26 Oct 2004 18:57:17 -0400
+Subject: [concurrency-interest] Strange behavior with LinkedBlockingQueue
+Message-ID: <417ED64D.20302@videotron.ca>
+
+Hi,
+I have written a Producer/Consumer test case that show, *almost* always, 
+a weird behavior (maybe a deathlock) with the use of 
+LinkedBlockingQueue.  Sometime, the test never finish!  Try it please 
+and give me your advice.  I am missing something?
+Jean
+
+public class ProducerConsumerQueueTest {
+
+   static Object NULL_OBJECT = new Object() {};
+   static int i;
+   static long time;
+
+   static class Producer implements Runnable {
+     BlockingQueue queue;
+
+     Producer(BlockingQueue q) { queue = q; }
+
+     public void run() {
+       while(true) {
+         try {
+           queue.put(NULL_OBJECT);
+         } catch (Exception e) {
+           e.printStackTrace();
+         }
+       }
+     }
+   }
+
+   static class Consumer implements Runnable {
+     private BlockingQueue queue;
+
+     Consumer(BlockingQueue q) { queue = q; }
+
+     public void run() {
+       int count = 0;
+       ArrayList l = new ArrayList(1000);
+       while(true) {
+         try {
+           count = queue.drainTo(l);
+           for (int i = 0; i < count; i++) {
+             consume(l.get(i));
+           }
+           System.out.println("count = " + count);
+           if (count > 0)
+             l.clear();
+           else
+             Thread.yield();
+         } catch (Exception e) {
+           e.printStackTrace();
+         }
+       }
+     }
+
+     void consume(Object x) {
+       i++;
+       if (i % 100 == 0)
+         System.out.println("i = " + i);
+       if (i >= 1000000) {
+         System.out.println("time = "
+             + (System.currentTimeMillis() - time)
+             + " (ms)");
+         System.exit(0);
+       }
+     }
+   }
+
+   public static void main(String args[]) throws InterruptedException {
+     time = System.currentTimeMillis();
+     BlockingQueue q = new LinkedBlockingQueue();
+     Producer p = new Producer(q);
+     Consumer c = new Consumer(q);
+     Thread t = new Thread(p);
+     t.setPriority(Thread.NORM_PRIORITY);
+     Thread.currentThread().setPriority(Thread.NORM_PRIORITY);
+     t.start();
+     c.run();
+   }
+}
+
+From dholmes@dltech.com.au  Wed Oct 27 00:24:47 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Wed, 27 Oct 2004 09:24:47 +1000
+Subject: [concurrency-interest] Strange behavior with LinkedBlockingQueue
+In-Reply-To: <417ED64D.20302@videotron.ca>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEAEEPAA.dholmes@dltech.com.au>
+
+Jean,
+
+>            if (count > 0)
+>              l.clear();
+>            else
+>              Thread.yield();
+
+There is no guarantee that Thread.yield will actually do anything. Unless
+your consumer blocks for some other reason, it can run forever without the
+producer getting a further chance to run. yield() is just a hint to the
+scheduler, you can not rely on it to guarantee progression.
+
+Similarly, priorities are just hints - and in the JDK on certain systems,
+have quite unexpected affects these days. (See the release notes)
+
+Either change the yield to a sleep, or else utilise the blocking take()
+method to ensure producer and consumer coordinate their actions properly.
+
+David Holmes
+
+
+From dholmes@dltech.com.au  Wed Oct 27 00:42:51 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Wed, 27 Oct 2004 09:42:51 +1000
+Subject: [concurrency-interest] Strange behavior with LinkedBlockingQueue
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCCEAEEPAA.dholmes@dltech.com.au>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEAEEPAA.dholmes@dltech.com.au>
+
+I wrote:
+> There is no guarantee that Thread.yield will actually do anything. Unless
+> your consumer blocks for some other reason, it can run forever without he
+> producer getting a further chance to run. yield() is just a hint to the
+> scheduler, you can not rely on it to guarantee progression.
+>
+> Similarly, priorities are just hints - and in the JDK on certain systems,
+> have quite unexpected affects these days. (See the release notes)
+>
+> Either change the yield to a sleep, or else utilise the blocking take()
+> method to ensure producer and consumer coordinate their actions properly.
+
+That does not seem to be the problem. I replaced the yield with a sleep and
+it still goes into a count=0 loop. It is as if something is silently killing
+or hanging the producer. Very odd.
+
+David Holmes
+
+
+From dholmes@dltech.com.au  Wed Oct 27 00:47:25 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Wed, 27 Oct 2004 09:47:25 +1000
+Subject: [concurrency-interest] Strange behavior with LinkedBlockingQueue
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCKEAEEPAA.dholmes@dltech.com.au>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOEAEEPAA.dholmes@dltech.com.au>
+
+> That does not seem to be the problem. I replaced the yield with a
+> sleep and it still goes into a count=0 loop. It is as if
+> something is silently killing or hanging the producer. Very odd.
+
+No the producer and consumer are both live. It seems as if there is an
+actual failure in the ArrayBlockingQueue somewhere.
+
+David Holmes
+
+
+From jozart@blarg.net  Wed Oct 27 01:01:47 2004
+From: jozart@blarg.net (Joe Bowbeer)
+Date: Tue, 26 Oct 2004 17:01:47 -0700
+Subject: [concurrency-interest] Strange behavior with LinkedBlockingQueue
+References: <NFBBKALFDCPFIDBNKAPCOEAEEPAA.dholmes@dltech.com.au>
+Message-ID: <005301c4bbb8$26e6e820$0200a8c0@REPLICANT2>
+
+David writes:
+
+> It seems as if there is an actual failure
+> in the ArrayBlockingQueue somewhere.
+
+Note: Sample code uses LinkedBlockingQueue (as subject indicates)
+
+
+----- Original Message ----- 
+From: "David Holmes" <dholmes@dltech.com.au>
+To: "Jean Morissette" <jean.morissette666@videotron.ca>; 
+<concurrency-interest@altair.cs.oswego.edu>
+Sent: Tuesday, October 26, 2004 4:47 PM
+Subject: RE: [concurrency-interest] Strange behavior with 
+LinkedBlockingQueue
+
+
+> That does not seem to be the problem. I replaced the yield with a
+> sleep and it still goes into a count=0 loop. It is as if
+> something is silently killing or hanging the producer. Very odd.
+
+No the producer and consumer are both live. It seems as if there is an
+actual failure in the ArrayBlockingQueue somewhere.
+
+David Holmes
+
+
+From dholmes@dltech.com.au  Wed Oct 27 01:07:51 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Wed, 27 Oct 2004 10:07:51 +1000
+Subject: [concurrency-interest] Strange behavior with LinkedBlockingQueue
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCKEAEEPAA.dholmes@dltech.com.au>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOEAFEPAA.dholmes@dltech.com.au>
+
+This is a bug in LinkedBlockingQueue.drainTo, which forgets to reset the
+tail pointer to indicate an empty queue. A bug report will be submitted -
+thanks!
+
+Here's a simpler test case to demonstrate that drainTo only works once:
+
+        BlockingQueue<Object> q = new LinkedBlockingQueue<Object>();
+        int count = 0;
+        ArrayList<Object> l = new ArrayList<Object>(1000);
+        while(true) {
+            for (int i = 0; i < 10000; i++)
+                q.put(NULL_OBJECT);
+            System.out.println("Produced 10000");
+            count = q.drainTo(l);
+            for (int i = 0; i < count; i++) {
+                l.get(i);
+            }
+            System.out.println("count = " + count);
+            if (count > 0)
+                l.clear();
+        }
+
+Produces:
+
+Produced 10000
+count = 10000
+Produced 10000
+count = 0
+Produced 10000
+count = 0
+Produced 10000
+count = 0
+...
+
+David Holmes
+
+
+From dl@cs.oswego.edu  Wed Oct 27 15:07:12 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Wed, 27 Oct 2004 10:07:12 -0400
+Subject: [concurrency-interest] Strange behavior with LinkedBlockingQueue
+In-Reply-To: <417ED64D.20302@videotron.ca>
+References: <417ED64D.20302@videotron.ca>
+Message-ID: <16767.43920.952872.582234@altair.cs.oswego.edu>
+
+Thanks very much for reporting this! Sorry for the problems.  (As
+David mentioned, drainTo sometimes did not properly reset internal
+state.)  We'll post source fix in CVS by the weekend after thoroughly
+testing, and somehow get this into the J2SE update release.
+
+-Doug
+
+From jean.morissette666@videotron.ca  Fri Oct 29 05:08:48 2004
+From: jean.morissette666@videotron.ca (Jean Morissette)
+Date: Fri, 29 Oct 2004 00:08:48 -0400
+Subject: [concurrency-interest] New method for BlockingQueue
+Message-ID: <4181C250.1040505@videotron.ca>
+
+Hi,
+I would like to use a method in BlockingQueue that blocks on the queue 
+up until a timeout occurs or until an element appears on the queue, 
+returning all elements waiting on the queue at that time.
+
+It's a little bit like a mix of methods poll(long timeout, TimeUnit 
+unit) and drainTo(Collection c), thus something like drainTo(Collection 
+c, long timeout, TimeUnit unit).
+
+I don't think that there is a way to implements efficiently this method 
+by wrapping a BlockingQueue.  Am-I wrong?
+
+Is it possible that this method could be added in a future release?
+
+Regards,
+Jean
+
+From jozart@blarg.net  Fri Oct 29 05:37:35 2004
+From: jozart@blarg.net (Joe Bowbeer)
+Date: Thu, 28 Oct 2004 21:37:35 -0700
+Subject: [concurrency-interest] New method for BlockingQueue
+References: <4181C250.1040505@videotron.ca>
+Message-ID: <01b301c4bd71$035b3680$0200a8c0@REPLICANT2>
+
+Jean Morissette writes:
+
+> I would like [...] drainTo(Collection c, long timeout, TimeUnit unit).
+
+
+A two-part strategy comes to mind:
+
+1. Poll for the first element initially, with specified timeout.
+2. Then fetch any remaining elements with drainTo -- or poll with timeout=0 
+while there are more elements.
+
+Does this suffice?  Is it inefficient?
+
+
+
+----- Original Message ----- 
+From: "Jean Morissette" <jean.morissette666@videotron.ca>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Thursday, October 28, 2004 9:08 PM
+Subject: [concurrency-interest] New method for BlockingQueue
+
+
+Hi,
+I would like to use a method in BlockingQueue that blocks on the queue
+up until a timeout occurs or until an element appears on the queue,
+returning all elements waiting on the queue at that time.
+
+It's a little bit like a mix of methods poll(long timeout, TimeUnit
+unit) and drainTo(Collection c), thus something like drainTo(Collection
+c, long timeout, TimeUnit unit).
+
+I don't think that there is a way to implements efficiently this method
+by wrapping a BlockingQueue.  Am-I wrong?
+
+Is it possible that this method could be added in a future release?
+
+Regards,
+Jean
+
+
+From dholmes@dltech.com.au  Fri Oct 29 05:47:35 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Fri, 29 Oct 2004 14:47:35 +1000
+Subject: [concurrency-interest] New method for BlockingQueue
+In-Reply-To: <4181C250.1040505@videotron.ca>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEDJEPAA.dholmes@dltech.com.au>
+
+Hello Jean,
+
+> I would like to use a method in BlockingQueue that blocks on the queue
+> up until a timeout occurs or until an element appears on the queue,
+> returning all elements waiting on the queue at that time.
+
+In the absence of atomic bulk operations (like addAll) I'm not sure you
+could ever expect to drain more than one element from the queue. Scheduling
+issues aside, as soon as one element is added then you would drain it.
+
+> I don't think that there is a way to implements efficiently this method
+> by wrapping a BlockingQueue.  Am-I wrong?
+
+No you are not wrong. These sort of arbitrary atomic sequences require
+additional locking to coordinate all the methods involved. You would have to
+wrap to provide a fully synchronized version that added the atomic method(s)
+you require.
+
+> Is it possible that this method could be added in a future release?
+
+Without additional semantics for bulk operations - which themselves imply
+the need for total locking - such an operation makes little sense. You'd end
+up needing to be fully synchronized to make this work - as far as I can see
+at present.
+
+David Holmes
+
+
+From rectalogic@yahoo.com  Sat Oct 30 03:20:46 2004
+From: rectalogic@yahoo.com (Andrew Wason)
+Date: Fri, 29 Oct 2004 19:20:46 -0700 (PDT)
+Subject: [concurrency-interest] LIFO ThreadPoolExecutor
+Message-ID: <20041030022046.875.qmail@web51309.mail.yahoo.com>
+
+I want to use a single thread ThreadPoolExecutor that
+internally uses a LIFO - basically what I would get
+from Executors.newSingleThreadExecutor() but using a
+LIFO.
+
+I'm queuing up thumbnail decoding tasks as the user
+scrolls through a list of thumbnails - so I want the
+most recently exposed thumbnail to be the first to be
+decoded.
+
+I don't see a BlockingQueue<E> LIFO implementation
+that I can use with ThreadPoolExecutor, so what would
+be the simplest way to do what I need?
+
+I could use a PriorityBlockingQueue<E> and always add
+new tasks as the 'least' element so they are at the
+head. Or I could use LinkedBlockingQueue<E> and every
+time I add a task, first drainTo(), add the new task,
+then addAll() the other tasks back.
+
+I could subclass LinkedBlockingQueue<E> and override
+various methods to reimplement it as a LIFO (if
+LinkedBlockingQueue<E>.insert() was not private this
+would be simple). I'm afraid this approach will be
+brittle as the JDK implementation changes underneath
+me.
+
+Does anyone have any suggestions as to the best
+approach?
+
+Thanks,
+Andrew
+
+
+		
+__________________________________
+Do you Yahoo!?
+Yahoo! Mail Address AutoComplete - You start. We finish.
+http://promotions.yahoo.com/new_mail 
+
+From win_ash12@yahoo.com  Sun Oct 31 08:52:06 2004
+From: win_ash12@yahoo.com (Aswin D)
+Date: Sun, 31 Oct 2004 01:52:06 -0700 (PDT)
+Subject: [concurrency-interest] Distributed lock managers
+Message-ID: <20041031085206.33878.qmail@web61206.mail.yahoo.com>
+
+--0-230462229-1099212726=:33109
+Content-Type: text/plain; charset=us-ascii
+
+Hello,
+          I am writing to enquire whether there is any public code available that implements a distributed lock manager. I am wanting to learn about clustering in j2ee application servers and find that there is not enough information regarding this subject area. Also any public code that supports the concept of completion callback over several nodes on a cluster would also be appreciated. Each of these several nodes may not all start at the same time.
+ 
+Prof. Lea-if you are reading this can I say that those of us who wish to get to a better understanding of  "under the hood" workings of locking, scheduling over a cluster there is not a good book in java available yet. If you can be persuaded to write one that would be much appreciated.
+Regards,
+Aswin D.
+
+__________________________________________________
+Do You Yahoo!?
+Tired of spam?  Yahoo! Mail has the best spam protection around 
+http://mail.yahoo.com 
+--0-230462229-1099212726=:33109
+Content-Type: text/html; charset=us-ascii
+
+<DIV>Hello,</DIV>
+<DIV>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; I am writing to enquire whether there is any public code available that implements a distributed lock manager. I am wanting to learn about clustering in j2ee application servers and find that there is not enough information regarding this subject area. Also any public code that supports the concept of completion callback over several nodes on a cluster would also be appreciated. Each of these several nodes may not all start at the same time.</DIV>
+<DIV>&nbsp;</DIV>
+<DIV>Prof. Lea-if you are reading this can I say that those of us who wish to get to a better understanding of&nbsp; "under the hood" workings of locking, scheduling over a cluster there is not a good book in java available yet. If you can be persuaded to write one that would be much appreciated.</DIV>
+<DIV>Regards,</DIV>
+<DIV>Aswin D.</DIV><p>__________________________________________________<br>Do You Yahoo!?<br>Tired of spam?  Yahoo! Mail has the best spam protection around <br>http://mail.yahoo.com 
+--0-230462229-1099212726=:33109--
+
+From dl@cs.oswego.edu  Sun Oct 31 15:13:33 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sun, 31 Oct 2004 10:13:33 -0500
+Subject: [concurrency-interest] Strange behavior with LinkedBlockingQueue
+In-Reply-To: <417ED64D.20302@videotron.ca>
+References: <417ED64D.20302@videotron.ca>
+Message-ID: <16773.285.693912.931132@altair.cs.oswego.edu>
+
+As now described on concurrency-interest site,
+  http://gee.cs.oswego.edu/dl/concurrency-interest/index.html
+You can obtain an updated jsr166.jar with the LinkedBlockingQueue.drainTo
+bug fix, and use it now via -Xbootclasspath option until it appears
+in a J2SE update.
+
+Thanks again for reporting this!
+
+-Doug
+
+From jean.morissette666@videotron.ca  Sun Oct 31 16:30:32 2004
+From: jean.morissette666@videotron.ca (Jean Morissette)
+Date: Sun, 31 Oct 2004 11:30:32 -0500
+Subject: [concurrency-interest] PooledLinkedBlockingQueue
+In-Reply-To: <16751.2431.310117.617402@altair.cs.oswego.edu>
+References: <NFBBKALFDCPFIDBNKAPCOEFCEOAA.dholmes@dltech.com.au>
+ <416DD060.20808@videotron.ca> <16750.26136.84328.635097@altair.cs.oswego.edu>
+ <416E9EF5.5020209@videotron.ca> <16751.2431.310117.617402@altair.cs.oswego.edu>
+Message-ID: <41851328.1050208@videotron.ca>
+
+Doug Lea wrote:
+>>But, is-it possible to improve performance one step farther?  I am 
+>>worried about memory allocation and garbage collection; maybe we can 
+>>improve performance by reusing LinkedBlockingQueue.Node?
+> 
+> 
+> I don't think this is a performance concern.  In micro-benchmarks,
+> LinkedBlockingQueue usually has better concurrent scalability than
+> ArrayBlockQueue, which doesn't do any dynamic allocation.
+> It's hard to predict how well either of these will work in
+> any given application, which is why we supply both. But I don't
+> think that in-between solutions work out too well, although please
+> feel free to prove to me otherwise :-)
+
+I will try. :-)
+
+Thus, in my PooledLinkedBlockingQueue implementation, methods 'offer' 
+and 'put' get a Node from the pool if one is available, else we create a 
+new one.  Method 'poll' and 'take' put the Node in the pool if it is not 
+full.
+
+But, what could be the best structure and strategy to use for the pool? 
+  I am worried that the pool become a bottleneck with synchronization. 
+So, is-it possible to don't do any locking when using the pool?  Is the 
+wait-free ConcurrentLinkedQueue a good choice?  Advices?
+
+Thanks
+Jean
+
+From dl@cs.oswego.edu  Sun Oct 31 21:15:41 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sun, 31 Oct 2004 16:15:41 -0500
+Subject: [concurrency-interest] PooledLinkedBlockingQueue
+In-Reply-To: <41851328.1050208@videotron.ca>
+References: <NFBBKALFDCPFIDBNKAPCOEFCEOAA.dholmes@dltech.com.au>
+ <416DD060.20808@videotron.ca>
+ <16750.26136.84328.635097@altair.cs.oswego.edu>
+ <416E9EF5.5020209@videotron.ca>
+ <16751.2431.310117.617402@altair.cs.oswego.edu>
+ <41851328.1050208@videotron.ca>
+Message-ID: <16773.22013.780495.747757@altair.cs.oswego.edu>
+
+> But, what could be the best structure and strategy to use for the pool? 
+>   I am worried that the pool become a bottleneck with synchronization. 
+> So, is-it possible to don't do any locking when using the pool?  Is the 
+> wait-free ConcurrentLinkedQueue a good choice?  Advices?
+
+This is the reason that performance of GC'ed concurrent data
+structures tends to be better than those using recycling. While there
+are lock-free solutions to the node-recycling problem, they are very
+complicated and tend to add more overhead than does GC. For some
+recent research papers on the subject see work by Maged Michael
+(http://www.research.ibm.com/people/m/michael/pubs.htm) and by Mark
+Moir and colleagues (http://research.sun.com/scalable/moir.html).
+
+-Doug
+
+From dl@cs.oswego.edu  Sun Oct 31 21:45:56 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sun, 31 Oct 2004 16:45:56 -0500
+Subject: [concurrency-interest] Distributed lock managers
+In-Reply-To: <20041031085206.33878.qmail@web61206.mail.yahoo.com>
+References: <20041031085206.33878.qmail@web61206.mail.yahoo.com>
+Message-ID: <16773.23828.325769.754764@altair.cs.oswego.edu>
+
+>  I am writing to enquire whether there is any public code available
+>  that implements a distributed lock manager. I am wanting to learn
+>  about clustering in j2ee application servers and find that there is
+>  not enough information regarding this subject area. Also any public
+>  code that supports the concept of completion callback over several
+>  nodes on a cluster would also be appreciated. Each of these several
+>  nodes may not all start at the same time.
+
+I don't know details of any of the open source ones, but if you google
+"distributed lock manager", you'll find some; for example, Apache's
+ODMG (http://db.apache.org/ojb/docu/guides/lockmanager.html). The
+classic textbook source on lock managers is Gray & Reuter "Transaction
+Processing" book, but it is a little dated and more focussed on
+concepts than implementation.
+
+> Prof. Lea-if you are reading this can I say that those of us who wish
+> to get to a better understanding of "under the hood" workings of
+> locking, scheduling over a cluster there is not a good book in java
+> available yet. If you can be persuaded to write one that would be much
+> appreciated.
+
+Thanks for the suggestion.  Someday there should be a book on Java
+cluster computing, but I don't think it will be soon. Among other
+things, JSR121 "isolates", which I hope will make it into next major
+J2SE release, will change the way a lot of things should be done.
+
+-Doug
+
+

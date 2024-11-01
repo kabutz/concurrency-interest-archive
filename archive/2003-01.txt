@@ -1,0 +1,4193 @@
+From prigogin@pacbell.net  Sun Jan  5 21:28:50 2003
+From: prigogin@pacbell.net (Sergey Prigogin)
+Date: Sun, 05 Jan 2003 13:28:50 -0800
+Subject: [concurrency-interest] Proposed extention to ReadWriteLock interface
+Message-ID: <000001c2b501$70eb0380$6401a8c0@pacbell.net>
+
+A problem with ReentrantReadWriteLock class, and ReadWriteLock interface
+in general, is that they don't allow for an upgrade from a read to write
+lock withouth allowing other writers to get in between. Using multiple
+locks to get around this problem would result in a cluttered code.
+
+This problem can be solved in a deadlock-safe manner by introducing the
+third kind of lock - write intent lock. Write intent locks are mutually
+exclusive, exclude write locks, but allow concurrent read locks:
+
+interface UpgradeableLock extends Lock
+{
+  public void upgrade();
+  public boolean tryUpgrade();
+  public void downgrade();
+  // etc.
+}
+
+interface ReadWriteLock
+{
+  public Lock readLock();
+  public UpgradeableLock writeIntentLock();
+  public Lock writeLock();
+}
+
+Sergey Prigogin  
+
+
+From dholmes@dltech.com.au  Sun Jan  5 23:29:02 2003
+From: dholmes@dltech.com.au (David Holmes)
+Date: Mon, 6 Jan 2003 09:29:02 +1000
+Subject: [concurrency-interest] Proposed extention to ReadWriteLock interface
+In-Reply-To: <000001c2b501$70eb0380$6401a8c0@pacbell.net>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAECACPAA.dholmes@dltech.com.au>
+
+Sergey Prigogin wrote:
+> A problem with ReentrantReadWriteLock class, and
+> ReadWriteLock interface in general, is that they don't allow for an
+> upgrade from a read to write
+> lock withouth allowing other writers to get in between.
+
+The ReentrantReadWriteLock class is one particular (and the EG think
+commonly needed and fairly general purpose) implementation of
+ReadWriteLock with certain characteristics and policy choices, but
+this class does not provide the semantics you describe.
+
+There are so many possible policy choices with Read/write lock
+implementations, most of which are used very infrequently and in very
+specialised contexts, that trying to provide even a selection of them
+in a general purpose library seems counter-productive as there would
+be confusion due to too much choice. Instead the EG have opted for an
+initial minimal approach with ReentrantReadWriteLock and a "wait and
+see" approach as to the need for other implementations.
+
+But just to comment on your proposal, rather than extending the Lock
+interface to support this I'd only extend ReadWriteLock as the
+inherent pairing between the read lock and write lock isn't captured
+using the Lock interface, whereas the ReadWriteLock interface is
+fundamentally describing a lock pair. That way you wouldn't need a
+third lock 'type' in the "intent" lock - though perhaps implementation
+considerations make it favourable to distinguish between the two uses
+of the write lock.
+
+Regards,
+David Holmes
+
+
+From nikhils22@yahoo.com  Mon Jan  6 05:49:31 2003
+From: nikhils22@yahoo.com (nikhil ss)
+Date: Sun, 5 Jan 2003 21:49:31 -0800 (PST)
+Subject: [concurrency-interest] question on SyncVariables
+Message-ID: <20030106054931.47579.qmail@web41303.mail.yahoo.com>
+
+Hi Folks ,
+
+I need to understand why the synchronized variable
+classes are used.
+
+Correct me If I am wrong , one example which I can
+think of is the need for synchronizing it in the
+context of multiple threads updating this variable. So
+,does this guarantee that the update operations are
+atomic and there is no need of using the volatile
+keyword.
+
+I need one clarification in commit()method also. I
+understand that commit would be called if and only if
+"assumedvalue is equal to the oldvalue". My point is
+that, can this be unequal since all the methods are
+synchronized? (bcos the current thread can always
+invoke get() for the present value)
+
+I am unclear about the usefulness of condition stated
+in commit() when all the access to the variable is
+synchronized.
+
+I may be missing a very trivial point here , but
+perhaps I could understand if someone can give me a
+program example 
+
+Regards
+Nikhil .
+
+__________________________________________________
+Do you Yahoo!?
+Yahoo! Mail Plus - Powerful. Affordable. Sign up now.
+http://mailplus.yahoo.com
+
+From dholmes@dltech.com.au  Mon Jan  6 06:21:12 2003
+From: dholmes@dltech.com.au (David Holmes)
+Date: Mon, 6 Jan 2003 16:21:12 +1000
+Subject: [concurrency-interest] question on SyncVariables
+In-Reply-To: <20030106054931.47579.qmail@web41303.mail.yahoo.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOECICPAA.dholmes@dltech.com.au>
+
+> I need to understand why the synchronized variable
+> classes are used.
+
+The synchronized variable classes in Doug Lea's package provide
+Mutable variants of the basic Number wrapper classes (and References).
+Because these are mutable they require synchronization to be used
+correctly in multi-threaded contexts. They also add some other utility
+functionality like waiting for changes in values.
+
+In JSR-166 the atomic classes provide a similar role, but rather than
+being synchronized they use atomic operations under the hood and so
+should be much faster. They don't provide the wait methods.
+
+> Correct me If I am wrong , one example which I can
+> think of is the need for synchronizing it in the
+> context of multiple threads updating this variable. So
+> ,does this guarantee that the update operations are
+> atomic and there is no need of using the volatile
+> keyword.
+
+If multiple threads update a shared variable then you generally need
+synchronization to ensure no updates are lost and to ensure that all
+threads see the updates made by the other threads. If those updates
+consist only of setting a new value without relying on the existing
+value, and if we are not dealing with long or double, then updates
+cannot be lost and it is sufficient to declare the primitive field as
+volatile to ensure updates are seen by each thread.
+
+ie. volatile int x;
+    // thread 1        // thread 2      //thread 3
+    x = 10;  //ok      x = -25; // ok   if (x == 10) ... // ok
+
+    // thread 4
+    x++; //ERROR: volatile not enough to do this
+
+> I need one clarification in commit()method also. I
+> understand that commit would be called if and only if
+> "assumedvalue is equal to the oldvalue". My point is
+> that, can this be unequal since all the methods are
+> synchronized? (bcos the current thread can always
+> invoke get() for the present value)
+
+commit() only succeeds if the assumedValue is equal to the actual
+value. It can be used by one thread to commit a change only if no
+other changes   have taken place since the thread did the get(). A
+usage example is given in the docs for Synchronizedvariable:
+http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/S
+ynchronizedVariable.html
+
+David Holmes
+
+
+From rganesan@myrealbox.com  Tue Jan  7 12:51:20 2003
+From: rganesan@myrealbox.com (Ganesan R)
+Date: 07 Jan 2003 18:21:20 +0530
+Subject: [concurrency-interest] A couple of questions JSR 166 ThreadExecutor and ScheduledExecutor
+Message-ID: <ouptr9p1h3.fsf@andlx-anamika.cisco.com>
+
+Hi,
+
+First, about the BlockingQueue being passed to ThreadExecutor. Can an
+application save a reference to the BlockingQueue and manipulate it? For
+example, I may want to remove a task that was submitted earlier if it has
+not yet been scheduled.
+
+Second, I don't understand why the ScheduledExecutor is, well, a
+ThreadExecutor. It makes more sense if a Scheduler take a ThreadExecutor 
+as an argument. A Scheduler needs at least one thread to send off events for
+execution. That thread can simply submit jobs to the ThreadExecutor passed
+to it on initialization. 
+
+ThreadExecutor documentation says:
+
+"However, programmers are urged to use the more convenient factory methods
+newCachedThreadPool newFixedThreadPool newSingleThreadExecutor and
+newThreadPerTaskExecutor, that preconfigure settings for the most common
+usage scenarios."
+
+As it stands now, ScheduledExecutor() does not provide any of these
+convenience methods. The constructor is different from the ThreadExecutor
+(no Queue passed in), so what's the rationale behind extending
+ThreadExecutor?
+
+And finally, when can we see the promised util.concurrent implementation
+based on the draft :-). The draft is sufficiently different from the current
+releases of util.concurrent that I am hesistant to continue using the
+current API.
+
+Ganesan
+
+-- 
+Ganesan
+
+From dl@cs.oswego.edu  Tue Jan  7 13:20:24 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Tue, 7 Jan 2003 08:20:24 -0500
+Subject: [concurrency-interest] A couple of questions JSR 166 ThreadExecutor and ScheduledExecutor
+In-Reply-To: <ouptr9p1h3.fsf@andlx-anamika.cisco.com>
+References: <ouptr9p1h3.fsf@andlx-anamika.cisco.com>
+Message-ID: <15898.54296.290752.604148@altair.cs.oswego.edu>
+
+Ganesan (who ought to subscribe to this list so I don't have to manually
+process posts :-) wrote:
+
+> 
+> First, about the BlockingQueue being passed to ThreadExecutor. Can an
+> application save a reference to the BlockingQueue and manipulate it? For
+> example, I may want to remove a task that was submitted earlier if it has
+> not yet been scheduled.
+
+Yes, you can do this. You of course have to be careful about it (for
+example being prepared to deal with fact that by the time you try to
+remove a task, it has already started running), but the reason we
+allow you to pass in your own queue is so you can do such things.
+
+Also, if your main goal here is to deal with cancellability, consider
+using FutureTasks, that will cancel even if a task has started.
+
+> 
+> Second, I don't understand why the ScheduledExecutor is, well, a
+> ThreadExecutor. It makes more sense if a Scheduler take a ThreadExecutor 
+> as an argument. A Scheduler needs at least one thread to send off events for
+> execution. That thread can simply submit jobs to the ThreadExecutor passed
+> to it on initialization. 
+
+There are two ways to set up this kind of system. One is, as you say,
+to have a separate scheduler thread passing in items to a
+ThreadExecutor. You can do this yourself easily enough. The other is
+simply to use a DelayQueue as the task queue in a ThreadExecutor. You
+cannot set this up yourself very easily though because there is some
+internal communication needed between executors and delay queues to
+manage periodic tasks. ScheduledExecutor does exactly this -- it
+arranges the internal coordination, and then exposes the
+task-submission methods. So you cannot pass in your own queue, so
+it cannot take the same set of constructors as ThreadExecutor.
+
+> And finally, when can we see the promised util.concurrent implementation
+> based on the draft :-). The draft is sufficiently different from the current
+> releases of util.concurrent that I am hesistant to continue using the
+> current API.
+
+We are working hard at this. We are running a little behind initial
+estimates. Please be patient :-)
+
+-Doug
+
+From dholmes@dltech.com.au  Wed Jan  8 01:15:42 2003
+From: dholmes@dltech.com.au (David Holmes)
+Date: Wed, 8 Jan 2003 11:15:42 +1000
+Subject: [concurrency-interest] uninterruptible acquire on Semaphore?
+In-Reply-To: <3E00B993.2040408@gemstone.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOEDACPAA.dholmes@dltech.com.au>
+
+Sorry for the delayed response - this slipped through the cracks.
+
+Eric Zoerner wrote:
+> Would it not make sense and be useful to have an
+> uninterruptible version of acquire on Semaphore?
+
+This is one of a number of yo-yo methods in the API set: it's out,
+it's in, it's out again. Currently it's out.
+
+I'm not 100% sure of the rationale but if I recall correctly this was
+considered something that was seldom needed and easily implemented if
+needed and so was removed from the general Semaphore API.
+
+For the context you describe I'd probably define a BinarySemaphore
+extension that not only adds the uninterruptible acquire (as you
+describe - though realising that if interrupts do occur then ordering
+properties may not be preserved) and also sanity checks to make sure
+it really is used as a binary semaphore.
+
+David Holmes
+
+
+From rganesan-l@myrealbox.com  Wed Jan  8 04:41:40 2003
+From: rganesan-l@myrealbox.com (rganesan-l@myrealbox.com)
+Date: 08 Jan 2003 10:11:40 +0530
+Subject: [concurrency-interest] A couple of questions JSR 166 ThreadExecutor and ScheduledExecutor
+In-Reply-To: <15898.54296.290752.604148@altair.cs.oswego.edu>
+References: <ouptr9p1h3.fsf@andlx-anamika.cisco.com>
+ <15898.54296.290752.604148@altair.cs.oswego.edu>
+Message-ID: <ouadicp81n.fsf@andlx-anamika.cisco.com>
+
+>>>>> "Doug" == Doug Lea <dl@cs.oswego.edu> writes:
+
+> Ganesan (who ought to subscribe to this list so I don't have to manually
+> process posts :-) wrote:
+
+Sorry! I am subscribed, but with a different address :-). I have been
+trying to tweak my news reader (gnus) to set the alternate address
+automatically for me. Since that appears to broken, I have set it
+manually this time :-). 
+
+> Also, if your main goal here is to deal with cancellability, consider
+> using FutureTasks, that will cancel even if a task has started.
+
+Interesting. Does the FutureTask.cancel() remove itself from the queue of
+it's Executor (assuming the task not running already?). At first glance this
+doesn't appear to be the case for ThreadExecutor (it only takes a Runnable).
+ScheduledExecutor on the other hand does seem to be aware of Cancellable,
+but it's still not clear whether the Task never gets scheduled or just
+refuses to run when scheduled.
+
+>> Second, I don't understand why the ScheduledExecutor is, well, a
+>> ThreadExecutor. It makes more sense if a Scheduler take a ThreadExecutor 
+>> as an argument. A Scheduler needs at least one thread to send off events for
+>> execution. That thread can simply submit jobs to the ThreadExecutor passed
+>> to it on initialization. 
+
+> There are two ways to set up this kind of system. One is, as you say,
+> to have a separate scheduler thread passing in items to a
+> ThreadExecutor. You can do this yourself easily enough. 
+
+Okay.
+
+> The other is simply to use a DelayQueue as the task queue in a
+> ThreadExecutor.  You cannot set this up yourself very easily though
+> because there is some internal communication needed between executors and
+> delay queues to manage periodic tasks. ScheduledExecutor does exactly this
+> -- it arranges the internal coordination, and then exposes the
+> task-submission methods. So you cannot pass in your own queue, so it
+> cannot take the same set of constructors as ThreadExecutor.
+
+I see. I wasn't aware of DelayedQueues. I kind assumed that there was a
+separate scheduler thread. Does this mean that I should consider
+ScheduledExecutor.getQueue() practically read-only?
+
+I now understand the rationale for ScheduleExecutor. What happens when I
+call ScheduledExecutor.newCachedThreadPool()? Do I get a ThreadExecutor or a
+ScheduledExecutor? In other words, does ScheduledExecutor override the
+factory methods in ThreadExecutor? If this is the case, I get exactly what I
+need (a common thread pool for all my asynchronous tasks).
+
+If not, I'll have to hookup java.util.timer with a ThreadExecutor to get the
+job done. There will be two context switches for a job though :-(, but I
+guess that's better than two different thread pools in my application.
+
+>> And finally, when can we see the promised util.concurrent implementation
+>> based on the draft :-). The draft is sufficiently different from the current
+>> releases of util.concurrent that I am hesistant to continue using the
+>> current API.
+
+> We are working hard at this. We are running a little behind initial
+> estimates. Please be patient :-)
+
+Okay :-). Some of the API docs seem to indicate that the javadocs are
+generated from code using generics. I hope the initial draft will not
+require the generics compiler. I like generics but I'd like to try out the
+APIs with non-generics capable JDKs initially. 
+
+Ganesan
+
+-- 
+Ganesan R
+
+
+From dl@cs.oswego.edu  Thu Jan  9 00:13:09 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Wed, 8 Jan 2003 19:13:09 -0500
+Subject: [concurrency-interest] A couple of questions JSR 166 ThreadExecutor and ScheduledExecutor
+In-Reply-To: <ouadicp81n.fsf@andlx-anamika.cisco.com>
+References: <ouptr9p1h3.fsf@andlx-anamika.cisco.com>
+ <15898.54296.290752.604148@altair.cs.oswego.edu>
+ <ouadicp81n.fsf@andlx-anamika.cisco.com>
+Message-ID: <15900.48789.426891.708177@altair.cs.oswego.edu>
+
+
+Ganesan wrote:
+
+> Interesting. Does the FutureTask.cancel() remove itself from the queue of
+> it's Executor (assuming the task not running already?). At first glance this
+> doesn't appear to be the case for ThreadExecutor (it only takes a Runnable).
+> ScheduledExecutor on the other hand does seem to be aware of Cancellable,
+> but it's still not clear whether the Task never gets scheduled or just
+> refuses to run when scheduled.
+
+Cancelled tasks do NOT automatically get dequeued in ThreadExecutor,
+they just refuse to run.  There is nothing that precludes making
+special versions of Futures/tasks that would do automatically do this,
+but the statndard FutureTasks do not.  (They'd need to keep track of
+which queue they were in, which in general is not something we want to
+require.)
+
+> I see. I wasn't aware of DelayedQueues. I kind assumed that there was a
+> separate scheduler thread. Does this mean that I should consider
+> ScheduledExecutor.getQueue() practically read-only?
+
+No, you can still call delayq.remove(task), and it will remove it if
+it is not already removed/running.
+
+> I now understand the rationale for ScheduleExecutor. What happens when I
+> call ScheduledExecutor.newCachedThreadPool()? Do I get a ThreadExecutor or a
+> ScheduledExecutor? In other words, does ScheduledExecutor override the
+> factory methods in ThreadExecutor? If this is the case, I get exactly what I
+> need (a common thread pool for all my asynchronous tasks).
+
+Thanks for a very good question! We will figure this out and
+fix the spec to say the right thing, whatever that might be...
+
+-Doug
+
+From Darron_Shaffer_TW@stercomm.com  Mon Jan 13 15:02:34 2003
+From: Darron_Shaffer_TW@stercomm.com (Shaffer, Darron (SCI TW))
+Date: Mon, 13 Jan 2003 09:02:34 -0600
+Subject: [concurrency-interest] Feature request
+Message-ID: <D0E281E7D3C7164399488D7AD8BEEFEB0EE3C1@scidalmsg02.csg.stercomm.com>
+
+I'd like to request that java.util.Collections.synchronizedMap() be modified
+to return a ConcurrentMap.
+
+Once synchronization is assumed, the putIfAbsent method can be quite useful.
+
+Since ConcurrentMap extends Map this should not break existing code.
+
+Darron J Shaffer
+Sterling Commerce
+(Midwest Consulting Group)
+469-524-2764
+
+From joshua.bloch@sun.com  Wed Jan 15 02:50:59 2003
+From: joshua.bloch@sun.com (Joshua Bloch)
+Date: Tue, 14 Jan 2003 18:50:59 -0800
+Subject: [concurrency-interest] Feature request
+References: <D0E281E7D3C7164399488D7AD8BEEFEB0EE3C1@scidalmsg02.csg.stercomm.com>
+Message-ID: <3E24CC93.2040308@sun.com>
+
+Darron,
+
+    Seems like a reasonable enough request.
+
+             Josh
+
+Shaffer, Darron (SCI TW) wrote:
+
+>I'd like to request that java.util.Collections.synchronizedMap() be modified
+>to return a ConcurrentMap.
+>
+>Once synchronization is assumed, the putIfAbsent method can be quite useful.
+>
+>Since ConcurrentMap extends Map this should not break existing code.
+>
+>Darron J Shaffer
+>Sterling Commerce
+>(Midwest Consulting Group)
+>469-524-2764
+>_______________________________________________
+>Concurrency-interest mailing list
+>Concurrency-interest@altair.cs.oswego.edu
+>http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>  
+>
+
+
+
+
+From Costin.Cozianu@tabs.toshiba.com  Wed Jan 22 00:52:54 2003
+From: Costin.Cozianu@tabs.toshiba.com (Costin.Cozianu@tabs.toshiba.com)
+Date: Tue, 21 Jan 2003 16:52:54 -0800
+Subject: [concurrency-interest] Feature request: Serializable queues
+Message-ID: <OF821265E8.8F13AB33-ON88256CB6.0002C325@tais.net>
+
+Dear all,
+
+First let me thank Doug Lea for the wonderful book and the wonderful
+package that made my life a bit easier.
+
+Here is my problem: I need to be able to serialize a Queue, for the purpose
+of doing some transactional work.
+Basically the queue prioritizes some operations that needed to be executed
+serially and FIFO, plus needed to survive both abrupt shutdown,
+and graceful shutdown. Because I store operations in the Queue and in no
+other place I need to be able to serialize the Queue itself.
+
+The implementation that I had chose was SingleListQueue, however this can
+apply to other implementations.
+Basically it can be made Serializable for almost free, and it may be useful
+to others in similar situation.
+
+
+So what do you think ? Is it worth puting this feature in the main package
+?
+
+If yes, I can volunteer some diffs, and  I have to disclose that the first
+beneficiary would be me :)
+
+
+Best regards,
+Costin Cozianu
+costin.cozianu@tabs.toshiba.com
+
+
+
+From dl@cs.oswego.edu  Wed Jan 22 01:37:03 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Tue, 21 Jan 2003 20:37:03 -0500
+Subject: [concurrency-interest] Feature request: Serializable queues
+In-Reply-To: <OF821265E8.8F13AB33-ON88256CB6.0002C325@tais.net>
+References: <OF821265E8.8F13AB33-ON88256CB6.0002C325@tais.net>
+Message-ID: <15917.62911.297424.128353@altair.cs.oswego.edu>
+
+Costin.Cozianu wrote:
+
+>  Because I store operations in the Queue and in no
+> other place I need to be able to serialize the Queue itself
+
+The java.util.concurrent versions of standard Queue implementations
+WILL be Serializable.
+
+And to answer your next question :-) My best estimate is that we
+will have the preliminary release of j.u.c versions (without the
+new native support features) sometime in March.
+
+-Doug
+
+From dl@cs.oswego.edu  Thu Jan 30 12:21:58 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Thu, 30 Jan 2003 07:21:58 -0500
+Subject: [concurrency-interest] Extending Executors
+Message-ID: <15929.6374.269341.25426@altair.cs.oswego.edu>
+
+Dear concurrency-interest list members,
+
+We (the JSR166 expert group) are almost done solidifying APIs for
+JSR166, but have some remaining concerns and disagreements about
+whether we have put in the right kind and amount of extensibility and
+tuning support for the Executor framework. We need your help!
+
+If you have subclassed dl.u.c.PooledExecutor or any other thread-pool
+class/framework, or used some of the tuning methods, or wanted to do
+something along these lines but couldn't or didn't see how, we'd
+greatly appreciate it if you could take a few minutes and figure out
+how you would express this design using the j.u.c.Executor framework
+under the current snapshot APIs at:
+  http://gee.cs.oswego.edu/dl/concurrent/dist/docs/index.html
+And tell us if you foresee any problems, and answer the questions
+below.
+
+(Note: There are a couple of refactorings to these APIs that we are
+already committed to but haven't posted. They don't much impact
+current questions though.)
+
+Some background: ThreadExecutor, the main concrete Thread pool etc
+implementation, is designed to nearly eliminate the need for
+subclassing to obtain common extensions.  Instead, you can define
+customized ExecutorIntercepts that can perform special actions at any
+or all of five points: newThread, beforeExecute, afterExecute,
+cannotExecute, terminated.  ExecutorIntercepts are construction-time
+only parameters. You cannot change them dynamically.  You might use
+beforeExecute to perform logging, or the combination of before and
+after to measure execution time, and so on, in a (roughly)
+aspect-oriented style.
+
+Additionally, there are a few other access and tuning methods in the
+ThreadExecutor class (for example statistics gathering) that eliminate
+some common reasons people subclassed dl.u.c versions.
+
+Question 1:
+   Do you need to do anything that is not covered by this approach? 
+
+Sample answer: you might want to compose several different actions in
+beforeExecute etc. We don't supply a way do do this. You can set this
+up yourself though.  For example, you can create a
+ComposableExecutorIntercepts class and use it. Or you could similarly
+make a class that establishes javabeans style listeners that are
+notified on any or all actions.  And so on.  But while these are all
+possible, they are not too convenient under current framework.
+
+The second issue is about how this is factored. ExecutorIntercepts
+collects five different actions. And one of them, cannotExecute
+encompasses two different kinds of cases (blocked execution due to
+saturation and attempts to execute after shutdown).  So,
+ExecutorIntercepts is combination of two methods that act as
+single-socket "plugins" -- newThread and cannotExecute, plus the other
+three that are often used in an event-like manner.
+
+Question 2:
+  Does this packaging of the different kinds of intercepts impede use? 
+
+Sample answer: the dl.u.c.PooledExecutor support for pluggable
+blocked-execution handlers isn't done so nicely in j.u.c version. For
+example there isn't a "discardWhenBlocked" method or handler; instead
+you'd need to create a customized ExecutorIntercepts class. We can add
+some conveniences to alleviate this, but it will still be a bit more
+awkward.
+
+Another: It is inelegant that only one of the ExecutorIntercepts
+methods, newThread, is also broken out in its own interface
+(ThreadFactory). We did this because ThreadFactory is occasionally
+needed in contexts outside of Executors. This also makes the signature
+of newThread a little weird so that it can apply whether or not you
+have an Executor. Beyond being a little weird, are there any problems?
+
+Another: Maybe you need to independently deal with the two cases
+covered by cannotExecute?
+
+The next one is about signatures.
+
+Question 3:
+  Is it a problem in defining intercepts that Executor.execute 
+  cannot throw InterruptedException?
+
+The dl.u.c version does throw IE, because it is possible that to use a
+blocked execution policy that entails waiting, which should be aborted
+upon interruption.  People complained that it is annoying to have to
+catch exceptions in all the other configurations in which the
+exception would never be thrown.  But as a consequence, if you do need
+such a policy, you must either devise some convoluted handling scheme,
+or more typically, escalate InterruptedException into an unchecked
+RuntimeException. Is this a prectical problem for you?
+
+The next issue is about parameterization.  ExecutorIntercepts is
+designed so that you can use the same ExecutorIntercepts across
+several Executors (thus, the Executor object is sent as an argument to
+each method). This lets you set a common policy across executors.
+
+Question 4:
+  Should ExecutorIntercepts instead be executor-specific?
+
+Sample problem: In current version, you may end up doing lots of
+casts (of the Executor), creating tables to track particular
+executors, and use other awkward constructions that wouldn't be
+necessary in other approaches. On the other hand, none of the
+alternatives we have considered are signficiantly easier to use.
+
+The next one is about dynamic changes in policy. Currently, you only
+get one chance, during construction, to set policies for an
+executor. There are two reasons for this. First, allowing changes
+invites errors and misbehavior, when for example you change them
+between a call to beforeExecute and afterExecute that must be paired.
+Second, making them final construction-only parameters means that they
+are very easy for compilers to completely optimize away if you don't
+use them.
+
+Question 5:
+  Do you need to do anything that argues for allowing the
+  ExecutorIntercepts being used by an Executor to be changed 
+  (via a setIntercepts method) while the executor is running? 
+
+Sample problem: You might want to perform logging only after some
+initial startup period. 
+
+The next question is on naming. 
+
+Question 6:
+  Is there a better name than ExecutorIntercepts?
+
+Some people think the name sounds too imposing and exotic.
+Possible replacements are ExecutorHooks, ExecutorCallbacks.
+
+And the final question is whether we should do this at all:
+
+Question 7:
+  Does this approach cause more problems than it solves?
+  
+In other words, would you be happier to subclass versions of
+ThreadExecutor and related classes? Would you want to subclass anyway,
+despite the support? Would you prefer instead a set of protected
+beforeExecute, etc methods in Executor itself so that you could override
+them in subclasses?
+
+Additionally, it is possible to replace beforeExecute and afterExecute
+with simple task wrappers, as in:
+  execute(new Runnable() { public void run() {
+    before(); action(); after(); }});
+So these aren't strictly needed in the Executor if you can somehow
+make sure that all tasks are wrapped before being executed.  Is it
+worth it to have the ExecutorIntercepts class to get the guarantee
+that all tasks will hiot before/after code, not just the wrapped ones?
+
+Thanks again for helping us out!
+
+-- 
+Doug Lea, Computer Science Department, SUNY Oswego, Oswego, NY 13126 USA
+dl@cs.oswego.edu 315-312-2688 FAX:315-312-5424 http://gee.cs.oswego.edu/  
+
+From miles@milessabin.com  Thu Jan 30 13:00:56 2003
+From: miles@milessabin.com (Miles Sabin)
+Date: Thu, 30 Jan 2003 13:00:56 +0000
+Subject: [concurrency-interest] Extending Executors
+In-Reply-To: <15929.6374.269341.25426@altair.cs.oswego.edu>
+References: <15929.6374.269341.25426@altair.cs.oswego.edu>
+Message-ID: <200301301300.56353.miles@milessabin.com>
+
+Doug Lea wrote,
+> Question 7:
+>   Does this approach cause more problems than it solves?
+>
+> In other words, would you be happier to subclass versions of
+> ThreadExecutor and related classes? Would you want to subclass
+> anyway, despite the support? Would you prefer instead a set of
+> protected beforeExecute, etc methods in Executor itself so that you
+> could override them in subclasses?
+
+I think that in practice I would probably be tempted to encapsulate both 
+the pool and the intercepts in a single class. In which case I think it 
+would make life marginally easier if the ExecutorIntercepts methods 
+were directly defined protected on ThreadExecutor itself.
+
+Cheers,
+
+
+Miles
+
+From Darron_Shaffer_TW@stercomm.com  Thu Jan 30 15:34:58 2003
+From: Darron_Shaffer_TW@stercomm.com (Shaffer, Darron (SCI TW))
+Date: Thu, 30 Jan 2003 09:34:58 -0600
+Subject: [concurrency-interest] Extending Executors
+Message-ID: <D0E281E7D3C7164399488D7AD8BEEFEB0EE3DF@scidalmsg02.csg.stercomm.com>
+
+For the most part, I like this version of the ThreadedExector.
+
+> Question 1:
+>   Do you need to do anything that is not covered by this approach? 
+
+Yes.  
+
+a) If I wish to treat several ThreadExecutor's as one thread pool. Assume a
+binary-only library uses a thread pool but allows you to provide a policy
+object.  If the extension method is a ThreadedExecutor factory, I may be
+able to provide the same ThreadedExecutor to multiple clients.
+
+b) Consider what failures should be reportable from the intercept functions,
+with special handling by the ThreadedExecutor:
+
+   newThread() -- the system is busy, no new thread due to throttling.
+Perhaps the task should be placed back into the queue, to be run on an
+existing thread.
+
+> Question 2:
+>  Does this packaging of the different kinds of intercepts impede use? 
+
+No.  In fact, packaging the policy in a single object makes it easy for a
+block of code to accept policy decisions from client code.
+
+It might be a little more elegant to split cannotExecute() into two methods.
+
+>Question 3:
+>  Is it a problem in defining intercepts that Executor.execute 
+>  cannot throw InterruptedException?
+
+No.  I think this is a good compromise -- make the common case easy, and the
+other case possible.
+
+> Questions 4, 5, 6.
+
+No strong opinion.
+
+> Question 7:
+>   Does this approach cause more problems than it solves?
+
+No.  Having any standard mechanism makes it more likely for libraries to
+expose a mechanism.
+
+Darron Shaffer
+
+From blanshlu@netscape.net  Thu Jan 30 16:24:43 2003
+From: blanshlu@netscape.net (Luke Blanshard)
+Date: Thu, 30 Jan 2003 11:24:43 -0500
+Subject: [concurrency-interest] Extending Executors
+Message-ID: <4D61CC25.756706E2.00948489@netscape.net>
+
+Doug Lea <dl@cs.oswego.edu> wrote:
+
+>   Do you need to do anything that is not covered by this approach? 
+
+No.
+
+>  Does this packaging of the different kinds of intercepts impede use? 
+
+No.
+
+>  Is it a problem in defining intercepts that Executor.execute 
+>  cannot throw InterruptedException?
+
+I would say it's a problem that Executor.execute is defined without an "out".  There is nothing in the specification for the method that gives a clue that it might fail to execute the command.  But rather than declare it to throw InterruptedException, I'd suggest defining a new runtime exception, e.g. CommandNotExecutedException, and adding that to the method's specification.  That way the simple case doesn't have to do anything special to use an Executor, and the complicated case has a standard way to indicate failure.
+
+
+>  Should ExecutorIntercepts instead be executor-specific?
+
+If you added one more method to ExecutorIntercepts, I think you could have it both ways.  A method that was called when the executor was created would give the intercepts object a chance to reject being used for more than one executor, to ensure that its executor is of the right class, and to do a single cast and cache the result.
+
+
+>  Do you need to do anything that argues for allowing the
+>  ExecutorIntercepts being used by an Executor to be changed 
+>  (via a setIntercepts method) while the executor is running? 
+
+No, and I think this would be a mistake.  Let the intercepts object modify its own behavior if need be.
+
+If you really wanted to enable swapping of intercepts, you might consider supplying an intercepts implementation that delegates to another intercepts object, and provide a way to modify the delegate.
+
+>  Is there a better name than ExecutorIntercepts?
+>
+>Some people think the name sounds too imposing and exotic.
+>Possible replacements are ExecutorHooks, ExecutorCallbacks.
+
+I think either of these replacements would be more evocative for me.  But I can live with the imposing, exotic name.
+
+
+>  Does this approach cause more problems than it solves?
+
+No, I like the approach.
+
+
+>Additionally, it is possible to replace beforeExecute and afterExecute
+>with simple task wrappers, as in:
+>  execute(new Runnable() { public void run() {
+>    before(); action(); after(); }});
+
+Yeah, but it's hard to get this right -- to guarantee that after() is always called, and so on.
+
+
+Luke
+
+__________________________________________________________________
+The NEW Netscape 7.0 browser is now available. Upgrade now! http://channels.netscape.com/ns/browsers/download.jsp 
+
+Get your own FREE, personal Netscape Mail account today at http://webmail.netscape.com/
+
+From kregan@amazon.com  Thu Jan 30 18:45:03 2003
+From: kregan@amazon.com (Regan, Kevin)
+Date: Thu, 30 Jan 2003 10:45:03 -0800
+Subject: [concurrency-interest] Question about ThreadExecutor...
+Message-ID: <32E915AF61D33346B5C80A9707C3DD440288114E@ex-mail-02.ant.amazon.com>
+
+This is a multi-part message in MIME format.
+
+------_=_NextPart_001_01C2C88F.B3336A88
+Content-Type: text/plain;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+
+Hi,
+
+I have a JMS process that has a single thread grabbing requests and =
+putting them on the thread pool.  What I would like to happen is have =
+that thread stop grabbing JMS requests when all the workers are busy.  =
+For example, if there are 100 worker threads and the JMS listener has =
+just added the 150th element to the queue, it would be great if I could =
+get that listener thread to block until the queue gets down to, say, 50 =
+elements.  Is there any way to accomplish this with the concurrent =
+library?
+
+Thanks!
+Kevin Regan
+kregan@amazon.com
+
+
+------_=_NextPart_001_01C2C88F.B3336A88
+Content-Type: text/html;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<HTML>
+<HEAD>
+<META HTTP-EQUIV=3D"Content-Type" CONTENT=3D"text/html; =
+charset=3Dus-ascii">
+<META NAME=3D"Generator" CONTENT=3D"MS Exchange Server version =
+6.0.6249.1">
+<TITLE>Question about ThreadExecutor...</TITLE>
+</HEAD>
+<BODY>
+<!-- Converted from text/rtf format -->
+<BR>
+
+<P ALIGN=3DLEFT><SPAN LANG=3D"en-us"><FONT SIZE=3D2 =
+FACE=3D"Arial">Hi,</FONT></SPAN></P>
+
+<P ALIGN=3DLEFT><SPAN LANG=3D"en-us"><FONT SIZE=3D2 FACE=3D"Arial">I =
+have a JMS process that has a single thread grabbing requests and =
+putting them on the thread pool.&nbsp; What I would like to happen is =
+have that thread stop grabbing JMS requests when all the workers are =
+busy.&nbsp; For example, if there are 100 worker threads and the JMS =
+listener has just added the 150</FONT></SPAN><SPAN =
+LANG=3D"en-us"></SPAN><SPAN LANG=3D"en-us"><SUP><FONT SIZE=3D2 =
+FACE=3D"Arial">th</FONT></SUP></SPAN><SPAN LANG=3D"en-us"></SPAN><SPAN =
+LANG=3D"en-us"><FONT SIZE=3D2 FACE=3D"Arial"></FONT></SPAN><SPAN =
+LANG=3D"en-us"></SPAN><SPAN LANG=3D"en-us"> <FONT SIZE=3D2 =
+FACE=3D"Arial">element to the queue, it would be great if I could get =
+that listener thread to block until the queue gets down to, say, 50 =
+elements.&nbsp; Is there any way to accomplish this with the concurrent =
+library?</FONT></SPAN></P>
+
+<P ALIGN=3DLEFT><SPAN LANG=3D"en-us"><FONT SIZE=3D2 =
+FACE=3D"Arial">Thanks!</FONT></SPAN></P>
+
+<P ALIGN=3DLEFT><SPAN LANG=3D"en-us"><FONT SIZE=3D2 FACE=3D"Arial">Kevin =
+Regan</FONT></SPAN></P>
+
+<P ALIGN=3DLEFT><SPAN LANG=3D"en-us"></SPAN><A =
+HREF=3D"mailto:kregan@amazon.com"><SPAN LANG=3D"en-us"></SPAN><SPAN =
+LANG=3D"en-us"><U><FONT COLOR=3D"#0000FF" SIZE=3D2 =
+FACE=3D"Arial">kregan@amazon.com</FONT></U></SPAN><SPAN =
+LANG=3D"en-us"></SPAN></A><SPAN LANG=3D"en-us"></SPAN><SPAN =
+LANG=3D"en-us"></SPAN></P>
+
+</BODY>
+</HTML>
+------_=_NextPart_001_01C2C88F.B3336A88--
+
+From kregan@amazon.com  Thu Jan 30 19:00:59 2003
+From: kregan@amazon.com (Regan, Kevin)
+Date: Thu, 30 Jan 2003 11:00:59 -0800
+Subject: [concurrency-interest] Question about ThreadExecutor...
+Message-ID: <32E915AF61D33346B5C80A9707C3DD4402881152@ex-mail-02.ant.amazon.com>
+
+This is a multi-part message in MIME format.
+
+------_=_NextPart_001_01C2C891.ED351F90
+Content-Type: text/plain;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+=20
+
+I guess, more specifically, I would like the behavior of the =
+ThreadExecutor.newFixedThreadPool(), but with the JMS request listener =
+thread blocking if it calls execute() when the queue has "too many" =
+elements in it.
+
+=20
+
+Thanks again!
+
+Kevin Regan
+
+kregan@amazon.com
+
+=20
+
+-----Original Message-----
+From: Regan, Kevin=20
+Sent: Thursday, January 30, 2003 10:45 AM
+To: concurrency-interest@altair.cs.oswego.edu
+Subject: [concurrency-interest] Question about ThreadExecutor...
+
+=20
+
+=20
+
+Hi,
+
+I have a JMS process that has a single thread grabbing requests and =
+putting them on the thread pool.  What I would like to happen is have =
+that thread stop grabbing JMS requests when all the workers are busy.  =
+For example, if there are 100 worker threads and the JMS listener has =
+just added the 150th element to the queue, it would be great if I could =
+get that listener thread to block until the queue gets down to, say, 50 =
+elements.  Is there any way to accomplish this with the concurrent =
+library?
+
+Thanks!
+
+Kevin Regan
+
+kregan@amazon.com <mailto:kregan@amazon.com>=20
+
+
+------_=_NextPart_001_01C2C891.ED351F90
+Content-Type: text/html;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+
+<head>
+<META HTTP-EQUIV=3D"Content-Type" CONTENT=3D"text/html; =
+charset=3Dus-ascii">
+
+
+<meta name=3DGenerator content=3D"Microsoft Word 10 (filtered)">
+<title>Question about ThreadExecutor...</title>
+
+<style>
+<!--
+ /* Font Definitions */
+ @font-face
+	{font-family:Tahoma;
+	panose-1:2 11 6 4 3 5 4 4 2 4;}
+ /* Style Definitions */
+ p.MsoNormal, li.MsoNormal, div.MsoNormal
+	{margin:0in;
+	margin-bottom:.0001pt;
+	font-size:12.0pt;
+	font-family:"Times New Roman";}
+a:link, span.MsoHyperlink
+	{color:blue;
+	text-decoration:underline;}
+a:visited, span.MsoHyperlinkFollowed
+	{color:blue;
+	text-decoration:underline;}
+p
+	{margin-right:0in;
+	margin-left:0in;
+	font-size:12.0pt;
+	font-family:"Times New Roman";}
+span.EmailStyle18
+	{font-family:Arial;
+	color:navy;}
+@page Section1
+	{size:8.5in 11.0in;
+	margin:1.0in 1.25in 1.0in 1.25in;}
+div.Section1
+	{page:Section1;}
+-->
+</style>
+
+</head>
+
+<body lang=3DEN-US link=3Dblue vlink=3Dblue>
+
+<div class=3DSection1>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<!-- Converted from text/rtf format -->
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>I guess, more specifically, I would =
+like
+the behavior of the ThreadExecutor.newFixedThreadPool(), but with the =
+JMS
+request listener thread blocking if it calls execute() when the queue =
+has &#8220;too
+many&#8221; elements in it.</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Thanks again!</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Kevin Regan</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>kregan@amazon.com</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+face=3DTahoma><span
+style=3D'font-size:10.0pt;font-family:Tahoma'>-----Original =
+Message-----<br>
+<b><span style=3D'font-weight:bold'>From:</span></b> Regan, Kevin <br>
+<b><span style=3D'font-weight:bold'>Sent:</span></b> Thursday, January =
+30, 2003
+10:45 AM<br>
+<b><span style=3D'font-weight:bold'>To:</span></b>
+concurrency-interest@altair.cs.oswego.edu<br>
+<b><span style=3D'font-weight:bold'>Subject:</span></b> =
+[concurrency-interest]
+Question about ThreadExecutor...</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+<p style=3D'margin-left:.5in'><font size=3D2 face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial'>Hi,</span></font></p>
+
+<p style=3D'margin-left:.5in'><font size=3D2 face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial'>I have a JMS process that has a single thread
+grabbing requests and putting them on the thread pool.&nbsp; What I =
+would like
+to happen is have that thread stop grabbing JMS requests when all the =
+workers
+are busy.&nbsp; For example, if there are 100 worker threads and the JMS
+listener has just added the 150<sup>th</sup></span></font> <font =
+size=3D2
+face=3DArial><span style=3D'font-size:10.0pt;font-family:Arial'>element =
+to the
+queue, it would be great if I could get that listener thread to block =
+until the
+queue gets down to, say, 50 elements.&nbsp; Is there any way to =
+accomplish this
+with the concurrent library?</span></font></p>
+
+<p style=3D'margin-left:.5in'><font size=3D2 face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial'>Thanks!</span></font></p>
+
+<p style=3D'margin-left:.5in'><font size=3D2 face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial'>Kevin Regan</span></font></p>
+
+<p style=3D'margin-left:.5in'><font size=3D3 face=3D"Times New =
+Roman"><span
+style=3D'font-size:12.0pt'><a href=3D"mailto:kregan@amazon.com"><font =
+size=3D2
+face=3DArial><span =
+style=3D'font-size:10.0pt;font-family:Arial'>kregan@amazon.com</span></fo=
+nt></a></span></font></p>
+
+</div>
+
+</body>
+
+</html>
+=00
+------_=_NextPart_001_01C2C891.ED351F90--
+
+From kregan@amazon.com  Thu Jan 30 19:05:58 2003
+From: kregan@amazon.com (Regan, Kevin)
+Date: Thu, 30 Jan 2003 11:05:58 -0800
+Subject: [concurrency-interest] Question about ThreadExecutor...
+Message-ID: <32E915AF61D33346B5C80A9707C3DD4402881153@ex-mail-02.ant.amazon.com>
+
+This is a multi-part message in MIME format.
+
+------_=_NextPart_001_01C2C892.9F33AEA0
+Content-Type: text/plain;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+=20
+
+Would the following accomplish this:
+
+=20
+
+int numThreads =3D 100;
+
+int maximumQueueSize =3D 50;
+
+Executor executor =3D ThreadExecutor(numThreads, numThreads, 0, null, =
+new ArrayBlockingQueue(maximumQueueSize), new ExecutorIntercepts());
+
+=20
+
+Would this do what I want (ThreadExecutor.newFixedThreadPool()) and also =
+cause the Executor.execute() method to block if the queue had 50 =
+elements waiting on it?
+
+=20
+
+Thanks again (and sorry for the SPAM).
+
+Kevin Regan
+
+kregan@amazon.com
+
+=20
+
+-----Original Message-----
+From: Regan, Kevin=20
+Sent: Thursday, January 30, 2003 11:01 AM
+To: Regan, Kevin; concurrency-interest@altair.cs.oswego.edu
+Subject: RE: [concurrency-interest] Question about ThreadExecutor...
+
+=20
+
+=20
+
+I guess, more specifically, I would like the behavior of the =
+ThreadExecutor.newFixedThreadPool(), but with the JMS request listener =
+thread blocking if it calls execute() when the queue has "too many" =
+elements in it.
+
+=20
+
+Thanks again!
+
+Kevin Regan
+
+kregan@amazon.com
+
+=20
+
+-----Original Message-----
+From: Regan, Kevin=20
+Sent: Thursday, January 30, 2003 10:45 AM
+To: concurrency-interest@altair.cs.oswego.edu
+Subject: [concurrency-interest] Question about ThreadExecutor...
+
+=20
+
+=20
+
+Hi,
+
+I have a JMS process that has a single thread grabbing requests and =
+putting them on the thread pool.  What I would like to happen is have =
+that thread stop grabbing JMS requests when all the workers are busy.  =
+For example, if there are 100 worker threads and the JMS listener has =
+just added the 150th element to the queue, it would be great if I could =
+get that listener thread to block until the queue gets down to, say, 50 =
+elements.  Is there any way to accomplish this with the concurrent =
+library?
+
+Thanks!
+
+Kevin Regan
+
+kregan@amazon.com <mailto:kregan@amazon.com>=20
+
+
+------_=_NextPart_001_01C2C892.9F33AEA0
+Content-Type: text/html;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2//EN">
+<html>
+
+<head>
+<meta http-equiv=3DContent-Type content=3D"text/html; =
+charset=3Dus-ascii">
+<meta name=3DGenerator content=3D"Microsoft Word 10 (filtered)">
+<title>Question about ThreadExecutor...</title>
+
+<style>
+<!--
+ /* Font Definitions */
+ @font-face
+	{font-family:Tahoma;
+	panose-1:2 11 6 4 3 5 4 4 2 4;}
+ /* Style Definitions */
+ p.MsoNormal, li.MsoNormal, div.MsoNormal
+	{margin:0in;
+	margin-bottom:.0001pt;
+	font-size:12.0pt;
+	font-family:"Times New Roman";}
+a:link, span.MsoHyperlink
+	{color:blue;
+	text-decoration:underline;}
+a:visited, span.MsoHyperlinkFollowed
+	{color:blue;
+	text-decoration:underline;}
+p
+	{margin-right:0in;
+	margin-left:0in;
+	font-size:12.0pt;
+	font-family:"Times New Roman";}
+span.emailstyle18
+	{font-family:Arial;
+	color:navy;}
+span.EmailStyle19
+	{font-family:Arial;
+	color:navy;}
+@page Section1
+	{size:8.5in 11.0in;
+	margin:1.0in 1.25in 1.0in 1.25in;}
+div.Section1
+	{page:Section1;}
+-->
+</style>
+
+</head>
+
+<body lang=3DEN-US link=3Dblue vlink=3Dblue>
+
+<div class=3DSection1>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Would the following accomplish =
+this:</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>int numThreads =3D =
+100;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>int maximumQueueSize =3D =
+50;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Executor executor =3D =
+ThreadExecutor(numThreads,
+numThreads, 0, null, new ArrayBlockingQueue(maximumQueueSize), new =
+ExecutorIntercepts());</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Would this do what I want =
+(ThreadExecutor.newFixedThreadPool())
+and also cause the Executor.execute() method to block if the queue had =
+50
+elements waiting on it?</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Thanks again (and sorry for the =
+SPAM).</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Kevin Regan</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>kregan@amazon.com</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+face=3DTahoma><span
+style=3D'font-size:10.0pt;font-family:Tahoma'>-----Original =
+Message-----<br>
+<b><span style=3D'font-weight:bold'>From:</span></b> Regan, Kevin <br>
+<b><span style=3D'font-weight:bold'>Sent:</span></b> Thursday, January =
+30, 2003
+11:01 AM<br>
+<b><span style=3D'font-weight:bold'>To:</span></b> Regan, Kevin;
+concurrency-interest@altair.cs.oswego.edu<br>
+<b><span style=3D'font-weight:bold'>Subject:</span></b> RE:
+[concurrency-interest] Question about =
+ThreadExecutor...</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dnavy face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;color:navy'>&nbsp;</span></fo=
+nt></p>
+
+<!-- Converted from text/rtf format -->
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dnavy face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;color:navy'>I guess, more
+specifically, I would like the behavior of the
+ThreadExecutor.newFixedThreadPool(), but with the JMS request listener =
+thread
+blocking if it calls execute() when the queue has &#8220;too many&#8221;
+elements in it.</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dnavy face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;color:navy'>&nbsp;</span></fo=
+nt></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dnavy face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;color:navy'>Thanks =
+again!</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dnavy face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;color:navy'>Kevin =
+Regan</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dnavy face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;color:navy'>kregan@amazon.com=
+</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dnavy face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;color:navy'>&nbsp;</span></fo=
+nt></p>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+face=3DTahoma><span
+style=3D'font-size:10.0pt;font-family:Tahoma'>-----Original =
+Message-----<br>
+<b><span style=3D'font-weight:bold'>From:</span></b> Regan, Kevin <br>
+<b><span style=3D'font-weight:bold'>Sent:</span></b> Thursday, January =
+30, 2003
+10:45 AM<br>
+<b><span style=3D'font-weight:bold'>To:</span></b>
+concurrency-interest@altair.cs.oswego.edu<br>
+<b><span style=3D'font-weight:bold'>Subject:</span></b> =
+[concurrency-interest]
+Question about ThreadExecutor...</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+<p style=3D'margin-left:1.0in'><font size=3D2 face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial'>Hi,</span></font></p>
+
+<p style=3D'margin-left:1.0in'><font size=3D2 face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial'>I have a JMS process that has a single thread
+grabbing requests and putting them on the thread pool.&nbsp; What I =
+would like
+to happen is have that thread stop grabbing JMS requests when all the =
+workers
+are busy.&nbsp; For example, if there are 100 worker threads and the JMS
+listener has just added the 150<sup>th</sup></span></font> <font =
+size=3D2
+face=3DArial><span style=3D'font-size:10.0pt;font-family:Arial'>element =
+to the
+queue, it would be great if I could get that listener thread to block =
+until the
+queue gets down to, say, 50 elements.&nbsp; Is there any way to =
+accomplish this
+with the concurrent library?</span></font></p>
+
+<p style=3D'margin-left:1.0in'><font size=3D2 face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial'>Thanks!</span></font></p>
+
+<p style=3D'margin-left:1.0in'><font size=3D2 face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial'>Kevin Regan</span></font></p>
+
+<p style=3D'margin-left:1.0in'><font size=3D3 face=3D"Times New =
+Roman"><span
+style=3D'font-size:12.0pt'><a href=3D"mailto:kregan@amazon.com"><font =
+size=3D2
+face=3DArial><span =
+style=3D'font-size:10.0pt;font-family:Arial'>kregan@amazon.com</span></fo=
+nt></a></span></font></p>
+
+</div>
+
+</body>
+
+</html>
+=00
+------_=_NextPart_001_01C2C892.9F33AEA0--
+
+From arkin@intalio.com  Thu Jan 30 19:28:41 2003
+From: arkin@intalio.com (Assaf Arkin)
+Date: Thu, 30 Jan 2003 11:28:41 -0800
+Subject: [concurrency-interest] Extending Executors
+In-Reply-To: <15929.6374.269341.25426@altair.cs.oswego.edu>
+Message-ID: <IGEJLEPAJBPHKACOOKHNKEBCDCAA.arkin@intalio.com>
+
+> Question 7:
+>   Does this approach cause more problems than it solves?
+>
+> In other words, would you be happier to subclass versions of
+> ThreadExecutor and related classes? Would you want to subclass anyway,
+> despite the support? Would you prefer instead a set of protected
+> beforeExecute, etc methods in Executor itself so that you could override
+> them in subclasses?
+
+I would like to have multiple instances of ThreadExecutor with different
+policies that are controlled by the constructor of the ThreadExecutor, not
+the application using the ThreadExecutor. Extending an implementation seems
+the most efficient means to achieve this. Different components will either
+select or have a pre-selected ThreadExecutor associated with their thread,
+depending on their needs.
+
+A ThreadExecutor could pick the priority from the current thread, from the
+component associated with the current thread, propagate caller credentials
+to the execution thread, set a timeout for execution, etc. It may have a
+different policy for dealing with errors (e.g. logging the error, discarding
+the component, invoking another component).
+
+However, I would like the thread pool to be shared by multiple instances of
+ThreadExecutor. The thread pool is both a means to throttle use of the CPU,
+and also a mechanism for measuing capacity on the server. If I could have
+all ThreadExecutors share the same thread pool I could have better control
+of the server.
+
+One way to accomplish this is to have an abstract ThreadExecutor, a default
+implementation and a thread association. The application would use a static
+method to obtain the ThreadExecutor, which would obtain the one associated
+with its thread, or the default one if no association exists. The thread
+association could be set to return a customized ThreadExecutor that uses the
+default ThreadExecutor, thus, allowing per-thread executors and a common
+thread pool (or any other combination).
+
+arkin
+
+
+>
+> Additionally, it is possible to replace beforeExecute and afterExecute
+> with simple task wrappers, as in:
+>   execute(new Runnable() { public void run() {
+>     before(); action(); after(); }});
+> So these aren't strictly needed in the Executor if you can somehow
+> make sure that all tasks are wrapped before being executed.  Is it
+> worth it to have the ExecutorIntercepts class to get the guarantee
+> that all tasks will hiot before/after code, not just the wrapped ones?
+>
+> Thanks again for helping us out!
+>
+> --
+> Doug Lea, Computer Science Department, SUNY Oswego, Oswego, NY 13126 USA
+> dl@cs.oswego.edu 315-312-2688 FAX:315-312-5424 http://gee.cs.oswego.edu/
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From jozart@csi.com  Thu Jan 30 19:48:39 2003
+From: jozart@csi.com (Joseph Bowbeer)
+Date: Thu, 30 Jan 2003 11:48:39 -0800
+Subject: [concurrency-interest] Question about ThreadExecutor...
+References: <32E915AF61D33346B5C80A9707C3DD4402881153@ex-mail-02.ant.amazon.com>
+Message-ID: <00aa01c2c898$96431c80$0a0a0a0a@REPLICANT>
+
+This is a multi-part message in MIME format.
+
+------=_NextPart_000_00A7_01C2C855.87D67770
+Content-Type: text/plain;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+Kevin,
+
+If I understand you correctly, you'd also need to choose a cannotExecute =
+impl. that explicitly waited.  (Currently we don't offer any choices =
+except the default and roll-your-own, but we are considering canning =
+some of the most popular choices such as "wait", "error", and "ignore".)
+
+Our current default cannotExecute impl. is to execute the task in the =
+caller's current thread.  Since the goal of your executor is to execute =
+on a specific thread, this policy is not for you. =20
+
+Writing a blocked-execution handler that waits is made more complicated =
+by our intention to remove InterruptedException from the execute() =
+signature.  If we follow-through on this, the "wait" impl. will need to =
+either loop while ignoring interrupts, or throw a RuntimeException (such =
+as CommandCannotExecuteException).
+
+Comments?
+
+
+  ----- Original Message -----=20
+  From: Regan, Kevin=20
+  To: Regan, Kevin ; concurrency-interest@altair.cs.oswego.edu=20
+  Sent: Thursday, January 30, 2003 11:05 AM
+  Subject: RE: [concurrency-interest] Question about ThreadExecutor...
+
+
+  Question about ThreadExecutor... Would the following accomplish this: =
+int numThreads =3D 100; int maximumQueueSize =3D 50; Executor executor =
+=3D ThreadExecutor(numThreads, numThreads, 0, null, new =
+ArrayBlockingQueue(maximumQueueSize), new ExecutorIntercepts()); Would =
+this do what I want (ThreadExecutor.newFixedThreadPool()) and also cause =
+the Executor.execute() method to block if the queue had 50 elements =
+waiting on it? Thanks again (and sorry for the SPAM). Kevin Regan =
+kregan@amazon.com -----Original Message-----
+  From: Regan, Kevin=20
+  Sent: Thursday, January 30, 2003 11:01 AM
+  To: Regan, Kevin; concurrency-interest@altair.cs.oswego.edu
+  Subject: RE: [concurrency-interest] Question about ThreadExecutor... I =
+guess, more specifically, I would like the behavior of the =
+ThreadExecutor.newFixedThreadPool(), but with the JMS request listener =
+thread blocking if it calls execute() when the queue has "too many" =
+elements in it. Thanks again! Kevin Regan kregan@amazon.com =
+-----Original Message-----
+  From: Regan, Kevin=20
+  Sent: Thursday, January 30, 2003 10:45 AM
+  To: concurrency-interest@altair.cs.oswego.edu
+  Subject: [concurrency-interest] Question about ThreadExecutor... Hi, I =
+have a JMS process that has a single thread grabbing requests and =
+putting them on the thread pool. What I would like to happen is have =
+that thread stop grabbing JMS requests when all the workers are busy. =
+For example, if there are 100 worker threads and the JMS listener has =
+just added the 150th element to the queue, it would be great if I could =
+get that listener thread to block until the queue gets down to, say, 50 =
+elements. Is there any way to accomplish this with the concurrent =
+library? Thanks! Kevin Regan kregan@amazon.com=20
+  u
+------=_NextPart_000_00A7_01C2C855.87D67770
+Content-Type: text/html;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<HTML><HEAD>
+<META http-equiv=3DContent-Type content=3D"text/html; =
+charset=3Diso-8859-1">
+<META content=3D"MSHTML 6.00.2800.1126" name=3DGENERATOR>
+<STYLE></STYLE>
+</HEAD>
+<BODY bgColor=3D#ffffff>
+<DIV><FONT size=3D2>Kevin,</FONT></DIV>
+<DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT size=3D2>If I understand you correctly, you'd also need to =
+choose a=20
+cannotExecute impl. that explicitly waited.&nbsp; (Currently we don't =
+offer any=20
+choices except the default and roll-your-own, but we are=20
+considering&nbsp;canning some of the most popular choices such as =
+"wait",=20
+"error", and "ignore".)</FONT></DIV>
+<DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT size=3D2>Our current default cannotExecute impl. is to =
+execute the task=20
+in the caller's current thread.&nbsp; Since the goal of your executor is =
+to=20
+execute on a specific thread, this policy is not for you.&nbsp; =
+</FONT></DIV>
+<DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT size=3D2>Writing a blocked-execution handler that waits is =
+made more=20
+complicated by our intention to remove InterruptedException from the =
+execute()=20
+signature.&nbsp; If we follow-through on this, the "wait" impl. will =
+need to=20
+either loop while ignoring interrupts, or throw a RuntimeException (such =
+
+as&nbsp;</FONT><FONT =
+size=3D2>CommandCannotExecuteException).</FONT></DIV>
+<DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT size=3D2>Comments?</FONT></DIV>
+<DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+<DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+<BLOCKQUOTE=20
+style=3D"PADDING-RIGHT: 0px; PADDING-LEFT: 5px; MARGIN-LEFT: 5px; =
+BORDER-LEFT: #000000 2px solid; MARGIN-RIGHT: 0px">
+  <DIV style=3D"FONT: 10pt arial">----- Original Message ----- </DIV>
+  <DIV=20
+  style=3D"BACKGROUND: #e4e4e4; FONT: 10pt arial; font-color: =
+black"><B>From:</B>=20
+  <A title=3Dkregan@amazon.com href=3D"mailto:kregan@amazon.com">Regan, =
+Kevin</A>=20
+  </DIV>
+  <DIV style=3D"FONT: 10pt arial"><B>To:</B> <A =
+title=3Dkregan@amazon.com=20
+  href=3D"mailto:kregan@amazon.com">Regan, Kevin</A> ; <A=20
+  title=3Dconcurrency-interest@altair.cs.oswego.edu=20
+  =
+href=3D"mailto:concurrency-interest@altair.cs.oswego.edu">concurrency-int=
+erest@altair.cs.oswego.edu</A>=20
+  </DIV>
+  <DIV style=3D"FONT: 10pt arial"><B>Sent:</B> Thursday, January 30, =
+2003 11:05=20
+  AM</DIV>
+  <DIV style=3D"FONT: 10pt arial"><B>Subject:</B> RE: =
+[concurrency-interest]=20
+  Question about ThreadExecutor...</DIV>
+  <DIV><BR></DIV>Question about ThreadExecutor... Would the following =
+accomplish=20
+  this: int numThreads =3D 100; int maximumQueueSize =3D 50; Executor =
+executor =3D=20
+  ThreadExecutor(numThreads, numThreads, 0, null, new=20
+  ArrayBlockingQueue(maximumQueueSize), new ExecutorIntercepts()); Would =
+this do=20
+  what I want (ThreadExecutor.newFixedThreadPool()) and also cause the=20
+  Executor.execute() method to block if the queue had 50 elements =
+waiting on it?=20
+  Thanks again (and sorry for the SPAM). Kevin Regan kregan@amazon.com=20
+  -----Original Message-----<BR>From: Regan, Kevin <BR>Sent: Thursday, =
+January=20
+  30, 2003 11:01 AM<BR>To: Regan, Kevin;=20
+  concurrency-interest@altair.cs.oswego.edu<BR>Subject: RE:=20
+  [concurrency-interest] Question about ThreadExecutor... I guess, more=20
+  specifically, I would like the behavior of the=20
+  ThreadExecutor.newFixedThreadPool(), but with the JMS request listener =
+thread=20
+  blocking if it calls execute() when the queue has =93too many=94 =
+elements in it.=20
+  Thanks again! Kevin Regan kregan@amazon.com -----Original=20
+  Message-----<BR>From: Regan, Kevin <BR>Sent: Thursday, January 30, =
+2003 10:45=20
+  AM<BR>To: concurrency-interest@altair.cs.oswego.edu<BR>Subject:=20
+  [concurrency-interest] Question about ThreadExecutor... Hi, I have a =
+JMS=20
+  process that has a single thread grabbing requests and putting them on =
+the=20
+  thread pool. What I would like to happen is have that thread stop =
+grabbing JMS=20
+  requests when all the workers are busy. For example, if there are 100 =
+worker=20
+  threads and the JMS listener has just added the 150th element to the =
+queue, it=20
+  would be great if I could get that listener thread to block until the =
+queue=20
+  gets down to, say, 50 elements. Is there any way to accomplish this =
+with the=20
+  concurrent library? Thanks! Kevin Regan kregan@amazon.com=20
+<BR>u</BLOCKQUOTE></BODY></HTML>
+
+------=_NextPart_000_00A7_01C2C855.87D67770--
+
+
+From kregan@amazon.com  Thu Jan 30 20:01:23 2003
+From: kregan@amazon.com (Regan, Kevin)
+Date: Thu, 30 Jan 2003 12:01:23 -0800
+Subject: [concurrency-interest] Question about ThreadExecutor...
+Message-ID: <32E915AF61D33346B5C80A9707C3DD4402881158@ex-mail-02.ant.amazon.com>
+
+This is a multi-part message in MIME format.
+
+------_=_NextPart_001_01C2C89A.5D23E04A
+Content-Type: text/plain;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+=20
+
+Looking at the old library (1.3.2), I see the following:
+
+=20
+
+PooledExecutor threadPool =3D new PooledExecutor(new BoundedBuffer(50), =
+200);
+
+threadPool.setMinimumPoolSize(10);
+
+threadPool.setKeepAliveTime(1000 * 60 * 5);
+
+threadPool.waitWhenBlocked();
+
+threadPool.createThreads(10);
+
+=20
+
+Does this do what I want, and, if so, how does it translate to the new =
+library?
+
+=20
+
+Thanks!
+
+Kevin
+
+=20
+
+-----Original Message-----
+From: Joseph Bowbeer [mailto:jozart@csi.com]=20
+Sent: Thursday, January 30, 2003 11:49 AM
+To: Regan, Kevin; concurrency-interest@altair.cs.oswego.edu
+Subject: Re: [concurrency-interest] Question about ThreadExecutor...
+
+=20
+
+Kevin,
+
+=20
+
+If I understand you correctly, you'd also need to choose a cannotExecute =
+impl. that explicitly waited.  (Currently we don't offer any choices =
+except the default and roll-your-own, but we are considering canning =
+some of the most popular choices such as "wait", "error", and "ignore".)
+
+=20
+
+Our current default cannotExecute impl. is to execute the task in the =
+caller's current thread.  Since the goal of your executor is to execute =
+on a specific thread, this policy is not for you. =20
+
+=20
+
+Writing a blocked-execution handler that waits is made more complicated =
+by our intention to remove InterruptedException from the execute() =
+signature.  If we follow-through on this, the "wait" impl. will need to =
+either loop while ignoring interrupts, or throw a RuntimeException (such =
+as CommandCannotExecuteException).
+
+=20
+
+Comments?
+
+=20
+
+=20
+
+	----- Original Message -----=20
+
+	From: Regan, Kevin <mailto:kregan@amazon.com> =20
+
+	To: Regan, Kevin <mailto:kregan@amazon.com>  ; =
+concurrency-interest@altair.cs.oswego.edu=20
+
+	Sent: Thursday, January 30, 2003 11:05 AM
+
+	Subject: RE: [concurrency-interest] Question about ThreadExecutor...
+
+	=20
+
+	Question about ThreadExecutor... Would the following accomplish this: =
+int numThreads =3D 100; int maximumQueueSize =3D 50; Executor executor =
+=3D ThreadExecutor(numThreads, numThreads, 0, null, new =
+ArrayBlockingQueue(maximumQueueSize), new ExecutorIntercepts()); Would =
+this do what I want (ThreadExecutor.newFixedThreadPool()) and also cause =
+the Executor.execute() method to block if the queue had 50 elements =
+waiting on it? Thanks again (and sorry for the SPAM). Kevin Regan =
+kregan@amazon.com -----Original Message-----
+	From: Regan, Kevin=20
+	Sent: Thursday, January 30, 2003 11:01 AM
+	To: Regan, Kevin; concurrency-interest@altair.cs.oswego.edu
+	Subject: RE: [concurrency-interest] Question about ThreadExecutor... I =
+guess, more specifically, I would like the behavior of the =
+ThreadExecutor.newFixedThreadPool(), but with the JMS request listener =
+thread blocking if it calls execute() when the queue has "too many" =
+elements in it. Thanks again! Kevin Regan kregan@amazon.com =
+-----Original Message-----
+	From: Regan, Kevin=20
+	Sent: Thursday, January 30, 2003 10:45 AM
+	To: concurrency-interest@altair.cs.oswego.edu
+	Subject: [concurrency-interest] Question about ThreadExecutor... Hi, I =
+have a JMS process that has a single thread grabbing requests and =
+putting them on the thread pool. What I would like to happen is have =
+that thread stop grabbing JMS requests when all the workers are busy. =
+For example, if there are 100 worker threads and the JMS listener has =
+just added the 150th element to the queue, it would be great if I could =
+get that listener thread to block until the queue gets down to, say, 50 =
+elements. Is there any way to accomplish this with the concurrent =
+library? Thanks! Kevin Regan kregan@amazon.com=20
+	u
+
+
+------_=_NextPart_001_01C2C89A.5D23E04A
+Content-Type: text/html;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<html>
+
+<head>
+<META HTTP-EQUIV=3D"Content-Type" CONTENT=3D"text/html; =
+charset=3Dus-ascii">
+
+
+<meta name=3DGenerator content=3D"Microsoft Word 10 (filtered)">
+
+<style>
+<!--
+ /* Font Definitions */
+ @font-face
+	{font-family:Tahoma;
+	panose-1:2 11 6 4 3 5 4 4 2 4;}
+ /* Style Definitions */
+ p.MsoNormal, li.MsoNormal, div.MsoNormal
+	{margin:0in;
+	margin-bottom:.0001pt;
+	font-size:12.0pt;
+	font-family:"Times New Roman";}
+a:link, span.MsoHyperlink
+	{color:blue;
+	text-decoration:underline;}
+a:visited, span.MsoHyperlinkFollowed
+	{color:blue;
+	text-decoration:underline;}
+span.EmailStyle17
+	{font-family:Arial;
+	color:navy;}
+@page Section1
+	{size:8.5in 11.0in;
+	margin:1.0in 1.25in 1.0in 1.25in;}
+div.Section1
+	{page:Section1;}
+-->
+</style>
+
+</head>
+
+<body bgcolor=3Dwhite lang=3DEN-US link=3Dblue vlink=3Dblue>
+
+<div class=3DSection1>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Looking at the old library (1.3.2), =
+I see
+the following:</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>PooledExecutor threadPool =3D new =
+PooledExecutor(new
+BoundedBuffer(50), 200);</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>threadPool.setMinimumPoolSize(10);</=
+span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>threadPool.setKeepAliveTime(1000 * =
+60 *
+5);</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>threadPool.waitWhenBlocked();</span>=
+</font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>threadPool.createThreads(10);</span>=
+</font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Does this do what I want, and, if =
+so, how
+does it translate to the new library?</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Thanks!</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Kevin</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+face=3DTahoma><span
+style=3D'font-size:10.0pt;font-family:Tahoma'>-----Original =
+Message-----<br>
+<b><span style=3D'font-weight:bold'>From:</span></b> Joseph Bowbeer =
+[mailto:jozart@csi.com]
+<br>
+<b><span style=3D'font-weight:bold'>Sent:</span></b> Thursday, January =
+30, 2003
+11:49 AM<br>
+<b><span style=3D'font-weight:bold'>To:</span></b> Regan, Kevin;
+concurrency-interest@altair.cs.oswego.edu<br>
+<b><span style=3D'font-weight:bold'>Subject:</span></b> Re:
+[concurrency-interest] Question about =
+ThreadExecutor...</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+face=3D"Times New Roman"><span
+style=3D'font-size:10.0pt'>Kevin,</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+face=3D"Times New Roman"><span
+style=3D'font-size:10.0pt'>If I understand you correctly, you'd also =
+need to
+choose a cannotExecute impl. that explicitly waited.&nbsp; (Currently we =
+don't
+offer any choices except the default and roll-your-own, but we are
+considering&nbsp;canning some of the most popular choices such as
+&quot;wait&quot;, &quot;error&quot;, and =
+&quot;ignore&quot;.)</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+face=3D"Times New Roman"><span
+style=3D'font-size:10.0pt'>Our current default cannotExecute impl. is to =
+execute
+the task in the caller's current thread.&nbsp; Since the goal of your =
+executor
+is to execute on a specific thread, this policy is not for you.&nbsp; =
+</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+face=3D"Times New Roman"><span
+style=3D'font-size:10.0pt'>Writing a blocked-execution handler that =
+waits is made
+more complicated by our intention to remove InterruptedException from =
+the
+execute() signature.&nbsp; If we follow-through on this, the =
+&quot;wait&quot;
+impl. will need to either loop while ignoring interrupts, or throw a
+RuntimeException (such =
+as&nbsp;CommandCannotExecuteException).</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+face=3D"Times New Roman"><span
+style=3D'font-size:10.0pt'>Comments?</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<blockquote style=3D'border:none;border-left:solid black =
+1.5pt;padding:0in 0in 0in 4.0pt;
+margin-left:3.75pt;margin-top:5.0pt;margin-right:0in;margin-bottom:5.0pt'=
+>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial'>----- Original Message =
+----- </span></font></p>
+
+</div>
+
+<div style=3D'font-color:black'>
+
+<p class=3DMsoNormal =
+style=3D'margin-left:.5in;background:#E4E4E4'><b><font size=3D2
+face=3DArial><span =
+style=3D'font-size:10.0pt;font-family:Arial;font-weight:bold'>From:</span=
+></font></b><font
+size=3D2 face=3DArial><span =
+style=3D'font-size:10.0pt;font-family:Arial'> <a
+href=3D"mailto:kregan@amazon.com" title=3D"kregan@amazon.com">Regan, =
+Kevin</a> </span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><b><font size=3D2 =
+face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;font-weight:bold'>To:</span><=
+/font></b><font
+size=3D2 face=3DArial><span =
+style=3D'font-size:10.0pt;font-family:Arial'> <a
+href=3D"mailto:kregan@amazon.com" title=3D"kregan@amazon.com">Regan, =
+Kevin</a> ; <a
+href=3D"mailto:concurrency-interest@altair.cs.oswego.edu"
+title=3D"concurrency-interest@altair.cs.oswego.edu">concurrency-interest@=
+altair.cs.oswego.edu</a>
+</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><b><font size=3D2 =
+face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;font-weight:bold'>Sent:</span=
+></font></b><font
+size=3D2 face=3DArial><span =
+style=3D'font-size:10.0pt;font-family:Arial'> Thursday,
+January 30, 2003 11:05 AM</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><b><font size=3D2 =
+face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;font-weight:bold'>Subject:</s=
+pan></font></b><font
+size=3D2 face=3DArial><span =
+style=3D'font-size:10.0pt;font-family:Arial'> RE:
+[concurrency-interest] Question about =
+ThreadExecutor...</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>Question about ThreadExecutor... Would the =
+following
+accomplish this: int numThreads =3D 100; int maximumQueueSize =3D 50; =
+Executor
+executor =3D ThreadExecutor(numThreads, numThreads, 0, null, new
+ArrayBlockingQueue(maximumQueueSize), new ExecutorIntercepts()); Would =
+this do
+what I want (ThreadExecutor.newFixedThreadPool()) and also cause the
+Executor.execute() method to block if the queue had 50 elements waiting =
+on it?
+Thanks again (and sorry for the SPAM). Kevin Regan kregan@amazon.com
+-----Original Message-----<br>
+From: Regan, Kevin <br>
+Sent: Thursday, January 30, 2003 11:01 AM<br>
+To: Regan, Kevin; concurrency-interest@altair.cs.oswego.edu<br>
+Subject: RE: [concurrency-interest] Question about ThreadExecutor... I =
+guess,
+more specifically, I would like the behavior of the
+ThreadExecutor.newFixedThreadPool(), but with the JMS request listener =
+thread
+blocking if it calls execute() when the queue has &#8220;too many&#8221;
+elements in it. Thanks again! Kevin Regan kregan@amazon.com =
+-----Original Message-----<br>
+From: Regan, Kevin <br>
+Sent: Thursday, January 30, 2003 10:45 AM<br>
+To: concurrency-interest@altair.cs.oswego.edu<br>
+Subject: [concurrency-interest] Question about ThreadExecutor... Hi, I =
+have a
+JMS process that has a single thread grabbing requests and putting them =
+on the
+thread pool. What I would like to happen is have that thread stop =
+grabbing JMS
+requests when all the workers are busy. For example, if there are 100 =
+worker
+threads and the JMS listener has just added the 150th element to the =
+queue, it
+would be great if I could get that listener thread to block until the =
+queue
+gets down to, say, 50 elements. Is there any way to accomplish this with =
+the
+concurrent library? Thanks! Kevin Regan kregan@amazon.com <br>
+u</span></font></p>
+
+</blockquote>
+
+</div>
+
+</body>
+
+</html>
+=00
+------_=_NextPart_001_01C2C89A.5D23E04A--
+
+From arkin@intalio.com  Thu Jan 30 21:05:08 2003
+From: arkin@intalio.com (Assaf Arkin)
+Date: Thu, 30 Jan 2003 13:05:08 -0800
+Subject: [concurrency-interest] Question about ThreadExecutor...
+In-Reply-To: <00aa01c2c898$96431c80$0a0a0a0a@REPLICANT>
+Message-ID: <IGEJLEPAJBPHKACOOKHNMEBFDCAA.arkin@intalio.com>
+
+This is a multi-part message in MIME format.
+
+------=_NextPart_000_0150_01C2C860.36E18480
+Content-Type: text/plain;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: 8bit
+
+You can have a thread that polls the next message and executes it, but then
+you can only process one message at a time. Or you can have a thread that
+polls all the messages and fires them for asynchronous execution. But if you
+have a thousand messages in the queue you would be loading all thousand
+messages into memory, which is pointless if you can only processes 10
+messages at a time.
+
+A better solution would be to have a queue that represents a portion of the
+pool that is expected to become free next, e.g. a pool of 25 threads and a
+queue of 5 requests, keep feeding the queue but only with enough requests to
+feed the pool when the next thread becomes available. When the queue gets
+full, the polling thread simply blocks. This is not a problem for the
+polling thread which is just a way to get messages from one queue to
+another.
+
+Alternatively, the queue size could change dynamically to account for the
+load (smiliar to the silding window flow congenstion control in TCP). If you
+can process all requests fast enough, the queue size grows one request at a
+time. If you can't process the requests fast enough, the queue size starts
+shrinking (e.g. half the size each time a request gets delayed by 5 seconds
+or more). That way you can determine the throughput as the inverse of the
+queue size, where queue size 1 means overloaded.
+
+You could get by without the queue by just blocking for the next available
+thread. but the queue would allow you to get requests from different threads
+and spawn them off based on priority, given precedence to the incoming
+request with the higher priority. For example, one poller would feed
+messages from a JMS queue, another would feed requests from the HTTP server,
+another would feed scheduled work, and the pool would be divided based on
+priority.
+
+This policy, however, could lead to starvation. Let's say that you have two
+polling threads for JMS and HTTP. The JMS poller submits a request with
+priority 1, the HTTP poller submits a set of request with priority 5 as fast
+as they can be processed. Since the server is overloaded, both have a queue
+of size 1, but the first request to be processed always comes from the HTTP
+queue since it has the higher priority. The JMS poller keeps blocking, which
+is acceptable considering that its work has lower priority (e.g. because
+HTTP requests have to be processed within max 2 minutes, and the JMS request
+has to be processed within 4 hours).
+
+A message is then submitted to the JMS queue with priority 10, but since the
+JMS poller is blocking for a request with priority 1, it never gets to
+process the higher priority request ahead of the HTTP poller. A better
+strategy would be for the JMS poller to not block, but instead go and reread
+the last message from the queue (which would be the new message with
+priority 10, since the queue can order by priority). That way the priority
+10 message will get processed, and the priority 1 message can get delayed
+until the workload is reduced.
+
+The JMQ poller could achieve this if the last request gets queued but the
+thread blocks until the queue has at least one empty slot, and for a limited
+period of time. When it times out, the request gets removed from the queue,
+making one slot available, and an exception is thrown indicating the request
+was not submitted. The JMS poller does not discard the message, instead it
+reads the next available message (could be the same one, or a higher
+priority one) and asks for execution again, and repeatedly.
+
+arkin
+  -----Original Message-----
+  From: concurrency-interest-admin@cs.oswego.edu
+[mailto:concurrency-interest-admin@cs.oswego.edu]On Behalf Of Joseph Bowbeer
+  Sent: Thursday, January 30, 2003 11:49 AM
+  To: Regan, Kevin; concurrency-interest@altair.cs.oswego.edu
+  Subject: Re: [concurrency-interest] Question about ThreadExecutor...
+
+
+  Kevin,
+
+  If I understand you correctly, you'd also need to choose a cannotExecute
+impl. that explicitly waited.  (Currently we don't offer any choices except
+the default and roll-your-own, but we are considering canning some of the
+most popular choices such as "wait", "error", and "ignore".)
+
+  Our current default cannotExecute impl. is to execute the task in the
+caller's current thread.  Since the goal of your executor is to execute on a
+specific thread, this policy is not for you.
+
+  Writing a blocked-execution handler that waits is made more complicated by
+our intention to remove InterruptedException from the execute() signature.
+If we follow-through on this, the "wait" impl. will need to either loop
+while ignoring interrupts, or throw a RuntimeException (such as
+CommandCannotExecuteException).
+
+  Comments?
+
+
+    ----- Original Message -----
+    From: Regan, Kevin
+    To: Regan, Kevin ; concurrency-interest@altair.cs.oswego.edu
+    Sent: Thursday, January 30, 2003 11:05 AM
+    Subject: RE: [concurrency-interest] Question about ThreadExecutor...
+
+
+    Question about ThreadExecutor... Would the following accomplish this:
+int numThreads = 100; int maximumQueueSize = 50; Executor executor =
+ThreadExecutor(numThreads, numThreads, 0, null, new
+ArrayBlockingQueue(maximumQueueSize), new ExecutorIntercepts()); Would this
+do what I want (ThreadExecutor.newFixedThreadPool()) and also cause the
+Executor.execute() method to block if the queue had 50 elements waiting on
+it? Thanks again (and sorry for the SPAM). Kevin Regan
+kregan@amazon.com -----Original Message-----
+    From: Regan, Kevin
+    Sent: Thursday, January 30, 2003 11:01 AM
+    To: Regan, Kevin; concurrency-interest@altair.cs.oswego.edu
+    Subject: RE: [concurrency-interest] Question about ThreadExecutor... I
+guess, more specifically, I would like the behavior of the
+ThreadExecutor.newFixedThreadPool(), but with the JMS request listener
+thread blocking if it calls execute() when the queue has “too many” elements
+in it. Thanks again! Kevin Regan kregan@amazon.com -----Original
+Message-----
+    From: Regan, Kevin
+    Sent: Thursday, January 30, 2003 10:45 AM
+    To: concurrency-interest@altair.cs.oswego.edu
+    Subject: [concurrency-interest] Question about ThreadExecutor... Hi, I
+have a JMS process that has a single thread grabbing requests and putting
+them on the thread pool. What I would like to happen is have that thread
+stop grabbing JMS requests when all the workers are busy. For example, if
+there are 100 worker threads and the JMS listener has just added the 150th
+element to the queue, it would be great if I could get that listener thread
+to block until the queue gets down to, say, 50 elements. Is there any way to
+accomplish this with the concurrent library? Thanks! Kevin Regan
+kregan@amazon.com
+    u
+
+------=_NextPart_000_0150_01C2C860.36E18480
+Content-Type: text/html;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<HTML><HEAD>
+<META http-equiv=3DContent-Type content=3D"text/html; =
+charset=3Diso-8859-1">
+<META content=3D"MSHTML 6.00.2800.1106" name=3DGENERATOR>
+<STYLE></STYLE>
+</HEAD>
+<BODY bgColor=3D#ffffff>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff size=3D2>You=20
+can have a thread that polls the next message and executes it, but then =
+you can=20
+only process one message at a time. Or you can have a thread that polls =
+all the=20
+messages and fires them for asynchronous execution. But if you have a =
+thousand=20
+messages in the queue you would be loading all thousand messages into =
+memory,=20
+which is pointless if you can only processes 10 messages at a=20
+time.</FONT></SPAN></DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+size=3D2></FONT></SPAN>&nbsp;</DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff size=3D2>A=20
+better solution would be to have a queue that represents a portion of =
+the pool=20
+that is expected to become free next, e.g. a pool of 25 threads and a =
+queue of 5=20
+requests, keep feeding the queue but only with enough requests to feed =
+the pool=20
+when the next thread becomes available. When the queue gets full, the =
+polling=20
+thread simply blocks. This is not a problem for the polling thread which =
+is just=20
+a way to get messages from one queue to another.</FONT></SPAN></DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+size=3D2></FONT></SPAN>&nbsp;</DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+size=3D2>Alternatively, the queue size could change dynamically to =
+account for the=20
+load (smiliar to the silding window flow congenstion control in TCP). If =
+you can=20
+process all requests fast enough, the queue size grows one request at a =
+time. If=20
+you can't process the requests fast enough, the queue size starts =
+shrinking=20
+(e.g. half the size each time a request gets delayed by 5 seconds or =
+more). That=20
+way you can determine the throughput as the inverse of the queue size, =
+where=20
+queue size 1 means overloaded.</FONT></SPAN></DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+size=3D2></FONT></SPAN>&nbsp;</DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff size=3D2>You=20
+could get by without the queue by just blocking for the next available =
+thread.=20
+but the queue would allow you to get requests from different threads and =
+spawn=20
+them off based on priority, given precedence to the incoming request =
+with the=20
+higher priority. For example, one poller would feed messages from a JMS =
+queue,=20
+another would feed requests from the HTTP server, another would feed =
+scheduled=20
+work, and the pool would be divided based on =
+priority.</FONT></SPAN></DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+size=3D2></FONT></SPAN>&nbsp;</DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff size=3D2>This=20
+policy, however, could lead to starvation. Let's say that you have two =
+polling=20
+threads for JMS and HTTP. The JMS poller submits a request with priority =
+1, the=20
+HTTP poller submits a set of request with priority 5 as fast as they can =
+be=20
+processed. Since the server is overloaded, both have a queue of size 1, =
+but the=20
+first request to be processed always comes from the HTTP queue since it =
+has the=20
+higher priority. The JMS poller keeps blocking, which is acceptable =
+considering=20
+that its work has lower priority (e.g. because HTTP requests have to be=20
+processed within max 2 minutes, and the JMS request has to be processed =
+within 4=20
+hours).</FONT></SPAN></DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+size=3D2></FONT></SPAN>&nbsp;</DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff size=3D2>A=20
+message is then submitted to the JMS queue with priority 10, but since =
+the JMS=20
+poller is blocking for a request with priority 1, it never gets to =
+process the=20
+higher priority request ahead of the HTTP poller. A better strategy =
+would be for=20
+the JMS poller to not block, but instead go and reread the last message =
+from the=20
+queue (which would be the new message with priority 10, since the queue =
+can=20
+order by priority). That way the priority 10 message will get processed, =
+and the=20
+priority 1 message can get delayed until the workload is=20
+reduced.</FONT></SPAN></DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+size=3D2></FONT></SPAN>&nbsp;</DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff size=3D2>The=20
+JMQ poller could achieve this if the last request gets queued but the =
+thread=20
+blocks until the queue has at least one empty slot, and for a limited =
+period of=20
+time. When it times out, the request gets removed from the queue, making =
+one=20
+slot available, and an exception is thrown indicating the request was =
+not=20
+submitted. The JMS poller does not discard the message, instead it reads =
+the=20
+next available message (could be the same one, or a higher priority one) =
+and=20
+asks for execution again, and repeatedly.</FONT></SPAN></DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+size=3D2></FONT></SPAN>&nbsp;</DIV>
+<DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+size=3D2>arkin</FONT></SPAN></DIV>
+<BLOCKQUOTE dir=3Dltr=20
+style=3D"PADDING-LEFT: 5px; MARGIN-LEFT: 5px; BORDER-LEFT: #0000ff 2px =
+solid; MARGIN-RIGHT: 0px">
+  <DIV class=3DOutlookMessageHeader dir=3Dltr align=3Dleft><FONT =
+face=3DTahoma=20
+  size=3D2>-----Original Message-----<BR><B>From:</B>=20
+  concurrency-interest-admin@cs.oswego.edu=20
+  [mailto:concurrency-interest-admin@cs.oswego.edu]<B>On Behalf Of =
+</B>Joseph=20
+  Bowbeer<BR><B>Sent:</B> Thursday, January 30, 2003 11:49 =
+AM<BR><B>To:</B>=20
+  Regan, Kevin; =
+concurrency-interest@altair.cs.oswego.edu<BR><B>Subject:</B> Re:=20
+  [concurrency-interest] Question about =
+ThreadExecutor...<BR><BR></FONT></DIV>
+  <DIV><FONT size=3D2>Kevin,</FONT></DIV>
+  <DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT size=3D2>If I understand you correctly, you'd also need to =
+choose a=20
+  cannotExecute impl. that explicitly waited.&nbsp; (Currently we don't =
+offer=20
+  any choices except the default and roll-your-own, but we are=20
+  considering&nbsp;canning some of the most popular choices such as =
+"wait",=20
+  "error", and "ignore".)</FONT></DIV>
+  <DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT size=3D2>Our current default cannotExecute impl. is to =
+execute the=20
+  task in the caller's current thread.&nbsp; Since the goal of your =
+executor is=20
+  to execute on a specific thread, this policy is not for you.&nbsp;=20
+  </FONT></DIV>
+  <DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT size=3D2>Writing a blocked-execution handler that waits is =
+made more=20
+  complicated by our intention to remove InterruptedException from the =
+execute()=20
+  signature.&nbsp; If we follow-through on this, the "wait" impl. will =
+need to=20
+  either loop while ignoring interrupts, or throw a RuntimeException =
+(such=20
+  as&nbsp;</FONT><FONT =
+size=3D2>CommandCannotExecuteException).</FONT></DIV>
+  <DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT size=3D2>Comments?</FONT></DIV>
+  <DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+  <DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+  <BLOCKQUOTE=20
+  style=3D"PADDING-RIGHT: 0px; PADDING-LEFT: 5px; MARGIN-LEFT: 5px; =
+BORDER-LEFT: #000000 2px solid; MARGIN-RIGHT: 0px">
+    <DIV style=3D"FONT: 10pt arial">----- Original Message ----- </DIV>
+    <DIV=20
+    style=3D"BACKGROUND: #e4e4e4; FONT: 10pt arial; font-color: =
+black"><B>From:</B>=20
+    <A title=3Dkregan@amazon.com =
+href=3D"mailto:kregan@amazon.com">Regan, Kevin</A>=20
+    </DIV>
+    <DIV style=3D"FONT: 10pt arial"><B>To:</B> <A =
+title=3Dkregan@amazon.com=20
+    href=3D"mailto:kregan@amazon.com">Regan, Kevin</A> ; <A=20
+    title=3Dconcurrency-interest@altair.cs.oswego.edu=20
+    =
+href=3D"mailto:concurrency-interest@altair.cs.oswego.edu">concurrency-int=
+erest@altair.cs.oswego.edu</A>=20
+    </DIV>
+    <DIV style=3D"FONT: 10pt arial"><B>Sent:</B> Thursday, January 30, =
+2003 11:05=20
+    AM</DIV>
+    <DIV style=3D"FONT: 10pt arial"><B>Subject:</B> RE: =
+[concurrency-interest]=20
+    Question about ThreadExecutor...</DIV>
+    <DIV><BR></DIV>Question about ThreadExecutor... Would the following=20
+    accomplish this: int numThreads =3D 100; int maximumQueueSize =3D =
+50; Executor=20
+    executor =3D ThreadExecutor(numThreads, numThreads, 0, null, new=20
+    ArrayBlockingQueue(maximumQueueSize), new ExecutorIntercepts()); =
+Would this=20
+    do what I want (ThreadExecutor.newFixedThreadPool()) and also cause =
+the=20
+    Executor.execute() method to block if the queue had 50 elements =
+waiting on=20
+    it? Thanks again (and sorry for the SPAM). Kevin Regan =
+kregan@amazon.com=20
+    -----Original Message-----<BR>From: Regan, Kevin <BR>Sent: Thursday, =
+January=20
+    30, 2003 11:01 AM<BR>To: Regan, Kevin;=20
+    concurrency-interest@altair.cs.oswego.edu<BR>Subject: RE:=20
+    [concurrency-interest] Question about ThreadExecutor... I guess, =
+more=20
+    specifically, I would like the behavior of the=20
+    ThreadExecutor.newFixedThreadPool(), but with the JMS request =
+listener=20
+    thread blocking if it calls execute() when the queue has =93too =
+many=94 elements=20
+    in it. Thanks again! Kevin Regan kregan@amazon.com -----Original=20
+    Message-----<BR>From: Regan, Kevin <BR>Sent: Thursday, January 30, =
+2003=20
+    10:45 AM<BR>To: =
+concurrency-interest@altair.cs.oswego.edu<BR>Subject:=20
+    [concurrency-interest] Question about ThreadExecutor... Hi, I have a =
+JMS=20
+    process that has a single thread grabbing requests and putting them =
+on the=20
+    thread pool. What I would like to happen is have that thread stop =
+grabbing=20
+    JMS requests when all the workers are busy. For example, if there =
+are 100=20
+    worker threads and the JMS listener has just added the 150th element =
+to the=20
+    queue, it would be great if I could get that listener thread to =
+block until=20
+    the queue gets down to, say, 50 elements. Is there any way to =
+accomplish=20
+    this with the concurrent library? Thanks! Kevin Regan =
+kregan@amazon.com=20
+  <BR>u</BLOCKQUOTE></BLOCKQUOTE></BODY></HTML>
+
+------=_NextPart_000_0150_01C2C860.36E18480--
+
+
+From arkin@intalio.com  Thu Jan 30 21:16:57 2003
+From: arkin@intalio.com (Assaf Arkin)
+Date: Thu, 30 Jan 2003 13:16:57 -0800
+Subject: [concurrency-interest] Question about ThreadExecutor...
+In-Reply-To: <IGEJLEPAJBPHKACOOKHNMEBFDCAA.arkin@intalio.com>
+Message-ID: <IGEJLEPAJBPHKACOOKHNGEBGDCAA.arkin@intalio.com>
+
+This is a multi-part message in MIME format.
+
+------=_NextPart_000_0156_01C2C861.DDBBF1E0
+Content-Type: text/plain;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: 8bit
+
+Forgot to mention another benefit of the no-wait approach, allowing the
+poller to use a back-out policy for distributing work within a cluster.
+
+Let's assume a cluster with several servers that can perform the work.
+Server A polls for the next JMS message which it cannot process, receives an
+exception, blocks for a short period of time, then tries again. In the
+meantime, server B picks up the request, and manages to process it. Using a
+single queue the workload could be easily distributed within the cluster
+through a very simple try-block policy.
+
+arkin
+  -----Original Message-----
+  From: concurrency-interest-admin@cs.oswego.edu
+[mailto:concurrency-interest-admin@cs.oswego.edu]On Behalf Of Assaf Arkin
+  Sent: Thursday, January 30, 2003 1:05 PM
+  To: Joseph Bowbeer; Regan, Kevin;
+concurrency-interest@altair.cs.oswego.edu
+  Subject: RE: [concurrency-interest] Question about ThreadExecutor...
+
+
+  You can have a thread that polls the next message and executes it, but
+then you can only process one message at a time. Or you can have a thread
+that polls all the messages and fires them for asynchronous execution. But
+if you have a thousand messages in the queue you would be loading all
+thousand messages into memory, which is pointless if you can only processes
+10 messages at a time.
+
+  A better solution would be to have a queue that represents a portion of
+the pool that is expected to become free next, e.g. a pool of 25 threads and
+a queue of 5 requests, keep feeding the queue but only with enough requests
+to feed the pool when the next thread becomes available. When the queue gets
+full, the polling thread simply blocks. This is not a problem for the
+polling thread which is just a way to get messages from one queue to
+another.
+
+  Alternatively, the queue size could change dynamically to account for the
+load (smiliar to the silding window flow congenstion control in TCP). If you
+can process all requests fast enough, the queue size grows one request at a
+time. If you can't process the requests fast enough, the queue size starts
+shrinking (e.g. half the size each time a request gets delayed by 5 seconds
+or more). That way you can determine the throughput as the inverse of the
+queue size, where queue size 1 means overloaded.
+
+  You could get by without the queue by just blocking for the next available
+thread. but the queue would allow you to get requests from different threads
+and spawn them off based on priority, given precedence to the incoming
+request with the higher priority. For example, one poller would feed
+messages from a JMS queue, another would feed requests from the HTTP server,
+another would feed scheduled work, and the pool would be divided based on
+priority.
+
+  This policy, however, could lead to starvation. Let's say that you have
+two polling threads for JMS and HTTP. The JMS poller submits a request with
+priority 1, the HTTP poller submits a set of request with priority 5 as fast
+as they can be processed. Since the server is overloaded, both have a queue
+of size 1, but the first request to be processed always comes from the HTTP
+queue since it has the higher priority. The JMS poller keeps blocking, which
+is acceptable considering that its work has lower priority (e.g. because
+HTTP requests have to be processed within max 2 minutes, and the JMS request
+has to be processed within 4 hours).
+
+  A message is then submitted to the JMS queue with priority 10, but since
+the JMS poller is blocking for a request with priority 1, it never gets to
+process the higher priority request ahead of the HTTP poller. A better
+strategy would be for the JMS poller to not block, but instead go and reread
+the last message from the queue (which would be the new message with
+priority 10, since the queue can order by priority). That way the priority
+10 message will get processed, and the priority 1 message can get delayed
+until the workload is reduced.
+
+  The JMQ poller could achieve this if the last request gets queued but the
+thread blocks until the queue has at least one empty slot, and for a limited
+period of time. When it times out, the request gets removed from the queue,
+making one slot available, and an exception is thrown indicating the request
+was not submitted. The JMS poller does not discard the message, instead it
+reads the next available message (could be the same one, or a higher
+priority one) and asks for execution again, and repeatedly.
+
+  arkin
+    -----Original Message-----
+    From: concurrency-interest-admin@cs.oswego.edu
+[mailto:concurrency-interest-admin@cs.oswego.edu]On Behalf Of Joseph Bowbeer
+    Sent: Thursday, January 30, 2003 11:49 AM
+    To: Regan, Kevin; concurrency-interest@altair.cs.oswego.edu
+    Subject: Re: [concurrency-interest] Question about ThreadExecutor...
+
+
+    Kevin,
+
+    If I understand you correctly, you'd also need to choose a cannotExecute
+impl. that explicitly waited.  (Currently we don't offer any choices except
+the default and roll-your-own, but we are considering canning some of the
+most popular choices such as "wait", "error", and "ignore".)
+
+    Our current default cannotExecute impl. is to execute the task in the
+caller's current thread.  Since the goal of your executor is to execute on a
+specific thread, this policy is not for you.
+
+    Writing a blocked-execution handler that waits is made more complicated
+by our intention to remove InterruptedException from the execute()
+signature.  If we follow-through on this, the "wait" impl. will need to
+either loop while ignoring interrupts, or throw a RuntimeException (such as
+CommandCannotExecuteException).
+
+    Comments?
+
+
+      ----- Original Message -----
+      From: Regan, Kevin
+      To: Regan, Kevin ; concurrency-interest@altair.cs.oswego.edu
+      Sent: Thursday, January 30, 2003 11:05 AM
+      Subject: RE: [concurrency-interest] Question about ThreadExecutor...
+
+
+      Question about ThreadExecutor... Would the following accomplish this:
+int numThreads = 100; int maximumQueueSize = 50; Executor executor =
+ThreadExecutor(numThreads, numThreads, 0, null, new
+ArrayBlockingQueue(maximumQueueSize), new ExecutorIntercepts()); Would this
+do what I want (ThreadExecutor.newFixedThreadPool()) and also cause the
+Executor.execute() method to block if the queue had 50 elements waiting on
+it? Thanks again (and sorry for the SPAM). Kevin Regan
+kregan@amazon.com -----Original Message-----
+      From: Regan, Kevin
+      Sent: Thursday, January 30, 2003 11:01 AM
+      To: Regan, Kevin; concurrency-interest@altair.cs.oswego.edu
+      Subject: RE: [concurrency-interest] Question about ThreadExecutor... I
+guess, more specifically, I would like the behavior of the
+ThreadExecutor.newFixedThreadPool(), but with the JMS request listener
+thread blocking if it calls execute() when the queue has “too many” elements
+in it. Thanks again! Kevin Regan kregan@amazon.com -----Original
+Message-----
+      From: Regan, Kevin
+      Sent: Thursday, January 30, 2003 10:45 AM
+      To: concurrency-interest@altair.cs.oswego.edu
+      Subject: [concurrency-interest] Question about ThreadExecutor... Hi, I
+have a JMS process that has a single thread grabbing requests and putting
+them on the thread pool. What I would like to happen is have that thread
+stop grabbing JMS requests when all the workers are busy. For example, if
+there are 100 worker threads and the JMS listener has just added the 150th
+element to the queue, it would be great if I could get that listener thread
+to block until the queue gets down to, say, 50 elements. Is there any way to
+accomplish this with the concurrent library? Thanks! Kevin Regan
+kregan@amazon.com
+      u
+
+------=_NextPart_000_0156_01C2C861.DDBBF1E0
+Content-Type: text/html;
+	charset="iso-8859-1"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<HTML><HEAD>
+<META http-equiv=3DContent-Type content=3D"text/html; =
+charset=3Diso-8859-1">
+<META content=3D"MSHTML 6.00.2800.1106" name=3DGENERATOR>
+<STYLE></STYLE>
+</HEAD>
+<BODY bgColor=3D#ffffff>
+<DIV><SPAN class=3D171001421-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+size=3D2>Forgot to mention another benefit of the no-wait approach, =
+allowing the=20
+poller to use a back-out policy for distributing work within a=20
+cluster.</FONT></SPAN></DIV>
+<DIV><SPAN class=3D171001421-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+size=3D2></FONT></SPAN>&nbsp;</DIV>
+<DIV><SPAN class=3D171001421-30012003><FONT face=3DTahoma =
+color=3D#0000ff size=3D2>Let's=20
+assume a cluster with several servers that can perform the work. Server =
+A polls=20
+for the next JMS message which it cannot process, receives an exception, =
+blocks=20
+for a short period of time, then tries again. In the meantime, server B =
+picks up=20
+the request, and manages to process it. Using a single queue the =
+workload could=20
+be easily distributed within the cluster through a very simple try-block =
+
+policy.</FONT></SPAN></DIV>
+<DIV><SPAN class=3D171001421-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+size=3D2></FONT></SPAN>&nbsp;</DIV>
+<DIV><SPAN class=3D171001421-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+size=3D2>arkin</FONT></SPAN></DIV>
+<BLOCKQUOTE dir=3Dltr=20
+style=3D"PADDING-LEFT: 5px; MARGIN-LEFT: 5px; BORDER-LEFT: #0000ff 2px =
+solid; MARGIN-RIGHT: 0px">
+  <DIV class=3DOutlookMessageHeader dir=3Dltr align=3Dleft><FONT =
+face=3DTahoma=20
+  size=3D2>-----Original Message-----<BR><B>From:</B>=20
+  concurrency-interest-admin@cs.oswego.edu=20
+  [mailto:concurrency-interest-admin@cs.oswego.edu]<B>On Behalf Of =
+</B>Assaf=20
+  Arkin<BR><B>Sent:</B> Thursday, January 30, 2003 1:05 PM<BR><B>To:</B> =
+Joseph=20
+  Bowbeer; Regan, Kevin;=20
+  concurrency-interest@altair.cs.oswego.edu<BR><B>Subject:</B> RE:=20
+  [concurrency-interest] Question about =
+ThreadExecutor...<BR><BR></FONT></DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff size=3D2>You=20
+  can have a thread that polls the next message and executes it, but =
+then you=20
+  can only process one message at a time. Or you can have a thread that =
+polls=20
+  all the messages and fires them for asynchronous execution. But if you =
+have a=20
+  thousand messages in the queue you would be loading all thousand =
+messages into=20
+  memory, which is pointless if you can only processes 10 messages at a=20
+  time.</FONT></SPAN></DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+  size=3D2></FONT></SPAN>&nbsp;</DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff size=3D2>A=20
+  better solution would be to have a queue that represents a portion of =
+the pool=20
+  that is expected to become free next, e.g. a pool of 25 threads and a =
+queue of=20
+  5 requests, keep feeding the queue but only with enough requests to =
+feed the=20
+  pool when the next thread becomes available. When the queue gets full, =
+the=20
+  polling thread simply blocks. This is not a problem for the polling =
+thread=20
+  which is just a way to get messages from one queue to=20
+  another.</FONT></SPAN></DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+  size=3D2></FONT></SPAN>&nbsp;</DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+  size=3D2>Alternatively, the queue size could change dynamically to =
+account for=20
+  the load (smiliar to the silding window flow congenstion control in =
+TCP). If=20
+  you can process all requests fast enough, the queue size grows one =
+request at=20
+  a time. If you can't process the requests fast enough, the queue size =
+starts=20
+  shrinking (e.g. half the size each time a request gets delayed by 5 =
+seconds or=20
+  more). That way you can determine the throughput as the inverse of the =
+queue=20
+  size, where queue size 1 means overloaded.</FONT></SPAN></DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+  size=3D2></FONT></SPAN>&nbsp;</DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff size=3D2>You=20
+  could get by without the queue by just blocking for the next available =
+thread.=20
+  but the queue would allow you to get requests from different threads =
+and spawn=20
+  them off based on priority, given precedence to the incoming request =
+with the=20
+  higher priority. For example, one poller would feed messages from a =
+JMS queue,=20
+  another would feed requests from the HTTP server, another would feed =
+scheduled=20
+  work, and the pool would be divided based on =
+priority.</FONT></SPAN></DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+  size=3D2></FONT></SPAN>&nbsp;</DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+  size=3D2>This policy, however, could lead to starvation. Let's say =
+that you have=20
+  two polling threads for JMS and HTTP. The JMS poller submits a request =
+with=20
+  priority 1, the HTTP poller submits a set of request with priority 5 =
+as fast=20
+  as they can be processed. Since the server is overloaded, both have a =
+queue of=20
+  size 1, but the first request to be processed always comes from the =
+HTTP queue=20
+  since it has the higher priority. The JMS poller keeps blocking, which =
+is=20
+  acceptable considering that its work has lower priority (e.g. because =
+HTTP=20
+  requests have to be processed within max 2 minutes, and the JMS =
+request has to=20
+  be processed within 4 hours).</FONT></SPAN></DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+  size=3D2></FONT></SPAN>&nbsp;</DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff size=3D2>A=20
+  message is then submitted to the JMS queue with priority 10, but since =
+the JMS=20
+  poller is blocking for a request with priority 1, it never gets to =
+process the=20
+  higher priority request ahead of the HTTP poller. A better strategy =
+would be=20
+  for the JMS poller to not block, but instead go and reread the last =
+message=20
+  from the queue (which would be the new message with priority 10, since =
+the=20
+  queue can order by priority). That way the priority 10 message will =
+get=20
+  processed, and the priority 1 message can get delayed until the =
+workload is=20
+  reduced.</FONT></SPAN></DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+  size=3D2></FONT></SPAN>&nbsp;</DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff size=3D2>The=20
+  JMQ poller could achieve this if the last request gets queued but the =
+thread=20
+  blocks until the queue has at least one empty slot, and for a limited =
+period=20
+  of time. When it times out, the request gets removed from the queue, =
+making=20
+  one slot available, and an exception is thrown indicating the request =
+was not=20
+  submitted. The JMS poller does not discard the message, instead it =
+reads the=20
+  next available message (could be the same one, or a higher priority =
+one) and=20
+  asks for execution again, and repeatedly.</FONT></SPAN></DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+  size=3D2></FONT></SPAN>&nbsp;</DIV>
+  <DIV><SPAN class=3D919101420-30012003><FONT face=3DTahoma =
+color=3D#0000ff=20
+  size=3D2>arkin</FONT></SPAN></DIV>
+  <BLOCKQUOTE dir=3Dltr=20
+  style=3D"PADDING-LEFT: 5px; MARGIN-LEFT: 5px; BORDER-LEFT: #0000ff 2px =
+solid; MARGIN-RIGHT: 0px">
+    <DIV class=3DOutlookMessageHeader dir=3Dltr align=3Dleft><FONT =
+face=3DTahoma=20
+    size=3D2>-----Original Message-----<BR><B>From:</B>=20
+    concurrency-interest-admin@cs.oswego.edu=20
+    [mailto:concurrency-interest-admin@cs.oswego.edu]<B>On Behalf Of =
+</B>Joseph=20
+    Bowbeer<BR><B>Sent:</B> Thursday, January 30, 2003 11:49 =
+AM<BR><B>To:</B>=20
+    Regan, Kevin; =
+concurrency-interest@altair.cs.oswego.edu<BR><B>Subject:</B>=20
+    Re: [concurrency-interest] Question about=20
+    ThreadExecutor...<BR><BR></FONT></DIV>
+    <DIV><FONT size=3D2>Kevin,</FONT></DIV>
+    <DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+    <DIV><FONT size=3D2>If I understand you correctly, you'd also need =
+to choose a=20
+    cannotExecute impl. that explicitly waited.&nbsp; (Currently we =
+don't offer=20
+    any choices except the default and roll-your-own, but we are=20
+    considering&nbsp;canning some of the most popular choices such as =
+"wait",=20
+    "error", and "ignore".)</FONT></DIV>
+    <DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+    <DIV><FONT size=3D2>Our current default cannotExecute impl. is to =
+execute the=20
+    task in the caller's current thread.&nbsp; Since the goal of your =
+executor=20
+    is to execute on a specific thread, this policy is not for =
+you.&nbsp;=20
+    </FONT></DIV>
+    <DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+    <DIV><FONT size=3D2>Writing a blocked-execution handler that waits =
+is made=20
+    more complicated by our intention to remove InterruptedException =
+from the=20
+    execute() signature.&nbsp; If we follow-through on this, the "wait" =
+impl.=20
+    will need to either loop while ignoring interrupts, or throw a=20
+    RuntimeException (such as&nbsp;</FONT><FONT=20
+    size=3D2>CommandCannotExecuteException).</FONT></DIV>
+    <DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+    <DIV><FONT size=3D2>Comments?</FONT></DIV>
+    <DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+    <DIV><FONT size=3D2></FONT>&nbsp;</DIV>
+    <BLOCKQUOTE=20
+    style=3D"PADDING-RIGHT: 0px; PADDING-LEFT: 5px; MARGIN-LEFT: 5px; =
+BORDER-LEFT: #000000 2px solid; MARGIN-RIGHT: 0px">
+      <DIV style=3D"FONT: 10pt arial">----- Original Message ----- =
+</DIV>
+      <DIV=20
+      style=3D"BACKGROUND: #e4e4e4; FONT: 10pt arial; font-color: =
+black"><B>From:</B>=20
+      <A title=3Dkregan@amazon.com =
+href=3D"mailto:kregan@amazon.com">Regan,=20
+      Kevin</A> </DIV>
+      <DIV style=3D"FONT: 10pt arial"><B>To:</B> <A =
+title=3Dkregan@amazon.com=20
+      href=3D"mailto:kregan@amazon.com">Regan, Kevin</A> ; <A=20
+      title=3Dconcurrency-interest@altair.cs.oswego.edu=20
+      =
+href=3D"mailto:concurrency-interest@altair.cs.oswego.edu">concurrency-int=
+erest@altair.cs.oswego.edu</A>=20
+      </DIV>
+      <DIV style=3D"FONT: 10pt arial"><B>Sent:</B> Thursday, January 30, =
+2003=20
+      11:05 AM</DIV>
+      <DIV style=3D"FONT: 10pt arial"><B>Subject:</B> RE: =
+[concurrency-interest]=20
+      Question about ThreadExecutor...</DIV>
+      <DIV><BR></DIV>Question about ThreadExecutor... Would the =
+following=20
+      accomplish this: int numThreads =3D 100; int maximumQueueSize =3D =
+50; Executor=20
+      executor =3D ThreadExecutor(numThreads, numThreads, 0, null, new=20
+      ArrayBlockingQueue(maximumQueueSize), new ExecutorIntercepts()); =
+Would=20
+      this do what I want (ThreadExecutor.newFixedThreadPool()) and also =
+cause=20
+      the Executor.execute() method to block if the queue had 50 =
+elements=20
+      waiting on it? Thanks again (and sorry for the SPAM). Kevin Regan=20
+      kregan@amazon.com -----Original Message-----<BR>From: Regan, Kevin =
+
+      <BR>Sent: Thursday, January 30, 2003 11:01 AM<BR>To: Regan, Kevin; =
+
+      concurrency-interest@altair.cs.oswego.edu<BR>Subject: RE:=20
+      [concurrency-interest] Question about ThreadExecutor... I guess, =
+more=20
+      specifically, I would like the behavior of the=20
+      ThreadExecutor.newFixedThreadPool(), but with the JMS request =
+listener=20
+      thread blocking if it calls execute() when the queue has =93too =
+many=94=20
+      elements in it. Thanks again! Kevin Regan kregan@amazon.com =
+-----Original=20
+      Message-----<BR>From: Regan, Kevin <BR>Sent: Thursday, January 30, =
+2003=20
+      10:45 AM<BR>To: =
+concurrency-interest@altair.cs.oswego.edu<BR>Subject:=20
+      [concurrency-interest] Question about ThreadExecutor... Hi, I have =
+a JMS=20
+      process that has a single thread grabbing requests and putting =
+them on the=20
+      thread pool. What I would like to happen is have that thread stop =
+grabbing=20
+      JMS requests when all the workers are busy. For example, if there =
+are 100=20
+      worker threads and the JMS listener has just added the 150th =
+element to=20
+      the queue, it would be great if I could get that listener thread =
+to block=20
+      until the queue gets down to, say, 50 elements. Is there any way =
+to=20
+      accomplish this with the concurrent library? Thanks! Kevin Regan=20
+      kregan@amazon.com =
+<BR>u</BLOCKQUOTE></BLOCKQUOTE></BLOCKQUOTE></BODY></HTML>
+
+------=_NextPart_000_0156_01C2C861.DDBBF1E0--
+
+
+From kregan@amazon.com  Thu Jan 30 22:13:02 2003
+From: kregan@amazon.com (Regan, Kevin)
+Date: Thu, 30 Jan 2003 14:13:02 -0800
+Subject: [concurrency-interest] Question about ThreadExecutor...
+Message-ID: <32E915AF61D33346B5C80A9707C3DD4402881160@ex-mail-02.ant.amazon.com>
+
+This is a multi-part message in MIME format.
+
+------_=_NextPart_001_01C2C8AC.C1B16034
+Content-Type: text/plain;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+=20
+
+Arkin,
+
+=20
+
+Thanks for the information.  I agree with you.  This seems like a common =
+enough pattern that it should be modeled somehow in the new library...
+
+=20
+
+--Kevin
+
+=20
+
+-----Original Message-----
+From: Assaf Arkin [mailto:arkin@intalio.com]=20
+Sent: Thursday, January 30, 2003 2:10 PM
+To: Regan, Kevin
+Subject: RE: [concurrency-interest] Question about ThreadExecutor...
+
+=20
+
+I don't think so.
+
+=20
+
+What you have submitted is definitely what your application should be =
+doing. You would want to define a queue with some limited size and use =
+that queue.
+
+=20
+
+But whether it works depends on the thread pool implementation. I know =
+how we implemented the thread pool after doing extensive research into =
+distributed load balancing (which is summarized below). I don't know how =
+the current implementation works, given that I don't have access to the =
+source code and the documentation is insufficient to form an opinion.
+
+=20
+
+>From what I could tell you would have 50 queued requests at all times, =
+you will probably block when the queue is full, but you would still =
+retrieve the message form the JMS queue, so no other server is able to =
+retrieve the same message if that server is able to process it ahead of =
+you.
+
+=20
+
+The point I am making is that the code you provided is adequate from the =
+perspective of the application, but the thread pool implementation needs =
+more complicated logic there, and also needs a TimeoutException on the =
+execute method. That way you could grab a message, queue it, if the =
+queue if full you get a timeout, back out for a while, repeat (but grab =
+the message again, it could be a different message next time). That way =
+you could balance the workload against a pool of servers using the JMS =
+queue as the source of all requests.
+
+=20
+
+But I know that the code to make it work is not that complicated, so =
+that's something this group should look into. With a bit more discussion =
+and code we could create a framework  that could be used to build truley =
+scalable solutions.
+
+=20
+
+arkin=20
+
+	-----Original Message-----
+	From: Regan, Kevin [mailto:kregan@amazon.com]
+	Sent: Thursday, January 30, 2003 1:19 PM
+	To: Assaf Arkin
+	Subject: RE: [concurrency-interest] Question about ThreadExecutor...
+
+	=20
+
+	Hi Arkin,
+
+	=20
+
+	Did you see my subsequent post (with code)?  Could you tell me if that =
+will do the trick?
+
+	=20
+
+	Thanks!
+	Kevin
+
+	=20
+
+	-----Original Message-----
+	From: Assaf Arkin [mailto:arkin@intalio.com]=20
+	Sent: Thursday, January 30, 2003 1:05 PM
+	To: Joseph Bowbeer; Regan, Kevin; =
+concurrency-interest@altair.cs.oswego.edu
+	Subject: RE: [concurrency-interest] Question about ThreadExecutor...
+
+	=20
+
+	You can have a thread that polls the next message and executes it, but =
+then you can only process one message at a time. Or you can have a =
+thread that polls all the messages and fires them for asynchronous =
+execution. But if you have a thousand messages in the queue you would be =
+loading all thousand messages into memory, which is pointless if you can =
+only processes 10 messages at a time.
+
+	=20
+
+	A better solution would be to have a queue that represents a portion of =
+the pool that is expected to become free next, e.g. a pool of 25 threads =
+and a queue of 5 requests, keep feeding the queue but only with enough =
+requests to feed the pool when the next thread becomes available. When =
+the queue gets full, the polling thread simply blocks. This is not a =
+problem for the polling thread which is just a way to get messages from =
+one queue to another.
+
+	=20
+
+	Alternatively, the queue size could change dynamically to account for =
+the load (smiliar to the silding window flow congenstion control in =
+TCP). If you can process all requests fast enough, the queue size grows =
+one request at a time. If you can't process the requests fast enough, =
+the queue size starts shrinking (e.g. half the size each time a request =
+gets delayed by 5 seconds or more). That way you can determine the =
+throughput as the inverse of the queue size, where queue size 1 means =
+overloaded.
+
+	=20
+
+	You could get by without the queue by just blocking for the next =
+available thread. but the queue would allow you to get requests from =
+different threads and spawn them off based on priority, given precedence =
+to the incoming request with the higher priority. For example, one =
+poller would feed messages from a JMS queue, another would feed requests =
+from the HTTP server, another would feed scheduled work, and the pool =
+would be divided based on priority.
+
+	=20
+
+	This policy, however, could lead to starvation. Let's say that you have =
+two polling threads for JMS and HTTP. The JMS poller submits a request =
+with priority 1, the HTTP poller submits a set of request with priority =
+5 as fast as they can be processed. Since the server is overloaded, both =
+have a queue of size 1, but the first request to be processed always =
+comes from the HTTP queue since it has the higher priority. The JMS =
+poller keeps blocking, which is acceptable considering that its work has =
+lower priority (e.g. because HTTP requests have to be processed within =
+max 2 minutes, and the JMS request has to be processed within 4 hours).
+
+	=20
+
+	A message is then submitted to the JMS queue with priority 10, but =
+since the JMS poller is blocking for a request with priority 1, it never =
+gets to process the higher priority request ahead of the HTTP poller. A =
+better strategy would be for the JMS poller to not block, but instead go =
+and reread the last message from the queue (which would be the new =
+message with priority 10, since the queue can order by priority). That =
+way the priority 10 message will get processed, and the priority 1 =
+message can get delayed until the workload is reduced.
+
+	=20
+
+	The JMQ poller could achieve this if the last request gets queued but =
+the thread blocks until the queue has at least one empty slot, and for a =
+limited period of time. When it times out, the request gets removed from =
+the queue, making one slot available, and an exception is thrown =
+indicating the request was not submitted. The JMS poller does not =
+discard the message, instead it reads the next available message (could =
+be the same one, or a higher priority one) and asks for execution again, =
+and repeatedly.
+
+	=20
+
+	arkin
+
+		-----Original Message-----
+		From: concurrency-interest-admin@cs.oswego.edu =
+[mailto:concurrency-interest-admin@cs.oswego.edu]On Behalf Of Joseph =
+Bowbeer
+		Sent: Thursday, January 30, 2003 11:49 AM
+		To: Regan, Kevin; concurrency-interest@altair.cs.oswego.edu
+		Subject: Re: [concurrency-interest] Question about ThreadExecutor...
+
+		Kevin,
+
+		=20
+
+		If I understand you correctly, you'd also need to choose a =
+cannotExecute impl. that explicitly waited.  (Currently we don't offer =
+any choices except the default and roll-your-own, but we are considering =
+canning some of the most popular choices such as "wait", "error", and =
+"ignore".)
+
+		=20
+
+		Our current default cannotExecute impl. is to execute the task in the =
+caller's current thread.  Since the goal of your executor is to execute =
+on a specific thread, this policy is not for you. =20
+
+		=20
+
+		Writing a blocked-execution handler that waits is made more =
+complicated by our intention to remove InterruptedException from the =
+execute() signature.  If we follow-through on this, the "wait" impl. =
+will need to either loop while ignoring interrupts, or throw a =
+RuntimeException (such as CommandCannotExecuteException).
+
+		=20
+
+		Comments?
+
+		=20
+
+		=20
+
+			----- Original Message -----=20
+
+			From: Regan, Kevin <mailto:kregan@amazon.com> =20
+
+			To: Regan, Kevin <mailto:kregan@amazon.com>  ; =
+concurrency-interest@altair.cs.oswego.edu=20
+
+			Sent: Thursday, January 30, 2003 11:05 AM
+
+			Subject: RE: [concurrency-interest] Question about ThreadExecutor...
+
+			=20
+
+			Question about ThreadExecutor... Would the following accomplish this: =
+int numThreads =3D 100; int maximumQueueSize =3D 50; Executor executor =
+=3D ThreadExecutor(numThreads, numThreads, 0, null, new =
+ArrayBlockingQueue(maximumQueueSize), new ExecutorIntercepts()); Would =
+this do what I want (ThreadExecutor.newFixedThreadPool()) and also cause =
+the Executor.execute() method to block if the queue had 50 elements =
+waiting on it? Thanks again (and sorry for the SPAM). Kevin Regan =
+kregan@amazon.com -----Original Message-----
+			From: Regan, Kevin=20
+			Sent: Thursday, January 30, 2003 11:01 AM
+			To: Regan, Kevin; concurrency-interest@altair.cs.oswego.edu
+			Subject: RE: [concurrency-interest] Question about ThreadExecutor... =
+I guess, more specifically, I would like the behavior of the =
+ThreadExecutor.newFixedThreadPool(), but with the JMS request listener =
+thread blocking if it calls execute() when the queue has "too many" =
+elements in it. Thanks again! Kevin Regan kregan@amazon.com =
+-----Original Message-----
+			From: Regan, Kevin=20
+			Sent: Thursday, January 30, 2003 10:45 AM
+			To: concurrency-interest@altair.cs.oswego.edu
+			Subject: [concurrency-interest] Question about ThreadExecutor... Hi, =
+I have a JMS process that has a single thread grabbing requests and =
+putting them on the thread pool. What I would like to happen is have =
+that thread stop grabbing JMS requests when all the workers are busy. =
+For example, if there are 100 worker threads and the JMS listener has =
+just added the 150th element to the queue, it would be great if I could =
+get that listener thread to block until the queue gets down to, say, 50 =
+elements. Is there any way to accomplish this with the concurrent =
+library? Thanks! Kevin Regan kregan@amazon.com=20
+			u
+
+
+------_=_NextPart_001_01C2C8AC.C1B16034
+Content-Type: text/html;
+	charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<html>
+
+<head>
+<META HTTP-EQUIV=3D"Content-Type" CONTENT=3D"text/html; =
+charset=3Dus-ascii">
+
+
+<meta name=3DGenerator content=3D"Microsoft Word 10 (filtered)">
+
+<style>
+<!--
+ /* Font Definitions */
+ @font-face
+	{font-family:Tahoma;
+	panose-1:2 11 6 4 3 5 4 4 2 4;}
+ /* Style Definitions */
+ p.MsoNormal, li.MsoNormal, div.MsoNormal
+	{margin:0in;
+	margin-bottom:.0001pt;
+	font-size:12.0pt;
+	font-family:"Times New Roman";}
+a:link, span.MsoHyperlink
+	{color:blue;
+	text-decoration:underline;}
+a:visited, span.MsoHyperlinkFollowed
+	{color:blue;
+	text-decoration:underline;}
+span.emailstyle17
+	{font-family:Arial;
+	color:navy;}
+span.EmailStyle18
+	{font-family:Arial;
+	color:navy;}
+@page Section1
+	{size:8.5in 11.0in;
+	margin:1.0in 1.25in 1.0in 1.25in;}
+div.Section1
+	{page:Section1;}
+-->
+</style>
+
+</head>
+
+<body bgcolor=3Dwhite lang=3DEN-US link=3Dblue vlink=3Dblue>
+
+<div class=3DSection1>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Arkin,</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>Thanks for the information.&nbsp; I =
+agree with
+you.&nbsp; This seems like a common enough pattern that it should be =
+modeled somehow
+in the new library&#8230;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>--Kevin</span></font></p>
+
+<p class=3DMsoNormal><font size=3D2 color=3Dnavy face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial;color:navy'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+face=3DTahoma><span
+style=3D'font-size:10.0pt;font-family:Tahoma'>-----Original =
+Message-----<br>
+<b><span style=3D'font-weight:bold'>From:</span></b> Assaf Arkin
+[mailto:arkin@intalio.com] <br>
+<b><span style=3D'font-weight:bold'>Sent:</span></b> Thursday, January =
+30, 2003
+2:10 PM<br>
+<b><span style=3D'font-weight:bold'>To:</span></b> Regan, Kevin<br>
+<b><span style=3D'font-weight:bold'>Subject:</span></b> RE:
+[concurrency-interest] Question about =
+ThreadExecutor...</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>I
+don't think so.</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>What
+you have submitted is definitely what your application should be doing. =
+You
+would want to define a queue with some limited size and use that =
+queue.</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>But
+whether it works depends on the thread pool implementation. I know how =
+we
+implemented the thread pool after doing extensive research into =
+distributed
+load balancing (which is summarized below). I don't know how the current
+implementation works, given that I don't have access to the source code =
+and the
+documentation is insufficient to form an opinion.</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>From
+what I could tell you would have 50 queued requests at all times, you =
+will
+probably block when the queue is full, but you would still retrieve the =
+message
+form the&nbsp;JMS queue, so no other server is able to retrieve the same
+message if that server is able to process it ahead of =
+you.</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>The
+point I am making is that the code you provided is adequate from the
+perspective of the application, but the thread pool implementation needs =
+more
+complicated logic there, and also needs a TimeoutException on the =
+execute
+method. That way you could grab a message, queue it, if the queue if =
+full you
+get a timeout, back out for a while, repeat (but grab the message again, =
+it
+could be a different message next time). That way you could balance the
+workload against a pool of servers using the JMS queue as the source of =
+all
+requests.</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>But I
+know that the code to make it work is not that complicated,&nbsp;so =
+that's
+something this group should look into. With a bit more discussion and =
+code we
+could create a framework &nbsp;that could be used to build truley =
+scalable
+solutions.</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>arkin</span></fo=
+nt>&nbsp;</p>
+
+</div>
+
+<blockquote style=3D'border:none;border-left:solid blue =
+1.5pt;padding:0in 0in 0in 4.0pt;
+margin-left:3.75pt;margin-top:5.0pt;margin-right:0in;margin-bottom:5.0pt'=
+>
+
+<p class=3DMsoNormal =
+style=3D'margin-right:0in;margin-bottom:12.0pt;margin-left:
+.5in'><font size=3D2 face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma'>-----Original
+Message-----<br>
+<b><span style=3D'font-weight:bold'>From:</span></b> Regan, Kevin
+[mailto:kregan@amazon.com]<br>
+<b><span style=3D'font-weight:bold'>Sent:</span></b> Thursday, January =
+30, 2003
+1:19 PM<br>
+<b><span style=3D'font-weight:bold'>To:</span></b> Assaf Arkin<br>
+<b><span style=3D'font-weight:bold'>Subject:</span></b> RE:
+[concurrency-interest] Question about =
+ThreadExecutor...</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dnavy face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;color:navy'>Hi =
+Arkin,</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dnavy face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;color:navy'>Did you see my =
+subsequent
+post (with code)?&nbsp; Could you tell me if that will do the =
+trick?</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D2 =
+color=3Dnavy face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;color:navy'>Thanks!<br>
+Kevin</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:.5in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+face=3DTahoma><span
+style=3D'font-size:10.0pt;font-family:Tahoma'>-----Original =
+Message-----<br>
+<b><span style=3D'font-weight:bold'>From:</span></b> Assaf Arkin
+[mailto:arkin@intalio.com] <br>
+<b><span style=3D'font-weight:bold'>Sent:</span></b> Thursday, January =
+30, 2003
+1:05 PM<br>
+<b><span style=3D'font-weight:bold'>To:</span></b> Joseph Bowbeer; =
+Regan, Kevin;
+concurrency-interest@altair.cs.oswego.edu<br>
+<b><span style=3D'font-weight:bold'>Subject:</span></b> RE:
+[concurrency-interest] Question about =
+ThreadExecutor...</span></font></p>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>You
+can have a thread that polls the next message and executes it, but then =
+you can
+only process one message at a time. Or you can have a thread that polls =
+all the
+messages and fires them for asynchronous execution. But if you have a =
+thousand
+messages in the queue you would be loading all thousand messages into =
+memory,
+which is pointless if you can only processes 10 messages at a =
+time.</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>A
+better solution would be to have a queue that represents a portion of =
+the pool
+that is expected to become free next, e.g. a pool of 25 threads and a =
+queue of
+5 requests, keep feeding the queue but only with enough requests to feed =
+the
+pool when the next thread becomes available. When the queue gets full, =
+the
+polling thread simply blocks. This is not a problem for the polling =
+thread
+which is just a way to get messages from one queue to =
+another.</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>Alternatively,
+the queue size could change dynamically to account for the load (smiliar =
+to the
+silding window flow congenstion control in TCP). If you can process all
+requests fast enough, the queue size grows one request at a time. If you =
+can't
+process the requests fast enough, the queue size starts shrinking (e.g. =
+half
+the size each time a request gets delayed by 5 seconds or more). That =
+way you
+can determine the throughput as the inverse of the queue size, where =
+queue size
+1 means overloaded.</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>You could
+get by without the queue by just blocking for the next available thread. =
+but
+the queue would allow you to get requests from different threads and =
+spawn them
+off based on priority, given precedence to the incoming request with the =
+higher
+priority. For example, one poller would feed messages from a JMS queue, =
+another
+would feed requests from the HTTP server, another would feed scheduled =
+work,
+and the pool would be divided based on priority.</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>This
+policy, however, could lead to starvation. Let's say that you have two =
+polling
+threads for JMS and HTTP. The JMS poller submits a request with priority =
+1, the
+HTTP poller submits a set of request with priority 5 as fast as they can =
+be
+processed. Since the server is overloaded, both have a queue of size 1, =
+but the
+first request to be processed always comes from the HTTP queue since it =
+has the
+higher priority. The JMS poller keeps blocking, which is acceptable =
+considering
+that its work has lower priority (e.g. because HTTP requests have to be
+processed within max 2 minutes, and the JMS request has to be processed =
+within
+4 hours).</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>A
+message is then submitted to the JMS queue with priority 10, but since =
+the JMS
+poller is blocking for a request with priority 1, it never gets to =
+process the
+higher priority request ahead of the HTTP poller. A better strategy =
+would be
+for the JMS poller to not block, but instead go and reread the last =
+message
+from the queue (which would be the new message with priority 10, since =
+the
+queue can order by priority). That way the priority 10 message will get
+processed, and the priority 1 message can get delayed until the workload =
+is
+reduced.</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>The
+JMQ poller could achieve this if the last request gets queued but the =
+thread
+blocks until the queue has at least one empty slot, and for a limited =
+period of
+time. When it times out, the request gets removed from the queue, making =
+one
+slot available, and an exception is thrown indicating the request was =
+not
+submitted. The JMS poller does not discard the message, instead it reads =
+the
+next available message (could be the same one, or a higher priority one) =
+and
+asks for execution again, and repeatedly.</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+color=3Dblue
+face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma;color:blue'>arkin</span></fo=
+nt></p>
+
+</div>
+
+<blockquote style=3D'border:none;border-left:solid blue =
+1.5pt;padding:0in 0in 0in 4.0pt;
+margin-left:3.75pt;margin-top:5.0pt;margin-right:0in;margin-bottom:5.0pt'=
+>
+
+<p class=3DMsoNormal =
+style=3D'margin-right:0in;margin-bottom:12.0pt;margin-left:
+1.0in'><font size=3D2 face=3DTahoma><span =
+style=3D'font-size:10.0pt;font-family:Tahoma'>-----Original
+Message-----<br>
+<b><span style=3D'font-weight:bold'>From:</span></b>
+concurrency-interest-admin@cs.oswego.edu
+[mailto:concurrency-interest-admin@cs.oswego.edu]<b><span =
+style=3D'font-weight:
+bold'>On Behalf Of </span></b>Joseph Bowbeer<br>
+<b><span style=3D'font-weight:bold'>Sent:</span></b> Thursday, January =
+30, 2003
+11:49 AM<br>
+<b><span style=3D'font-weight:bold'>To:</span></b> Regan, Kevin;
+concurrency-interest@altair.cs.oswego.edu<br>
+<b><span style=3D'font-weight:bold'>Subject:</span></b> Re:
+[concurrency-interest] Question about =
+ThreadExecutor...</span></font></p>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+face=3D"Times New Roman"><span
+style=3D'font-size:10.0pt'>Kevin,</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+face=3D"Times New Roman"><span
+style=3D'font-size:10.0pt'>If I understand you correctly, you'd also =
+need to
+choose a cannotExecute impl. that explicitly waited.&nbsp; (Currently we =
+don't
+offer any choices except the default and roll-your-own, but we are
+considering&nbsp;canning some of the most popular choices such as
+&quot;wait&quot;, &quot;error&quot;, and =
+&quot;ignore&quot;.)</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+face=3D"Times New Roman"><span
+style=3D'font-size:10.0pt'>Our current default cannotExecute impl. is to =
+execute
+the task in the caller's current thread.&nbsp; Since the goal of your =
+executor
+is to execute on a specific thread, this policy is not for you.&nbsp; =
+</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+face=3D"Times New Roman"><span
+style=3D'font-size:10.0pt'>Writing a blocked-execution handler that =
+waits is made
+more complicated by our intention to remove InterruptedException from =
+the
+execute() signature.&nbsp; If we follow-through on this, the =
+&quot;wait&quot;
+impl. will need to either loop while ignoring interrupts, or throw a
+RuntimeException (such =
+as&nbsp;CommandCannotExecuteException).</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+face=3D"Times New Roman"><span
+style=3D'font-size:10.0pt'>Comments?</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<blockquote style=3D'border:none;border-left:solid black =
+1.5pt;padding:0in 0in 0in 4.0pt;
+margin-left:3.75pt;margin-top:5.0pt;margin-right:0in;margin-bottom:5.0pt'=
+>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D2 =
+face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial'>----- Original Message =
+----- </span></font></p>
+
+</div>
+
+<div style=3D'font-color:black'>
+
+<p class=3DMsoNormal =
+style=3D'margin-left:1.0in;background:#E4E4E4'><b><font
+size=3D2 face=3DArial><span =
+style=3D'font-size:10.0pt;font-family:Arial;font-weight:
+bold'>From:</span></font></b><font size=3D2 face=3DArial><span =
+style=3D'font-size:
+10.0pt;font-family:Arial'> <a href=3D"mailto:kregan@amazon.com"
+title=3D"kregan@amazon.com">Regan, Kevin</a> </span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><b><font size=3D2 =
+face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;font-weight:bold'>To:</span><=
+/font></b><font
+size=3D2 face=3DArial><span =
+style=3D'font-size:10.0pt;font-family:Arial'> <a
+href=3D"mailto:kregan@amazon.com" title=3D"kregan@amazon.com">Regan, =
+Kevin</a> ; <a
+href=3D"mailto:concurrency-interest@altair.cs.oswego.edu"
+title=3D"concurrency-interest@altair.cs.oswego.edu">concurrency-interest@=
+altair.cs.oswego.edu</a>
+</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><b><font size=3D2 =
+face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;font-weight:bold'>Sent:</span=
+></font></b><font
+size=3D2 face=3DArial><span =
+style=3D'font-size:10.0pt;font-family:Arial'> Thursday,
+January 30, 2003 11:05 AM</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><b><font size=3D2 =
+face=3DArial><span
+style=3D'font-size:10.0pt;font-family:Arial;font-weight:bold'>Subject:</s=
+pan></font></b><font
+size=3D2 face=3DArial><span =
+style=3D'font-size:10.0pt;font-family:Arial'> RE:
+[concurrency-interest] Question about =
+ThreadExecutor...</span></font></p>
+
+</div>
+
+<div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>&nbsp;</span></font></p>
+
+</div>
+
+<p class=3DMsoNormal style=3D'margin-left:1.0in'><font size=3D3 =
+face=3D"Times New Roman"><span
+style=3D'font-size:12.0pt'>Question about ThreadExecutor... Would the =
+following
+accomplish this: int numThreads =3D 100; int maximumQueueSize =3D 50; =
+Executor
+executor =3D ThreadExecutor(numThreads, numThreads, 0, null, new
+ArrayBlockingQueue(maximumQueueSize), new ExecutorIntercepts()); Would =
+this do
+what I want (ThreadExecutor.newFixedThreadPool()) and also cause the
+Executor.execute() method to block if the queue had 50 elements waiting =
+on it?
+Thanks again (and sorry for the SPAM). Kevin Regan kregan@amazon.com
+-----Original Message-----<br>
+From: Regan, Kevin <br>
+Sent: Thursday, January 30, 2003 11:01 AM<br>
+To: Regan, Kevin; concurrency-interest@altair.cs.oswego.edu<br>
+Subject: RE: [concurrency-interest] Question about ThreadExecutor... I =
+guess,
+more specifically, I would like the behavior of the
+ThreadExecutor.newFixedThreadPool(), but with the JMS request listener =
+thread
+blocking if it calls execute() when the queue has &#8220;too many&#8221;
+elements in it. Thanks again! Kevin Regan kregan@amazon.com =
+-----Original
+Message-----<br>
+From: Regan, Kevin <br>
+Sent: Thursday, January 30, 2003 10:45 AM<br>
+To: concurrency-interest@altair.cs.oswego.edu<br>
+Subject: [concurrency-interest] Question about ThreadExecutor... Hi, I =
+have a
+JMS process that has a single thread grabbing requests and putting them =
+on the
+thread pool. What I would like to happen is have that thread stop =
+grabbing JMS
+requests when all the workers are busy. For example, if there are 100 =
+worker
+threads and the JMS listener has just added the 150th element to the =
+queue, it
+would be great if I could get that listener thread to block until the =
+queue gets
+down to, say, 50 elements. Is there any way to accomplish this with the
+concurrent library? Thanks! Kevin Regan kregan@amazon.com <br>
+u</span></font></p>
+
+</blockquote>
+
+</blockquote>
+
+</blockquote>
+
+</div>
+
+</body>
+
+</html>
+=00
+------_=_NextPart_001_01C2C8AC.C1B16034--
+

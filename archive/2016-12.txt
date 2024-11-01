@@ -1,0 +1,922 @@
+From akarnokd at gmail.com  Mon Dec  5 04:03:43 2016
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Mon, 5 Dec 2016 10:03:43 +0100
+Subject: [concurrency-interest] 9b147:
+ SubmissionPublisher.closeExceptionally doesn't call onSubscribe() in time
+Message-ID: <CAAWwtm8MpfRRYcO898vPzreDqhxePuVMNtADNcShJjdfFX-fHg@mail.gmail.com>
+
+I'm writing an interop library between RxJava 2 and JDK 9 Flow and run into
+an odd situation.
+
+The following test passes:
+
+    SubmissionPublisher<Integer> sp = new SubmissionPublisher<>();
+
+    TestSubscriber<Integer> ts = FlowInterop.fromFlowPublisher(sp)
+    .test();
+
+    sp.submit(1);
+    sp.submit(2);
+    sp.submit(3);
+    sp.submit(4);
+    sp.submit(5);
+
+    sp.close();
+
+    ts.awaitDone(5, TimeUnit.SECONDS)
+        .assertResult(1, 2, 3, 4, 5);
+
+
+
+but when I call closeExceptionally() instead:
+
+    SubmissionPublisher<Integer> sp = new SubmissionPublisher<>();
+
+    TestSubscriber<Integer> ts = FlowInterop.fromFlowPublisher(sp)
+        .test();
+
+    sp.submit(1);
+    sp.submit(2);
+    sp.submit(3);
+    sp.submit(4);
+    sp.submit(5);
+
+    sp.closeExceptionally(new IOException());
+
+
+    ts.awaitDone(5, TimeUnit.SECONDS)
+      .assertFailure(IOException.class, 1, 2, 3, 4, 5);
+
+
+The test fails because there was no call to Flow.Subscriber.onSubscribe in
+this case before calling Flow.Subscriber.onError with the IOException:
+
+Caused by: java.lang.NullPointerException: onSubscribe not called in proper
+order
+at io.reactivex.subscribers.TestSubscriber.onError(TestSubscriber.java:221)
+at
+hu.akarnokd.rxjava2.interop.FlowableFromFlowPublisher$FromFlowPublisherSubscriber.onError(FlowableFromFlowPublisher.java:62)
+*at
+java.base/java.util.concurrent.SubmissionPublisher$BufferedSubscription.checkControl(SubmissionPublisher.java:1463)*
+* at
+java.base/java.util.concurrent.SubmissionPublisher$BufferedSubscription.consume(SubmissionPublisher.java:1421)*
+at
+java.base/java.util.concurrent.SubmissionPublisher$ConsumerTask.exec(SubmissionPublisher.java:919)
+at java.base/java.util.concurrent.ForkJoinTask.doExec(ForkJoinTask.java:283)
+at
+java.base/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1575)
+at
+java.base/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:158)
+
+Sleeping before the call to closeExceptionally() seems to make it work.
+
+The relevant converter looks like this:
+
+final class FlowableFromFlowPublisher<T> extends Flowable<T> {
+
+    final Flow.Publisher<T> source;
+
+    FlowableFromFlowPublisher(Flow.Publisher<T> source) {
+        this.source = source;
+    }
+
+    @Override
+    protected void subscribeActual(org.reactivestreams.Subscriber<?
+super T> s) {
+        source.subscribe(new FromFlowPublisherSubscriber<>(s));
+    }
+
+    static final class FromFlowPublisherSubscriber<T> implements
+Flow.Subscriber<T>, org.reactivestreams.Subscription {
+
+        final org.reactivestreams.Subscriber<? super T> actual;
+
+        Flow.Subscription s;
+
+        FromFlowPublisherSubscriber(org.reactivestreams.Subscriber<?
+super T> actual) {
+            this.actual = actual;
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+            this.s = subscription;
+            actual.onSubscribe(this);
+        }
+
+        @Override
+        public void onNext(T t) {
+            actual.onNext(t);
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            actual.onError(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            actual.onComplete();
+        }
+
+        @Override
+        public void request(long n) {
+            s.request(n);
+        }
+
+        @Override
+        public void cancel() {
+            s.cancel();
+        }
+    }
+}
+
+It looks like if there is a closeExceptionally() call, the protocol is not
+held and onError is called without calling onSubscribe.
+
+(Repository: https://github.com/akarnokd/RxJava2Jdk9Interop )
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20161205/24ce0b9e/attachment.html>
+
+From viktor.klang at gmail.com  Mon Dec  5 04:54:45 2016
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Mon, 5 Dec 2016 10:54:45 +0100
+Subject: [concurrency-interest] 9b147:
+ SubmissionPublisher.closeExceptionally doesn't call onSubscribe() in time
+In-Reply-To: <CAAWwtm8MpfRRYcO898vPzreDqhxePuVMNtADNcShJjdfFX-fHg@mail.gmail.com>
+References: <CAAWwtm8MpfRRYcO898vPzreDqhxePuVMNtADNcShJjdfFX-fHg@mail.gmail.com>
+Message-ID: <CANPzfU8Thabb5J6vw_J7zWPnDJSuCw29DENfKFPbmZ2wXZzkDQ@mail.gmail.com>
+
+Nice catch, Dávid!
+
+On Mon, Dec 5, 2016 at 10:03 AM, Dávid Karnok <akarnokd at gmail.com> wrote:
+
+> I'm writing an interop library between RxJava 2 and JDK 9 Flow and run
+> into an odd situation.
+>
+> The following test passes:
+>
+>     SubmissionPublisher<Integer> sp = new SubmissionPublisher<>();
+>
+>     TestSubscriber<Integer> ts = FlowInterop.fromFlowPublisher(sp)
+>     .test();
+>
+>     sp.submit(1);
+>     sp.submit(2);
+>     sp.submit(3);
+>     sp.submit(4);
+>     sp.submit(5);
+>
+>     sp.close();
+>
+>     ts.awaitDone(5, TimeUnit.SECONDS)
+>         .assertResult(1, 2, 3, 4, 5);
+>
+>
+>
+> but when I call closeExceptionally() instead:
+>
+>     SubmissionPublisher<Integer> sp = new SubmissionPublisher<>();
+>
+>     TestSubscriber<Integer> ts = FlowInterop.fromFlowPublisher(sp)
+>         .test();
+>
+>     sp.submit(1);
+>     sp.submit(2);
+>     sp.submit(3);
+>     sp.submit(4);
+>     sp.submit(5);
+>
+>     sp.closeExceptionally(new IOException());
+>
+>
+>     ts.awaitDone(5, TimeUnit.SECONDS)
+>       .assertFailure(IOException.class, 1, 2, 3, 4, 5);
+>
+>
+> The test fails because there was no call to Flow.Subscriber.onSubscribe in
+> this case before calling Flow.Subscriber.onError with the IOException:
+>
+> Caused by: java.lang.NullPointerException: onSubscribe not called in
+> proper order
+> at io.reactivex.subscribers.TestSubscriber.onError(
+> TestSubscriber.java:221)
+> at hu.akarnokd.rxjava2.interop.FlowableFromFlowPublisher$
+> FromFlowPublisherSubscriber.onError(FlowableFromFlowPublisher.java:62)
+> *at
+> java.base/java.util.concurrent.SubmissionPublisher$BufferedSubscription.checkControl(SubmissionPublisher.java:1463)*
+> * at
+> java.base/java.util.concurrent.SubmissionPublisher$BufferedSubscription.consume(SubmissionPublisher.java:1421)*
+> at java.base/java.util.concurrent.SubmissionPublisher$ConsumerTask.exec(
+> SubmissionPublisher.java:919)
+> at java.base/java.util.concurrent.ForkJoinTask.
+> doExec(ForkJoinTask.java:283)
+> at java.base/java.util.concurrent.ForkJoinPool.
+> runWorker(ForkJoinPool.java:1575)
+> at java.base/java.util.concurrent.ForkJoinWorkerThread.run(
+> ForkJoinWorkerThread.java:158)
+>
+> Sleeping before the call to closeExceptionally() seems to make it work.
+>
+> The relevant converter looks like this:
+>
+> final class FlowableFromFlowPublisher<T> extends Flowable<T> {
+>
+>     final Flow.Publisher<T> source;
+>
+>     FlowableFromFlowPublisher(Flow.Publisher<T> source) {
+>         this.source = source;
+>     }
+>
+>     @Override
+>     protected void subscribeActual(org.reactivestreams.Subscriber<? super T> s) {
+>         source.subscribe(new FromFlowPublisherSubscriber<>(s));
+>     }
+>
+>     static final class FromFlowPublisherSubscriber<T> implements Flow.Subscriber<T>, org.reactivestreams.Subscription {
+>
+>         final org.reactivestreams.Subscriber<? super T> actual;
+>
+>         Flow.Subscription s;
+>
+>         FromFlowPublisherSubscriber(org.reactivestreams.Subscriber<? super T> actual) {
+>             this.actual = actual;
+>         }
+>
+>         @Override
+>         public void onSubscribe(Flow.Subscription subscription) {
+>             this.s = subscription;
+>             actual.onSubscribe(this);
+>         }
+>
+>         @Override
+>         public void onNext(T t) {
+>             actual.onNext(t);
+>         }
+>
+>         @Override
+>         public void onError(Throwable throwable) {
+>             actual.onError(throwable);
+>         }
+>
+>         @Override
+>         public void onComplete() {
+>             actual.onComplete();
+>         }
+>
+>         @Override
+>         public void request(long n) {
+>             s.request(n);
+>         }
+>
+>         @Override
+>         public void cancel() {
+>             s.cancel();
+>         }
+>     }
+> }
+>
+> It looks like if there is a closeExceptionally() call, the protocol is not
+> held and onError is called without calling onSubscribe.
+>
+> (Repository: https://github.com/akarnokd/RxJava2Jdk9Interop )
+> --
+> Best regards,
+> David Karnok
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+
+-- 
+Cheers,
+√
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20161205/4757bc4c/attachment-0001.html>
+
+From 7025260588 at txt.att.net  Mon Dec  5 18:05:22 2016
+From: 7025260588 at txt.att.net (7025260588 at txt.att.net)
+Date: Mon, 05 Dec 2016 15:05:22 -0800
+Subject: [concurrency-interest] Concurrency-interest_Digest, _Vol_143,
+	_Issue_1
+In-Reply-To: mailman.13.1480931712.2378.concurrency-interest@cs.oswego.edu
+Message-ID: <GP5N1u00U0XRU3v01P5NTj@txt.att.net>
+
+Stop
+
+  -----Original Message-----
+  From: <concurrency-interest at cs.oswego.edu>
+  Sent: Mon, 05 Dec 2016 04:55:12 -0500
+  To: 7025260588 at txt.att.net
+ Subject: Concurrency-interest_Digest,_Vol_143,_Issue_1
+
+>Send Concurrency-interest mailing list submissions to
+>	concurrency-interest at cs.oswego.edu
+>
+>To subscribe or unsubscribe via the World Wide Web, visit
+>	http://cs.oswego.edu/mailman
+
+==================================================================
+This mobile text message is brought to you by AT&T
+
+From dl at cs.oswego.edu  Mon Dec  5 19:29:23 2016
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 5 Dec 2016 19:29:23 -0500
+Subject: [concurrency-interest] 9b147:
+ SubmissionPublisher.closeExceptionally doesn't call onSubscribe() in time
+In-Reply-To: <CAAWwtm8MpfRRYcO898vPzreDqhxePuVMNtADNcShJjdfFX-fHg@mail.gmail.com>
+References: <CAAWwtm8MpfRRYcO898vPzreDqhxePuVMNtADNcShJjdfFX-fHg@mail.gmail.com>
+Message-ID: <546e6e21-8c9d-526a-ca3e-9488f5fcdd76@cs.oswego.edu>
+
+
+Thanks! I agree that this it was inconsistent to give onError
+precedence over onSubscribe. It is now changed to work in the
+same way across close and closeExceptionally. (It will take a
+while to get this into jdk9 builds though.)
+
+-Doug
+
+
+On 12/05/2016 04:03 AM, Dávid Karnok wrote:
+> I'm writing an interop library between RxJava 2 and JDK 9 Flow and run
+> into an odd situation.
+>
+> The following test passes:
+>
+>     SubmissionPublisher<Integer> sp = new SubmissionPublisher<>();
+>
+>     TestSubscriber<Integer> ts = FlowInterop.fromFlowPublisher(sp)
+>     .test();
+>
+>     sp.submit(1);
+>     sp.submit(2);
+>     sp.submit(3);
+>     sp.submit(4);
+>     sp.submit(5);
+>
+>     sp.close();
+>
+>     ts.awaitDone(5, TimeUnit.SECONDS)
+>         .assertResult(1, 2, 3, 4, 5);
+>
+>
+>
+> but when I call closeExceptionally() instead:
+>
+>     SubmissionPublisher<Integer> sp = new SubmissionPublisher<>();
+>
+>     TestSubscriber<Integer> ts = FlowInterop.fromFlowPublisher(sp)
+>         .test();
+>
+>     sp.submit(1);
+>     sp.submit(2);
+>     sp.submit(3);
+>     sp.submit(4);
+>     sp.submit(5);
+>
+>     sp.closeExceptionally(new IOException());
+>
+>
+>     ts.awaitDone(5, TimeUnit.SECONDS)
+>       .assertFailure(IOException.class, 1, 2, 3, 4, 5);
+>
+>
+> The test fails because there was no call to Flow.Subscriber.onSubscribe
+> in this case before calling Flow.Subscriber.onError with the IOException:
+>
+> Caused by: java.lang.NullPointerException: onSubscribe not called in
+> proper order
+> at io.reactivex.subscribers.TestSubscriber.onError(TestSubscriber.java:221)
+> at
+> hu.akarnokd.rxjava2.interop.FlowableFromFlowPublisher$FromFlowPublisherSubscriber.onError(FlowableFromFlowPublisher.java:62)
+> *at
+> java.base/java.util.concurrent.SubmissionPublisher$BufferedSubscription.checkControl(SubmissionPublisher.java:1463)*
+> *at
+> java.base/java.util.concurrent.SubmissionPublisher$BufferedSubscription.consume(SubmissionPublisher.java:1421)*
+> at
+> java.base/java.util.concurrent.SubmissionPublisher$ConsumerTask.exec(SubmissionPublisher.java:919)
+> at java.base/java.util.concurrent.ForkJoinTask.doExec(ForkJoinTask.java:283)
+> at
+> java.base/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1575)
+> at
+> java.base/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:158)
+>
+> Sleeping before the call to closeExceptionally() seems to make it work.
+>
+> The relevant converter looks like this:
+>
+> final class FlowableFromFlowPublisher<T> extends Flowable<T> {
+>
+>     final Flow.Publisher<T> source;
+>
+>     FlowableFromFlowPublisher(Flow.Publisher<T> source) {
+>         this.source = source;
+>     }
+>
+>     @Override
+> protected void subscribeActual(org.reactivestreams.Subscriber<? super T> s) {
+>         source.subscribe(new FromFlowPublisherSubscriber<>(s));
+>     }
+>
+>     static final class FromFlowPublisherSubscriber<T> implements Flow.Subscriber<T>, org.reactivestreams.Subscription {
+>
+>         final org.reactivestreams.Subscriber<? super T> actual;
+>
+>         Flow.Subscription s;
+>
+>         FromFlowPublisherSubscriber(org.reactivestreams.Subscriber<? super T> actual) {
+>             this.actual = actual;
+>         }
+>
+>         @Override
+> public void onSubscribe(Flow.Subscription subscription) {
+>             this.s = subscription;
+>             actual.onSubscribe(this);
+>         }
+>
+>         @Override
+> public void onNext(T t) {
+>             actual.onNext(t);
+>         }
+>
+>         @Override
+> public void onError(Throwable throwable) {
+>             actual.onError(throwable);
+>         }
+>
+>         @Override
+> public void onComplete() {
+>             actual.onComplete();
+>         }
+>
+>         @Override
+> public void request(long n) {
+>             s.request(n);
+>         }
+>
+>         @Override
+> public void cancel() {
+>             s.cancel();
+>         }
+>     }
+> }
+>
+> It looks like if there is a closeExceptionally() call, the protocol is
+> not held and onError is called without calling onSubscribe.
+>
+> (Repository: https://github.com/akarnokd/RxJava2Jdk9Interop )
+> --
+> Best regards,
+> David Karnok
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+From leventov.ru at gmail.com  Mon Dec 12 15:55:32 2016
+From: leventov.ru at gmail.com (Roman Leventov)
+Date: Mon, 12 Dec 2016 14:55:32 -0600
+Subject: [concurrency-interest] ReentrantReadWriteLock sample usage -
+	redundant volatile
+Message-ID: <CAAMLo=bDJPw0PLp0xuceGxeC+RJc2zdvx8K2RgzTPjni=8Rm6w@mail.gmail.com>
+
+It seems that in "CachedData" sample usage in ReentrantReadWriteLock
+class-level Javadoc comment volatile on cacheValid field is redundant,
+because cacheValid is only accessed when readLock or writeLock is held,
+that should guarantee total memory safety.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20161212/98e1282e/attachment.html>
+
+From dl at cs.oswego.edu  Tue Dec 13 16:08:15 2016
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 13 Dec 2016 16:08:15 -0500
+Subject: [concurrency-interest] ReentrantReadWriteLock sample usage -
+ redundant volatile
+In-Reply-To: <CAAMLo=bDJPw0PLp0xuceGxeC+RJc2zdvx8K2RgzTPjni=8Rm6w@mail.gmail.com>
+References: <CAAMLo=bDJPw0PLp0xuceGxeC+RJc2zdvx8K2RgzTPjni=8Rm6w@mail.gmail.com>
+Message-ID: <325fb3f5-e9f4-cd79-217e-262628b0ba1b@cs.oswego.edu>
+
+On 12/12/2016 03:55 PM, Roman Leventov wrote:
+> It seems that in "CachedData" sample usage in ReentrantReadWriteLock
+> class-level Javadoc comment volatile on cacheValid field is redundant,
+> because cacheValid is only accessed when readLock or writeLock is held,
+> that should guarantee total memory safety.
+>
+
+Thanks; changed. Omitting "volatile" here might reduce confusion.
+My vague recollection is that the example was abstracted from
+an actual usage, where there may have been some reason to rely on
+volatile in other parts of the code.
+
+-Doug
+
+
+
+From joerg.hettel at hs-kl.de  Wed Dec 14 04:00:08 2016
+From: joerg.hettel at hs-kl.de (=?UTF-8?Q?J=c3=b6rg_Hettel?=)
+Date: Wed, 14 Dec 2016 10:00:08 +0100
+Subject: [concurrency-interest] ReentrantReadWriteLock sample usage -
+ redundant volatile
+In-Reply-To: <325fb3f5-e9f4-cd79-217e-262628b0ba1b@cs.oswego.edu>
+References: <CAAMLo=bDJPw0PLp0xuceGxeC+RJc2zdvx8K2RgzTPjni=8Rm6w@mail.gmail.com>
+ <325fb3f5-e9f4-cd79-217e-262628b0ba1b@cs.oswego.edu>
+Message-ID: <3e3e40b4-ca07-b71f-d2fd-f92d7a65e66c@hs-kl.de>
+
+|In this case cacheValid field should also be changed to private|
+
+|Joerg
+|
+
+
+Am 13.12.2016 um 22:08 schrieb Doug Lea:
+> On 12/12/2016 03:55 PM, Roman Leventov wrote:
+>> It seems that in "CachedData" sample usage in ReentrantReadWriteLock
+>> class-level Javadoc comment volatile on cacheValid field is redundant,
+>> because cacheValid is only accessed when readLock or writeLock is held,
+>> that should guarantee total memory safety.
+>>
+>
+> Thanks; changed. Omitting "volatile" here might reduce confusion.
+> My vague recollection is that the example was abstracted from
+> an actual usage, where there may have been some reason to rely on
+> volatile in other parts of the code.
+>
+> -Doug
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20161214/98f8ad18/attachment.html>
+
+From ati at activeviam.com  Wed Dec 28 04:30:01 2016
+From: ati at activeviam.com (Antoine Tissier)
+Date: Wed, 28 Dec 2016 10:30:01 +0100
+Subject: [concurrency-interest] Suspecting a problem in recent jdk-9 builds
+Message-ID: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+
+Hi,
+
+We have been running benchmarks for our in-memory analytics software
+ActivePivot on a M6.32 machine (Solaris Sparc, 8 TB RAM, 2304 logical cores
+(288 physical cores)).
+Our benchmarks involve high parallelism along with many queries divided in
+a high number of tasks (CountedCompleters) in the ForkJoinPool. With build
+145 of jdk-9, some tasks are not executed, causing larger completion
+problems. However, with the earlier build 111, the problem does not occur.
+
+On a smaller Linux machine (Linux amd 64, 64 logical cores (32 physical
+cores), 512 GB RAM) but with a similar setup, the problem was not
+reproduced.
+
+The problem seems to arise when a large number of completers (>20 000) are
+involved: forking tasks works well but when submitting tasks to a new pool,
+it seems that their compute method is sometimes not called.
+We indeed log every call to ForkJoinPool.submit, as well as everytime a
+completer enters its compute method, and clearly see that once in a while,
+the task is never computed after having been submitted. We let the system
+run for an additional hour, and there was no more progress even though the
+system was idle. Thread dumps did not show any suspect activity (all worker
+threads were idle).
+
+We tried to reproduce the problem with a similar but more simple test, but
+it was not successful.
+
+Are you aware of any concurrency/task completion problems in the more
+recent builds of jdk-9 ?
+Are there any additional tests that we could run in order to diagnose this
+issue ?
+
+Best regards,
+Antoine
+
+
+
+-- 
+[image: ActiveViam]
+
+46 rue de l'Arbre Sec, 75001 Paris
+France
+[image: Twitter] <https://twitter.com/active_viam> [image: Blog]
+<http://activeviam.com/blog/> [image: Linkedin]
+<https://www.linkedin.com/company/85029> [image: Youtube]
+<https://www.youtube.com/channel/UCGjYnbjlPamN0RvSm3eGqCw> Antoine Tissier
+*Junior Software Engineer*
+
+
+[image: Mobile]+33(0) 6.26.33.35.62 <+33%206%2026%2033%2035%2062>
+[image: Skype]antoine_tissier
+[image: Website]www.activeviam.com <https://activeviam.com/>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20161228/f21af1c9/attachment.html>
+
+From aph at redhat.com  Wed Dec 28 04:56:23 2016
+From: aph at redhat.com (Andrew Haley)
+Date: Wed, 28 Dec 2016 09:56:23 +0000
+Subject: [concurrency-interest] Suspecting a problem in recent jdk-9
+ builds
+In-Reply-To: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+References: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+Message-ID: <6131a3ff-be15-c9fa-4a82-13be7fa5efa6@redhat.com>
+
+On 28/12/16 09:30, Antoine Tissier wrote:
+> We tried to reproduce the problem with a similar but more simple test, but
+> it was not successful.
+
+Did you run jcstress?  If not, please do that first.
+
+Andrew.
+
+
+From dl at cs.oswego.edu  Wed Dec 28 07:30:33 2016
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 28 Dec 2016 07:30:33 -0500
+Subject: [concurrency-interest] Suspecting a problem in recent jdk-9
+ builds
+In-Reply-To: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+References: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+Message-ID: <2413d23c-80a0-6843-d70b-3c50c99cabb6@cs.oswego.edu>
+
+On 12/28/2016 04:30 AM, Antoine Tissier wrote:
+> Hi,
+>
+> We have been running benchmarks for our in-memory analytics software
+> ActivePivot on a M6.32 machine (Solaris Sparc, 8 TB RAM, 2304 logical
+> cores (288 physical cores)).
+> Our benchmarks involve high parallelism along with many queries divided
+> in a high number of tasks (CountedCompleters) in the ForkJoinPool. With
+> build 145 of jdk-9, some tasks are not executed, causing larger
+> completion problems. However, with the earlier build 111, the problem
+> does not occur.
+>
+> On a smaller Linux machine (Linux amd 64, 64 logical cores (32 physical
+> cores), 512 GB RAM) but with a similar setup, the problem was not
+> reproduced.
+>
+> The problem seems to arise when a large number of completers (>20 000)
+> are involved: forking tasks works well but when submitting tasks to a
+> new pool, it seems that their compute method is sometimes not called.
+> We indeed log every call to ForkJoinPool.submit, as well as everytime a
+> completer enters its compute method, and clearly see that once in a
+> while, the task is never computed after having been submitted. We let
+> the system run for an additional hour, and there was no more progress
+> even though the system was idle. Thread dumps did not show any suspect
+> activity (all worker threads were idle).
+>
+> We tried to reproduce the problem with a similar but more simple test,
+> but it was not successful.
+>
+> Are you aware of any concurrency/task completion problems in the more
+> recent builds of jdk-9 ?
+
+The only changes in any relevant j.u.c classes were to incorporate
+VarHandles in June. I believe these were tested on Sparcs, but not
+by me.
+
+> Are there any additional tests that we could run in order to diagnose
+> this issue ?
+
+It's not easy to diagnose a problem that seems to be specific
+to a machine and program we don't have.
+
+Some initial checks would be to try different VM and GC settings,
+especially -XX:+UseParallelGC, (vs default UseG1GC) and
+-XX:-UseBiasedLocking). Also, if using commonPool, try
+    -Djava.util.concurrent.ForkJoinPool.common.parallelism=n
+for different values of n.
+
+These would help rule out some kinds of problems.
+
+-Doug
+
+
+
+From martinrb at google.com  Wed Dec 28 11:56:33 2016
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 28 Dec 2016 08:56:33 -0800
+Subject: [concurrency-interest] Suspecting a problem in recent jdk-9
+	builds
+In-Reply-To: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+References: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+Message-ID: <CA+kOe09RZXpWdO-cBXz4ybrSAhn5axff+zJ1zG1jo9j0eiyr6Q@mail.gmail.com>
+
+Experience suggests that such problems are *usually* in the application
+code, but of course there are undiscovered bugs in java.util.concurrent.
+
+Since only you can reproduce the problem, only you can narrow down the
+possible root causes.  You could build your own openjdk9, bisect to the
+exact commit that is causing problems, but it would be a lot of work, and
+it might in the end be a change to hotspot gc, with root cause still
+unknown...
+
+On Wed, Dec 28, 2016 at 1:30 AM, Antoine Tissier <ati at activeviam.com> wrote:
+
+> Hi,
+>
+> We have been running benchmarks for our in-memory analytics software
+> ActivePivot on a M6.32 machine (Solaris Sparc, 8 TB RAM, 2304 logical cores
+> (288 physical cores)).
+> Our benchmarks involve high parallelism along with many queries divided in
+> a high number of tasks (CountedCompleters) in the ForkJoinPool. With build
+> 145 of jdk-9, some tasks are not executed, causing larger completion
+> problems. However, with the earlier build 111, the problem does not occur.
+>
+> On a smaller Linux machine (Linux amd 64, 64 logical cores (32 physical
+> cores), 512 GB RAM) but with a similar setup, the problem was not
+> reproduced.
+>
+> The problem seems to arise when a large number of completers (>20 000) are
+> involved: forking tasks works well but when submitting tasks to a new pool,
+> it seems that their compute method is sometimes not called.
+> We indeed log every call to ForkJoinPool.submit, as well as everytime a
+> completer enters its compute method, and clearly see that once in a while,
+> the task is never computed after having been submitted. We let the system
+> run for an additional hour, and there was no more progress even though the
+> system was idle. Thread dumps did not show any suspect activity (all worker
+> threads were idle).
+>
+> We tried to reproduce the problem with a similar but more simple test, but
+> it was not successful.
+>
+> Are you aware of any concurrency/task completion problems in the more
+> recent builds of jdk-9 ?
+> Are there any additional tests that we could run in order to diagnose this
+> issue ?
+>
+> Best regards,
+> Antoine
+>
+>
+>
+> --
+> [image: ActiveViam]
+>
+> 46 rue de l'Arbre Sec, 75001 Paris
+> France
+> [image: Twitter] <https://twitter.com/active_viam> [image: Blog]
+> <http://activeviam.com/blog/> [image: Linkedin]
+> <https://www.linkedin.com/company/85029> [image: Youtube]
+> <https://www.youtube.com/channel/UCGjYnbjlPamN0RvSm3eGqCw> Antoine Tissier
+> *Junior Software Engineer*
+>
+>
+> [image: Mobile]+33(0) 6.26.33.35.62 <+33%206%2026%2033%2035%2062>
+> [image: Skype]antoine_tissier
+> [image: Website]www.activeviam.com <https://activeviam.com/>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20161228/b11d563c/attachment.html>
+
+From ati at activeviam.com  Fri Dec 30 12:03:50 2016
+From: ati at activeviam.com (Antoine Tissier)
+Date: Fri, 30 Dec 2016 18:03:50 +0100
+Subject: [concurrency-interest] Suspecting a problem in recent jdk-9
+	builds
+In-Reply-To: <CA+kOe09RZXpWdO-cBXz4ybrSAhn5axff+zJ1zG1jo9j0eiyr6Q@mail.gmail.com>
+References: <CAA--Oij05ndmc_RrgrhB=MDPdQiJPydEESRQ0JhKEyn2PTcfBw@mail.gmail.com>
+ <CA+kOe09RZXpWdO-cBXz4ybrSAhn5axff+zJ1zG1jo9j0eiyr6Q@mail.gmail.com>
+Message-ID: <CAA--OignGKhhkp71WV7=jxvk+t+p88g4gXUvr3DhStbX6f4_1g@mail.gmail.com>
+
+Thank you for all your answers.
+
+We tried to run jcstress and all the tests passed without any error.
+
+Our application uses several TBs of RAM, so we need to use G1GC. The
+problem still occurs when adding -XX:-UseBiasedLocking to the VM args. We
+are going to try building the application with the commit corresponding to
+the addition of the VarHandles and the one just before to see if we can
+narrow the problem down to this change.
+
+Note that we are a partner of Oracle and we are running our application on
+the Oracle network, so it is accessible by the JVM engineers. Let us know
+if you need to arrange access to the application.
+
+Best,
+Antoine
+
+On Wed, Dec 28, 2016 at 5:56 PM, Martin Buchholz <martinrb at google.com>
+wrote:
+
+> Experience suggests that such problems are *usually* in the application
+> code, but of course there are undiscovered bugs in java.util.concurrent.
+>
+> Since only you can reproduce the problem, only you can narrow down the
+> possible root causes.  You could build your own openjdk9, bisect to the
+> exact commit that is causing problems, but it would be a lot of work, and
+> it might in the end be a change to hotspot gc, with root cause still
+> unknown...
+>
+> On Wed, Dec 28, 2016 at 1:30 AM, Antoine Tissier <ati at activeviam.com>
+> wrote:
+>
+>> Hi,
+>>
+>> We have been running benchmarks for our in-memory analytics software
+>> ActivePivot on a M6.32 machine (Solaris Sparc, 8 TB RAM, 2304 logical cores
+>> (288 physical cores)).
+>> Our benchmarks involve high parallelism along with many queries divided
+>> in a high number of tasks (CountedCompleters) in the ForkJoinPool. With
+>> build 145 of jdk-9, some tasks are not executed, causing larger completion
+>> problems. However, with the earlier build 111, the problem does not occur.
+>>
+>> On a smaller Linux machine (Linux amd 64, 64 logical cores (32 physical
+>> cores), 512 GB RAM) but with a similar setup, the problem was not
+>> reproduced.
+>>
+>> The problem seems to arise when a large number of completers (>20 000)
+>> are involved: forking tasks works well but when submitting tasks to a new
+>> pool, it seems that their compute method is sometimes not called.
+>> We indeed log every call to ForkJoinPool.submit, as well as everytime a
+>> completer enters its compute method, and clearly see that once in a while,
+>> the task is never computed after having been submitted. We let the system
+>> run for an additional hour, and there was no more progress even though the
+>> system was idle. Thread dumps did not show any suspect activity (all worker
+>> threads were idle).
+>>
+>> We tried to reproduce the problem with a similar but more simple test,
+>> but it was not successful.
+>>
+>> Are you aware of any concurrency/task completion problems in the more
+>> recent builds of jdk-9 ?
+>> Are there any additional tests that we could run in order to diagnose
+>> this issue ?
+>>
+>> Best regards,
+>> Antoine
+>>
+>>
+>>
+>> --
+>> [image: ActiveViam]
+>>
+>> 46 rue de l'Arbre Sec, 75001 Paris
+>> France
+>> [image: Twitter] <https://twitter.com/active_viam> [image: Blog]
+>> <http://activeviam.com/blog/> [image: Linkedin]
+>> <https://www.linkedin.com/company/85029> [image: Youtube]
+>> <https://www.youtube.com/channel/UCGjYnbjlPamN0RvSm3eGqCw> Antoine
+>> Tissier
+>> *Junior Software Engineer*
+>>
+>>
+>> [image: Mobile]+33(0) 6.26.33.35.62 <+33%206%2026%2033%2035%2062>
+>> [image: Skype]antoine_tissier
+>> [image: Website]www.activeviam.com <https://activeviam.com/>
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+>
+
+
+-- 
+[image: ActiveViam]
+
+46 rue de l'Arbre Sec, 75001 Paris
+France
+[image: Twitter] <https://twitter.com/active_viam> [image: Blog]
+<http://activeviam.com/blog/> [image: Linkedin]
+<https://www.linkedin.com/company/85029> [image: Youtube]
+<https://www.youtube.com/channel/UCGjYnbjlPamN0RvSm3eGqCw> Antoine Tissier
+*Junior Software Engineer*
+
+
+[image: Mobile]+33(0) 6.26.33.35.62
+[image: Skype]antoine_tissier
+[image: Website]www.activeviam.com <https://activeviam.com/>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20161230/d61137c5/attachment.html>
+

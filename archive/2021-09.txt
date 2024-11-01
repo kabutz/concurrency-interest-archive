@@ -1,0 +1,320 @@
+Subject: [concurrency-interest] The generic return type of result-less futures
+From: Chris Vest via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-09-06, 11:25
+To: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Chris Vest <mr.chrisvest@gmail.com>
+
+Hi,
+
+I looked through the mailing list archives, but I didn't see any
+previous discussion of this.
+Since Runnables don't return anything, there could be a question of
+what the generic type of the future should be.
+It looks like it has been a wildcard from the beginning:
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ExecutorService.java?r1=1.7&r2=1.8#l29
+ although it was removed at one point:
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ExecutorService.java?r1=1.13&r2=1.14#l33
+but later returned:
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/concurrent/ExecutorService.java?r1=1.17&r2=1.18#l129
+and in that process changed from producing a future that returns "an
+arbitrary value" to "return null".
+So since it then returns null, the future could - as far as I can tell
+- just as well be typed to return Object or Void.
+
+I'm wondering if there are any specific reasons in favour of
+wildcards, or against Object or Void, that I'm not seeing.
+
+Thanks,
+Chris
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: [concurrency-interest] Does MutableCallSite.syncAll actually work?
+From: Brian S O'Neill via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-09-11, 20:52
+To: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Brian S O'Neill <bronee@gmail.com>
+
+The documentation for the MutableCallSite.syncAll method appears to be quite thorough, and in particular: "In terms of the Java Memory Model, this operation performs a synchronization action which is comparable in effect to the writing of a volatile variable by the current thread, and an eventual volatile read by every other thread that may access one of the affected call sites."
+
+https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/lang/invoke/MutableCallSite.html#syncAll(java.lang.invoke.MutableCallSite%5B%5D)
+
+Upon inspection, I see that the implementation is quite trivial and somewhat old-skool with respect to memory barrier enforcement.
+
+    public static void syncAll(MutableCallSite[] sites) {
+        if (sites.length == 0)  return;
+        STORE_BARRIER.lazySet(0);
+        for (MutableCallSite site : sites) {
+            Objects.requireNonNull(site); // trigger NPE on first null
+        }
+        // FIXME: NYI
+    }
+    private static final AtomicInteger STORE_BARRIER = new AtomicInteger();
+
+Given the FIXME comment, which I assume means, "not yet implemented", does the syncAll method actually do anything? I don't understand the low-level details regarding how dynamic call sites get updated within HotSpot, but perhaps a simple memory barrier is all that's required? If so, that's great, and then I suppose the FIXME comment is wrong. Otherwise, this looks like a bug when considering the well specified documentation.
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+.
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Does MutableCallSite.syncAll actually work?
+From: Remi Forax via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-09-11, 21:28
+To: Brian S O'Neill <bronee@gmail.com>
+CC: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Remi Forax <forax@univ-mlv.fr>
+
+A MutableCallSite is a box around a method handle (the target).
+The specification of syncAll() makes sense if you pair it with the spec of setTarget().
+
+The specification says that setTarget() [1] is a normal plain set and that syncAll() forces the update(s) to be visible to all threads.
+
+The implementation does something else,
+the implementation of setTarget() calls a native method MethodHandleNatives.setCallSiteTargetNormal() goes to a safepoint and deopt all the JITed codes (if the code is JITed),
+so the implementation of setTarget() is stronger than what the spec asks for setTarget() so syncAll() does not need to actually force a volatile read.
+
+regards,
+Rémi
+
+[1] https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/lang/invoke/MutableCallSite.html#setTarget(java.lang.invoke.MethodHandle)
+
+----- Original Message -----
+> > From: "concurrency-interest" <concurrency-interest@cs.oswego.edu>
+> > To: "concurrency-interest" <concurrency-interest@cs.oswego.edu>
+> > Sent: Samedi 11 Septembre 2021 19:52:16
+> > Subject: [concurrency-interest] Does MutableCallSite.syncAll actually work?
+
+> > The documentation for the MutableCallSite.syncAll method appears to be
+> > quite thorough, and in particular: "In terms of the Java Memory Model,
+> > this operation performs a synchronization action which is comparable in
+> > effect to the writing of a volatile variable by the current thread, and
+> > an eventual volatile read by every other thread that may access one of
+> > the affected call sites."
+> > 
+> > https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/lang/invoke/MutableCallSite.html#syncAll(java.lang.invoke.MutableCallSite%5B%5D)
+> > 
+> > Upon inspection, I see that the implementation is quite trivial and
+> > somewhat old-skool with respect to memory barrier enforcement.
+> > 
+> >     public static void syncAll(MutableCallSite[] sites) {
+> >         if (sites.length == 0)  return;
+> >         STORE_BARRIER.lazySet(0);
+> >         for (MutableCallSite site : sites) {
+> >             Objects.requireNonNull(site); // trigger NPE on first null
+> >         }
+> >         // FIXME: NYI
+> >     }
+> >     private static final AtomicInteger STORE_BARRIER = new AtomicInteger();
+> > 
+> > Given the FIXME comment, which I assume means, "not yet implemented",
+> > does the syncAll method actually do anything? I don't understand the
+> > low-level details regarding how dynamic call sites get updated within
+> > HotSpot, but perhaps a simple memory barrier is all that's required? If
+> > so, that's great, and then I suppose the FIXME comment is wrong.
+> > Otherwise, this looks like a bug when considering the well specified
+> > documentation.
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest@cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Does MutableCallSite.syncAll actually work?
+From: Brian S O'Neill via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-09-11, 21:40
+To: Remi Forax <forax@univ-mlv.fr>
+CC: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Brian S O'Neill <bronee@gmail.com>
+
+This is good to know, thanks! So it seems that the comments should be fixed in the syncAll method to reflect this. Also, does lazySet really do anything in this case? Should it be replaced with an appropriate fence instruction?
+
+On 2021-09-11 11:28 AM, Remi Forax wrote:
+> A MutableCallSite is a box around a method handle (the target).
+> The specification of syncAll() makes sense if you pair it with the spec of setTarget().
+>
+> The specification says that setTarget() [1] is a normal plain set and that syncAll() forces the update(s) to be visible to all threads.
+>
+> The implementation does something else,
+> the implementation of setTarget() calls a native method MethodHandleNatives.setCallSiteTargetNormal() goes to a safepoint and deopt all the JITed codes (if the code is JITed),
+> so the implementation of setTarget() is stronger than what the spec asks for setTarget() so syncAll() does not need to actually force a volatile read.
+>
+> regards,
+> Rémi
+>
+> [1] https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/lang/invoke/MutableCallSite.html#setTarget(java.lang.invoke.MethodHandle)
+>
+> ----- Original Message -----
+>> From: "concurrency-interest" <concurrency-interest@cs.oswego.edu>
+>> To: "concurrency-interest" <concurrency-interest@cs.oswego.edu>
+>> Sent: Samedi 11 Septembre 2021 19:52:16
+>> Subject: [concurrency-interest] Does MutableCallSite.syncAll actually work?
+>
+>> The documentation for the MutableCallSite.syncAll method appears to be
+>> quite thorough, and in particular: "In terms of the Java Memory Model,
+>> this operation performs a synchronization action which is comparable in
+>> effect to the writing of a volatile variable by the current thread, and
+>> an eventual volatile read by every other thread that may access one of
+>> the affected call sites."
+>>
+>> https://docs.oracle.com/en/java/javase/16/docs/api/java.base/java/lang/invoke/MutableCallSite.html#syncAll(java.lang.invoke.MutableCallSite%5B%5D)
+>>
+>> Upon inspection, I see that the implementation is quite trivial and
+>> somewhat old-skool with respect to memory barrier enforcement.
+>>
+>>      public static void syncAll(MutableCallSite[] sites) {
+>>          if (sites.length == 0)  return;
+>>          STORE_BARRIER.lazySet(0);
+>>          for (MutableCallSite site : sites) {
+>>              Objects.requireNonNull(site); // trigger NPE on first null
+>>          }
+>>          // FIXME: NYI
+>>      }
+>>      private static final AtomicInteger STORE_BARRIER = new AtomicInteger();
+>>
+>> Given the FIXME comment, which I assume means, "not yet implemented",
+>> does the syncAll method actually do anything? I don't understand the
+>> low-level details regarding how dynamic call sites get updated within
+>> HotSpot, but perhaps a simple memory barrier is all that's required? If
+>> so, that's great, and then I suppose the FIXME comment is wrong.
+>> Otherwise, this looks like a bug when considering the well specified
+>> documentation.
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest@cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] The generic return type of result-less futures
+From: Chris Povirk via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-09-14, 22:51
+To: Chris Vest <mr.chrisvest@gmail.com>
+CC: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Chris Povirk <cpovirk@google.com>
+
+I was in no way involved in any of these decisions, but I happen to have opinions from designing similar APIs in Guava, which may or may not be of any interest here.
+
+First: It looks to me like the version of ExecutorService in which the wildcard was "removed" was actually just the introduction of the new `(Runnable, T)` overload, which naturally returns Future<T>? That is, I think the wildcard-returning version has always been there?
+
+Second: It looks like newer JDK methods have chosen to return Future<Void>. For example, see CompletableFuture.allOf.
+
+As for the actual considerations: There seems to be one main point in favor of Future<?>:
+
+    "Future<?>" is shorter than "Future<Void>." It's also significantly shorter than "Future<@Nullable Void>," which is what you'd have to write when using some nullness checkers.
+
+Future<Void> has various advantages:
+
+    It explicitly declares "no useful return type" rather than "possibly some useful return type, possibly not."
+    Wildcards are confusing: We saw a surprising number of callers who avoided submit(someRunnable) in favor of submit(someRunnable, null) just so that they could have a non-wildcard Future. They seemed to find it easier to reason about the types they'd need in their declarations when, e.g., attaching a listener to the Future.
+    Wildcards are confusing: They lead to longer error messages. 
+    Wildcards can cause type-inference problems: We've seen problems calling methods like Guava's Futures.whenAllComplete when passing Future instances whose value type is a wildcard.
+    While an API probably shouldn't require a Future<Void> as an input, if one does, then it's nice to have a Future<Void> available. (In contrast, an API that accepts a Future<?> works with a Future<Void> and a Future<?> equally well.)
+
+Putting that all together, we picked Void for our new methods (example).
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] The generic return type of result-less futures
+From: Kevin Bourrillion via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-09-14, 23:34
+To: Chris Povirk <cpovirk@google.com>
+CC: concurrency-interest <concurrency-interest@cs.oswego.edu>
+Reply-To: Kevin Bourrillion <kevinb@google.com>
+
+I'll add (as cpovirk's teammate) that it's been a useful general principle for us to never use wildcards in return types, probably not worth carving out a special case for.
+
+(I'm not sure why EJ3e (on p142) only speaks against bounded wildcards in return types.)
+
+
+
+On Tue, Sep 14, 2021 at 12:54 PM Chris Povirk via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+
+    I was in no way involved in any of these decisions, but I happen to have opinions from designing similar APIs in Guava, which may or may not be of any interest here.
+
+    First: It looks to me like the version of ExecutorService in which the wildcard was "removed" was actually just the introduction of the new `(Runnable, T)` overload, which naturally returns Future<T>? That is, I think the wildcard-returning version has always been there?
+
+    Second: It looks like newer JDK methods have chosen to return Future<Void>. For example, see CompletableFuture.allOf.
+
+    As for the actual considerations: There seems to be one main point in favor of Future<?>:
+
+        "Future<?>" is shorter than "Future<Void>." It's also significantly shorter than "Future<@Nullable Void>," which is what you'd have to write when using some nullness checkers.
+
+    Future<Void> has various advantages:
+
+        It explicitly declares "no useful return type" rather than "possibly some useful return type, possibly not."
+        Wildcards are confusing: We saw a surprising number of callers who avoided submit(someRunnable) in favor of submit(someRunnable, null) just so that they could have a non-wildcard Future. They seemed to find it easier to reason about the types they'd need in their declarations when, e.g., attaching a listener to the Future.
+        Wildcards are confusing: They lead to longer error messages. 
+        Wildcards can cause type-inference problems: We've seen problems calling methods like Guava's Futures.whenAllComplete when passing Future instances whose value type is a wildcard.
+        While an API probably shouldn't require a Future<Void> as an input, if one does, then it's nice to have a Future<Void> available. (In contrast, an API that accepts a Future<?> works with a Future<Void> and a Future<?> equally well.)
+
+    Putting that all together, we picked Void for our new methods (example).
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest@cs.oswego.edu
+    http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-- 
+Kevin Bourrillion | Java Librarian | Google, Inc. | kevinb@google.com
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: [concurrency-interest] Object-based monitors vs Lock based-monitors for JDK 17+
+From: Pedro Felix via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2021-09-29, 19:50
+To: concurrency-interest@cs.oswego.edu
+Reply-To: Pedro Felix <pmhsfelix@gmail.com>
+
+Hi,
+
+What are the recommendations on the use of Object-based monitors (i.e. synchronized, Object.wait, Object.notify) vs. the use of Lock-based monitors (i.e. Lock and Monitor interfaces), for JDK 17 and upcoming versions?
+There are scenarios where the Lock-based monitors are clearly preferable, such as needing more than one condition or having non-structured lock-unlock pairs.
+However, for simple scenarios where both are applicable, which should we use? Are there any performance or other advantages in using Object-based vs. Lock-based monitors?
+ 
+Also, which are preferable when using Loom's virtual threads? I recall reading that there may be limitations around Object-based monitors and virtual threads, such as blocking the carrier thread.
+
+Thanks.
+Regards,
+Pedro
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest

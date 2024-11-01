@@ -1,0 +1,2053 @@
+From heinz at javaspecialists.eu  Thu Aug  1 09:22:27 2019
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Thu, 01 Aug 2019 14:22:27 +0100
+Subject: [concurrency-interest] Using custom ThreadPool inside
+ parallelstream causing deadlock
+In-Reply-To: <CAEacge8TEZoRBK3iE_VgQ1gpSuN71VogfXnkRz0umhn0P+o9KQ@mail.gmail.com>
+References: <1564389915465-0.post@n7.nabble.com>
+ <5D3EC998.6000704@javaspecialists.eu> <1564399582493-0.post@n7.nabble.com>
+ <5D41ED62.9090204@javaspecialists.eu>
+ <CAEacge8TEZoRBK3iE_VgQ1gpSuN71VogfXnkRz0umhn0P+o9KQ@mail.gmail.com>
+Message-ID: <5D42E793.8010104@javaspecialists.eu>
+
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190801/6ec79ec9/attachment.html>
+
+From peter.levart at gmail.com  Fri Aug  2 07:37:43 2019
+From: peter.levart at gmail.com (Peter Levart)
+Date: Fri, 2 Aug 2019 13:37:43 +0200
+Subject: [concurrency-interest] Using custom ThreadPool inside
+ parallelstream causing deadlock
+In-Reply-To: <5D42E793.8010104@javaspecialists.eu>
+References: <1564389915465-0.post@n7.nabble.com>
+ <5D3EC998.6000704@javaspecialists.eu> <1564399582493-0.post@n7.nabble.com>
+ <5D41ED62.9090204@javaspecialists.eu>
+ <CAEacge8TEZoRBK3iE_VgQ1gpSuN71VogfXnkRz0umhn0P+o9KQ@mail.gmail.com>
+ <5D42E793.8010104@javaspecialists.eu>
+Message-ID: <8eb86c09-8e49-9c1f-13af-cd41d7693c40@gmail.com>
+
+Hi Dr. Heinz,
+
+On 8/1/19 3:22 PM, Dr Heinz M. Kabutz via Concurrency-interest wrote:
+> One socket, two cores, 2 hyperthreads per core: 1-2-2 :-)
+>
+> My server is a 2-4-1 machine.
+>
+> Well if there are no common threads available, then usually the 
+> submitting work does the work by itself.  You can easily verify this, 
+> even in JShell:
+>
+> // Single threaded - only the main thread
+> jshell> IntStream.range(0, 1000).mapToObj(i -> 
+> Thread.currentThread()).collect(Collectors.toSet())
+> $1 ==> [Thread[main,5,main]]
+>
+> // parallel - the main thread and the three common pool worker threads
+> jshell> IntStream.range(0, 1000).parallel().mapToObj(i -> 
+> Thread.currentThread()).collect(Collectors.toSet())
+> $2 ==> [Thread[ForkJoinPool.commonPool-worker-3,5,main], 
+> Thread[main,5,main], Thread[ForkJoinPool.commonPool-worker-5,5,main], 
+> Thread[ForkJoinPool.commonPool-worker-7,5,main]]
+>
+> // now we block up all the common pool threads
+> jshell> new Thread(() -> IntStream.range(0, 1000).parallel().forEach(i 
+> -> java.util.concurrent.locks.LockSupport.park())).start()
+>
+> // and now when we go parallel, it still "works", but uses the 
+> submitting thread
+> jshell> IntStream.range(0, 1000).parallel().mapToObj(i -> 
+> Thread.currentThread()).collect(Collectors.toSet())
+> $4 ==> [Thread[main,5,main]]
+>
+
+I tried your simplified example on my PC (1-4-2) and couldn't get it to 
+deadlock. I then tried with 
+java.util.concurrent.ForkJoinPool.common.parallelism=3 (which would be 
+the default on your laptop) and immediately deadlocked it. Here's what I 
+think happens:
+
+- common FJ pool uses up all its threads to execute tasks in the outer 
+parallel stream.
+- those tasks execute the process() method that 1st submits 
+updateTask(s) to the fixed pool (non-blocking as the pool has an 
+unbounded queue) and then await for tasks to be finished with 
+future.get() which blocks
+- the tasks executing in fixed pool spawn inner parallel stream tasks 
+using ForkJoinTask.invoke() (the mechanism used by parallel stream to 
+submit the root task). This method calls FJT.doInvoke():
+
+     private int doInvoke() {
+         int s; Thread t; ForkJoinWorkerThread wt;
+         return (s = doExec()) < 0 ? s :
+             ((t = Thread.currentThread()) instanceof 
+ForkJoinWorkerThread) ?
+             (wt = (ForkJoinWorkerThread)t).pool.
+             awaitJoin(wt.workQueue, this, 0L) :
+             externalAwaitDone();
+     }
+
+...this method 1st calls doExec():
+
+     final int doExec() {
+         int s; boolean completed;
+         if ((s = status) >= 0) {
+             try {
+                 completed = exec();
+             } catch (Throwable rex) {
+                 completed = false;
+                 s = setExceptionalCompletion(rex);
+             }
+             if (completed)
+                 s = setDone();
+         }
+         return s;
+     }
+
+...and since from the stack traces of submitting threads (fixed pool 
+threads) we see that externalAwaitDone() is called afterwards, the 
+doExec() must have called exec() that returned false.
+
+We know that parallel stream is implemented with special subclass of 
+ForkJoinTask called CountedCompleter. Here's the CountedCompleter.exec() 
+implementation:
+
+     protected final boolean exec() {
+         compute();
+         return false;
+     }
+
+...which supports the above claim.
+
+So far, the guts of the CountedCompleter.compute() has executed, and the 
+fixed-pool thread blocks in externalAwaitDone(). Let's look at the 
+ForEachTask.compute() implementation that has executed:
+
+         // Similar to AbstractTask but doesn't need to track child tasks
+         public void compute() {
+             Spliterator<S> rightSplit = spliterator, leftSplit;
+             long sizeEstimate = rightSplit.estimateSize(), sizeThreshold;
+             if ((sizeThreshold = targetSize) == 0L)
+                 targetSize = sizeThreshold = 
+AbstractTask.suggestTargetSize(sizeEstimate);
+             boolean isShortCircuit = 
+StreamOpFlag.SHORT_CIRCUIT.isKnown(helper.getStreamAndOpFlags());
+             boolean forkRight = false;
+             Sink<S> taskSink = sink;
+             ForEachTask<S, T> task = this;
+             while (!isShortCircuit || !taskSink.cancellationRequested()) {
+                 if (sizeEstimate <= sizeThreshold ||
+                     (leftSplit = rightSplit.trySplit()) == null) {
+                     task.helper.copyInto(taskSink, rightSplit);
+                     break;
+                 }
+                 ForEachTask<S, T> leftTask = new ForEachTask<>(task, 
+leftSplit);
+                 task.addToPendingCount(1);
+                 ForEachTask<S, T> taskToFork;
+                 if (forkRight) {
+                     forkRight = false;
+                     rightSplit = leftSplit;
+                     taskToFork = task;
+                     task = leftTask;
+                 }
+                 else {
+                     forkRight = true;
+                     taskToFork = leftTask;
+                 }
+                 taskToFork.fork();
+                 sizeEstimate = rightSplit.estimateSize();
+             }
+             task.spliterator = null;
+             task.propagateCompletion();
+         }
+
+The isShortCircut flag is evaluated to 'false' (checked with the 
+debugger, helper.combinedFlags == 101).
+
+There is a 'forkRight' flag that initially starts at false and then 
+alternates in the while loop.
+
+There is a 'task' local variable that initially starts with 'this'.
+
+Observing the state of ForEackTask instance while the thread is blocked 
+in its externalAwaitDone() I can see the 'targetSize' being 5, while 
+sizeEstimate is evaluated to 4, which means that this is now a "leaf" 
+task. But has it actually executed its split yet?
+
+The Task's compute() method has finished, but that doesn't mean it has 
+already executed its "leaf" split and sent the elements to the lambda 
+Consumer. Observing its state while the thread is blocked in 
+externalAwaitDone(), I can see the 'completer' being null. Which means 
+that ForEachTask was constructed with the following constructor:
+
+         ForEachTask(PipelineHelper<T> helper,
+                     Spliterator<S> spliterator,
+                     Sink<S> sink) {
+             super(null);
+             this.sink = sink;
+             this.helper = helper;
+             this.spliterator = spliterator;
+             this.targetSize = 0L;
+         }
+
+as the root task which initializes the 'pending' count to 0. But I see 
+pending count being 2. So, it must have been incremented afterwards. It 
+must have spawned-off some children. A child is spawned by creating it 
+and then calling fork() either on the child or the parent !!! (depending 
+on the value of forkRight flag which alternates). Since I can also see 
+the state of task still holding its spliterator, it means that the final 
+statements of compute():
+
+             task.spliterator = null;
+             task.propagateCompletion();
+
+...have not been called on this task yet, but on a child task. The fork 
+must have been called on this task then.
+
+ForkJoinTask.fork() javadocs say:
+
+      * ... While
+      * it is not necessarily enforced, it is a usage error to fork a
+      * task more than once unless it has completed and been
+      * reinitialized.
+
+Does this also mean that fork() should not be called on a task that is 
+in the middle of executing its execute() method? I don't know.
+
+Since we are executing in non-ForkJoinThread, fork() amounts to 
+commonFJPool.externalPush(task). This method just pushes the task to a 
+(common)FJPool queue and eventually calls FJPool.signalWork(), which I 
+assume, does not add a worker thread if there are already max. threads 
+in the pool even if all threads are occupied. So the task we are calling 
+externalAwaitDone() on has been swept into the FJPool queue in hope that 
+some JFPool thread will pick it up and (re)execute it. But all FJPool 
+threads are busy waiting for results from fixed-pool tasks.
+
+Before the patch for 8020040, the ForEachTask.compute() looked like this:
+
+         public void compute() {
+             boolean isShortCircuit = 
+StreamOpFlag.SHORT_CIRCUIT.isKnown(helper.getStreamAndOpFlags());
+             while (true) {
+                 if (isShortCircuit && sink.cancellationRequested()) {
+                     propagateCompletion();
+                     spliterator = null;
+                     return;
+                 }
+
+                 Spliterator<S> split;
+                 if (!AbstractTask.suggestSplit(spliterator, targetSize)
+                     || (split = spliterator.trySplit()) == null) {
+                     helper.copyInto(sink, spliterator);
+                     propagateCompletion();
+                     spliterator = null;
+                     return;
+                 }
+                 else {
+                     addToPendingCount(1);
+                     new ForEachTask<>(this, split).fork();
+                 }
+             }
+         }
+
+Which guaranteed that only child tasks were forked-off while the root 
+task's compute() always completed with clearing the spliterator and 
+propagateCompletion() call in the submitting thread. Would that variant 
+prevent the deadlock? I don't think as the root task would still have a 
+non-zero pending count waiting for child tasks to decrement it and 
+eventually complete it, while child tasks would be sitting in the FJPool 
+forever.
+
+If all this is true, then this can be called resource exhaustion. If 
+external threads are executing FJTask.fork() while the FJPool is already 
+fully occupied by other tasks, those new forked tasks will only be 
+queued, not executed in the external threads.
+
+Could this be improved? Hm...
+
+Regards, Peter
+
+
+>
+> Regards
+>
+> Heinz
+> -- 
+> Dr Heinz M. Kabutz (PhD CompSci)
+> Author of "The Java™ Specialists' Newsletter" -www.javaspecialists.eu
+> Java Champion -www.javachampions.org
+> JavaOne Rock Star Speaker
+> Tel: +30 69 75 595 262
+> Skype: kabutz
+>
+>
+> Olivier Peyrusse wrote:
+>> Hello,
+>>
+>> I agree with Heinz's first analysis. You have a resource deadlock 
+>> because the common pool, as any FJP, cannot detect that you are 
+>> blocking its threads doing Future#get.
+>> The spare threads in your custom thread pool cannot help the FJP to 
+>> progress. They can only submit more tasks that won't be executed.
+>>
+>> The most suprising is that it often succeeds. Though I haven't run 
+>> Heinz's sample yet, I suspect that it is a race condition. All tasks 
+>> are submitted in a shared work queue of the fjp and randomly stolen 
+>> by its workers. My guess is that it blocks on the rare occasions 
+>> where all "outer" tasks are started before any "inner" task start.
+>>
+>> Btw, @Heinz, what do you mean by your 1-2-2 machine? :-$
+>>
+>> Cheers
+>>
+>>
+>> Le mer. 31 juil. 2019 à 21:37, Dr Heinz M. Kabutz via 
+>> Concurrency-interest <concurrency-interest at cs.oswego.edu 
+>> <mailto:concurrency-interest at cs.oswego.edu>> a écrit :
+>>
+>>     Hi Akhil,
+>>
+>>     I've been looking at this off-and-on over the last few days,
+>>     whenever I
+>>     had a few minutes.  It is indeed interesting.  Of course we
+>>     should not
+>>     block in tasks within a parallel stream.  But it should still
+>>     work, and
+>>     usually does.  On my 1-2-2 machine, it fails rarely in Java 8 -
+>>     about
+>>     1/1000.  Java 9 and 10 is more often, about a dozen times per
+>>     1000. And
+>>     then it seems to get even more often since Java 11.
+>>
+>>     Obviously the FJP would have changed between Java 8 and 9 with the
+>>     addition of VarHandles and fences and opaque.
+>>
+>>     I have not found the "smoking gun" yet, but am going to look at this
+>>     particular problem in my webinar tomorrow at 16:00 UTC -
+>>     https://www.javaspecialists.eu/webinars
+>>
+>>     We have some very smart people joining the webinar and perhaps we'll
+>>     figure it out collectively.
+>>
+>>     Regards
+>>
+>>     Heinz
+>>     -- 
+>>     Dr Heinz M. Kabutz (PhD CompSci)
+>>     Author of "The Java™ Specialists' Newsletter" -
+>>     www.javaspecialists.eu <http://www.javaspecialists.eu>
+>>     Java Champion - www.javachampions.org <http://www.javachampions.org>
+>>     JavaOne Rock Star Speaker
+>>     Tel: +30 69 75 595 262
+>>     Skype: kabutz
+>>
+>>
+>>
+>>     akhilpratap1991 via Concurrency-interest wrote:
+>>     > Heinz,
+>>     >
+>>     > I know and understand using the ForkJoinPool would solve the
+>>     porblem. But my
+>>     > concern here is why my code is getting deadlocked as I see two
+>>     threads from
+>>     > Custom Fixed ThreadPool are free to take care of inner
+>>     parallelStream. And
+>>     > why it is not always getting deadlocked.
+>>     >
+>>     >
+>>     >
+>>     > --
+>>     > Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+>>     > _______________________________________________
+>>     > Concurrency-interest mailing list
+>>     > Concurrency-interest at cs.oswego.edu
+>>     <mailto:Concurrency-interest at cs.oswego.edu>
+>>     > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>     >
+>>     _______________________________________________
+>>     Concurrency-interest mailing list
+>>     Concurrency-interest at cs.oswego.edu
+>>     <mailto:Concurrency-interest at cs.oswego.edu>
+>>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190802/ab44f0d9/attachment-0001.html>
+
+From heinz at javaspecialists.eu  Fri Aug  2 10:13:42 2019
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Fri, 02 Aug 2019 15:13:42 +0100
+Subject: [concurrency-interest] Using custom ThreadPool inside
+ parallelstream causing deadlock
+In-Reply-To: <8eb86c09-8e49-9c1f-13af-cd41d7693c40@gmail.com>
+References: <1564389915465-0.post@n7.nabble.com>
+ <5D3EC998.6000704@javaspecialists.eu> <1564399582493-0.post@n7.nabble.com>
+ <5D41ED62.9090204@javaspecialists.eu>
+ <CAEacge8TEZoRBK3iE_VgQ1gpSuN71VogfXnkRz0umhn0P+o9KQ@mail.gmail.com>
+ <5D42E793.8010104@javaspecialists.eu>
+ <8eb86c09-8e49-9c1f-13af-cd41d7693c40@gmail.com>
+Message-ID: <5D444516.8040002@javaspecialists.eu>
+
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190802/1de289af/attachment.html>
+
+From pavel.rappo at gmail.com  Mon Aug 12 14:24:41 2019
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Mon, 12 Aug 2019 19:24:41 +0100
+Subject: [concurrency-interest] A typo in the javadoc for
+	java.util.concurrent.Phaser
+Message-ID: <CAChcVu=m+iSZw2t_63K2dekxrdztDqVd1ywAKOzghYaaDjHDYw@mail.gmail.com>
+
+While reading the javadoc for java.util.concurrent.Phaser I noticed a
+tiny little typo.
+
+"...Progress is ensured if the pool's parallelismLevel can accommodate
+the maximum number of simultaneously blocked parties..."
+
+Nowhere else in the j.u.c is "parallelism" or "parallelism level"
+referred to as parallelismLevel (which itself looks like a parameter
+name).
+
+I guess it should've been
+
+"...Progress is ensured if the pool's parallelism level can
+accommodate the maximum number of simultaneously blocked parties..."
+
+unless I miss something.
+
+Thanks,
+-Pavel
+
+From martinrb at google.com  Mon Aug 12 18:06:40 2019
+From: martinrb at google.com (Martin Buchholz)
+Date: Mon, 12 Aug 2019 15:06:40 -0700
+Subject: [concurrency-interest] A typo in the javadoc for
+	java.util.concurrent.Phaser
+In-Reply-To: <CAChcVu=m+iSZw2t_63K2dekxrdztDqVd1ywAKOzghYaaDjHDYw@mail.gmail.com>
+References: <CAChcVu=m+iSZw2t_63K2dekxrdztDqVd1ywAKOzghYaaDjHDYw@mail.gmail.com>
+Message-ID: <CA+kOe0_FLVrL1S_vZJ1exb1mwDDsX9vZSZv6k6_Wh3=ASXgB2w@mail.gmail.com>
+
+Thanks!
+
+I agree; your wording improvement will appear in a future openjdk commit.
+
+On Mon, Aug 12, 2019 at 11:27 AM Pavel Rappo via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> While reading the javadoc for java.util.concurrent.Phaser I noticed a
+> tiny little typo.
+>
+> "...Progress is ensured if the pool's parallelismLevel can accommodate
+> the maximum number of simultaneously blocked parties..."
+>
+> Nowhere else in the j.u.c is "parallelism" or "parallelism level"
+> referred to as parallelismLevel (which itself looks like a parameter
+> name).
+>
+> I guess it should've been
+>
+> "...Progress is ensured if the pool's parallelism level can
+> accommodate the maximum number of simultaneously blocked parties..."
+>
+> unless I miss something.
+>
+> Thanks,
+> -Pavel
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190812/f45e3880/attachment.html>
+
+From valentin.male.kovalenko at gmail.com  Thu Aug 22 11:35:52 2019
+From: valentin.male.kovalenko at gmail.com (Valentin Kovalenko)
+Date: Thu, 22 Aug 2019 09:35:52 -0600
+Subject: [concurrency-interest] another lazy initialization,
+	now with method reference
+Message-ID: <CAO-wXwKK3Phn7FCBuBucD4D+iNvNZQ_FsXms7dvhsRN4LpRp0g@mail.gmail.com>
+
+I bumped into the following lazy initialization code that tries to
+piggy-back on the assumption that captures of variables in lambda
+expressions have final fields semantics:
+
+//is taken from https://stackoverflow.com/a/35335467/1285873
+static <T> Supplier<T> memoize1(Supplier<T> original) {
+  return new Supplier<>() {
+    //notice the absence of the volatile modifier
+    Supplier<T> delegate = this::init; //w1(delegate, init)
+    boolean initialized;
+
+    public T get() {
+        return delegate.get(); //r1(delegate, either init or captured),
+hb(w1, r1), not hb(w2, r1)
+    }
+
+    private synchronized T init() {
+        if(!initialized) {
+            T val = original.get();
+            delegate = () -> val; //w2(delegate, captured), hb(w1, w2)
+            initialized = true;
+            return val;
+        }
+        return delegate.get(); //r2(delegate, captured), hb(w2, r2)
+    }
+  };
+}
+
+Apparently, reads r1 are allowed to observe either the value written by w1,
+or the value written by w2 because there is no hb(w2, r1). Therefore, the
+get method is allowed to observe the result of w1 infinitely many times,
+hence acquiring the monitor per each invocation, which is not good. So this
+is a performance (not correctness) problem in the code above, but it's not
+the most interesting part.
+
+A more interesting part of the code is the assumption about final fields
+semantics of captured variables. Is it true that "a capture" of a variable
+in lambda expression has the semantics of final fields? I was not able to
+find anything about it in JLS.
+
+If the assumption is it is not true, then reads from fields of the val
+object are allowed to observe the default writes and thus observing "not
+completely initialized state" of the val object is allowed (unless this
+object itself is immutable, but let's assume it is not).
+
+If the assumption about final fields semantics of captured variables is
+true, then the aforementioned code is equivalent to the following and is
+technically correct (but still has the aforementioned problem with an
+unbounded number of monitor acquire actions):
+
+//comments are specified on some of the lines that have a somewhat
+corresponding analogous line in the first implementation
+static <T> Supplier<T> memoize2(Supplier<T> original) {
+  return new Supplier<>() {
+    //still intentionally no volatile modifier
+    FinalWrapper<T> delegate = null;//w1(delegate, null)
+
+    public T get() {
+      FinalWrapper<T> delegate = this.delegate; //r1(delegate, either null
+or captured), hb(w1, r1), not hb(w2, r1)
+      if (delegate == null) {
+        delegate = init();//yes, here we intentionally have the same
+problem of potentially always acquiring the monitor
+      }
+      return delegate.get();
+    }
+
+    private synchronized FinalWrapper<T> init() {
+      FinalWrapper<T> delegate = this.delegate; //r2(delegate, either null
+or captured if hb(w2, r2)),
+      if (delegate == null) { //if(!initialized)
+        T val = original.get();
+        this.delegate = //initialized = true;
+            delegate = new FinalWrapper<>(val); //delegate = () -> val;
+w2(delegate, captured), hb(w1, w2)
+      }
+      return delegate;
+    }
+  };
+}
+
+static class FinalWrapper<T> {
+  private final T val;
+
+  FinalWrapper(T val) {
+    this.val = val;
+  }
+
+  T get() {
+    return val;
+  }
+}
+
+Just repeating the question so that it does not slip through the cracks: Is
+it true that "a capture" of a variable in lambda expression has the
+semantics of final fields? If yes, does anyone knows if this is specified
+in the JLS?
+
+Regards,
+Valentin
+[image: LinkedIn] <https://www.linkedin.com/in/stIncMale>   [image: GitHub]
+<https://github.com/stIncMale>   [image: YouTube]
+<https://www.youtube.com/user/stIncMale>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190822/76619e11/attachment.html>
+
+From aph at redhat.com  Fri Aug 23 04:50:15 2019
+From: aph at redhat.com (Andrew Haley)
+Date: Fri, 23 Aug 2019 09:50:15 +0100
+Subject: [concurrency-interest] another lazy initialization,
+ now with method reference
+In-Reply-To: <CAO-wXwKK3Phn7FCBuBucD4D+iNvNZQ_FsXms7dvhsRN4LpRp0g@mail.gmail.com>
+References: <CAO-wXwKK3Phn7FCBuBucD4D+iNvNZQ_FsXms7dvhsRN4LpRp0g@mail.gmail.com>
+Message-ID: <18cca4e8-8bc3-ea05-b89c-3549ad3d5864@redhat.com>
+
+On 8/22/19 4:35 PM, Valentin Kovalenko via Concurrency-interest wrote:
+
+> Is it true that "a capture" of a variable in lambda expression has
+> the semantics of final fields?
+
+I think not.
+
+> If yes, does anyone knows if this is specified in the JLS?
+
+In 15.27.4. Run-Time Evaluation of Lambda Expressions, it's made clear
+that
+
+  "At run time, evaluation of a lambda expression is similar to
+  evaluation of a class instance creation expression, insofar as
+  normal completion produces a reference to an object. Evaluation of a
+  lambda expression is distinct from execution of the lambda body.
+
+  "Either a new instance of a class with the properties below is
+  allocated and initialized, or an existing instance of a class with
+  the properties below is referenced."
+
+So, it is not guaranteed that an instance is generated, and therefore
+it is not guaranteed that a final field is initialized.
+
+-- 
+Andrew Haley  (he/him)
+Java Platform Lead Engineer
+Red Hat UK Ltd. <https://www.redhat.com>
+https://keybase.io/andrewhaley
+EAC8 43EB D3EF DB98 CC77 2FAD A5CD 6035 332F A671
+
+From valentin.male.kovalenko at gmail.com  Fri Aug 23 13:25:14 2019
+From: valentin.male.kovalenko at gmail.com (Valentin Kovalenko)
+Date: Fri, 23 Aug 2019 11:25:14 -0600
+Subject: [concurrency-interest] another lazy initialization,
+	now with method reference
+In-Reply-To: <mailman.3.1566576001.30574.concurrency-interest@cs.oswego.edu>
+References: <mailman.3.1566576001.30574.concurrency-interest@cs.oswego.edu>
+Message-ID: <CAO-wXwLO_HTW64A4XYYLEUQ0Wcb21ec4NypxCg7SvZu9tXhT2w@mail.gmail.com>
+
+Hi Andrew,
+
+While it's true that
+https://docs.oracle.com/javase/specs/jls/se12/html/jls-15.html#jls-15.27.4
+allows
+to not create a new instance each time a lambda expression is evaluated, it
+simply means that JLS allows returning a previously created instance as a
+result of evaluating a lambda expression. But I don't think this is
+relevant to the question of whether or not the semantics of final fields is
+applicable to the activity of capturing a variable and to the resulted
+field of a (generated) lambda-class (which I called "a capture" in the
+previous email). I still agree with your opinion that there is no such
+guarantee, I just don't think the argument you used is applicable.
+
+While discussing this in "JavaSpecialists Slack Team" (
+https://www.javaspecialists.eu/slack/), the idea popped up to check if
+OpenJDK generates lambda-classes with final fields. If it does not, then we
+could definitely say "the semantics of final fields is not guaranteed"
+(assuming that OpenJDK JDK implementation does not violate the JLS); if it
+does, then we can only say "OpenJDK JDK does generate final fields to hold
+captured values", and we can't say anything about guarantees.
+
+I conducted the experiment on openjdk 12.0.1 2019-04-16, and it does
+generate final fields, so we know that at least for now this implementation
+gives us the semantics of final fields for captured values. However, unless
+there is a statement about this in JLS/JVMS (I searched for "lambda" or
+"ACC_FINAL" in JVMS, but still did not find any information relevant to the
+question).
+
+Here is the code for the experiment:
+
+package stincmale.sandbox.examples;
+import java.lang.reflect.Field;
+import java.util.function.Supplier;
+class LambdaFields {
+  //run with -Djdk.internal.lambda.dumpProxyClasses=<location for dumping
+the generated classes>
+  public static void main(String... args) {
+    StringBuilder captureMe = new StringBuilder();
+    Supplier<StringBuilder> s = () -> captureMe;
+    for (Field field : s.getClass().getDeclaredFields()) {
+      System.out.println(field);
+    }
+  }
+}
+
+output:
+private final java.lang.StringBuilder
+stincmale.sandbox.examples.LambdaFields$$Lambda$14/0x000000080115e840.arg$1
+
+We can also disassemble the generated lambda-class file and see the same
+final modifier on the field:
+javap -p -c 'stincmale/sandbox/examples/LambdaFields$$Lambda$14' (your
+class name may be different)
+output:
+final class stincmale.sandbox.examples.LambdaFields$$Lambda$14 implements
+java.util.function.Supplier {
+  private final java.lang.StringBuilder arg$1;
+...
+
+So we can see that OpenJDK generates final fields for the captured values,
+but this observation does not mean such behaviour is guaranteed by JLS/JVMS.
+
+Regards,
+Valentin
+[image: LinkedIn] <https://www.linkedin.com/in/stIncMale>   [image: GitHub]
+<https://github.com/stIncMale>   [image: YouTube]
+<https://www.youtube.com/user/stIncMale>
+
+
+On Fri, 23 Aug 2019 at 10:01, <concurrency-interest-request at cs.oswego.edu>
+wrote:
+
+> Send Concurrency-interest mailing list submissions to
+>         concurrency-interest at cs.oswego.edu
+>
+> To subscribe or unsubscribe via the World Wide Web, visit
+>         http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> or, via email, send a message with subject or body 'help' to
+>         concurrency-interest-request at cs.oswego.edu
+>
+> You can reach the person managing the list at
+>         concurrency-interest-owner at cs.oswego.edu
+>
+> When replying, please edit your Subject line so it is more specific
+> than "Re: Contents of Concurrency-interest digest..."
+>
+>
+> Today's Topics:
+>
+>    1. Re: another lazy initialization, now with method reference
+>       (Andrew Haley)
+>
+>
+> ----------------------------------------------------------------------
+>
+> Message: 1
+> Date: Fri, 23 Aug 2019 09:50:15 +0100
+> From: Andrew Haley <aph at redhat.com>
+> To: Valentin Kovalenko <valentin.male.kovalenko at gmail.com>,
+>         concurrency-interest <concurrency-interest at cs.oswego.edu>
+> Subject: Re: [concurrency-interest] another lazy initialization, now
+>         with method reference
+> Message-ID: <18cca4e8-8bc3-ea05-b89c-3549ad3d5864 at redhat.com>
+> Content-Type: text/plain; charset=utf-8
+>
+> On 8/22/19 4:35 PM, Valentin Kovalenko via Concurrency-interest wrote:
+>
+> > Is it true that "a capture" of a variable in lambda expression has
+> > the semantics of final fields?
+>
+> I think not.
+>
+> > If yes, does anyone knows if this is specified in the JLS?
+>
+> In 15.27.4. Run-Time Evaluation of Lambda Expressions, it's made clear
+> that
+>
+>   "At run time, evaluation of a lambda expression is similar to
+>   evaluation of a class instance creation expression, insofar as
+>   normal completion produces a reference to an object. Evaluation of a
+>   lambda expression is distinct from execution of the lambda body.
+>
+>   "Either a new instance of a class with the properties below is
+>   allocated and initialized, or an existing instance of a class with
+>   the properties below is referenced."
+>
+> So, it is not guaranteed that an instance is generated, and therefore
+> it is not guaranteed that a final field is initialized.
+>
+> --
+> Andrew Haley  (he/him)
+> Java Platform Lead Engineer
+> Red Hat UK Ltd. <https://www.redhat.com>
+> https://keybase.io/andrewhaley
+> EAC8 43EB D3EF DB98 CC77 2FAD A5CD 6035 332F A671
+>
+>
+> ------------------------------
+>
+> Subject: Digest Footer
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> ------------------------------
+>
+> End of Concurrency-interest Digest, Vol 174, Issue 6
+> ****************************************************
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190823/c62dcd04/attachment.html>
+
+From oleksandr.otenko at gmail.com  Sat Aug 24 03:04:13 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sat, 24 Aug 2019 08:04:13 +0100
+Subject: [concurrency-interest] another lazy initialization,
+ now with method reference
+In-Reply-To: <CAO-wXwKK3Phn7FCBuBucD4D+iNvNZQ_FsXms7dvhsRN4LpRp0g@mail.gmail.com>
+References: <CAO-wXwKK3Phn7FCBuBucD4D+iNvNZQ_FsXms7dvhsRN4LpRp0g@mail.gmail.com>
+Message-ID: <CANkgWKjM2Sep3a3DHSB9A8PNsB2BC=DXJHmPPNyNqiyM3_10Wg@mail.gmail.com>
+
+It is true that whatever the lambda captures in the closure must be final
+or effectively final. You can easily see this at compile time, so I fully
+expect there to be a place in the spec devoted to this question.
+
+It is also true that passing the lambda is safe publishing - it may be that
+it gets executed on a thread different from creation thread.
+
+Now, given that the captured values are behaving as final, it only makes
+sense to implement them as final fields in the generated class. This,
+however, may be out of spec, in case lambda is not required to be
+implemented as a class with certain fields and methods. Still, safe
+publishing may be part of the spec.
+
+Alex
+
+On Thu, 22 Aug 2019, 16:39 Valentin Kovalenko via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> I bumped into the following lazy initialization code that tries to
+> piggy-back on the assumption that captures of variables in lambda
+> expressions have final fields semantics:
+>
+> //is taken from https://stackoverflow.com/a/35335467/1285873
+> static <T> Supplier<T> memoize1(Supplier<T> original) {
+>   return new Supplier<>() {
+>     //notice the absence of the volatile modifier
+>     Supplier<T> delegate = this::init; //w1(delegate, init)
+>     boolean initialized;
+>
+>     public T get() {
+>         return delegate.get(); //r1(delegate, either init or captured),
+> hb(w1, r1), not hb(w2, r1)
+>     }
+>
+>     private synchronized T init() {
+>         if(!initialized) {
+>             T val = original.get();
+>             delegate = () -> val; //w2(delegate, captured), hb(w1, w2)
+>             initialized = true;
+>             return val;
+>         }
+>         return delegate.get(); //r2(delegate, captured), hb(w2, r2)
+>     }
+>   };
+> }
+>
+> Apparently, reads r1 are allowed to observe either the value written by
+> w1, or the value written by w2 because there is no hb(w2, r1). Therefore,
+> the get method is allowed to observe the result of w1 infinitely many
+> times, hence acquiring the monitor per each invocation, which is not good.
+> So this is a performance (not correctness) problem in the code above, but
+> it's not the most interesting part.
+>
+> A more interesting part of the code is the assumption about final fields
+> semantics of captured variables. Is it true that "a capture" of a variable
+> in lambda expression has the semantics of final fields? I was not able to
+> find anything about it in JLS.
+>
+> If the assumption is it is not true, then reads from fields of the val
+> object are allowed to observe the default writes and thus observing "not
+> completely initialized state" of the val object is allowed (unless this
+> object itself is immutable, but let's assume it is not).
+>
+> If the assumption about final fields semantics of captured variables is
+> true, then the aforementioned code is equivalent to the following and is
+> technically correct (but still has the aforementioned problem with an
+> unbounded number of monitor acquire actions):
+>
+> //comments are specified on some of the lines that have a somewhat
+> corresponding analogous line in the first implementation
+> static <T> Supplier<T> memoize2(Supplier<T> original) {
+>   return new Supplier<>() {
+>     //still intentionally no volatile modifier
+>     FinalWrapper<T> delegate = null;//w1(delegate, null)
+>
+>     public T get() {
+>       FinalWrapper<T> delegate = this.delegate; //r1(delegate, either null
+> or captured), hb(w1, r1), not hb(w2, r1)
+>       if (delegate == null) {
+>         delegate = init();//yes, here we intentionally have the same
+> problem of potentially always acquiring the monitor
+>       }
+>       return delegate.get();
+>     }
+>
+>     private synchronized FinalWrapper<T> init() {
+>       FinalWrapper<T> delegate = this.delegate; //r2(delegate, either null
+> or captured if hb(w2, r2)),
+>       if (delegate == null) { //if(!initialized)
+>         T val = original.get();
+>         this.delegate = //initialized = true;
+>             delegate = new FinalWrapper<>(val); //delegate = () -> val;
+> w2(delegate, captured), hb(w1, w2)
+>       }
+>       return delegate;
+>     }
+>   };
+> }
+>
+> static class FinalWrapper<T> {
+>   private final T val;
+>
+>   FinalWrapper(T val) {
+>     this.val = val;
+>   }
+>
+>   T get() {
+>     return val;
+>   }
+> }
+>
+> Just repeating the question so that it does not slip through the cracks:
+> Is it true that "a capture" of a variable in lambda expression has the
+> semantics of final fields? If yes, does anyone knows if this is specified
+> in the JLS?
+>
+> Regards,
+> Valentin
+> [image: LinkedIn] <https://www.linkedin.com/in/stIncMale>   [image:
+> GitHub] <https://github.com/stIncMale>   [image: YouTube]
+> <https://www.youtube.com/user/stIncMale>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190824/65390ed8/attachment-0001.html>
+
+From oleksandr.otenko at gmail.com  Sat Aug 24 03:16:13 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sat, 24 Aug 2019 08:16:13 +0100
+Subject: [concurrency-interest] another lazy initialization,
+ now with method reference
+In-Reply-To: <CAO-wXwKK3Phn7FCBuBucD4D+iNvNZQ_FsXms7dvhsRN4LpRp0g@mail.gmail.com>
+References: <CAO-wXwKK3Phn7FCBuBucD4D+iNvNZQ_FsXms7dvhsRN4LpRp0g@mail.gmail.com>
+Message-ID: <CANkgWKhPXXfNTzZuC1V6r4spSat3+0rjND5Gg5kT_o2znS2Yrw@mail.gmail.com>
+
+What this code does not achieve, is safe visibility of the constructed
+Supplier. Ie if it becomes visible to another thread through racy
+publishing, there is nothing to guarantee that the initial assignment of
+delegate occurred. Not that you have to guarantee that, but this is what it
+does not achieve, and the lambda does.
+
+Alex
+
+On Thu, 22 Aug 2019, 16:39 Valentin Kovalenko via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> I bumped into the following lazy initialization code that tries to
+> piggy-back on the assumption that captures of variables in lambda
+> expressions have final fields semantics:
+>
+> //is taken from https://stackoverflow.com/a/35335467/1285873
+> static <T> Supplier<T> memoize1(Supplier<T> original) {
+>   return new Supplier<>() {
+>     //notice the absence of the volatile modifier
+>     Supplier<T> delegate = this::init; //w1(delegate, init)
+>     boolean initialized;
+>
+>     public T get() {
+>         return delegate.get(); //r1(delegate, either init or captured),
+> hb(w1, r1), not hb(w2, r1)
+>     }
+>
+>     private synchronized T init() {
+>         if(!initialized) {
+>             T val = original.get();
+>             delegate = () -> val; //w2(delegate, captured), hb(w1, w2)
+>             initialized = true;
+>             return val;
+>         }
+>         return delegate.get(); //r2(delegate, captured), hb(w2, r2)
+>     }
+>   };
+> }
+>
+> Apparently, reads r1 are allowed to observe either the value written by
+> w1, or the value written by w2 because there is no hb(w2, r1). Therefore,
+> the get method is allowed to observe the result of w1 infinitely many
+> times, hence acquiring the monitor per each invocation, which is not good.
+> So this is a performance (not correctness) problem in the code above, but
+> it's not the most interesting part.
+>
+> A more interesting part of the code is the assumption about final fields
+> semantics of captured variables. Is it true that "a capture" of a variable
+> in lambda expression has the semantics of final fields? I was not able to
+> find anything about it in JLS.
+>
+> If the assumption is it is not true, then reads from fields of the val
+> object are allowed to observe the default writes and thus observing "not
+> completely initialized state" of the val object is allowed (unless this
+> object itself is immutable, but let's assume it is not).
+>
+> If the assumption about final fields semantics of captured variables is
+> true, then the aforementioned code is equivalent to the following and is
+> technically correct (but still has the aforementioned problem with an
+> unbounded number of monitor acquire actions):
+>
+> //comments are specified on some of the lines that have a somewhat
+> corresponding analogous line in the first implementation
+> static <T> Supplier<T> memoize2(Supplier<T> original) {
+>   return new Supplier<>() {
+>     //still intentionally no volatile modifier
+>     FinalWrapper<T> delegate = null;//w1(delegate, null)
+>
+>     public T get() {
+>       FinalWrapper<T> delegate = this.delegate; //r1(delegate, either null
+> or captured), hb(w1, r1), not hb(w2, r1)
+>       if (delegate == null) {
+>         delegate = init();//yes, here we intentionally have the same
+> problem of potentially always acquiring the monitor
+>       }
+>       return delegate.get();
+>     }
+>
+>     private synchronized FinalWrapper<T> init() {
+>       FinalWrapper<T> delegate = this.delegate; //r2(delegate, either null
+> or captured if hb(w2, r2)),
+>       if (delegate == null) { //if(!initialized)
+>         T val = original.get();
+>         this.delegate = //initialized = true;
+>             delegate = new FinalWrapper<>(val); //delegate = () -> val;
+> w2(delegate, captured), hb(w1, w2)
+>       }
+>       return delegate;
+>     }
+>   };
+> }
+>
+> static class FinalWrapper<T> {
+>   private final T val;
+>
+>   FinalWrapper(T val) {
+>     this.val = val;
+>   }
+>
+>   T get() {
+>     return val;
+>   }
+> }
+>
+> Just repeating the question so that it does not slip through the cracks:
+> Is it true that "a capture" of a variable in lambda expression has the
+> semantics of final fields? If yes, does anyone knows if this is specified
+> in the JLS?
+>
+> Regards,
+> Valentin
+> [image: LinkedIn] <https://www.linkedin.com/in/stIncMale>   [image:
+> GitHub] <https://github.com/stIncMale>   [image: YouTube]
+> <https://www.youtube.com/user/stIncMale>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190824/3d3433a5/attachment.html>
+
+From valentin.male.kovalenko at gmail.com  Sat Aug 24 11:50:26 2019
+From: valentin.male.kovalenko at gmail.com (Valentin Kovalenko)
+Date: Sat, 24 Aug 2019 09:50:26 -0600
+Subject: [concurrency-interest] another lazy initialization,
+ now with method reference
+In-Reply-To: <CAO-wXwLfVx0DpRo5vSXw1ysuE7dMeAVngVJVya_ASEnHgPtzGw@mail.gmail.com>
+References: <mailman.3.1566630273.1841.concurrency-interest@cs.oswego.edu>
+ <CAO-wXwLfVx0DpRo5vSXw1ysuE7dMeAVngVJVya_ASEnHgPtzGw@mail.gmail.com>
+Message-ID: <CAO-wXwLGQvpSpxFrykO0Zw9rGQLrgB98P3U5=atAPRNrpu6WKQ@mail.gmail.com>
+
+Hi Alex,
+
+> It is true that whatever the lambda captures in the closure must be final
+> or effectively final. You can easily see this at compile time, so I fully
+> expect there to be a place in the spec devoted to this question.
+Absolutely, and
+https://docs.oracle.com/javase/specs/jls/se12/html/jls-15.html#jls-15.27.2
+specifies
+this. This part is obvious.
+
+> It is also true that passing the lambda is safe publishing - it may be
+that
+> it gets executed on a thread different from creation thread.
+I agree that an immediate receiver of the result of a lambda expression
+must be guaranteed to observe a fully-initialized object. Otherwise, the
+implementation of lambda expressions is just broken. However, can we expect
+safe publishing in a situation when the application code then re-publishes
+this object via a data race (as we would have with the semantics of final
+fields)? I think we cannot, because an implementation that does not provide
+such a guarantee would not violate JLS.
+
+> Now, given that the captured values are behaving as final, it only makes
+> sense to implement them as final fields in the generated class.
+It totally makes sense. But making sense and being guaranteed are different
+things. The same is applicable to variables captured by anonymous classes:
+again OpenJDK uses final fields to represent them, and it makes sense. But
+removing the final modifier would have not violated any requirements of the
+specification (at least I am failing to find any of requirements that would
+have been violated if the final modifier were not there).
+
+> This,
+> however, may be out of spec, in case lambda is not required to be
+> implemented as a class with certain fields and methods. Still, safe
+> publishing may be part of the spec.
+As I mentioned above, the question is not about safe publishing of the
+object from "an evaluator of a lambda expression" to "a direct receiver of
+the result of a lambda expression", but about guarantees we have (or don't
+have) while re-publishing such a result via a data race. It would be great
+to have such a guarantee specified in JLS for both the results of lambda
+expressions and for the captured part of the state of anonymous classes,
+but it seems like it is not there.
+
+Regards,
+Valentin
+[image: LinkedIn] <https://www.linkedin.com/in/stIncMale>   [image: GitHub]
+<https://github.com/stIncMale>   [image: YouTube]
+<https://www.youtube.com/user/stIncMale>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190824/5fdd0183/attachment.html>
+
+From valentin.male.kovalenko at gmail.com  Sat Aug 24 11:27:00 2019
+From: valentin.male.kovalenko at gmail.com (Valentin Kovalenko)
+Date: Sat, 24 Aug 2019 09:27:00 -0600
+Subject: [concurrency-interest] another lazy initialization,
+ now with method reference
+In-Reply-To: <mailman.3.1566630273.1841.concurrency-interest@cs.oswego.edu>
+References: <mailman.3.1566630273.1841.concurrency-interest@cs.oswego.edu>
+Message-ID: <CAO-wXwLfVx0DpRo5vSXw1ysuE7dMeAVngVJVya_ASEnHgPtzGw@mail.gmail.com>
+
+Hi Alex,
+
+> It is true that whatever the lambda captures in the closure must be final
+> or effectively final. You can easily see this at compile time, so I fully
+> expect there to be a place in the spec devoted to this question.
+Absolutely, and
+https://docs.oracle.com/javase/specs/jls/se12/html/jls-15.html#jls-15.27.2
+specifies
+this. This part is obvious.
+
+> It is also true that passing the lambda is safe publishing - it may be
+that
+> it gets executed on a thread different from creation thread.
+I agree that an immediate receiver of the result of a lambda expression
+must be guaranteed to observe a fully-initialized object. Otherwise, the
+implementation of lambda expressions is just broken. However, can we expect
+safe publishing in a situation when the application code then re-publishes
+this object via a data race (as we would have with the semantics of final
+fields)? I think we cannot, because an implementation that does not provide
+such a guarantee would not violate JLS.
+
+> Now, given that the captured values are behaving as final, it only makes
+> sense to implement them as final fields in the generated class.
+It totally makes sense. But making sense and being guaranteed are different
+things. The same is applicable to variables captured by anonymous classes:
+again OpenJDK uses final fields to represent them, and it makes sense. But
+removing the final modifier would have not violated any requirements of the
+specification (at least I am failing to find any of requirements that would
+have been violated if the final modifier were not there).
+
+> This,
+> however, may be out of spec, in case lambda is not required to be
+> implemented as a class with certain fields and methods. Still, safe
+> publishing may be part of the spec.
+As I mentioned above, the question is not about safe publishing of the
+object from "an evaluator of a lambda expression" to "a direct receiver of
+the result of a lambda expression", but about guarantees we have (or don't
+have) while re-publishing such a result via a data race. It would be great
+to have such a guarantee specified in JLS for both the results of lambda
+expressions and for the captured part of the state of anonymous classes,
+but it seems like it is not there.
+
+Regards,
+Valentin
+[image: LinkedIn] <https://www.linkedin.com/in/stIncMale>   [image: GitHub]
+<https://github.com/stIncMale>   [image: YouTube]
+<https://www.youtube.com/user/stIncMale>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190824/a839083f/attachment-0001.html>
+
+From pavel.rappo at gmail.com  Fri Aug 30 07:21:47 2019
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Fri, 30 Aug 2019 12:21:47 +0100
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+Message-ID: <CAChcVumswKQRXv-Rqkn2ZSKO7NSqYMsJztWc+meJCdg=NHT4uA@mail.gmail.com>
+
+While reading the javadoc for the java.util.concurrent.TimeUnit.sleep
+method I noticed an inconsistency.
+
+"... at param timeout the minimum time to sleep. If less than or equal to
+zero, do not sleep at all..."
+
+I'd argue that the use of the word "minimum" there might be
+misleading. Thread.sleep (which TimeUnit.sleep claims to delegate the
+sleeping to) does not give that guarantee. It simply states
+
+"... at param millis the length of time to sleep in milliseconds..."
+
+Moreover, the spec for Thread.sleep has a special clause that suggests
+that the thread may sleep inaccurately, possibly even less than the
+specified amount of time:
+
+"...subject to the precision and accuracy of system timers and schedulers..."
+
+Thanks,
+-Pavel
+
+From tg at freigmbh.de  Fri Aug 30 08:01:54 2019
+From: tg at freigmbh.de (Thorsten Goetzke)
+Date: Fri, 30 Aug 2019 14:01:54 +0200
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+Message-ID: <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+
+Hello,
+
+I asked a similar question pretty much exactly a year ago.
+My interpretation of the answer would be that the jvm should no longer 
+wake up to early (spurios wakeups for multithreaded scenarios may still 
+happen).
+Earlier versions of the jvm do tend to wake up to early.
+@Martin Buchholz ist that correct?
+
+
+http://cs.oswego.edu/pipermail/concurrency-interest/2018-August/016501.html
+http://cs.oswego.edu/pipermail/concurrency-interest/2018-August/016510.html
+
+
+Am 30.08.19 um 13:21 schrieb Pavel Rappo via Concurrency-interest:
+> While reading the javadoc for the java.util.concurrent.TimeUnit.sleep
+> method I noticed an inconsistency.
+> 
+> "... at param timeout the minimum time to sleep. If less than or equal to
+> zero, do not sleep at all..."
+> 
+> I'd argue that the use of the word "minimum" there might be
+> misleading. Thread.sleep (which TimeUnit.sleep claims to delegate the
+> sleeping to) does not give that guarantee. It simply states
+> 
+> "... at param millis the length of time to sleep in milliseconds..."
+> 
+> Moreover, the spec for Thread.sleep has a special clause that suggests
+> that the thread may sleep inaccurately, possibly even less than the
+> specified amount of time:
+> 
+> "...subject to the precision and accuracy of system timers and schedulers..."
+> 
+> Thanks,
+> -Pavel
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+From pavel.rappo at gmail.com  Fri Aug 30 09:17:03 2019
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Fri, 30 Aug 2019 14:17:03 +0100
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+ <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+Message-ID: <CAChcVumC6Ftb-Du86XLLwokXnKsTmrnxtyGP0m4Ad-RfKhXPQw@mail.gmail.com>
+
+I've skimmed through that discussion thread, thanks. My impression is
+that one of two things has to happen. Either the Thread.sleep spec
+gets fixed or the TimeUnit.sleep spec gets fixed.
+
+I don't buy the argument [*] that we can dismiss that concern since
+all known implementations behave normally anyway, i.e. Thread.sleep
+never returns earlier than the specified amount of time passes. It
+smells like programming to an implementation rather than to an
+interface.
+
+--------------------
+* Even if it were the case which we know it is not. See JDK-6313903.
+
+
+
+On Fri, Aug 30, 2019 at 1:03 PM Thorsten Goetzke via
+Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>
+> Hello,
+>
+> I asked a similar question pretty much exactly a year ago.
+> My interpretation of the answer would be that the jvm should no longer
+> wake up to early (spurios wakeups for multithreaded scenarios may still
+> happen).
+> Earlier versions of the jvm do tend to wake up to early.
+> @Martin Buchholz ist that correct?
+>
+>
+> http://cs.oswego.edu/pipermail/concurrency-interest/2018-August/016501.html
+> http://cs.oswego.edu/pipermail/concurrency-interest/2018-August/016510.html
+>
+>
+> Am 30.08.19 um 13:21 schrieb Pavel Rappo via Concurrency-interest:
+> > While reading the javadoc for the java.util.concurrent.TimeUnit.sleep
+> > method I noticed an inconsistency.
+> >
+> > "... at param timeout the minimum time to sleep. If less than or equal to
+> > zero, do not sleep at all..."
+> >
+> > I'd argue that the use of the word "minimum" there might be
+> > misleading. Thread.sleep (which TimeUnit.sleep claims to delegate the
+> > sleeping to) does not give that guarantee. It simply states
+> >
+> > "... at param millis the length of time to sleep in milliseconds..."
+> >
+> > Moreover, the spec for Thread.sleep has a special clause that suggests
+> > that the thread may sleep inaccurately, possibly even less than the
+> > specified amount of time:
+> >
+> > "...subject to the precision and accuracy of system timers and schedulers..."
+> >
+> > Thanks,
+> > -Pavel
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From davidcholmes at aapt.net.au  Fri Aug 30 09:25:10 2019
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Fri, 30 Aug 2019 23:25:10 +1000
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+ <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+Message-ID: <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+
+Thread.sleep on Windows can return early. That's a long standing bug that I'm currently looking at addressing. Thread.sleep is not subject to "spurious wakeups" - that's only for Object.wait() and LockSupport.park(). The higher-level synchronizers don't allow spurious wakeups or early returns.
+
+Note that the Windows timed-wait API are all specified to be able to return up to a "tick" early - and a tick can be as bad as 16ms!
+
+BTW the claim that a sleep time of zero does not sleep at all is also not quite accurate - it's implemented as a "yield" so may or may not actually result in the thread going off CPU. As Doug used to put it sleep(0) means "sleep for at least no time". 😊
+
+I know it always seems that these things should be easy to specify and implement precisely, but it's never quite that simple. To ensure sleeping "at least" the amount specified may mean sleeping considerably longer - which for short sleeps can be worse than returning slightly early. Things are not as bad as they were 20 years ago though.
+
+Cheers,
+David
+
+> -----Original Message-----
+> From: Concurrency-interest On Behalf Of Thorsten Goetzke via Concurrency-interest
+> Sent: Friday, August 30, 2019 10:02 PM
+> To: concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] More accurate wording for java.util.concurrent.TimeUnit.sleep
+> 
+> Hello,
+> 
+> I asked a similar question pretty much exactly a year ago.
+> My interpretation of the answer would be that the jvm should no longer wake up to early (spurios wakeups for multithreaded
+> scenarios may still happen).
+> Earlier versions of the jvm do tend to wake up to early.
+> @Martin Buchholz ist that correct?
+> 
+> 
+> http://cs.oswego.edu/pipermail/concurrency-interest/2018-August/016501.html
+> http://cs.oswego.edu/pipermail/concurrency-interest/2018-August/016510.html
+> 
+> 
+> Am 30.08.19 um 13:21 schrieb Pavel Rappo via Concurrency-interest:
+> > While reading the javadoc for the java.util.concurrent.TimeUnit.sleep
+> > method I noticed an inconsistency.
+> >
+> > "... at param timeout the minimum time to sleep. If less than or equal to
+> > zero, do not sleep at all..."
+> >
+> > I'd argue that the use of the word "minimum" there might be
+> > misleading. Thread.sleep (which TimeUnit.sleep claims to delegate the
+> > sleeping to) does not give that guarantee. It simply states
+> >
+> > "... at param millis the length of time to sleep in milliseconds..."
+> >
+> > Moreover, the spec for Thread.sleep has a special clause that suggests
+> > that the thread may sleep inaccurately, possibly even less than the
+> > specified amount of time:
+> >
+> > "...subject to the precision and accuracy of system timers and schedulers..."
+> >
+> > Thanks,
+> > -Pavel
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From tg at freigmbh.de  Fri Aug 30 09:57:24 2019
+From: tg at freigmbh.de (Thorsten Goetzke)
+Date: Fri, 30 Aug 2019 15:57:24 +0200
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+ <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+ <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+Message-ID: <737aa068-ad28-d87a-a675-edb80cd18be7@freigmbh.de>
+
+Just for my personal interest:
+Is there something wrong with the code
+below? Couldn't just the Thread.sleep java side implemtation get updated 
+accordingly?
+
+void sleep (long timeout){
+final long l = System.currentTimeMillis();
+long remaining = timeout;
+   do {
+         Thread.sleep(remaining);
+         remaining = l - System.currentTimeMillis() + timeout;
+} while (remaining > 0);
+}
+
+You may (or should) also use System.nanoTime instead of currentTimeMillis.
+
+Over the years i have seen a lot of
+Thread.sleep(100)
+Thread.sleep(1)//we need to sleep a bit longer because sleep wakes up to 
+early!!!
+
+And as much as i hate the code and the comment, there is a reason people 
+type this.
+
+
+
+Am 30.08.19 um 15:25 schrieb David Holmes:
+> Thread.sleep on Windows can return early. That's a long standing bug that I'm currently looking at addressing. Thread.sleep is not subject to "spurious wakeups" - that's only for Object.wait() and LockSupport.park(). The higher-level synchronizers don't allow spurious wakeups or early returns.
+> 
+> Note that the Windows timed-wait API are all specified to be able to return up to a "tick" early - and a tick can be as bad as 16ms!
+> 
+> BTW the claim that a sleep time of zero does not sleep at all is also not quite accurate - it's implemented as a "yield" so may or may not actually result in the thread going off CPU. As Doug used to put it sleep(0) means "sleep for at least no time". 😊
+> 
+> I know it always seems that these things should be easy to specify and implement precisely, but it's never quite that simple. To ensure sleeping "at least" the amount specified may mean sleeping considerably longer - which for short sleeps can be worse than returning slightly early. Things are not as bad as they were 20 years ago though.
+> 
+> Cheers,
+> David
+> 
+>> -----Original Message-----
+>> From: Concurrency-interest On Behalf Of Thorsten Goetzke via Concurrency-interest
+>> Sent: Friday, August 30, 2019 10:02 PM
+>> To: concurrency-interest at cs.oswego.edu
+>> Subject: [concurrency-interest] More accurate wording for java.util.concurrent.TimeUnit.sleep
+>>
+>> Hello,
+>>
+>> I asked a similar question pretty much exactly a year ago.
+>> My interpretation of the answer would be that the jvm should no longer wake up to early (spurios wakeups for multithreaded
+>> scenarios may still happen).
+>> Earlier versions of the jvm do tend to wake up to early.
+>> @Martin Buchholz ist that correct?
+>>
+>>
+>> http://cs.oswego.edu/pipermail/concurrency-interest/2018-August/016501.html
+>> http://cs.oswego.edu/pipermail/concurrency-interest/2018-August/016510.html
+>>
+>>
+>> Am 30.08.19 um 13:21 schrieb Pavel Rappo via Concurrency-interest:
+>>> While reading the javadoc for the java.util.concurrent.TimeUnit.sleep
+>>> method I noticed an inconsistency.
+>>>
+>>> "... at param timeout the minimum time to sleep. If less than or equal to
+>>> zero, do not sleep at all..."
+>>>
+>>> I'd argue that the use of the word "minimum" there might be
+>>> misleading. Thread.sleep (which TimeUnit.sleep claims to delegate the
+>>> sleeping to) does not give that guarantee. It simply states
+>>>
+>>> "... at param millis the length of time to sleep in milliseconds..."
+>>>
+>>> Moreover, the spec for Thread.sleep has a special clause that suggests
+>>> that the thread may sleep inaccurately, possibly even less than the
+>>> specified amount of time:
+>>>
+>>> "...subject to the precision and accuracy of system timers and schedulers..."
+>>>
+>>> Thanks,
+>>> -Pavel
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+From pavel.rappo at gmail.com  Fri Aug 30 10:54:53 2019
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Fri, 30 Aug 2019 15:54:53 +0100
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <737aa068-ad28-d87a-a675-edb80cd18be7@freigmbh.de>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+ <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+ <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+ <737aa068-ad28-d87a-a675-edb80cd18be7@freigmbh.de>
+Message-ID: <CAChcVu==a0u9R0+1cm8mw5RxkhNrUoJyzkwzvSuj7Mmhr4XnWA@mail.gmail.com>
+
+Let's leave out the correctness, the corner cases and just discuss the idea
+behind that code. I think David put this nicely in his previous email:
+
+...To ensure sleeping "at least" the amount specified may mean sleeping
+considerably longer - which for short sleeps can be worse than returning
+slightly early...
+
+I personally think of Thread.sleep as of the most low-level function that
+provides the functionality of sleeping. It's up to each individual consumer
+of this functionality to extend and to build on top of it.
+
+Consider this totally fictional example from everyday life. You have a
+super important thing to attend to at 9 am sharp. You wake up at night and
+glance at your watch. You still have 3 hours of sleep. The next time you
+wake up, you realize you have only 20 mins left. Now here's a question.
+Would you better get off the bed straight away or would you take your
+chances and sleep for another 20 mins? As the next time you look at your
+watch, it may display noon.
+
+
+On Fri, Aug 30, 2019 at 2:58 PM Thorsten Goetzke via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Just for my personal interest:
+> Is there something wrong with the code
+> below? Couldn't just the Thread.sleep java side implemtation get updated
+> accordingly?
+>
+> void sleep (long timeout){
+> final long l = System.currentTimeMillis();
+> long remaining = timeout;
+>    do {
+>          Thread.sleep(remaining);
+>          remaining = l - System.currentTimeMillis() + timeout;
+> } while (remaining > 0);
+> }
+>
+> You may (or should) also use System.nanoTime instead of currentTimeMillis.
+>
+> Over the years i have seen a lot of
+> Thread.sleep(100)
+> Thread.sleep(1)//we need to sleep a bit longer because sleep wakes up to
+> early!!!
+>
+> And as much as i hate the code and the comment, there is a reason people
+> type this.
+>
+>
+>
+> Am 30.08.19 um 15:25 schrieb David Holmes:
+> > Thread.sleep on Windows can return early. That's a long standing bug
+> that I'm currently looking at addressing. Thread.sleep is not subject to
+> "spurious wakeups" - that's only for Object.wait() and LockSupport.park().
+> The higher-level synchronizers don't allow spurious wakeups or early
+> returns.
+> >
+> > Note that the Windows timed-wait API are all specified to be able to
+> return up to a "tick" early - and a tick can be as bad as 16ms!
+> >
+> > BTW the claim that a sleep time of zero does not sleep at all is also
+> not quite accurate - it's implemented as a "yield" so may or may not
+> actually result in the thread going off CPU. As Doug used to put it
+> sleep(0) means "sleep for at least no time". 😊
+> >
+> > I know it always seems that these things should be easy to specify and
+> implement precisely, but it's never quite that simple. To ensure sleeping
+> "at least" the amount specified may mean sleeping considerably longer -
+> which for short sleeps can be worse than returning slightly early. Things
+> are not as bad as they were 20 years ago though.
+> >
+> > Cheers,
+> > David
+> >
+> >> -----Original Message-----
+> >> From: Concurrency-interest On Behalf Of Thorsten Goetzke via
+> Concurrency-interest
+> >> Sent: Friday, August 30, 2019 10:02 PM
+> >> To: concurrency-interest at cs.oswego.edu
+> >> Subject: [concurrency-interest] More accurate wording for
+> java.util.concurrent.TimeUnit.sleep
+> >>
+> >> Hello,
+> >>
+> >> I asked a similar question pretty much exactly a year ago.
+> >> My interpretation of the answer would be that the jvm should no longer
+> wake up to early (spurios wakeups for multithreaded
+> >> scenarios may still happen).
+> >> Earlier versions of the jvm do tend to wake up to early.
+> >> @Martin Buchholz ist that correct?
+> >>
+> >>
+> >>
+> http://cs.oswego.edu/pipermail/concurrency-interest/2018-August/016501.html
+> >>
+> http://cs.oswego.edu/pipermail/concurrency-interest/2018-August/016510.html
+> >>
+> >>
+> >> Am 30.08.19 um 13:21 schrieb Pavel Rappo via Concurrency-interest:
+> >>> While reading the javadoc for the java.util.concurrent.TimeUnit.sleep
+> >>> method I noticed an inconsistency.
+> >>>
+> >>> "... at param timeout the minimum time to sleep. If less than or equal to
+> >>> zero, do not sleep at all..."
+> >>>
+> >>> I'd argue that the use of the word "minimum" there might be
+> >>> misleading. Thread.sleep (which TimeUnit.sleep claims to delegate the
+> >>> sleeping to) does not give that guarantee. It simply states
+> >>>
+> >>> "... at param millis the length of time to sleep in milliseconds..."
+> >>>
+> >>> Moreover, the spec for Thread.sleep has a special clause that suggests
+> >>> that the thread may sleep inaccurately, possibly even less than the
+> >>> specified amount of time:
+> >>>
+> >>> "...subject to the precision and accuracy of system timers and
+> schedulers..."
+> >>>
+> >>> Thanks,
+> >>> -Pavel
+> >>> _______________________________________________
+> >>> Concurrency-interest mailing list
+> >>> Concurrency-interest at cs.oswego.edu
+> >>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >>>
+> >> _______________________________________________
+> >> Concurrency-interest mailing list
+> >> Concurrency-interest at cs.oswego.edu
+> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190830/ea632cd3/attachment-0001.html>
+
+From pavel.rappo at gmail.com  Fri Aug 30 11:08:48 2019
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Fri, 30 Aug 2019 16:08:48 +0100
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+ <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+ <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+Message-ID: <CAChcVumYNrRsh0Z0BSZ0V-YEB-2hqUXbs7=2eyd7hzYWX4pKJg@mail.gmail.com>
+
+> On Fri, Aug 30, 2019 at 2:25 PM David Holmes via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>
+> <snip>
+>
+> BTW the claim that a sleep time of zero does not sleep at all is also not quite accurate - it's implemented as a "yield" so may or may not actually result in the thread going off CPU. As Doug used to put it sleep(0) means "sleep for at least no time".
+
+If I understand this correctly, TimeUnit.sleep does not try to specify
+how Thread.sleep behaves. Instead, TimeUnit.sleep builds on top of
+Thread.sleep's behavior by saying that if TimeUnit.sleep(timeout) is
+called with timeout <= 0, then the Thread.sleep method is not called
+at all. But I can definitely see how it might be confusing given that
+TimeUnit.sleep is designed as "a convenience method that converts time
+arguments into the form required by the {@code Thread.sleep} method."
+
+From martinrb at google.com  Fri Aug 30 13:00:15 2019
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 30 Aug 2019 10:00:15 -0700
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <CAChcVumYNrRsh0Z0BSZ0V-YEB-2hqUXbs7=2eyd7hzYWX4pKJg@mail.gmail.com>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+ <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+ <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+ <CAChcVumYNrRsh0Z0BSZ0V-YEB-2hqUXbs7=2eyd7hzYWX4pKJg@mail.gmail.com>
+Message-ID: <CA+kOe08C-UrSE9rKH66gH=9obQwiBDcZzKna=FOBfK+YJ_zNCw@mail.gmail.com>
+
+I've been a steady advocate of "at least" semantics for methods that
+specify a duration, including sleep.
+
+https://bugs.openjdk.java.net/browse/JDK-6313903
+<https://bugs.openjdk.java.net/browse/JDK-6313903?filter=25118>
+
+Pavel, if you need to do something surely at 9am, set the alarm for 8am,
+not 9am!
+
+I agree that if Thread.sleep(0) is not really a no-op then
+TimeUnit.sleep(0) should do the same thing.  Doug?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190830/85111122/attachment.html>
+
+From martinrb at google.com  Fri Aug 30 13:01:50 2019
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 30 Aug 2019 10:01:50 -0700
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <737aa068-ad28-d87a-a675-edb80cd18be7@freigmbh.de>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+ <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+ <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+ <737aa068-ad28-d87a-a675-edb80cd18be7@freigmbh.de>
+Message-ID: <CA+kOe09x=K=ZKREUxWRdKgb0gNNi9sZTfknyDzsqtpx4C5kQNQ@mail.gmail.com>
+
+On Fri, Aug 30, 2019 at 6:58 AM Thorsten Goetzke via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+>
+> You may (or should) also use System.nanoTime instead of currentTimeMillis.
+>
+
+Yes, over the years we have replaced many calls to  currentTimeMillis
+with nanoTime, when interested in elapsed time.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190830/a85291b9/attachment.html>
+
+From pavel.rappo at gmail.com  Fri Aug 30 13:43:43 2019
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Fri, 30 Aug 2019 18:43:43 +0100
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <CA+kOe08C-UrSE9rKH66gH=9obQwiBDcZzKna=FOBfK+YJ_zNCw@mail.gmail.com>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+ <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+ <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+ <CAChcVumYNrRsh0Z0BSZ0V-YEB-2hqUXbs7=2eyd7hzYWX4pKJg@mail.gmail.com>
+ <CA+kOe08C-UrSE9rKH66gH=9obQwiBDcZzKna=FOBfK+YJ_zNCw@mail.gmail.com>
+Message-ID: <CAChcVukTVRkTbW00rnrUEpq331WngzqpdBpEu50qrn6fgbdS=g@mail.gmail.com>
+
+> On Fri, Aug 30, 2019 at 6:00 PM Martin Buchholz <martinrb at google.com> wrote:
+>
+> I've been a steady advocate of "at least" semantics for methods that specify a duration, including sleep.
+>
+> https://bugs.openjdk.java.net/browse/JDK-6313903
+
+Then it seems like you are in favor of changing the Thread.sleep spec.
+
+> Pavel, if you need to do something surely at 9am, set the alarm for 8am, not 9am!
+
+I never said in that example that the alarm is set for 9 am. I
+shouldn't have used this analogy, to be honest. Analogies typically
+lead to more confusion.
+
+> I agree that if Thread.sleep(0) is not really a no-op then TimeUnit.sleep(0) should do the same thing.
+
+Hm... We have to think carefully about that. My guess would be that
+this "avoid Thread.sleep(0)" behavior has something to do with
+consistency. You see, 0 (zero) can have a special meaning in some
+APIs. For instance, java.util.concurrent treats it literally. Zero or
+no time at all. On the other hand, java.net API typically treats it
+"as an infinite timeout" (e.g. Socket.connect(SocketAddress, int)).
+java.lang has it both ways. Thread.sleep is like java.util.concurrent
+in that respect, but Thread.join and Object.wait(long) are like
+java.net.
+
+Having said that, I think TimeUnit tries to be consistent.
+
+From davidcholmes at aapt.net.au  Fri Aug 30 19:35:02 2019
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Sat, 31 Aug 2019 09:35:02 +1000
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <CAChcVumYNrRsh0Z0BSZ0V-YEB-2hqUXbs7=2eyd7hzYWX4pKJg@mail.gmail.com>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+ <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+ <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+ <CAChcVumYNrRsh0Z0BSZ0V-YEB-2hqUXbs7=2eyd7hzYWX4pKJg@mail.gmail.com>
+Message-ID: <008401d55f8b$8c4913f0$a4db3bd0$@aapt.net.au>
+
+Hi Pavel,
+
+Yes my bad. Timeunit itself takes care of the <= 0 behaviour.
+
+David
+
+> -----Original Message-----
+> From: Pavel Rappo
+> Sent: Saturday, August 31, 2019 1:09 AM
+> To: dholmes at ieee.org
+> Cc: Thorsten Goetzke <tg at freigmbh.de>; David Holmes <davidcholmes at aapt.net.au>; concurrency-interest <concurrency-
+> interest at cs.oswego.edu>
+> Subject: Re: [concurrency-interest] More accurate wording for java.util.concurrent.TimeUnit.sleep
+> 
+> > On Fri, Aug 30, 2019 at 2:25 PM David Holmes via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> >
+> > <snip>
+> >
+> > BTW the claim that a sleep time of zero does not sleep at all is also not quite accurate - it's implemented as a "yield" so may or may
+> not actually result in the thread going off CPU. As Doug used to put it sleep(0) means "sleep for at least no time".
+> 
+> If I understand this correctly, TimeUnit.sleep does not try to specify how Thread.sleep behaves. Instead, TimeUnit.sleep builds on top
+> of Thread.sleep's behavior by saying that if TimeUnit.sleep(timeout) is called with timeout <= 0, then the Thread.sleep method is not
+> called at all. But I can definitely see how it might be confusing given that TimeUnit.sleep is designed as "a convenience method that
+> converts time arguments into the form required by the {@code Thread.sleep} method."
+
+
+From davidcholmes at aapt.net.au  Fri Aug 30 19:37:59 2019
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Sat, 31 Aug 2019 09:37:59 +1000
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <CA+kOe08C-UrSE9rKH66gH=9obQwiBDcZzKna=FOBfK+YJ_zNCw@mail.gmail.com>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+ <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+ <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+ <CAChcVumYNrRsh0Z0BSZ0V-YEB-2hqUXbs7=2eyd7hzYWX4pKJg@mail.gmail.com>
+ <CA+kOe08C-UrSE9rKH66gH=9obQwiBDcZzKna=FOBfK+YJ_zNCw@mail.gmail.com>
+Message-ID: <008501d55f8b$f563f800$e02be800$@aapt.net.au>
+
+Martin,
+
+ 
+
+I think we took the opportunity with TimeUnit to tighten up the loose specs from Thread.sleep. So I’m happy for TimeUnit to specify that <=0 is a no-op rather than some vague system level thing that may or may not actually have an observable affect.
+
+ 
+
+Cheers,
+
+David
+
+ 
+
+From: Concurrency-interest On Behalf Of Martin Buchholz via Concurrency-interest
+Sent: Saturday, August 31, 2019 3:00 AM
+To: Pavel Rappo <pavel.rappo at gmail.com>
+Cc: concurrency-interest <concurrency-interest at cs.oswego.edu>; David Holmes <dholmes at ieee.org>
+Subject: Re: [concurrency-interest] More accurate wording for java.util.concurrent.TimeUnit.sleep
+
+ 
+
+I've been a steady advocate of "at least" semantics for methods that specify a duration, including sleep.
+
+ 
+
+https://bugs.openjdk.java.net/browse/JDK-6313903 <https://bugs.openjdk.java.net/browse/JDK-6313903?filter=25118> 
+
+ 
+
+Pavel, if you need to do something surely at 9am, set the alarm for 8am, not 9am!
+
+ 
+
+I agree that if Thread.sleep(0) is not really a no-op then TimeUnit.sleep(0) should do the same thing.  Doug?
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190831/9072324d/attachment.html>
+
+From martinrb at google.com  Fri Aug 30 19:48:29 2019
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 30 Aug 2019 16:48:29 -0700
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <008501d55f8b$f563f800$e02be800$@aapt.net.au>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+ <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+ <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+ <CAChcVumYNrRsh0Z0BSZ0V-YEB-2hqUXbs7=2eyd7hzYWX4pKJg@mail.gmail.com>
+ <CA+kOe08C-UrSE9rKH66gH=9obQwiBDcZzKna=FOBfK+YJ_zNCw@mail.gmail.com>
+ <008501d55f8b$f563f800$e02be800$@aapt.net.au>
+Message-ID: <CA+kOe09R6Wfk+t5za2Vrkc===V5jOaBUK0p6VW8=r-ktPUEhkA@mail.gmail.com>
+
+On Fri, Aug 30, 2019 at 4:38 PM David Holmes <davidcholmes at aapt.net.au>
+wrote:
+
+> Martin,
+>
+>
+>
+> I think we took the opportunity with TimeUnit to tighten up the loose
+> specs from Thread.sleep. So I’m happy for TimeUnit to specify that <=0 is a
+> no-op rather than some vague system level thing that may or may not
+> actually have an observable affect.
+>
+
+ Oh, OK.  Another factoid I probably once knew and have now half-forgotten.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190830/54e3d0be/attachment-0001.html>
+
+From martinrb at google.com  Fri Aug 30 19:51:23 2019
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 30 Aug 2019 16:51:23 -0700
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <CAChcVukTVRkTbW00rnrUEpq331WngzqpdBpEu50qrn6fgbdS=g@mail.gmail.com>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+ <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+ <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+ <CAChcVumYNrRsh0Z0BSZ0V-YEB-2hqUXbs7=2eyd7hzYWX4pKJg@mail.gmail.com>
+ <CA+kOe08C-UrSE9rKH66gH=9obQwiBDcZzKna=FOBfK+YJ_zNCw@mail.gmail.com>
+ <CAChcVukTVRkTbW00rnrUEpq331WngzqpdBpEu50qrn6fgbdS=g@mail.gmail.com>
+Message-ID: <CA+kOe08Wpsj4npu4v1kf=cCc=395CBE-pKas0zYxwjZk0Wj3gA@mail.gmail.com>
+
+On Fri, Aug 30, 2019 at 10:43 AM Pavel Rappo <pavel.rappo at gmail.com> wrote:
+
+> > On Fri, Aug 30, 2019 at 6:00 PM Martin Buchholz <martinrb at google.com>
+> wrote:
+> >
+> > I've been a steady advocate of "at least" semantics for methods that
+> specify a duration, including sleep.
+> >
+> > https://bugs.openjdk.java.net/browse/JDK-6313903
+>
+> Then it seems like you are in favor of changing the Thread.sleep spec.
+>
+
+Here's the 2005 version of Martin agreeing with you!
+https://bugs.openjdk.java.net/browse/JDK-5068368?focusedCommentId=12148372&page=com.atlassian.jira.plugin.system.issuetabpanels%3Acomment-tabpanel#comment-12148372
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190830/4a84bf7c/attachment.html>
+
+From pavel.rappo at gmail.com  Sat Aug 31 12:35:37 2019
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Sat, 31 Aug 2019 17:35:37 +0100
+Subject: [concurrency-interest] More accurate wording for
+ java.util.concurrent.TimeUnit.sleep
+In-Reply-To: <CAChcVukTVRkTbW00rnrUEpq331WngzqpdBpEu50qrn6fgbdS=g@mail.gmail.com>
+References: <64632b0d-2dca-bfe1-3cbb-e522fae3f171@freigmbh.de>
+ <6172121f-ba76-80c9-c5b5-6f366d79fe3c@freigmbh.de>
+ <006a01d55f36$59366f30$0ba34d90$@aapt.net.au>
+ <CAChcVumYNrRsh0Z0BSZ0V-YEB-2hqUXbs7=2eyd7hzYWX4pKJg@mail.gmail.com>
+ <CA+kOe08C-UrSE9rKH66gH=9obQwiBDcZzKna=FOBfK+YJ_zNCw@mail.gmail.com>
+ <CAChcVukTVRkTbW00rnrUEpq331WngzqpdBpEu50qrn6fgbdS=g@mail.gmail.com>
+Message-ID: <CAChcVum5+Lw9Xq-_QgyJ4rxoq=nMfnPOcE2Y_ggihLiVJHMLfg@mail.gmail.com>
+
+On Fri, Aug 30, 2019 at 6:43 PM Pavel Rappo <pavel.rappo at gmail.com> wrote:
+
+> Hm... We have to think carefully about that. My guess would be that
+> this "avoid Thread.sleep(0)" behavior has something to do with
+> consistency. You see, 0 (zero) can have a special meaning in some
+> APIs. For instance, java.util.concurrent treats it literally. Zero or
+> no time at all. On the other hand, java.net API typically treats it
+> "as an infinite timeout" (e.g. Socket.connect(SocketAddress, int)).
+> java.lang has it both ways. Thread.sleep is like java.util.concurrent
+> in that respect, but Thread.join and Object.wait(long) are like
+> java.net.
+>
+> Having said that, I think TimeUnit tries to be consistent.
+
+Revisiting this, I have probably made a poor word choice. I should've
+used the word "uniform" instead of "consistent". Meaning that when one
+uses TimeUnit, one always knows what a 0 (zero) timeout means.
+
+Thread.sleep seems to be the only method from classic (pre Java 5)
+concurrency that doesn't say anything about its behavior when zero is
+passed. And it kinda makes sense when you think about it.
+
+TimeUnit eliminates this need to think. And to be honest I like it.
+Maybe that should be made more explicit by mentioning that design
+choice in the class-level javadoc though. Something to the effect that
+"unless otherwise stated... methods that accept timeout argument...
+are no-op when that argument is less than or equal to zero...".
+
+From p.r.doyle at gmail.com  Sat Aug 31 16:09:33 2019
+From: p.r.doyle at gmail.com (Patrick Doyle)
+Date: Sat, 31 Aug 2019 16:09:33 -0400
+Subject: [concurrency-interest] Tracking task context across fork operations
+Message-ID: <CANUDhE=4k-sWkUox+yjLq_PqZ5Dz3=xNSJFKP0AfTifrmaxSUA@mail.gmail.com>
+
+Hello,
+
+I have a need to supply some ThreadLocal-style context to a
+ForkJoinPool operation; namely, a parallel stream operation.  I found
+no way to make this work without modifying java.util.concurrent.  (If
+you have a way, I'm all ears!)
+
+The modification I made was quite modest.  It's in the patch below.
+I'm wondering what folks think about making this change for real?
+This could be a solution to the long-stanging "task-local context"
+problem.  It's effectively a one-line change that allows a
+ForkJoinPool thread to take some action whenever a task is forked by
+that thread.
+
+With this change, it becomes possible to create a ForkJoinPool with a
+thread factory whose threads wrap every forked task in order to
+propagate context from the forking thread (which already has the right
+context) into the forked task (which can run on another thread).
+
+Here is the patch.  (It's based on Java 8, but the relevant code
+hasn't changed.)
+
+diff --git a/icepick/src/main/java/java/util/concurrent/ForkJoinTask.java
+b/icepick/src/main/java/java/util/concurrent/ForkJoinTask.java
+index fd4bc819..0af40c2d 100755
+--- a/icepick/src/main/java/java/util/concurrent/ForkJoinTask.java
++++ b/icepick/src/main/java/java/util/concurrent/ForkJoinTask.java
+@@ -697,7 +697,7 @@ public abstract class ForkJoinTask<V> implements
+Future<V>, Serializable {
+     public final ForkJoinTask<V> fork() {
+         Thread t;
+         if ((t = Thread.currentThread()) instanceof ForkJoinWorkerThread)
+-            ((ForkJoinWorkerThread)t).workQueue.push(this);
++            ((ForkJoinWorkerThread)t).forkTask(this);
+         else
+             ForkJoinPool.common.externalPush(this);
+         return this;
+diff --git a/icepick/src/main/java/java/util/concurrent/ForkJoinWorkerThread.java
+b/icepick/src/main/java/java/util/concurrent/ForkJoinWorkerThread.java
+index d146f29f..b4abb8af 100755
+--- a/icepick/src/main/java/java/util/concurrent/ForkJoinWorkerThread.java
++++ b/icepick/src/main/java/java/util/concurrent/ForkJoinWorkerThread.java
+@@ -170,6 +170,10 @@ public class ForkJoinWorkerThread extends Thread {
+         }
+     }
+
++    protected <T> void forkTask(ForkJoinTask<T> task) {
++       workQueue.push(task);
++    }
++
+     /**
+      * Erases ThreadLocals by nulling out Thread maps.
+      */
+
+The wrapping code looks like the following.  This doesn't need to be
+in the class library; normal user code can do this.
+
+@Override
+protected <T> void forkTask(ForkJoinTask<T> task) {
+   C inheritedContext = context.get();  // "context" is a ThreadLocal
+   super.forkTask(ForkJoinTask.adapt(()->{
+      C oldContext = context.get();
+      context.set(inheritedContext);
+      try {
+        return task.invoke();
+      } finally {
+        context.set(oldContext);
+      }
+   }));
+}
+
+--
+Patrick Doyle
+p.r.doyle at gmail.com
+

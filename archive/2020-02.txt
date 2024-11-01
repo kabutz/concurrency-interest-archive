@@ -1,0 +1,1325 @@
+From dl at cs.oswego.edu  Tue Feb  4 14:52:06 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 4 Feb 2020 14:52:06 -0500
+Subject: [concurrency-interest] ForkJoin refresh
+In-Reply-To: <565925d8-dd20-ebd6-0959-7de1bfb4b662@cs.oswego.edu>
+References: <565925d8-dd20-ebd6-0959-7de1bfb4b662@cs.oswego.edu>
+Message-ID: <b857071a-1791-3991-c900-5eba6337c162@cs.oswego.edu>
+
+
+I mentioned a few weeks ago that most uses of
+Executors.newFixedThreadPool(n) (based on TPE ThreadPoolExecutor) should
+instead use "new ForkJoinPool(n)", This led to more systematic removal
+of FJP-TPE differences in new FJ update. Among the issues are default
+interrupt policies for ForkJoinTasks that wrap Callables and Runnables.
+The ExecutorService invokeAny and invokeAll methods for arrays of
+Callables are specified in a way that makes users expect that cancelled
+tasks are interrupted. So they now are. Further, in addition to
+internally forcing this for only these methods, there is now a way that
+anyone can obtain this effect for any wrapped Callable (exposing a hack
+that I've suggested in response to desperate queries). New method
+adaptInterruptible(Callable) has class-level description as follows:
+
+ *
+ * <p>By default, method {@link #cancel} ignores its {@code
+ * mayInterruptIfRunning} argument, separating task cancellation from
+ * the interruption status of threads running tasks. However, the
+ * method is overridable to accommodate cases in which running tasks
+ * must be cancelled using interrupts. This may arise when adapting
+ * Callables that cannot check {@code isCancelled()} task status.
+ * Tasks constructed with the (@link #adaptInterruptible) adaptor
+ * track and interrupt the running thread upon {@code
+ * cancel(true)}. Reliable usage requires awareness of potential
+ * consequences: Method bodies should ignore stray interrupts to cope
+ * with the inherent possibility that a late interrupt issued by
+ * another thread after a given task has completed may (inadvertently)
+ * interrupt some future task. Further, interruptible tasks should not
+ * in general create subtasks, because an interrupt intended for a
+ * given task may be consumed by one of its subtasks, or vice versa.
+ *
+
+
+(Formatted in context at:
+http://gee.cs.oswego.edu/dl/jsr166/dist/docs/java.base/java/util/concurrent/ForkJoinTask.html)
+
+The intent of this description is to also help explain why most
+ForkJoinTasks should not and do not interrupt when cancelling. Doing
+otherwise would lead to constant surprises about both "missed" and
+"spurious" interrupts, without any sure way to fix these problems. But
+adaptInterruptible can still be useful when restricted to those
+occasional cases (often legacy code) where such things can be tolerated.
+
+Beyond these, the only difference between fixed-pool TPE and FJP that
+could conceivably matter is that FJP.shutdownNow does not return a
+collection of tasks that did not run because of pool termination.
+(Because there is no central queue, it does not know which tasks are
+cancelled due to termination vs otherwise.)
+
+Comments and suggestions are welcome.
+
+On 1/17/20 4:39 PM, Doug Lea via Concurrency-interest wrote:
+> It would be great to get feedback from other usages before integrating
+> into OpenJDK. As usual, you can try it with any JDK11+ JVM by grabbing
+> http://gee.cs.oswego.edu/dl/concurrent/dist/jsr166.jar and running "java
+> --patch-module java.base="$DIR/jsr166.jar", where DIR is the full file
+> prefix. (Although beware that using --patch-module slows down startup,
+> and occasionally entire test runs. For other options, see
+> http://gee.cs.oswego.edu/dl/concurrency-interest/index.html).
+> 
+
+
+From peter.levart at gmail.com  Wed Feb  5 10:15:21 2020
+From: peter.levart at gmail.com (Peter Levart)
+Date: Wed, 5 Feb 2020 16:15:21 +0100
+Subject: [concurrency-interest] ForkJoin refresh
+In-Reply-To: <b857071a-1791-3991-c900-5eba6337c162@cs.oswego.edu>
+References: <565925d8-dd20-ebd6-0959-7de1bfb4b662@cs.oswego.edu>
+ <b857071a-1791-3991-c900-5eba6337c162@cs.oswego.edu>
+Message-ID: <54357bad-a710-ca65-f5ab-c4b79947790d@gmail.com>
+
+Hi,
+
+On 2/4/20 8:52 PM, Doug Lea via Concurrency-interest wrote:
+>   * Tasks constructed with the (@link #adaptInterruptible) adaptor
+>   * track and interrupt the running thread upon {@code
+>   * cancel(true)}. Reliable usage requires awareness of potential
+>   * consequences: Method bodies should ignore stray interrupts to cope
+>   * with the inherent possibility that a late interrupt issued by
+>   * another thread after a given task has completed may (inadvertently)
+>   * interrupt some future task. Further, interruptible tasks should not
+>   * in general create subtasks, because an interrupt intended for a
+>   * given task may be consumed by one of its subtasks, or vice versa.
+
+Would something like the following be more "precise" in targeting the 
+task and only the task and not any other code that executes after the 
+task in the same thread? At least stray interrupts would not be possible 
+as a consequence of cancel(true) for some unrelated task. Should anyone 
+interrupt the pool thread outside of normal task execution, the 
+interrupted status would not propagate to task code nor would it be lost 
+after the task has finished.
+
+The hot path cost of this would be a CAS instead of a volatile write to 
+the runner field at the end of each task.
+
+     static final class AdaptedInterruptibleCallable<T> extends 
+ForkJoinTask<T>
+         implements RunnableFuture<T> {
+         @SuppressWarnings("serial") // Conditionally serializable
+         final Callable<? extends T> callable;
+         @SuppressWarnings("serial") // Conditionally serializable
+         transient volatile Thread runner;
+         @SuppressWarnings("serial") // Conditionally serializable
+         transient volatile boolean cancelInterrupted;
+         T result;
+
+         AdaptedInterruptibleCallable(Callable<? extends T> callable) {
+             if (callable == null) throw new NullPointerException();
+             this.callable = callable;
+         }
+
+         public final T getRawResult() { return result; }
+
+         public final void setRawResult(T v) { result = v; }
+
+         public final boolean exec() {
+             // save the pre-task interrupted status and clear it for task
+             boolean wasInterrupted = Thread.interrupted();
+             Thread t = Thread.currentThread();
+             runner = t;
+             try {
+                 result = callable.call();
+                 return true;
+             } catch (RuntimeException rex) {
+                 throw rex;
+             } catch (Exception ex) {
+                 throw new RuntimeException(ex);
+             } finally {
+                 if (!RUNNER.compareAndSet(this, t, (Thread) null)) {
+                     // someone called cancel(true) and successfully CASed
+                     // runner to null - we should wait for it to set the
+                     // cancelInterrupted flag...
+                     while (!cancelInterrupted) {
+                         Thread.onSpinWait();
+                     }
+                     // ... and then clear the interrupt it set just 
+before that
+                     Thread.interrupted();
+                 }
+                 // restore pre-task interrupted status
+                 if (wasInterrupted) {
+                     Thread.currentThread().interrupt();
+                 }
+             }
+         }
+
+         public final void run() { invoke(); }
+
+         public final boolean cancel(boolean mayInterruptIfRunning) {
+             Thread t;
+             boolean stat = super.cancel(false);
+             if (mayInterruptIfRunning && (t = runner) != null &&
+                 RUNNER.compareAndSet(this, t, (Thread) null)) {
+                 try {
+                     t.interrupt();
+                 } catch (Throwable ignore) {
+                 }
+                 cancelInterrupted = true;
+             }
+             return stat;
+         }
+
+         public String toString() {
+             return super.toString() + "[Wrapped task = " + callable + "]";
+         }
+
+         private static final VarHandle RUNNER;
+         static {
+             try {
+                 RUNNER = MethodHandles
+                     .lookup()
+.findVarHandle(AdaptedInterruptibleCallable.class, "runner", Thread.class);
+             } catch (NoSuchFieldException | IllegalAccessException e) {
+                 throw new InternalError(e);
+             }
+         }
+
+         private static final long serialVersionUID = 2838392045355241008L;
+     }
+
+
+
+
+Regards, Peter
+
+
+From peter.levart at gmail.com  Wed Feb  5 11:00:07 2020
+From: peter.levart at gmail.com (Peter Levart)
+Date: Wed, 5 Feb 2020 17:00:07 +0100
+Subject: [concurrency-interest] ForkJoin refresh
+In-Reply-To: <54357bad-a710-ca65-f5ab-c4b79947790d@gmail.com>
+References: <565925d8-dd20-ebd6-0959-7de1bfb4b662@cs.oswego.edu>
+ <b857071a-1791-3991-c900-5eba6337c162@cs.oswego.edu>
+ <54357bad-a710-ca65-f5ab-c4b79947790d@gmail.com>
+Message-ID: <548c774a-d1f1-c5b0-e135-5802349845da@gmail.com>
+
+Ooops,
+
+There's also a race at the beginning of task execution. The task might 
+already be executing and another thread might call cancel(true) even 
+before the 'runner' field is set. In this case, the code of task will 
+not get interrupted. So we should check the cancelation status after 
+setting the 'runner' field and bail out if it was canceled.
+
+This might do:
+
+     static final class AdaptedInterruptibleCallable<T> extends 
+ForkJoinTask<T>
+         implements RunnableFuture<T> {
+         @SuppressWarnings("serial") // Conditionally serializable
+         final Callable<? extends T> callable;
+         transient volatile Thread runner;
+         transient volatile boolean cancelInterrupted;
+         @SuppressWarnings("serial") // Conditionally serializable
+         T result;
+
+         AdaptedInterruptibleCallable(Callable<? extends T> callable) {
+             if (callable == null) throw new NullPointerException();
+             this.callable = callable;
+         }
+
+         public final T getRawResult() { return result; }
+
+         public final void setRawResult(T v) { result = v; }
+
+         public final boolean exec() {
+             Thread t = Thread.currentThread();
+             // set runner filed
+             runner = t;
+             try {
+                 // check for concurrent cancel() that just missed the 
+runner field
+                 if (isCancelled()) {
+                     throw new CancellationException();
+                 } else {
+                     result = callable.call();
+                 }
+                 return true;
+             } catch (RuntimeException rex) {
+                 throw rex;
+             } catch (Exception ex) {
+                 throw new RuntimeException(ex);
+             } finally {
+                 if (!RUNNER.compareAndSet(this, t, (Thread) null)) {
+                     // someone called cancel(true) and successfully CASed
+                     // runner to null - we should wait for it to set the
+                     // cancelInterrupted flag...
+                     while (!cancelInterrupted) {
+                         Thread.onSpinWait();
+                     }
+                     // ... and then clear the interrupt it set just 
+before that
+                     Thread.interrupted();
+                 }
+             }
+         }
+
+         public final void run() { invoke(); }
+
+         public final boolean cancel(boolean mayInterruptIfRunning) {
+             Thread t;
+             boolean stat = super.cancel(false);
+             if (mayInterruptIfRunning && (t = runner) != null &&
+                 RUNNER.compareAndSet(this, t, (Thread) null)) {
+                 try {
+                     t.interrupt();
+                 } catch (Throwable ignore) {
+                 }
+                 cancelInterrupted = true;
+             }
+             return stat;
+         }
+
+         public String toString() {
+             return super.toString() + "[Wrapped task = " + callable + "]";
+         }
+
+         private static final VarHandle RUNNER;
+         static {
+             try {
+                 RUNNER = MethodHandles
+                     .lookup()
+.findVarHandle(AdaptedInterruptibleCallable.class, "runner", Thread.class);
+             } catch (NoSuchFieldException | IllegalAccessException e) {
+                 throw new InternalError(e);
+             }
+         }
+
+         private static final long serialVersionUID = 2838392045355241008L;
+     }
+
+
+Regards, Peter
+
+
+From dl at cs.oswego.edu  Thu Feb  6 07:31:36 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Thu, 6 Feb 2020 07:31:36 -0500
+Subject: [concurrency-interest] ForkJoin refresh
+In-Reply-To: <54357bad-a710-ca65-f5ab-c4b79947790d@gmail.com>
+References: <565925d8-dd20-ebd6-0959-7de1bfb4b662@cs.oswego.edu>
+ <b857071a-1791-3991-c900-5eba6337c162@cs.oswego.edu>
+ <54357bad-a710-ca65-f5ab-c4b79947790d@gmail.com>
+Message-ID: <f22ed1bb-f847-5a1f-6418-ca6f63b7c7d8@cs.oswego.edu>
+
+On 2/5/20 10:15 AM, Peter Levart wrote:
+
+> 
+> Would something like the following be more "precise" in targeting the 
+> task and only the task and not any other code that executes after the 
+> task in the same thread? At least stray interrupts would not be possible 
+> as a consequence of cancel(true) for some unrelated task. Should anyone 
+> interrupt the pool thread outside of normal task execution, the 
+> interrupted status would not propagate to task code nor would it be lost 
+> after the task has finished.
+> 
+
+Thanks for taking a look at this. I'm not sure your suggested changes
+are preferable though. Interrupt status for interruptible tasks is
+cleared at end, before running next task, which reduces the impact of
+other slow threads needlessly interrupting the task. I can't think of
+cases where it helps to conditionalize this on whether any occurred?
+To better explain though, I'll add to internal documentation that the
+only occurrence of Thread.interrupt inside FJ code itself is during
+termination, in which case tasks are or will be cancelled anyway.
+
+-Doug
+
+
+From peter.levart at gmail.com  Thu Feb  6 10:56:41 2020
+From: peter.levart at gmail.com (Peter Levart)
+Date: Thu, 6 Feb 2020 16:56:41 +0100
+Subject: [concurrency-interest] ForkJoin refresh
+In-Reply-To: <f22ed1bb-f847-5a1f-6418-ca6f63b7c7d8@cs.oswego.edu>
+References: <565925d8-dd20-ebd6-0959-7de1bfb4b662@cs.oswego.edu>
+ <b857071a-1791-3991-c900-5eba6337c162@cs.oswego.edu>
+ <54357bad-a710-ca65-f5ab-c4b79947790d@gmail.com>
+ <f22ed1bb-f847-5a1f-6418-ca6f63b7c7d8@cs.oswego.edu>
+Message-ID: <021b27b1-7a75-3f34-dc67-b4a00064357f@gmail.com>
+
+
+
+On 2/6/20 1:31 PM, Doug Lea wrote:
+> On 2/5/20 10:15 AM, Peter Levart wrote:
+>
+>> Would something like the following be more "precise" in targeting the
+>> task and only the task and not any other code that executes after the
+>> task in the same thread? At least stray interrupts would not be possible
+>> as a consequence of cancel(true) for some unrelated task. Should anyone
+>> interrupt the pool thread outside of normal task execution, the
+>> interrupted status would not propagate to task code nor would it be lost
+>> after the task has finished.
+>>
+> Thanks for taking a look at this. I'm not sure your suggested changes
+> are preferable though. Interrupt status for interruptible tasks is
+> cleared at end, before running next task, which reduces the impact of
+> other slow threads needlessly interrupting the task.
+It may reduce the impact, but it can't guarantee that it won't happen. 
+There is a theoretical race in cancel(true):
+
+1455                 if (mayInterruptIfRunning && (t = runner) != null) {
+1456                     try {
+1457                         t.interrupt();
+1458                     } catch (Throwable ignore) {
+1459                     }
+1460                 }
+
+...between the read of the 'runner' field and the call to interrupt() 
+the 't' thread may already transition to running another unrelated task 
+which will get a stray interrupt then...
+
+If stray interrupts are not problematic, then what about the race that 
+causes a missing interrupt at the start of execution of the task:
+
+1436             public final boolean exec() {
+1437                 Thread.interrupted();
+1438                 runner = Thread.currentThread();
+1439                 try {
+1440                     result = callable.call();
+1441                     return true;
+
+The task might already be executing (just entering exec method), but has 
+not yet assigned the 'runner' field. A concurrent thread with access to 
+the task may call cancel(true) which will not interrupt the task, 
+because it observes the runner still being null. So the task will 
+execute user code to the end although user code might have checks to 
+detect interrupts. In my 2nd message I proposed to add a check after 
+assigning the runner field:
+
+             Thread.interrupted();
+             runner = Thread.currentThread();
+             try {
+                 // check for concurrent cancel() that just missed the 
+runner field
+                 if (isCancelled()) {
+                     throw new CancellationException();
+                 } else {
+                     result = callable.call();
+                 }
+                 return true;
+
+The cancelation and the read of 'runner' field in cancel() are reversed, 
+so this should guarantee that either interrupt is observable by user 
+code or the task ends execution before it enters user code (Callable):
+
+1452             public final boolean cancel(boolean 
+mayInterruptIfRunning) {
+1453                 Thread t;
+1454                 boolean stat = super.cancel(false);
+1455                 if (mayInterruptIfRunning && (t = runner) != null) {
+1456                     try {
+1457                         t.interrupt();
+
+
+Regards, Peter
+
+>   I can't think of
+> cases where it helps to conditionalize this on whether any occurred?
+> To better explain though, I'll add to internal documentation that the
+> only occurrence of Thread.interrupt inside FJ code itself is during
+> termination, in which case tasks are or will be cancelled anyway.
+>
+> -Doug
+>
+
+
+From dl at cs.oswego.edu  Fri Feb  7 08:54:05 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 7 Feb 2020 08:54:05 -0500
+Subject: [concurrency-interest] ForkJoin refresh
+In-Reply-To: <021b27b1-7a75-3f34-dc67-b4a00064357f@gmail.com>
+References: <565925d8-dd20-ebd6-0959-7de1bfb4b662@cs.oswego.edu>
+ <b857071a-1791-3991-c900-5eba6337c162@cs.oswego.edu>
+ <54357bad-a710-ca65-f5ab-c4b79947790d@gmail.com>
+ <f22ed1bb-f847-5a1f-6418-ca6f63b7c7d8@cs.oswego.edu>
+ <021b27b1-7a75-3f34-dc67-b4a00064357f@gmail.com>
+Message-ID: <68ef10a6-0eb1-c956-be28-90f75da4d01e@cs.oswego.edu>
+
+On 2/6/20 10:56 AM, Peter Levart wrote:
+> 
+> If stray interrupts are not problematic, then what about the race that 
+> causes a missing interrupt at the start of execution of the task:
+
+Thanks; I agree. It suffices to just recheck status. (The outcome of
+CancellationException will be reported without needing to throw it here.)
+
+1436             public final boolean exec() {
+1437                 Thread.interrupted();
+1438                 runner = Thread.currentThread();
+1439                 try {
++                      if (!isDone())
+1440                     result = callable.call();
+1441                     return true;
+
+
+
+From nigro.fra at gmail.com  Wed Feb 12 02:12:05 2020
+From: nigro.fra at gmail.com (Francesco Nigro)
+Date: Wed, 12 Feb 2020 08:12:05 +0100
+Subject: [concurrency-interest] pthread_cond_signal/await
+Message-ID: <CAKxGtTWU46AiR588wnc5nCLg6KW5q7jbRC5qjK8YEKvt5RgPxA@mail.gmail.com>
+
+Hi folks,
+
+I've noticed that some concurrent primitives employees mixed strategies
+before parking threads.
+I am aware of the Linux kernel mechanism of pthread_cond_signal/wait and
+the stealthy issue about the contention around futex buckets, but I would
+like to understand if there are academic papers or just some article to
+explain the motivation of such strategies and how the effectiveness is
+being ensured given the very different OSes and architectures supported.
+
+In addition, I see that FJ has dropped the spin before parking threads,
+while SynchronousQueue still use it and I don't understand why...
+
+Many thanks,
+Franz
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200212/501c09e1/attachment.htm>
+
+From JanecekPetr at seznam.cz  Wed Feb 12 05:01:37 2020
+From: JanecekPetr at seznam.cz (=?utf-8?q?Petr_Jane=C4=8Dek?=)
+Date: Wed, 12 Feb 2020 11:01:37 +0100 (CET)
+Subject: [concurrency-interest] ThreadPoolExecutor - cancel rejected tasks
+ with Discard*Policy?
+Message-ID: <6tF.1QAE.166Mgzukrb0.1UGyq1@seznam.cz>
+
+Hello,
+
+I'm sorry to open a new thread on something I feel must have been discussed before,
+I did not find any previous mention.
+
+Imagine this:
+
+```java
+// Note the DiscardPolicy
+ExecutorService executor = new ThreadPoolExecutor(
+1, 1,
+1, TimeUnit.MINUTES,
+new ArrayBlockingQueue<>(1),
+new ThreadPoolExecutor.DiscardPolicy()
+);
+
+Runnable task = () -> Uninterruptibles.sleepUninterruptibly(1, TimeUnit.SECONDS);
+executor.submit(task);
+executor.submit(task);
+// The following task will get rejected and discarded by the pool:
+executor.submit(task).get();
+```
+
+The code above will block forever, the `get()` call never returns. The task
+had been rejected, but the returned Future is not cancelled, will never run,
+and therefore will never be completed in any way. There's no way I'm aware
+of to know the returned Future had been rejected.
+
+This was very confusing and unexpected to me, I definitely expected the policy
+to cancel the task. Note that this only happens with the Discard* policies
+because the AbortPolicy throws and never returns a broken Future to the user,
+while the CallerRunsPolicy returns a runnable Future.
+
+I'd like to open a discussion around a few possible naive approaches to ease
+the pain of future developers who get similarly caught by surprise:
+
+1. Change the Discard*Policy to cancel the task. I did not find any place
+where this would break any existing contracts. That said, obviously such
+a change changes the behaviour in a significant way, and so it might not be
+the way to go.
+
+2. Introduce a DiscardAndCancelPolicy. Yes, writing such a policy is trivial
+and anybody can do it if he needs it. The problem is that this is so obscure
+that I cannot imagine many people do this right away. Discoverability is very
+important here, and having an extra policy would tip people off.
+
+3. Change the Discard*Policie's JavaDoc in a way it is clear that it does not
+play with ExecutorService.submit() very well.
+
+4. All of the above, or some more complex solution?
+
+Thank you,
+Petr Janeček
+
+From dl at cs.oswego.edu  Wed Feb 12 09:26:25 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 12 Feb 2020 09:26:25 -0500
+Subject: [concurrency-interest] ThreadPoolExecutor - cancel rejected
+ tasks with Discard*Policy?
+In-Reply-To: <6tF.1QAE.166Mgzukrb0.1UGyq1@seznam.cz>
+References: <6tF.1QAE.166Mgzukrb0.1UGyq1@seznam.cz>
+Message-ID: <b7b71fc1-e7dc-8e37-29c6-ebf58decfe50@cs.oswego.edu>
+
+On 2/12/20 5:01 AM, Petr Janeček via Concurrency-interest wrote:
+
+> // The following task will get rejected and discarded by the pool:
+> executor.submit(task).get();
+> ```
+> 
+> The code above will block forever, the `get()` call never returns. The task
+> had been rejected, but the returned Future is not cancelled, will never run,
+> and therefore will never be completed in any way. There's no way I'm aware
+> of to know the returned Future had been rejected.
+
+Right. None of the supplied RejectedExecutionHandlers perform
+task.cancel when discarding. In retrospect, they probably should have.
+At this point, it would probably suffice to add discussion to javadocs
+about how to do so. But if others support adding new Policies, we should
+consider it.
+
+-Doug
+
+> 
+> This was very confusing and unexpected to me, I definitely expected the policy
+> to cancel the task. Note that this only happens with the Discard* policies
+> because the AbortPolicy throws and never returns a broken Future to the user,
+> while the CallerRunsPolicy returns a runnable Future.
+> 
+> I'd like to open a discussion around a few possible naive approaches to ease
+> the pain of future developers who get similarly caught by surprise:
+> 
+> 1. Change the Discard*Policy to cancel the task. I did not find any place
+> where this would break any existing contracts. That said, obviously such
+> a change changes the behaviour in a significant way, and so it might not be
+> the way to go.
+> 
+> 2. Introduce a DiscardAndCancelPolicy. Yes, writing such a policy is trivial
+> and anybody can do it if he needs it. The problem is that this is so obscure
+> that I cannot imagine many people do this right away. Discoverability is very
+> important here, and having an extra policy would tip people off.
+> 
+> 3. Change the Discard*Policie's JavaDoc in a way it is clear that it does not
+> play with ExecutorService.submit() very well.
+> 
+> 4. All of the above, or some more complex solution?
+> 
+> Thank you,
+> Petr Janeček
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+
+
+From dl at cs.oswego.edu  Wed Feb 12 10:10:09 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 12 Feb 2020 10:10:09 -0500
+Subject: [concurrency-interest] pthread_cond_signal/await
+In-Reply-To: <CAKxGtTWU46AiR588wnc5nCLg6KW5q7jbRC5qjK8YEKvt5RgPxA@mail.gmail.com>
+References: <CAKxGtTWU46AiR588wnc5nCLg6KW5q7jbRC5qjK8YEKvt5RgPxA@mail.gmail.com>
+Message-ID: <fbfbaff0-918a-867a-3cdc-4679899c7121@cs.oswego.edu>
+
+On 2/12/20 2:12 AM, Francesco Nigro via Concurrency-interest wrote:
+> Hi folks,
+> 
+> I've noticed that some concurrent primitives employees mixed strategies
+> before parking threads.
+
+Yes. Every policy and mechanism for blocking threads entails tradeoffs
+and potential performance bugs. The recent refreshes of AQS and FJ make
+these more uniform in more cases, but there are still some others that
+need renewed attention. SynchronousQueue is among them. When used in
+contexts such as Executors.newCahcedThreadPool, spinning to reduce the
+worst latency impacts (see below) for starting new tasks is usually
+empirically a good idea, but doing so for simple messaging is usually
+empirically a bad idea. This will be improved; most likely by creating
+new components better geared for the latter.
+
+While I'm at it, a reminder of the options available when you cannot
+immediately proceed due to the actions (or lack thereof) of other
+threads. Each has overhead, throughput, latency, threshholding, code
+structure, and complexity tradeoffs that have led to decades of
+disagreements about the best way to write concurrent software.
+
+* Avoid blocking by helping (as in non-blocking data structures and some
+FokJoin mechanisms).
+
+* Avoid blocking by arranging a completion/continuation to be triggered,
+and then doing something else (as in CompletableFuture,
+CountedCompleter, and other async components).
+
+* Spin or pause waiting to see if you were momentarily unlucky, before
+trying further options.
+
+* Find another task to run, save context, perform it and restore context
+(as in user-level schedulers including upcoming Loom).
+
+* Pass the problem to the JVM, which entails further choices of which
+OS-level blocking primitives to use, and then the OS, which then has
+harder issues to consider, such as whether to power down your core.
+These are where the worst blocking latencies arise.
+
+-Doug
+
+
+From martinrb at google.com  Thu Feb 13 10:09:19 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Thu, 13 Feb 2020 07:09:19 -0800
+Subject: [concurrency-interest] ThreadPoolExecutor - cancel rejected
+ tasks with Discard*Policy?
+In-Reply-To: <6tF.1QAE.166Mgzukrb0.1UGyq1@seznam.cz>
+References: <6tF.1QAE.166Mgzukrb0.1UGyq1@seznam.cz>
+Message-ID: <CA+kOe0_SVh8Jn=b2YEs1r_jp-aaxzBqkfc9BPWPui5q37D9SfA@mail.gmail.com>
+
+The Executor interface is simply
+void execute(Runnable command)
+which may have been a design mistake in retrospect (but it's analogous to
+Thread.run).
+Giving a TODO to the executor should maybe require at least an
+acknowledgement in the form of a returned Future?
+The default rejection policy is like DiscardPolicy, with "notification".
+DiscardPolicy can be regarded as a "demo" Policy that might have been
+better confined to javadoc.
+I agree with Doug that it may be safest today to soft-deprecate
+DiscardPolicy in the javadoc.
+
+On Wed, Feb 12, 2020 at 2:03 AM Petr Janeček via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Hello,
+>
+> I'm sorry to open a new thread on something I feel must have been
+> discussed before,
+> I did not find any previous mention.
+>
+> Imagine this:
+>
+> ```java
+> // Note the DiscardPolicy
+> ExecutorService executor = new ThreadPoolExecutor(
+> 1, 1,
+> 1, TimeUnit.MINUTES,
+> new ArrayBlockingQueue<>(1),
+> new ThreadPoolExecutor.DiscardPolicy()
+> );
+>
+> Runnable task = () -> Uninterruptibles.sleepUninterruptibly(1,
+> TimeUnit.SECONDS);
+> executor.submit(task);
+> executor.submit(task);
+> // The following task will get rejected and discarded by the pool:
+> executor.submit(task).get();
+> ```
+>
+> The code above will block forever, the `get()` call never returns. The task
+> had been rejected, but the returned Future is not cancelled, will never
+> run,
+> and therefore will never be completed in any way. There's no way I'm aware
+> of to know the returned Future had been rejected.
+>
+> This was very confusing and unexpected to me, I definitely expected the
+> policy
+> to cancel the task. Note that this only happens with the Discard* policies
+> because the AbortPolicy throws and never returns a broken Future to the
+> user,
+> while the CallerRunsPolicy returns a runnable Future.
+>
+> I'd like to open a discussion around a few possible naive approaches to
+> ease
+> the pain of future developers who get similarly caught by surprise:
+>
+> 1. Change the Discard*Policy to cancel the task. I did not find any place
+> where this would break any existing contracts. That said, obviously such
+> a change changes the behaviour in a significant way, and so it might not be
+> the way to go.
+>
+> 2. Introduce a DiscardAndCancelPolicy. Yes, writing such a policy is
+> trivial
+> and anybody can do it if he needs it. The problem is that this is so
+> obscure
+> that I cannot imagine many people do this right away. Discoverability is
+> very
+> important here, and having an extra policy would tip people off.
+>
+> 3. Change the Discard*Policie's JavaDoc in a way it is clear that it does
+> not
+> play with ExecutorService.submit() very well.
+>
+> 4. All of the above, or some more complex solution?
+>
+> Thank you,
+> Petr Janeček
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200213/65cab240/attachment.htm>
+
+From jason_mehrens at hotmail.com  Thu Feb 13 11:11:20 2020
+From: jason_mehrens at hotmail.com (Jason Mehrens)
+Date: Thu, 13 Feb 2020 16:11:20 +0000
+Subject: [concurrency-interest] ThreadPoolExecutor - cancel rejected
+ tasks with Discard*Policy?
+In-Reply-To: <CA+kOe0_SVh8Jn=b2YEs1r_jp-aaxzBqkfc9BPWPui5q37D9SfA@mail.gmail.com>
+References: <6tF.1QAE.166Mgzukrb0.1UGyq1@seznam.cz>,
+ <CA+kOe0_SVh8Jn=b2YEs1r_jp-aaxzBqkfc9BPWPui5q37D9SfA@mail.gmail.com>
+Message-ID: <DM5PR1801MB207421C5BF1A380CA1065B07831A0@DM5PR1801MB2074.namprd18.prod.outlook.com>
+
+An idea I tossed around for a while was to add chaining of RejectedExecutionHandler to DiscardPolicy and DiscardOldestPolicy.  
+I never really spent the time to fully flesh out all of the problems so take it for what it is worth.
+The idea is that only if the executor is shutdown then call the next RejectedExecutionHandler in the chain.  The caller would construct and specify the additional handler.
+It would allow you to build things like DiscardOldest and CallerRuns or Discard and Abort.  If we added a cancel policy you could do Discard and Cancel.
+
+Maybe we wouldn't have to deprecate if added chaining?
+
+Jason
+
+________________________________________
+From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> on behalf of Martin Buchholz via Concurrency-interest <concurrency-interest at cs.oswego.edu>
+Sent: Thursday, February 13, 2020 9:09 AM
+To: Petr Janeček
+Cc: concurrency-interest
+Subject: Re: [concurrency-interest] ThreadPoolExecutor - cancel rejected tasks with Discard*Policy?
+
+The Executor interface is simply
+void execute(Runnable command)
+which may have been a design mistake in retrospect (but it's analogous to Thread.run).
+Giving a TODO to the executor should maybe require at least an acknowledgement in the form of a returned Future?
+The default rejection policy is like DiscardPolicy, with "notification".
+DiscardPolicy can be regarded as a "demo" Policy that might have been better confined to javadoc.
+I agree with Doug that it may be safest today to soft-deprecate DiscardPolicy in the javadoc.
+
+On Wed, Feb 12, 2020 at 2:03 AM Petr Janeček via Concurrency-interest <concurrency-interest at cs.oswego.edu<mailto:concurrency-interest at cs.oswego.edu>> wrote:
+Hello,
+
+I'm sorry to open a new thread on something I feel must have been discussed before,
+I did not find any previous mention.
+
+Imagine this:
+
+```java
+// Note the DiscardPolicy
+ExecutorService executor = new ThreadPoolExecutor(
+1, 1,
+1, TimeUnit.MINUTES,
+new ArrayBlockingQueue<>(1),
+new ThreadPoolExecutor.DiscardPolicy()
+);
+
+Runnable task = () -> Uninterruptibles.sleepUninterruptibly(1, TimeUnit.SECONDS);
+executor.submit(task);
+executor.submit(task);
+// The following task will get rejected and discarded by the pool:
+executor.submit(task).get();
+```
+
+The code above will block forever, the `get()` call never returns. The task
+had been rejected, but the returned Future is not cancelled, will never run,
+and therefore will never be completed in any way. There's no way I'm aware
+of to know the returned Future had been rejected.
+
+This was very confusing and unexpected to me, I definitely expected the policy
+to cancel the task. Note that this only happens with the Discard* policies
+because the AbortPolicy throws and never returns a broken Future to the user,
+while the CallerRunsPolicy returns a runnable Future.
+
+I'd like to open a discussion around a few possible naive approaches to ease
+the pain of future developers who get similarly caught by surprise:
+
+1. Change the Discard*Policy to cancel the task. I did not find any place
+where this would break any existing contracts. That said, obviously such
+a change changes the behaviour in a significant way, and so it might not be
+the way to go.
+
+2. Introduce a DiscardAndCancelPolicy. Yes, writing such a policy is trivial
+and anybody can do it if he needs it. The problem is that this is so obscure
+that I cannot imagine many people do this right away. Discoverability is very
+important here, and having an extra policy would tip people off.
+
+3. Change the Discard*Policie's JavaDoc in a way it is clear that it does not
+play with ExecutorService.submit() very well.
+
+4. All of the above, or some more complex solution?
+
+Thank you,
+Petr Janeček
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu<mailto:Concurrency-interest at cs.oswego.edu>
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From JanecekPetr at seznam.cz  Fri Feb 14 15:06:52 2020
+From: JanecekPetr at seznam.cz (JanecekPetr at seznam.cz)
+Date: Fri, 14 Feb 2020 21:06:52 +0100
+Subject: [concurrency-interest] ThreadPoolExecutor - cancel rejected
+ tasks with Discard*Policy?
+In-Reply-To: <b7b71fc1-e7dc-8e37-29c6-ebf58decfe50@cs.oswego.edu>
+Message-ID: <f0e0ffcf-1d91-4b5c-b5eb-4c3d2e065836@email.android.com>
+
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200214/9748d991/attachment.htm>
+
+From dl at cs.oswego.edu  Sun Feb 16 09:41:28 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sun, 16 Feb 2020 09:41:28 -0500
+Subject: [concurrency-interest] ThreadPoolExecutor - cancel rejected
+ tasks with Discard*Policy?
+In-Reply-To: <f0e0ffcf-1d91-4b5c-b5eb-4c3d2e065836@email.android.com>
+References: <f0e0ffcf-1d91-4b5c-b5eb-4c3d2e065836@email.android.com>
+Message-ID: <5fcd3df6-a943-55a7-0536-d1327eb61149@cs.oswego.edu>
+
+On 2/14/20 3:06 PM, JanecekPetr at seznam.cz wrote:
+> Looks like the opinions so far have been split almost evenly.
+
+This is what happens when we agree that we regret a small decision made
+many years ago; there is rarely a great solution. Probably we'll just
+add documentation. See the draft embedded example at:
+
+http://gee.cs.oswego.edu/dl/jsr166/dist/docs/java.base/java/util/concurrent/ThreadPoolExecutor.DiscardOldestPolicy.html
+
+Plus a few added sentences in TPE documentation
+http://gee.cs.oswego.edu/dl/jsr166/dist/docs/java.base/java/util/concurrent/ThreadPoolExecutor.html
+
+We could add @Deprecated(forRemoval=false), but I'm not sure how much
+this would help. There are a few legitimate uses for it, and that code
+would now encounter warnings.
+
+Comments still welcome.
+
+-Doug
+
+
+
+From viktor.klang at gmail.com  Sun Feb 16 10:16:29 2020
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Sun, 16 Feb 2020 15:16:29 +0000
+Subject: [concurrency-interest] ThreadPoolExecutor - cancel rejected
+ tasks with Discard*Policy?
+In-Reply-To: <6tF.1QAE.166Mgzukrb0.1UGyq1@seznam.cz>
+References: <6tF.1QAE.166Mgzukrb0.1UGyq1@seznam.cz>
+Message-ID: <CANPzfU_uf6qr5SoJDM-BV5HAbc3EnYObOs4SLgg5NXpXRdPp5g@mail.gmail.com>
+
+The real downside with CallerRunsPolicy is that it discards Runnables when
+the pool is shutting down, which means that in all cases where there might
+be a race condition between shutting down and submitting tasks, they may
+not get run at all :S
+
+On Wed, Feb 12, 2020 at 10:03 AM Petr Janeček via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Hello,
+>
+> I'm sorry to open a new thread on something I feel must have been
+> discussed before,
+> I did not find any previous mention.
+>
+> Imagine this:
+>
+> ```java
+> // Note the DiscardPolicy
+> ExecutorService executor = new ThreadPoolExecutor(
+> 1, 1,
+> 1, TimeUnit.MINUTES,
+> new ArrayBlockingQueue<>(1),
+> new ThreadPoolExecutor.DiscardPolicy()
+> );
+>
+> Runnable task = () -> Uninterruptibles.sleepUninterruptibly(1,
+> TimeUnit.SECONDS);
+> executor.submit(task);
+> executor.submit(task);
+> // The following task will get rejected and discarded by the pool:
+> executor.submit(task).get();
+> ```
+>
+> The code above will block forever, the `get()` call never returns. The task
+> had been rejected, but the returned Future is not cancelled, will never
+> run,
+> and therefore will never be completed in any way. There's no way I'm aware
+> of to know the returned Future had been rejected.
+>
+> This was very confusing and unexpected to me, I definitely expected the
+> policy
+> to cancel the task. Note that this only happens with the Discard* policies
+> because the AbortPolicy throws and never returns a broken Future to the
+> user,
+> while the CallerRunsPolicy returns a runnable Future.
+>
+> I'd like to open a discussion around a few possible naive approaches to
+> ease
+> the pain of future developers who get similarly caught by surprise:
+>
+> 1. Change the Discard*Policy to cancel the task. I did not find any place
+> where this would break any existing contracts. That said, obviously such
+> a change changes the behaviour in a significant way, and so it might not be
+> the way to go.
+>
+> 2. Introduce a DiscardAndCancelPolicy. Yes, writing such a policy is
+> trivial
+> and anybody can do it if he needs it. The problem is that this is so
+> obscure
+> that I cannot imagine many people do this right away. Discoverability is
+> very
+> important here, and having an extra policy would tip people off.
+>
+> 3. Change the Discard*Policie's JavaDoc in a way it is clear that it does
+> not
+> play with ExecutorService.submit() very well.
+>
+> 4. All of the above, or some more complex solution?
+>
+> Thank you,
+> Petr Janeček
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+-- 
+Cheers,
+√
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200216/31e62762/attachment.htm>
+
+From dl at cs.oswego.edu  Mon Feb 17 07:01:35 2020
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 17 Feb 2020 07:01:35 -0500
+Subject: [concurrency-interest] ThreadPoolExecutor - cancel rejected
+ tasks with Discard*Policy?
+In-Reply-To: <CANPzfU_uf6qr5SoJDM-BV5HAbc3EnYObOs4SLgg5NXpXRdPp5g@mail.gmail.com>
+References: <6tF.1QAE.166Mgzukrb0.1UGyq1@seznam.cz>
+ <CANPzfU_uf6qr5SoJDM-BV5HAbc3EnYObOs4SLgg5NXpXRdPp5g@mail.gmail.com>
+Message-ID: <6bac02d2-9183-83de-d32b-786ac681ef95@cs.oswego.edu>
+
+On 2/16/20 10:16 AM, Viktor Klang via Concurrency-interest wrote:
+> The real downside with CallerRunsPolicy is that it discards Runnables
+> when the pool is shutting down, which means that in all cases where
+> there might be a race condition between shutting down and submitting
+> tasks, they may not get run at all :S
+> 
+
+Some people would complain about the opposite policy choice as a
+downside. The main moral for JDK components is that predefining only a
+few of many possibly policies for the sake of convenience is not usually
+a good idea.
+
+-Doug
+
+
+
+
+From viktor.klang at gmail.com  Mon Feb 17 09:09:07 2020
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Mon, 17 Feb 2020 14:09:07 +0000
+Subject: [concurrency-interest] ThreadPoolExecutor - cancel rejected
+ tasks with Discard*Policy?
+In-Reply-To: <6bac02d2-9183-83de-d32b-786ac681ef95@cs.oswego.edu>
+References: <6tF.1QAE.166Mgzukrb0.1UGyq1@seznam.cz>
+ <CANPzfU_uf6qr5SoJDM-BV5HAbc3EnYObOs4SLgg5NXpXRdPp5g@mail.gmail.com>
+ <6bac02d2-9183-83de-d32b-786ac681ef95@cs.oswego.edu>
+Message-ID: <CANPzfU-TwXUOWjgrkCx4m4mM5e-Q29G7FtkOkXz+RnG4gp-+0Q@mail.gmail.com>
+
+On Mon, Feb 17, 2020 at 12:03 PM Doug Lea via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> On 2/16/20 10:16 AM, Viktor Klang via Concurrency-interest wrote:
+> > The real downside with CallerRunsPolicy is that it discards Runnables
+> > when the pool is shutting down, which means that in all cases where
+> > there might be a race condition between shutting down and submitting
+> > tasks, they may not get run at all :S
+> >
+>
+> Some people would complain about the opposite policy choice as a
+> downside. The main moral for JDK components is that predefining only a
+> few of many possibly policies for the sake of convenience is not usually
+> a good idea.
+>
+
+Yeah, "There is no optimal, general, solution." - Old Klangian Proverb
+
+
+>
+> -Doug
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+-- 
+Cheers,
+√
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200217/146addf3/attachment.htm>
+
+From JanecekPetr at seznam.cz  Tue Feb 18 06:38:49 2020
+From: JanecekPetr at seznam.cz (=?utf-8?q?Petr_Jane=C4=8Dek?=)
+Date: Tue, 18 Feb 2020 12:38:49 +0100 (CET)
+Subject: [concurrency-interest] 
+	=?utf-8?q?ThreadPoolExecutor_-_cancel_rej?=
+	=?utf-8?q?ected_tasks_with_Discard*Policy=3F?=
+References: <f0e0ffcf-1d91-4b5c-b5eb-4c3d2e065836@email.android.com>
+ <5fcd3df6-a943-55a7-0536-d1327eb61149@cs.oswego.edu>
+Message-ID: <F9.1QE4.6cY}Cj5ZZMN.1UIyp9@seznam.cz>
+
+> From: Doug Lea <dl at cs.oswego.edu>
+> Datum: 16. 2. 2020 15:43:13
+> 
+> Subject: Re: [concurrency-interest] ThreadPoolExecutor - cancel rejected tasks with Discard*Policy?
+> 
+> [...] Probably we'll just add documentation. See the draft embedded example at:
+> http://gee.cs.oswego.edu/dl/jsr166/dist/docs/java.base/java/util/concurrent/ThreadPoolExecutor.DiscardOldestPolicy.html
+> 
+> Plus a few added sentences in TPE documentation
+> http://gee.cs.oswego.edu/dl/jsr166/dist/docs/java.base/java/util/concurrent/ThreadPoolExecutor.html
+
+Thank you, that's very clear.
+I would personally like a new policy, too, but I admit its usage is probably
+obscure enough that it would not hold its own weight.
+ 
+> We could add @Deprecated(forRemoval=false), but I'm not sure how much
+> this would help. There are a few legitimate uses for it, and that code
+> would now encounter warnings.
+
+Agreed, I subjectively do not think @Deprecated is warranted in this case.
+
+PJ
+
+From leventov.ru at gmail.com  Sun Feb 23 23:54:47 2020
+From: leventov.ru at gmail.com (Roman Leventov)
+Date: Mon, 24 Feb 2020 07:54:47 +0300
+Subject: [concurrency-interest] Javadoc for
+ ConcurrentSkipListMap.computeIfAbsent()
+Message-ID: <CAAMLo=bmgVPr23xN740DjOtt5M0RK-B7Da-kgg5xuxKO8Ds44Q@mail.gmail.com>
+
+It says: "The function is NOT guaranteed to be applied once atomically only
+if the value is not present."
+
+It's hard to parse this sentence, and it seems to me to make little
+sense since when the value is present, the function is not applied at all.
+IMO it would be better to remove the last part "only if the value is not
+present", making it equal to the corresponding sentence in compute() and
+computeIfPresent() Javadocs.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200224/bcb38411/attachment.htm>
+
+From oleksandr.otenko at gmail.com  Mon Feb 24 04:43:17 2020
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 24 Feb 2020 09:43:17 +0000
+Subject: [concurrency-interest] Javadoc for
+ ConcurrentSkipListMap.computeIfAbsent()
+In-Reply-To: <CAAMLo=bmgVPr23xN740DjOtt5M0RK-B7Da-kgg5xuxKO8Ds44Q@mail.gmail.com>
+References: <CAAMLo=bmgVPr23xN740DjOtt5M0RK-B7Da-kgg5xuxKO8Ds44Q@mail.gmail.com>
+Message-ID: <CANkgWKhd_k4eN_MLUrut-xtn_wvigpPsEf5POQO+-90TRxyDcQ@mail.gmail.com>
+
+Define "present" / "not present".
+
+In a concurrent setting the boolean outcome of the function does not imply
+anything about how it decided that. In particular, was it seen "not
+present", but lost the race to set the new value.
+
+Alex
+
+On Mon, 24 Feb 2020, 04:57 Roman Leventov via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> It says: "The function is NOT guaranteed to be applied once atomically
+> only if the value is not present."
+>
+> It's hard to parse this sentence, and it seems to me to make little
+> sense since when the value is present, the function is not applied at all.
+> IMO it would be better to remove the last part "only if the value is not
+> present", making it equal to the corresponding sentence in compute() and
+> computeIfPresent() Javadocs.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200224/a002eb81/attachment.htm>
+
+From martinrb at google.com  Mon Feb 24 11:25:51 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Mon, 24 Feb 2020 08:25:51 -0800
+Subject: [concurrency-interest] Javadoc for
+ ConcurrentSkipListMap.computeIfAbsent()
+In-Reply-To: <CAAMLo=bmgVPr23xN740DjOtt5M0RK-B7Da-kgg5xuxKO8Ds44Q@mail.gmail.com>
+References: <CAAMLo=bmgVPr23xN740DjOtt5M0RK-B7Da-kgg5xuxKO8Ds44Q@mail.gmail.com>
+Message-ID: <CA+kOe0-HAFgFwSopbdfxUwRNfs++KOKaSTLCk9_RCysG-mZCcA@mail.gmail.com>
+
+We tried to improve the docs for ConcurrentHashMap in
+https://hg.openjdk.java.net/jdk/jdk/rev/35bac2745d04
+ConcurrentSkipListMap has a different spec but could also benefit from
+similar improvements.
+The key idea is that the ConcurrentHashMap "locks" an entry while a
+remapping function is called, but ConcurrentSkipListMap does not.
+But that's still not very clear.  And we don't want to use any wording like
+"entry is locked".
+
+On Sun, Feb 23, 2020 at 8:57 PM Roman Leventov via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> It says: "The function is NOT guaranteed to be applied once atomically
+> only if the value is not present."
+>
+> It's hard to parse this sentence, and it seems to me to make little
+> sense since when the value is present, the function is not applied at all.
+> IMO it would be better to remove the last part "only if the value is not
+> present", making it equal to the corresponding sentence in compute() and
+> computeIfPresent() Javadocs.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200224/00c083c3/attachment.htm>
+
+From heinz at javaspecialists.eu  Wed Feb 26 08:58:18 2020
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Wed, 26 Feb 2020 14:58:18 +0100
+Subject: [concurrency-interest] JLS 17.5
+Message-ID: <14cdbace-6cb9-f360-4c16-985d2a0c7a2e@javaspecialists.eu>
+
+Looking at JLS13, I noticed the following example 17.5.2:
+
+Example 17.5-2. final Fields For Security
+final fields are designed to allow for necessary security guarantees. 
+Consider the
+
+following program. One thread (which we shall refer to as thread 1) 
+executes:
+
+Global.s = "/tmp/usr".substring(4);
+
+while another thread (thread 2) executes
+
+String myS = Global.s;
+if (myS.equals("/tmp"))System.out.println(myS);
+
+String objects are intended to be immutable and string operations do not 
+perform synchronization. While the String implementation does not have 
+any data races, other code could have data races involving the use of 
+String objects, and the memory model makes weak guarantees for programs 
+that have data races. In particular, if the fields of the String class 
+were not final, then it would be possible (although unlikely) that 
+thread 2 could initially see the default value of 0 for the offset of 
+the string object, allowing it to compare as equal to "/tmp". A later 
+operation on the String object might see the correct offset of 4, so 
+that the String object is perceived as being "/usr". Many security 
+features of the Java programming language depend upon String objects 
+being perceived as truly immutable, even if malicious code is using data 
+races to pass String references between threads.
+
+
+It assumes that String has an "offset" field and when we make a 
+substring.  However, this was changed in Java 7 already, thus the JLS 
+should be updated.
+
+Regards
+
+Heinz
+-- 
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java™ Specialists' Newsletter" - www.javaspecialists.eu
+Java Champion - www.javachampions.org
+JavaOne Rock Star Speaker
+Tel: +30 69 75 595 262
+Skype: kabutz
+
+
+From aph at redhat.com  Fri Feb 28 04:38:50 2020
+From: aph at redhat.com (Andrew Haley)
+Date: Fri, 28 Feb 2020 09:38:50 +0000
+Subject: [concurrency-interest] JLS 17.5
+In-Reply-To: <14cdbace-6cb9-f360-4c16-985d2a0c7a2e@javaspecialists.eu>
+References: <14cdbace-6cb9-f360-4c16-985d2a0c7a2e@javaspecialists.eu>
+Message-ID: <61df8d33-47b0-8617-0eb4-8e688873aeb4@redhat.com>
+
+On 2/26/20 1:58 PM, Dr Heinz M. Kabutz via Concurrency-interest wrote:
+> 
+> It assumes that String has an "offset" field and when we make a 
+> substring.  However, this was changed in Java 7 already, thus the JLS 
+> should be updated.
+
+Isn't this just a "for example," though? The JLS doesn't specify how a
+String is implemented.
+
+-- 
+Andrew Haley  (he/him)
+Java Platform Lead Engineer
+Red Hat UK Ltd. <https://www.redhat.com>
+https://keybase.io/andrewhaley
+EAC8 43EB D3EF DB98 CC77 2FAD A5CD 6035 332F A671
+
+
+From heinz at javaspecialists.eu  Fri Feb 28 04:45:36 2020
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Fri, 28 Feb 2020 10:45:36 +0100
+Subject: [concurrency-interest] JLS 17.5
+In-Reply-To: <61df8d33-47b0-8617-0eb4-8e688873aeb4@redhat.com>
+References: <14cdbace-6cb9-f360-4c16-985d2a0c7a2e@javaspecialists.eu>
+ <61df8d33-47b0-8617-0eb4-8e688873aeb4@redhat.com>
+Message-ID: <e6f87c19-61c3-9e49-c79d-18fc6cd414ac@javaspecialists.eu>
+
+On 2020/02/28 10:38, Andrew Haley wrote:
+> On 2/26/20 1:58 PM, Dr Heinz M. Kabutz via Concurrency-interest wrote:
+>> It assumes that String has an "offset" field and when we make a
+>> substring.  However, this was changed in Java 7 already, thus the JLS
+>> should be updated.
+> Isn't this just a "for example," though? The JLS doesn't specify how a
+> String is implemented.
+Correct, but it's confusing to someone trying to understand what is 
+meant. This of course originates from the JMM which has the same example.
+
+From forax at univ-mlv.fr  Fri Feb 28 05:03:46 2020
+From: forax at univ-mlv.fr (Remi Forax)
+Date: Fri, 28 Feb 2020 11:03:46 +0100 (CET)
+Subject: [concurrency-interest] JLS 17.5
+In-Reply-To: <61df8d33-47b0-8617-0eb4-8e688873aeb4@redhat.com>
+References: <14cdbace-6cb9-f360-4c16-985d2a0c7a2e@javaspecialists.eu>
+ <61df8d33-47b0-8617-0eb4-8e688873aeb4@redhat.com>
+Message-ID: <1208795768.603655.1582884226044.JavaMail.zimbra@u-pem.fr>
+
+I'm sure everybody has mentally replaced "offset" by "coder".
+
+https://hg.openjdk.java.net/jdk/jdk/file/27e301f90b3a/src/java.base/share/classes/java/lang/String.java#l163
+
+Rémi
+
+----- Mail original -----
+> De: "concurrency-interest" <concurrency-interest at cs.oswego.edu>
+> À: "Dr Heinz M. Kabutz" <heinz at javaspecialists.eu>, "concurrency-interest" <concurrency-interest at cs.oswego.edu>
+> Envoyé: Vendredi 28 Février 2020 10:38:50
+> Objet: Re: [concurrency-interest] JLS 17.5
+
+> On 2/26/20 1:58 PM, Dr Heinz M. Kabutz via Concurrency-interest wrote:
+>> 
+>> It assumes that String has an "offset" field and when we make a
+>> substring.  However, this was changed in Java 7 already, thus the JLS
+>> should be updated.
+> 
+> Isn't this just a "for example," though? The JLS doesn't specify how a
+> String is implemented.
+> 
+> --
+> Andrew Haley  (he/him)
+> Java Platform Lead Engineer
+> Red Hat UK Ltd. <https://www.redhat.com>
+> https://keybase.io/andrewhaley
+> EAC8 43EB D3EF DB98 CC77 2FAD A5CD 6035 332F A671
+

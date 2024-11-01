@@ -1,0 +1,3735 @@
+From chussenet@yahoo.com  Sun May  4 01:51:22 2003
+From: chussenet@yahoo.com (Claude Hussenet)
+Date: Sat, 3 May 2003 17:51:22 -0700 (PDT)
+Subject: [concurrency-interest] applications of futures?
+In-Reply-To: <001101c30eb5$af494570$6501a8c0@hicks>
+Message-ID: <20030504005122.59055.qmail@web41505.mail.yahoo.com>
+
+Hi Michael,
+
+I am currently using the concurrent package
+for a large financial company in NY.
+
+Our target is to reduce by 50% the response
+time server side of the login process by using
+parallel asynchronous request during the login
+process and the display of the portlets page.
+
+A prototype was developed to validate
+the design and the choice of the concurrent package.
+
+I didn't encounter any performance or resources issue
+(Memory, CPU, Threads hanging....) during the 12
+stress test.
+The scenario tested was performing the current user
+experience of the login flow.
+I have also included some errors cases in the
+stress-test to analyze how
+the concurrent package handles errors.
+
+I am using thread pooling, asynchronous call, with
+timeout.
+
+In my case, the container package brings robust
+multi-threading capabilities 
+within a web-container without affecting the
+reliability of the web tier.
+
+Claude
+
+
+
+--- Michael Hicks <mwh@cs.umd.edu> wrote:
+> Hi all.
+> I've recently become interested in the idea of using
+> futures +
+> asynchronous methods as a means of concurrent
+> programming, and I'm
+> curious: how many of you on this list use futures in
+> your applications
+> (or know of applications that use them)?  For those
+> that do, what are
+> applications and/or their characteristics?  What do
+> you see as the
+> benefits and limitations of futures?
+> 
+> Thanks in advance,
+> Mike
+> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+>
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+=====
+Claude Hussenet
+Independent Consultant.
+
+__________________________________
+Do you Yahoo!?
+The New Yahoo! Search - Faster. Easier. Bingo.
+http://search.yahoo.com
+
+From dl@cs.oswego.edu  Fri May  9 15:39:38 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 9 May 2003 10:39:38 -0400
+Subject: [concurrency-interest] Possible Lock and Condition API changes
+Message-ID: <16059.48554.491835.250117@altair.cs.oswego.edu>
+
+Dear c-i list members,
+
+First, a quick apology. We haven't been updating API snaphots lately
+because of logistic problems in getting javadoc to simultaneously
+support upcoming JSR-166 stuff as well as generics (which are used in
+Queues etc). We've made a bunch of small API updates that you can't
+see until we work this out (soon). Most are uninteresting.  Probably
+the most visible of them is a method name change for atomics from
+"attemptUpdate" to "compareAndSet". Also, we are still approximately
+on track for getting out preliminary test release by revised target of
+"before JavaOne".
+
+We'd like your input about another proposed API change.
+
+The current form of Lock and Condition interfaces have some
+irregularities and misfits with respect to other aspects of Java that
+we are considering closing up, but at the expense of some
+controversial (among us Expert Group members) steps. The main API
+snags are that:
+  * Conditions declare methods "await"/"signal", etc, that have the same
+    high-level semantics as Object.wait/notify, but use different
+    names because Object versions are final. (Our concern is not the
+    ugliness of the names, but the possibility of confusion and error
+    about which ones to call.)
+  * Unlike the way builtin monitors works, a Lock in current API
+    doesn't have a "default" implicit single Condition to wait/notify on.
+  * For completeness, although there is no hope of changing this,
+    "synchronized(aLock)" does NOT interoperate with "aLock.lock()".
+    (The only paths we know to change this would require either JVM
+    spec changes that would break backward compatibility or
+    JLS/compilation changes that would add overhead to the vast
+    majority of "synchronized" statements that do not invlove Lock
+    objects. Neither is acceptable.)
+
+One proposal for addressing this is:
+  1. As part of JSR-166, change JLS spec to remove "final"
+     from Object.wait/notify etc so they can be overridden. Note: This
+     is a binary-compatible change (according to JLS definitions),
+     and our research on the issue shows that these methods need
+     not have been defined as final in the first place.
+  2. Extend Lock interface so that each Lock has one implicit/default 
+     Condition. (You can get more via newCondition().)
+  3. Conversely,  make Conditions more self-contained, by
+     also supporting Lock methods that just delegate to their
+     base Lock objects. (i.e., aCondition.lock() is same as
+     aCOndition.ghetLock().lock().)
+
+The resulting interfaces look like this:
+
+  interface Lock {
+    // locking methods
+    void lock();
+    void lockInterruptibly() throws InterruptedException;
+    boolean tryLock();
+    boolean tryLock(long time, TimeUnit unit) throws InterruptedException;
+    void unlock();
+
+    Condition newCondition();
+
+    // Overrides of Object monitor methods
+    void wait() throws InterruptedException;
+    void wait(long millis) throws InterruptedException;
+    void wait(long millis, int nanos) throws InterruptedException;
+    void notify();
+    void notifyAll();
+
+    // Additional waiting methods
+    void waitUninterruptibly();
+    long waitNanos(long nanosTimeout) throws InterruptedException;
+    boolean wait(long time, TimeUnit unit) throws InterruptedException;
+    boolean waitUntil(Date deadline) throws InterruptedException;
+  }
+
+  interface Condition extends Lock {
+     Lock getLock(); // get the base Lock object that this Condition uses
+  }
+
+Note that there are no interesting changes in underlying functionality
+here. Anything you can do with current API you can do with this and
+vice versa.
+
+The "pro" side for this argues that this will be easier to learn and
+use, and harder to misuse; and that people doing advanced concurrency
+control (i.e., the users of this API) need all the help we can give
+them to reduce likelhood of errors. And that otherwise, trying to
+explain to people what happens if you try to call aCondition.wait() is
+at best embarassing.
+
+The "con" side argues that making an API targeted for advanced users
+more regular is not a good enough reason to change JLS spec of
+Object.wait/notify (even if there was no reason to define as final in
+the first place, why mess with success?). And that making Lock and
+Condition interfaces almost the same might be confusing. And that FIVE
+flavors of timed waits (three new ones, each for good reason, plus two
+old ones that must be overridden along with plain wait) are too many.
+
+Does anyone have any technical or experiential arguments that might
+sway us one way or another? 
+
+Please, no arguments based purely on taste. We've got that ground
+pretty much covered :-)
+
+Thanks very much for the help!
+
+-- 
+Doug Lea, Computer Science Department, SUNY Oswego, Oswego, NY 13126 USA
+dl@cs.oswego.edu 315-312-2688 FAX:315-312-5424 http://gee.cs.oswego.edu/  
+
+From arkin@intalio.com  Fri May  9 19:59:31 2003
+From: arkin@intalio.com (Assaf Arkin)
+Date: Fri, 09 May 2003 11:59:31 -0700
+Subject: [concurrency-interest] Possible Lock and Condition API changes
+In-Reply-To: <16059.48554.491835.250117@altair.cs.oswego.edu>
+References: <16059.48554.491835.250117@altair.cs.oswego.edu>
+Message-ID: <3EBBFA93.1040003@intalio.com>
+
+On the one hand I do like using wait/notify instead of await/signal, it 
+makes the interface for concise. On the other hand, there's some 
+expectation on how it relates to synchronized() by those who have been 
+writing a lot of wait/notify code. I think both are equally confusing, 
+there's nothing we can do about it. I would just toss a coin ;-)
+
+Changing the behavior of this methods might be possible without having 
+to change the class library. You can wrap each lock object with a 
+proxywhich lets you intercept the method calls, so a call to wait() on 
+the interface may to to lockWait() on the implementation (which nobody 
+sees). It's going to be slower than non-proxies but it's a working 
+solution for those wanting to use it with older version of the JVM (some 
+installations I know of insist on using 1.3).
+
+Just my $.02
+
+arkin
+
+Doug Lea wrote:
+
+>Dear c-i list members,
+>
+>First, a quick apology. We haven't been updating API snaphots lately
+>because of logistic problems in getting javadoc to simultaneously
+>support upcoming JSR-166 stuff as well as generics (which are used in
+>Queues etc). We've made a bunch of small API updates that you can't
+>see until we work this out (soon). Most are uninteresting.  Probably
+>the most visible of them is a method name change for atomics from
+>"attemptUpdate" to "compareAndSet". Also, we are still approximately
+>on track for getting out preliminary test release by revised target of
+>"before JavaOne".
+>
+>We'd like your input about another proposed API change.
+>
+>The current form of Lock and Condition interfaces have some
+>irregularities and misfits with respect to other aspects of Java that
+>we are considering closing up, but at the expense of some
+>controversial (among us Expert Group members) steps. The main API
+>snags are that:
+>  * Conditions declare methods "await"/"signal", etc, that have the same
+>    high-level semantics as Object.wait/notify, but use different
+>    names because Object versions are final. (Our concern is not the
+>    ugliness of the names, but the possibility of confusion and error
+>    about which ones to call.)
+>  * Unlike the way builtin monitors works, a Lock in current API
+>    doesn't have a "default" implicit single Condition to wait/notify on.
+>  * For completeness, although there is no hope of changing this,
+>    "synchronized(aLock)" does NOT interoperate with "aLock.lock()".
+>    (The only paths we know to change this would require either JVM
+>    spec changes that would break backward compatibility or
+>    JLS/compilation changes that would add overhead to the vast
+>    majority of "synchronized" statements that do not invlove Lock
+>    objects. Neither is acceptable.)
+>
+>One proposal for addressing this is:
+>  1. As part of JSR-166, change JLS spec to remove "final"
+>     from Object.wait/notify etc so they can be overridden. Note: This
+>     is a binary-compatible change (according to JLS definitions),
+>     and our research on the issue shows that these methods need
+>     not have been defined as final in the first place.
+>  2. Extend Lock interface so that each Lock has one implicit/default 
+>     Condition. (You can get more via newCondition().)
+>  3. Conversely,  make Conditions more self-contained, by
+>     also supporting Lock methods that just delegate to their
+>     base Lock objects. (i.e., aCondition.lock() is same as
+>     aCOndition.ghetLock().lock().)
+>
+>The resulting interfaces look like this:
+>
+>  interface Lock {
+>    // locking methods
+>    void lock();
+>    void lockInterruptibly() throws InterruptedException;
+>    boolean tryLock();
+>    boolean tryLock(long time, TimeUnit unit) throws InterruptedException;
+>    void unlock();
+>
+>    Condition newCondition();
+>
+>    // Overrides of Object monitor methods
+>    void wait() throws InterruptedException;
+>    void wait(long millis) throws InterruptedException;
+>    void wait(long millis, int nanos) throws InterruptedException;
+>    void notify();
+>    void notifyAll();
+>
+>    // Additional waiting methods
+>    void waitUninterruptibly();
+>    long waitNanos(long nanosTimeout) throws InterruptedException;
+>    boolean wait(long time, TimeUnit unit) throws InterruptedException;
+>    boolean waitUntil(Date deadline) throws InterruptedException;
+>  }
+>
+>  interface Condition extends Lock {
+>     Lock getLock(); // get the base Lock object that this Condition uses
+>  }
+>
+>Note that there are no interesting changes in underlying functionality
+>here. Anything you can do with current API you can do with this and
+>vice versa.
+>
+>The "pro" side for this argues that this will be easier to learn and
+>use, and harder to misuse; and that people doing advanced concurrency
+>control (i.e., the users of this API) need all the help we can give
+>them to reduce likelhood of errors. And that otherwise, trying to
+>explain to people what happens if you try to call aCondition.wait() is
+>at best embarassing.
+>
+>The "con" side argues that making an API targeted for advanced users
+>more regular is not a good enough reason to change JLS spec of
+>Object.wait/notify (even if there was no reason to define as final in
+>the first place, why mess with success?). And that making Lock and
+>Condition interfaces almost the same might be confusing. And that FIVE
+>flavors of timed waits (three new ones, each for good reason, plus two
+>old ones that must be overridden along with plain wait) are too many.
+>
+>Does anyone have any technical or experiential arguments that might
+>sway us one way or another? 
+>
+>Please, no arguments based purely on taste. We've got that ground
+>pretty much covered :-)
+>
+>Thanks very much for the help!
+>
+>  
+>
+
+
+
+
+From Costin.Cozianu@tabs.toshiba.com  Fri May  9 20:13:42 2003
+From: Costin.Cozianu@tabs.toshiba.com (Costin.Cozianu@tabs.toshiba.com)
+Date: Fri, 9 May 2003 12:13:42 -0700
+Subject: [concurrency-interest] Possible Lock and Condition API changes
+Message-ID: <OF11CF93B4.F21F2EB7-ON88256D21.0056AA7B@tais.net>
+
+Dear all,
+
+I'll take a stab based on my recent experiences with Doug's concurrent
+framework (some little part of which I already midified for my needs).
+It's probably not directly related to Doug's specific questions, and it's
+probably too little too late to be of value to the JSR, but that's how it
+worked
+for me in after taking Doug's concurrent library and adjusting it to fit my
+needs.
+
+First of all, I think it's long past the time to introduce Java programmers
+to a more functional style of programming (and I don't mean strict
+functional, no assignment), but more in the sense of composing blocks of
+computations . As such I find a lot of interfaces that have a order
+dependency simply unreliable and too much of a hassle.
+
+As such I'd propose that instead of
+     boolean locked=false;
+     try {
+               lock. lock(); locked= true;
+      {BLOCK}
+     }
+     finally {
+     if (locked)
+     try {lock.release() } catch (Exception e) {})
+     }
+               // and you all know what a mess it is to relase 4-5
+exception throwing resources correctly instead of just one
+     // think a java.sql.Conection, Statement, ResultSet
+
+I should be able to use
+
+lock.withLock( new Action() { public Object perform() { {BLOCK}} });
+
+A beter way would be to make these kind of executions  composable:
+
+so I'd say
+
+lockedExecutor.compose(timeOutExecutor)
+.compose(multiProcessLockExecutor).perform( myBusinessLogic )
+
+// That will give me an execution of myBusinessLogic that will throw a
+TimeoutException if it didn;t finnish on time, plus it
+// aquire a lock for intraproces threads, plus it aquires a lock for the
+whole OS.
+
+
+
+
+By the way, speaking of composing execution contexts, I modified my local
+copy of executor framework (actually I wrappoed around Doug's classes
+rather than butchering his code ) so that every execution returns a result
+which is :
+
+class CallResult{
+     boolean success; // the computation performed successfully
+     Object result;
+     Object reasonForFailure; // typically an exception
+}
+
+So that if I want to perform a computation in a different thread, possibly
+in  a different VM,etc, I still have a convenient way to get back the
+results, also know exactly the underlying Java exception that is thrown and
+not a generic wrapped exception (like rmi.RemoteException). Unfortunately
+Java's type system doesn't support sum types.
+
+
+
+
+For the technicalities of why such an approach is good, my only reason is
+that it helps me cut lines of code, and makes
+the code simple and elegant. Helps to reason more effectively about what
+happesn with a piece of code also.
+And it's not about personal taste, DIjkstra taught me that elegance is not
+a luxury in our programming business, and I
+rather
+
+
+Did I mention that Java is in very dire need of some multi-processing
+basics ?  I mean how can you do serious
+concurrent systems without any decent primitives to run and coordinate
+across several Java VMs
+and non-Java processes ?
+
+I'm not sure that's in the scope of Doug's  JSR, though I would like it to
+be.  Maybe for the next version of Java.
+
+One more thing, I'd like to know who owns a lock, so that I can get out of
+a deadlocked suituation.
+Currently I'm using this externally, but I think the more elegant design is
+for the lock to have a notion of the owner.
+
+For example, some object owns a lock and performs an expensive operation
+and gets stucked or just the operation
+takes way too much for the current context.
+
+I need for another object to take the priority get a handle to the lock
+owner which  might be an instance of say Cancellable
+and call Cancellable.cancel() that will cause the lock to be released after
+which the calling object  should take absolute
+priority to aquring the lock and performing the urgent thing.
+
+Here you can have a potential for trouble between with a straight forward
+design, i.e:
+
+    Object o= lock.getOwner();
+    if (... ) {
+     // doSomething, cancel forcefully etc. the lock might have been
+resolved
+   }
+
+So I'd say the "feel good" design for me looks like:
+
+try {
+    lock.forcefullyAquireAndExec(  actionToTestAndCancelActiveOwner,
+actionToExecute )
+}
+catch ( CannotCancelException ) {
+     // Probably System.exit depending on the gravity of the situation
+}
+
+I feel that this design will factor out and simplify a lots of code that
+have to keep track of objects
+doing critical actions externally. For a direct example this would allow to
+easily add an
+
+forcedExecuteImmediate() to a lot of executors like QueuedExecutor.
+
+
+
+
+A few more things, that I think are definitely needed. Some  static method
+
+     ThreadLocal.removeAll() // remove all locals for the current thread
+
+or an instance method Thread.removeAllLocals()  with the same effect. This
+will make
+
+ ThreadLocal safe and easy to use in the context of pool of threads
+executors.
+
+One more thing I forgot to mention, an obvious need is PriorityQueue.
+
+A minor detail, I don't believe that Queue implementing Collection APIs
+feel the right way to go,
+especially since we can't insert nulls because of internal implementation
+details. What I used departing from
+Doug's code (more specifically added to LinkedQueue ) :
+
+ public static interface Visitor {
+       /**
+        * callback for iterating the objects in the queue
+        * @param access
+        * @return boolean - true if the iteration should continue, false if
+        * it should not
+        */
+       public boolean visit( VisitorAccess access);
+  }
+
+
+ public class VisitorAccess {
+
+       public boolean endOfQueue() {     ... }
+
+       public Object getCurrent(){ ...}
+
+       public void removeCurrent() { ... }
+  }
+
+I think this helps for example visit the queue of a QueuedExecutor much
+cleaner with a similar visit() method than what can be done
+using an external iterator, because your in a dilemma, the iterator cannot
+be held indefinitely (the queued actions have to execute),
+in the same time addition or subtractions from the queue  cannot continue
+asynchronously unless we give at least a chance to the thread
+in need of iteration (in my case the end user has to be ablwe to cancel
+some actions in the queue)
+
+So I see no clean design how the QueuedExecutor can pass an external
+iterator to its queue. Given the fact that I need a visit()/iterate()
+method
+in such objects, I'd see a need to be consistent and have them in the
+queues also.
+
+As for Condition methods I'd say wait and notify cannot be used since they
+have different (albeit similar) semantics in my limited understanding of
+it, when I say myobject.notifyAll, I do expect all threads waiting for
+myobject as a lcok to be awaken. When I say condition.signalAll() I do
+normally expect that only the threads waiting for a specifric condition
+related to the underlying lock, and not necessarily for condition object as
+a lock will be awaken.
+
+Plus, it will also possibly trigger annoying broken code like
+   condition= lock.createConditon(); synchronized (condition ) {
+condtion.wait(); }
+
+Again, even in this case, I'd prefer a more functional style like:
+     condition.execute(action, testPredicate);
+
+I also don't really understand why spurious wake up call are admitted. They
+complicate the interface semantics and consequently lots of client code,
+just to spear some implementation difficulty ?  Is it documented somewhere
+that targeted signalling of conditions is too expensive to implement ?
+
+I hope this helps. Thanks again to Doug Lea for providing the concurrent
+package and now providing the opportunity for
+the ungrateful beneficiaries to criticize some of his designs.
+
+best regards,
+
+Costin Cozianu
+costin.cozianu@tabs.toshiba.com
+Senior Software Engineer                 (949) 462-6779
+Toshiba American Business Solution
+Mobile                                              (310) 463-5940
+Alternate Email                                 c_cozianu@hotmail.com
+
+
+
+                                                                                                                                 
+                    Doug Lea <dl@cs.oswego.edu>                                                                                  
+                    Sent by:                              To:     concurrency-interest@altair.cs.oswego.edu                      
+                    concurrency-interest-admin@cs.        cc:                                                                    
+                    oswego.edu                            Subject:     [concurrency-interest] Possible Lock and Condition API    
+                                                          changes                                                                
+                                                                                                                                 
+                    05/09/2003 07:39 AM                                                                                          
+                                                                                                                                 
+                                                                                                                                 
+
+
+
+
+
+Dear c-i list members,
+
+First, a quick apology. We haven't been updating API snaphots lately
+because of logistic problems in getting javadoc to simultaneously
+support upcoming JSR-166 stuff as well as generics (which are used in
+Queues etc). We've made a bunch of small API updates that you can't
+see until we work this out (soon). Most are uninteresting.  Probably
+the most visible of them is a method name change for atomics from
+"attemptUpdate" to "compareAndSet". Also, we are still approximately
+on track for getting out preliminary test release by revised target of
+"before JavaOne".
+
+We'd like your input about another proposed API change.
+
+The current form of Lock and Condition interfaces have some
+irregularities and misfits with respect to other aspects of Java that
+we are considering closing up, but at the expense of some
+controversial (among us Expert Group members) steps. The main API
+snags are that:
+  * Conditions declare methods "await"/"signal", etc, that have the same
+    high-level semantics as Object.wait/notify, but use different
+    names because Object versions are final. (Our concern is not the
+    ugliness of the names, but the possibility of confusion and error
+    about which ones to call.)
+  * Unlike the way builtin monitors works, a Lock in current API
+    doesn't have a "default" implicit single Condition to wait/notify on.
+  * For completeness, although there is no hope of changing this,
+    "synchronized(aLock)" does NOT interoperate with "aLock.lock()".
+    (The only paths we know to change this would require either JVM
+    spec changes that would break backward compatibility or
+    JLS/compilation changes that would add overhead to the vast
+    majority of "synchronized" statements that do not invlove Lock
+    objects. Neither is acceptable.)
+
+One proposal for addressing this is:
+  1. As part of JSR-166, change JLS spec to remove "final"
+     from Object.wait/notify etc so they can be overridden. Note: This
+     is a binary-compatible change (according to JLS definitions),
+     and our research on the issue shows that these methods need
+     not have been defined as final in the first place.
+  2. Extend Lock interface so that each Lock has one implicit/default
+     Condition. (You can get more via newCondition().)
+  3. Conversely,  make Conditions more self-contained, by
+     also supporting Lock methods that just delegate to their
+     base Lock objects. (i.e., aCondition.lock() is same as
+     aCOndition.ghetLock().lock().)
+
+The resulting interfaces look like this:
+
+  interface Lock {
+    // locking methods
+    void lock();
+    void lockInterruptibly() throws InterruptedException;
+    boolean tryLock();
+    boolean tryLock(long time, TimeUnit unit) throws InterruptedException;
+    void unlock();
+
+    Condition newCondition();
+
+    // Overrides of Object monitor methods
+    void wait() throws InterruptedException;
+    void wait(long millis) throws InterruptedException;
+    void wait(long millis, int nanos) throws InterruptedException;
+    void notify();
+    void notifyAll();
+
+    // Additional waiting methods
+    void waitUninterruptibly();
+    long waitNanos(long nanosTimeout) throws InterruptedException;
+    boolean wait(long time, TimeUnit unit) throws InterruptedException;
+    boolean waitUntil(Date deadline) throws InterruptedException;
+  }
+
+  interface Condition extends Lock {
+     Lock getLock(); // get the base Lock object that this Condition uses
+  }
+
+Note that there are no interesting changes in underlying functionality
+here. Anything you can do with current API you can do with this and
+vice versa.
+
+The "pro" side for this argues that this will be easier to learn and
+use, and harder to misuse; and that people doing advanced concurrency
+control (i.e., the users of this API) need all the help we can give
+them to reduce likelhood of errors. And that otherwise, trying to
+explain to people what happens if you try to call aCondition.wait() is
+at best embarassing.
+
+The "con" side argues that making an API targeted for advanced users
+more regular is not a good enough reason to change JLS spec of
+Object.wait/notify (even if there was no reason to define as final in
+the first place, why mess with success?). And that making Lock and
+Condition interfaces almost the same might be confusing. And that FIVE
+flavors of timed waits (three new ones, each for good reason, plus two
+old ones that must be overridden along with plain wait) are too many.
+
+Does anyone have any technical or experiential arguments that might
+sway us one way or another?
+
+Please, no arguments based purely on taste. We've got that ground
+pretty much covered :-)
+
+Thanks very much for the help!
+
+--
+Doug Lea, Computer Science Department, SUNY Oswego, Oswego, NY 13126 USA
+dl@cs.oswego.edu 315-312-2688 FAX:315-312-5424 http://gee.cs.oswego.edu/
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+
+From larryr@saturn.sdsu.edu  Fri May  9 22:41:53 2003
+From: larryr@saturn.sdsu.edu (Larry Riedel)
+Date: 9 May 2003 21:41:53 -0000
+Subject: [concurrency-interest] Re: Possible Lock and Condition API changes
+In-Reply-To: <16059.48554.491835.250117@altair.cs.oswego.edu>
+Message-ID: <20030509214153.6476.qmail@home19.riedel.org>
+
+> We'd like your input about another proposed API change.
+> [...]
+>   1. As part of JSR-166, change JLS spec to remove "final"
+>      from Object.wait/notify etc so they can be overridden. Note: This
+>      is a binary-compatible change (according to JLS definitions),
+>      and our research on the issue shows that these methods need
+>      not have been defined as final in the first place.
+>   2. Extend Lock interface so that each Lock has one implicit/default 
+>      Condition. (You can get more via newCondition().)
+>   3. Conversely,  make Conditions more self-contained, by
+>      also supporting Lock methods that just delegate to their
+>      base Lock objects. (i.e., aCondition.lock() is same as
+>      aCOndition.ghetLock().lock().)
+> [...]
+> The "con" side argues that making an API targeted for advanced users
+> more regular is not a good enough reason to change JLS spec of
+> Object.wait/notify (even if there was no reason to define as final in
+> the first place, why mess with success?). And that making Lock and
+> Condition interfaces almost the same might be confusing. And that FIVE
+> flavors of timed waits (three new ones, each for good reason, plus two
+> old ones that must be overridden along with plain wait) are too many.
+
+If after all these years there does not seem to be a clear compelling
+technical reason for Object.lock/wait to be "final", such as a major
+security vulnerability or dramatic performance impact, I personally
+think it would be fine to say that as long as implementations of
+wait/notify satisfy the "Liskov Substitution Principle" (or whatever),
+it is ok for them to override the base class implementation.
+The proposed changes seem to produce behavior which seems natural and
+intuitive, and logically consistent with the behavior in other places.
+
+I think it is desirable for there to be superficial orthogonality
+between classes and methods and such, to make it more evident what to
+use for what, but I do not think that is a problem in this case.
+I do not think it would be desirable for there to be a situation where
+there are subtle incompatibilities which are not detectable until
+runtime, or where there seem to be two sets of classes which provide the
+same essential functionality, and one is not considered to be preferred
+to the other, and they cannot be succesfully used together.
+
+I think one of the benefits of having Java be not under the control of
+some sort of "consortium" or whatever is the ability to make this kind
+of change which seems safe and makes sense, but is not guaranteed to
+be without any risk.
+
+
+Larry
+
+
+From noel@devtech.com  Sat May 10 16:26:06 2003
+From: noel@devtech.com (Noel J. Bergman)
+Date: Sat, 10 May 2003 11:26:06 -0400
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <OF11CF93B4.F21F2EB7-ON88256D21.0056AA7B@tais.net>
+Message-ID: <NBBBJGEAGJAKLIDBKJOPCENHBJAB.noel@devtech.com>
+
+> It's probably not directly related to Doug's specific questions
+
+I'm changing the subject on some that didn't.  :-)
+
+> I should be able to use
+> lock.withLock( new Action() { public Object perform() { {BLOCK}} });
+
+What stops you?  I have similar code in my toolbox, e.g., for command
+mapping, with and without watchdog timers.
+
+> how can you do serious concurrent systems without any decent
+> primitives to run and coordinate across several Java VMs
+> and non-Java processes ?
+
+I suppose that depends upon your view of coordination.  Java tends to treat
+processes outside of the current one as completely independent, e.g., they
+could be running on other nodes in a network.  Therefore inter-process
+semaphores, for example, would not be appropriate, IMO.
+
+> I don't believe that Queue implementing Collection APIs feel the right way
+to go
+
+I agree with you.  Unfortunately, I seem to be in a minority on this view,
+but I think that putting Queue into the Collection hierarchy is congenitally
+flawed (see the "Queue is a Collection, not producer / consumer model?"
+thread in the archives).  I just want clean interfaces specific to the Queue
+problem domain, without the Collection cruft.
+
+I believe that David Walend also agrees, if I interpret his comments
+correctly.  As he puts it, "SomnifugiJMS is built on [the] Putable and
+Takable interfaces. If those interfaces don't survive, I'll probably create
+my own just to keep myself out of trouble. If you need them as well, then
+maybe it is worth our lobbying for them here."
+
+	--- Noel
+
+
+From bjorn.antonsson@appeal.se  Mon May 12 15:43:27 2003
+From: bjorn.antonsson@appeal.se (=?ISO-8859-1?Q?Bj=F6rn_Antonsson?=)
+Date: Mon, 12 May 2003 16:43:27 +0200
+Subject: [concurrency-interest] Possible Lock and Condition API changes
+In-Reply-To: <16059.48554.491835.250117@altair.cs.oswego.edu>
+References: <16059.48554.491835.250117@altair.cs.oswego.edu>
+Message-ID: <3EBFB30F.7080702@appeal.se>
+
+Doug Lea wrote:
+ > Dear c-i list members,
+
+<SNIP>
+
+ > One proposal for addressing this is:
+ >   1. As part of JSR-166, change JLS spec to remove "final"
+ >      from Object.wait/notify etc so they can be overridden. Note: This
+ >      is a binary-compatible change (according to JLS definitions),
+ >      and our research on the issue shows that these methods need
+ >      not have been defined as final in the first place.
+ >   2. Extend Lock interface so that each Lock has one implicit/default
+ >      Condition. (You can get more via newCondition().)
+ >   3. Conversely,  make Conditions more self-contained, by
+ >      also supporting Lock methods that just delegate to their
+ >      base Lock objects. (i.e., aCondition.lock() is same as
+ >      aCOndition.ghetLock().lock().)
+
+<SNIP>
+
+Is there anywhere that I can look at this version of the API? It
+seems unclear to me what happens if you try to do something like
+"Locks.newConditionFor(new Object()).getLock().lock()". Are you
+proposing that you should be able to get directly at the primitve
+monitor enter/exit functions?
+
+I think that it is important to keep the lock implementation
+clearly separated from the java monitors. The syntax of java
+enforces many nice properties like balanced monitor enter/exit
+calls, which can be used by a clever lock implementation or
+an optimizing code generator.
+
+ > The "pro" side for this argues that this will be easier to learn and
+ > use, and harder to misuse; and that people doing advanced concurrency
+ > control (i.e., the users of this API) need all the help we can give
+ > them to reduce likelhood of errors. And that otherwise, trying to
+ > explain to people what happens if you try to call aCondition.wait() is
+ > at best embarassing.
+ >
+ > The "con" side argues that making an API targeted for advanced users
+ > more regular is not a good enough reason to change JLS spec of
+ > Object.wait/notify (even if there was no reason to define as final in
+ > the first place, why mess with success?). And that making Lock and
+ > Condition interfaces almost the same might be confusing. And that FIVE
+ > flavors of timed waits (three new ones, each for good reason, plus two
+ > old ones that must be overridden along with plain wait) are too many.
+
+Once again I strongly believe that it should be made really clear
+that locks and monitors are not the same thing. If you mix them up,
+people will get confused. The fact that the Locks class provides
+conditionals for normal objects is just a convenience function to
+enhance readability as far as I'm concerned.
+
+As for wait and notify vs. await and signal, I think that wait
+and notify should be reserved for the monitors. If you use the
+names with conditionals, you're bound to have people getting
+really confused by the fact that
+
+synchronized (aCond) {
+    aCond.wait();
+}
+
+doesn't do what they think it should. I also feel that there is
+a huge opportunity for confusion if anybody can override wait or
+notify in their own classes. How do you guarantee any kind of
+semantics from those methods?
+
+I don't see what is so embarrasing about explaining that wait is
+tightly coupled with notify and synchronized, while await operates
+on the conditional, and the lock/monitor that it is encapsulating.
+
+ > Does anyone have any technical or experiential arguments that might
+ > sway us one way or another?
+ >
+ > Please, no arguments based purely on taste. We've got that ground
+ > pretty much covered :-)
+ >
+ > Thanks very much for the help!
+
+Just my two cents, but maybe I'm biased towards how the JVM looks
+at locking and synchronization.
+
+/Björn
+------------------------------------------------------------------
+Björn Antonsson. Senior Software Engineer.
+BEA Systems Stockholm Engineering AB. Java Runtime Products Group.
+
+
+From dl@cs.oswego.edu  Mon May 12 17:24:26 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Mon, 12 May 2003 12:24:26 -0400
+Subject: [concurrency-interest] Possible Lock and Condition API changes
+In-Reply-To: <3EBFB30F.7080702@appeal.se>
+References: <16059.48554.491835.250117@altair.cs.oswego.edu>
+ <3EBFB30F.7080702@appeal.se>
+Message-ID: <16063.51898.815515.12@altair.cs.oswego.edu>
+
+I think the sentiments expressed in c-i list mail so far pretty much
+match ours. While it may be a nice idea to change it, there are risks
+and tradeoffs that make it less than compelling, and so we are going
+to keep the current Lock and Condition API.
+
+-Doug
+
+From dl@cs.oswego.edu  Tue May 13 00:43:12 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Mon, 12 May 2003 19:43:12 -0400
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <NBBBJGEAGJAKLIDBKJOPCENHBJAB.noel@devtech.com>
+References: <OF11CF93B4.F21F2EB7-ON88256D21.0056AA7B@tais.net>
+ <NBBBJGEAGJAKLIDBKJOPCENHBJAB.noel@devtech.com>
+Message-ID: <16064.12688.894855.740426@altair.cs.oswego.edu>
+
+Noel wrote:
+
+> I agree with you.  Unfortunately, I seem to be in a minority on this view,
+> but I think that putting Queue into the Collection hierarchy is congenitally
+> flawed (see the "Queue is a Collection, not producer / consumer model?"
+> thread in the archives).  I just want clean interfaces specific to the Queue
+> problem domain, without the Collection cruft.
+
+One more try on this, since I'm slightly surprised you aren't content
+about it.
+
+The extra burden placed on {Blocking}Queue implementations
+compared to dl.u.c Channels amounts to:
+  * size()
+  * remove(Object x)
+  * iterator().
+
+Probably the most important one is remove. People sometimes need to
+cancel items from queues, and they will send you nasty mail when you
+don't provide a way to do this :-)
+
+And if you can implement remove, then you somehow have a way to
+iterate, and if you can iterate, you can calculate size.
+
+Users should not expect any of these operations to be particularly
+fast; merely possible. 
+
+And if you don't want people to use some of these methods
+in your application, you can always make simple view classes.
+
+-Doug
+
+
+From noel@devtech.com  Tue May 13 04:34:05 2003
+From: noel@devtech.com (Noel J. Bergman)
+Date: Mon, 12 May 2003 23:34:05 -0400
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <16064.12688.894855.740426@altair.cs.oswego.edu>
+Message-ID: <NBBBJGEAGJAKLIDBKJOPGEGMBKAB.noel@devtech.com>
+
+> > I agree with you.  Unfortunately, I seem to be in a minority on this
+view,
+> > but I think that putting Queue into the Collection hierarchy is
+congenitally
+> > flawed (see the "Queue is a Collection, not producer / consumer model?"
+> > thread in the archives).  I just want clean interfaces specific to the
+Queue
+> > problem domain, without the Collection cruft.
+
+> One more try on this, since I'm slightly surprised you aren't content
+> about it.
+
+I sincerely appreciate it, Doug.  :-)  I believe that the discontentment
+resides with different anticipations of use, and I also have what I hope is
+a reasonable and concrete solution.
+
+> The extra burden placed on {Blocking}Queue implementations
+> compared to dl.u.c Channels amounts to:
+>   * size()
+>   * remove(Object x)
+>   * iterator().
+
+Queue
+(http://gee.cs.oswego.edu/dl/concurrent/dist/docs/java/util/Queue.html)
+being a Collection class means that in addition to the Queue methods, it
+must also implement and expose the Collection methods: add, addAll, clear,
+contains, containsAll, equals, hashCode, isEmpty, iterator, remove,
+removeAll, retainAll, size, and toArray in all Queue implementations.  I
+realize that not all of those are as onerous as others, e.g., add == put,
+but as I see it:
+
+  - We lose the separation of Consumer (Takable) and Supplier (Puttable)
+interfaces.
+  - We go from two methods per interface (Channel has 5) to two dozen for
+BlockingQueue.
+  - We are forced to implement methods such as contains, toArray, and others
+that
+    are neither a *necessary* part of a *Queue* semantic, nor particularly
+reasonable
+    in a distributed, and possibly multiplexed, environment.
+
+I am really surprised to be arguing these particular points with you.  After
+all, one of the better little write-ups on the subject is yours:
+http://gee.cs.oswego.edu/dl/cpj/ifc.html.
+
+Tell me please, Doug, would it be a problem to preserve Takable and Puttable
+type interfaces, and to define Queue as:
+
+   interface Queue extends Takable, Puttable, Collection { ... }
+
+That would give you the Queue as Collection that JSR 166 currently provides,
+and provide the clean and simple interfaces that others of us have reason to
+believe are important.  [This would be the "reasonable and concrete
+solution" mentioned above.]
+
+> Probably the most important one is remove.  People sometimes need to
+> cancel items from queues, and they will send you nasty mail when you
+> don't provide a way to do this :-)
+
+Try removing an e-mail that you have already sent.  :-)  Along those lines,
+in a distributed model, a possible solution might be something similar to an
+NNTP control message, but that is up to the implementation, and there is no
+guarantee that a message can be removed/cancelled.
+
+> And if you can implement remove, then you somehow have a way to
+> iterate, and if you can iterate, you can calculate size.
+
+The ability to remove does not imply the ability to iterate.  The items in
+the queue may no longer even be resident on the machine that supplied them!
+
+> Users should not expect any of these operations to be particularly
+> fast; merely possible.
+
+Even to make some of them even possible in a network environment can be
+highly problematic.  If additional behaviors are deemed necessary they can
+be exposed in more specialized interfaces, but the basic requirements should
+not be complicated by unreasonable behaviors.  They may not be too bad in a
+single JVM environment, but a network environment is another matter.
+
+> And if you don't want people to use some of these methods
+> in your application, you can always make simple view classes.
+
+Of course.  I can always provide my own interfaces, and delegate to a
+java.util.Queue when that is an appropriate implementation, but then I lose
+the benefit of having a standard interface.  I would not have to do that if
+the basic interfaces were preserved.
+
+Placing Queue under Collection imposes extremely onerous and undesirable
+implementation mandates upon any implementation that does not involve single
+process implementations.  Perhaps this is the key issue underlying our
+differing viewpoints.  I expect an IPC mechanism to reasonably facilitate
+INTER-process communications, not just INTRA-process communications.
+
+Again, I would consider it a perfectly suitable solution if JSR 166 were to
+preserve the separate interfaces, and compose them in the general purpose
+interface expected by most programmers.
+
+Thoughts?
+
+	--- Noel
+
+
+From jozart@csi.com  Tue May 13 05:23:10 2003
+From: jozart@csi.com (Joseph Bowbeer)
+Date: Mon, 12 May 2003 21:23:10 -0700
+Subject: [concurrency-interest] Costin Cozianu's observations
+References: <NBBBJGEAGJAKLIDBKJOPGEGMBKAB.noel@devtech.com>
+Message-ID: <003b01c31907$5d3f4980$809a7cce@REPLICANT2>
+
+Noel Bergman writes:
+
+> I think that putting Queue into the Collection hierarchy is
+> congenitally flawed. [...] The extra burden amounts to...
+
+FWIW, another constraint imposed by "Queue extends Collection" is:
+
+ size <= Integer.MAX_VALUE  (since size returns an int, List and array
+indices are ints, etc.)
+
+Does this matter to you?
+
+
+I'm also curious to know if you think Queue implementations should as a rule
+implement Serializable, and whether you think they are different in this
+respect from Collections.
+
+
+----- Original Message ----- 
+From: "Noel J. Bergman" <noel@devtech.com>
+To: "Doug Lea" <dl@altair.cs.oswego.edu>;
+<concurrency-interest@altair.cs.oswego.edu>
+Sent: Monday, May 12, 2003 8:34 PM
+Subject: RE: [concurrency-interest] Costin Cozianu's observations
+
+
+>> I agree with you.  Unfortunately, I seem to be in a minority on this
+>> view, but I think that putting Queue into the Collection hierarchy is
+>> congenitally flawed (see the "Queue is a Collection, not
+>> producer / consumer model?" thread in the archives).
+>> I just want clean interfaces specific to the Queue problem domain,
+>> without the Collection cruft.
+
+> One more try on this, since I'm slightly surprised you aren't content
+> about it.
+
+I sincerely appreciate it, Doug.  :-)  I believe that the discontentment
+resides with different anticipations of use, and I also have what I hope is
+a reasonable and concrete solution.
+
+> The extra burden placed on {Blocking}Queue implementations
+> compared to dl.u.c Channels amounts to:
+>   * size()
+>   * remove(Object x)
+>   * iterator().
+
+Queue
+(http://gee.cs.oswego.edu/dl/concurrent/dist/docs/java/util/Queue.html)
+being a Collection class means that in addition to the Queue methods, it
+must also implement and expose the Collection methods: add, addAll, clear,
+contains, containsAll, equals, hashCode, isEmpty, iterator, remove,
+removeAll, retainAll, size, and toArray in all Queue implementations.  I
+realize that not all of those are as onerous as others, e.g., add == put,
+but as I see it:
+
+  - We lose the separation of Consumer (Takable) and Supplier (Puttable)
+interfaces.
+  - We go from two methods per interface (Channel has 5) to two dozen for
+BlockingQueue.
+  - We are forced to implement methods such as contains, toArray, and others
+that
+    are neither a *necessary* part of a *Queue* semantic, nor particularly
+reasonable
+    in a distributed, and possibly multiplexed, environment.
+
+I am really surprised to be arguing these particular points with you.  After
+all, one of the better little write-ups on the subject is yours:
+http://gee.cs.oswego.edu/dl/cpj/ifc.html.
+
+Tell me please, Doug, would it be a problem to preserve Takable and Puttable
+type interfaces, and to define Queue as:
+
+   interface Queue extends Takable, Puttable, Collection { ... }
+
+That would give you the Queue as Collection that JSR 166 currently provides,
+and provide the clean and simple interfaces that others of us have reason to
+believe are important.  [This would be the "reasonable and concrete
+solution" mentioned above.]
+
+> Probably the most important one is remove.  People sometimes need to
+> cancel items from queues, and they will send you nasty mail when you
+> don't provide a way to do this :-)
+
+Try removing an e-mail that you have already sent.  :-)  Along those lines,
+in a distributed model, a possible solution might be something similar to an
+NNTP control message, but that is up to the implementation, and there is no
+guarantee that a message can be removed/cancelled.
+
+> And if you can implement remove, then you somehow have a way to
+> iterate, and if you can iterate, you can calculate size.
+
+The ability to remove does not imply the ability to iterate.  The items in
+the queue may no longer even be resident on the machine that supplied them!
+
+> Users should not expect any of these operations to be particularly
+> fast; merely possible.
+
+Even to make some of them even possible in a network environment can be
+highly problematic.  If additional behaviors are deemed necessary they can
+be exposed in more specialized interfaces, but the basic requirements should
+not be complicated by unreasonable behaviors.  They may not be too bad in a
+single JVM environment, but a network environment is another matter.
+
+> And if you don't want people to use some of these methods
+> in your application, you can always make simple view classes.
+
+Of course.  I can always provide my own interfaces, and delegate to a
+java.util.Queue when that is an appropriate implementation, but then I lose
+the benefit of having a standard interface.  I would not have to do that if
+the basic interfaces were preserved.
+
+Placing Queue under Collection imposes extremely onerous and undesirable
+implementation mandates upon any implementation that does not involve single
+process implementations.  Perhaps this is the key issue underlying our
+differing viewpoints.  I expect an IPC mechanism to reasonably facilitate
+INTER-process communications, not just INTRA-process communications.
+
+Again, I would consider it a perfectly suitable solution if JSR 166 were to
+preserve the separate interfaces, and compose them in the general purpose
+interface expected by most programmers.
+
+Thoughts?
+
+--- Noel
+
+
+From dl@cs.oswego.edu  Tue May 13 16:29:36 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Tue, 13 May 2003 11:29:36 -0400
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <NBBBJGEAGJAKLIDBKJOPGEGMBKAB.noel@devtech.com>
+References: <16064.12688.894855.740426@altair.cs.oswego.edu>
+ <NBBBJGEAGJAKLIDBKJOPGEGMBKAB.noel@devtech.com>
+Message-ID: <16065.3936.878883.311858@altair.cs.oswego.edu>
+
+First a few "it's really not as bad as you think" comments...
+
+> it
+> must also implement and expose the Collection methods: add, addAll, clear,
+> contains, containsAll, equals, hashCode, isEmpty, iterator, remove,
+
+Most of these are done automagically just by extending one of the
+Abstract collection classes (there will also be an AbstractQueue
+extending AbstractCollection). The ones I listed are the ones you
+minimally need.
+
+> in a distributed model, a possible solution might be something similar to an
+> NNTP control message, but that is up to the implementation, and there is no
+> guarantee that a message can be removed/cancelled.
+
+Right. Remove(x) is useful as perhaps only one ingredient of message etc
+cancellation, where you might try to kill it from a queue if there, else
+try a "please ignore", and so on.  
+
+> Try removing an e-mail that you have already sent.  :-)  
+
+Something similar happens with SynchronousQueue. It's remove(x) always
+returns false (which is perfectly fine) because there is no storage,
+(just rendezvous-style handoffs), and so the queue never owns items.
+Queue like this are perfectly within spec.
+
+
+... And a counter-offer:
+
+> Tell me please, Doug, would it be a problem to preserve Takable and Puttable
+> type interfaces, and to define Queue as:
+> 
+>    interface Queue extends Takable, Puttable, Collection { ... }
+> 
+
+
+Well, this would be a problem, but we COULD handle the following
+change to BlockingQueue. What do you think?
+
+  interface Puttable<E> {
+    void put(E x) throws IE;
+    void offer(E x, long time, Timunit, unit) throws IE;
+  }
+
+  interface Takable<E> {
+    E take() throws IE;
+    E poll(long time, Timunit, unit) threows IE;
+  }
+
+  interface BlockingQueue<E> extends Puttable<E>, Takable<E>, Queue<E> {
+    int maximumSize();
+  }
+
+Where Queue remains as:
+
+  interface Queue<E> extends Collection<E> {
+     boolean offer(E x);
+     E poll();
+     E remove() throws NoSuchElementException;
+     E peek();
+     E element() throws NoSuchElementException;
+  }
+
+
+-Doug
+
+From Costin.Cozianu@tabs.toshiba.com  Tue May 13 22:45:29 2003
+From: Costin.Cozianu@tabs.toshiba.com (Costin.Cozianu@tabs.toshiba.com)
+Date: Tue, 13 May 2003 14:45:29 -0700
+Subject: [concurrency-interest] Costin Cozianu's observations
+Message-ID: <OF14DF687F.0B30C666-ON88256D25.007432B0@tais.net>
+
+See my comments below
+
+
+Thanks,
+Costin
+
+
+                                                                                                                                 
+                    "Noel J. Bergman"                                                                                            
+                    <noel@devtech.com>                    To:     Costin Cozianu/DSE/IRV/TOSHIBA-TABS@TOSHIBA-TABS,              
+                    Sent by:                              <concurrency-interest@altair.cs.oswego.edu>                            
+                    concurrency-interest-admin@cs.        cc:                                                                    
+                    oswego.edu                            Subject:     [concurrency-interest] Costin Cozianu's observations      
+                                                                                                                                 
+                                                                                                                                 
+                    05/10/2003 08:26 AM                                                                                          
+                                                                                                                                 
+                                                                                                                                 
+
+
+
+
+>> It's probably not directly related to Doug's specific questions
+
+> I'm changing the subject on some that didn't.  :-)
+
+>> I should be able to use
+>> lock.withLock( new Action() { public Object perform() { {BLOCK}} });
+
+>What stops you?  I have similar code in my toolbox, e.g., for command
+>mapping, with and without watchdog timers.
+
+Nothing stops me. I'll just need to change with the new package  (or remain
+with the old one).
+As a matter of fact, i later realized there are such utilities in the Locks
+class.
+
+The other problem is what I mentioned in my other email wrt Runnable not
+returning a
+value and loosing exception information. This is something really annoying
+and smells of a
+hackery that can trivially be avoided. Runnable is really a bad interface.
+
+>> how can you do serious concurrent systems without any decent
+>> primitives to run and coordinate across several Java VMs
+>> and non-Java processes ?
+
+>I suppose that depends upon your view of coordination.  Java tends to
+treat
+>processes outside of the current one as completely independent, e.g., they
+>could be running on other nodes in a network.  Therefore inter-process
+>semaphores, for example, would not be appropriate, IMO.
+
+I guess things like the Posix API might help, even as elementary as getting
+the PID of
+a spawned process. I view this idea that we have 100% pure Java, as
+absolutely unrealistic.
+In my experience Java just cannot interoperate nicely with other
+languages.Fixing the design
+of Runtime.getRuntime.exec() and fixing the implementation of it, and
+making it usable
+might also be a step forward.
+
+All the other high level languages have powerful Posix API bindings: Ocaml,
+SML, Haskell,
+Erlang, PLT Scheme, Python and these are only those that I have more or
+less knowledge about.
+
+
+>> I don't believe that Queue implementing Collection APIs feel the right
+way
+>to go
+
+>I agree with you.  Unfortunately, I seem to be in a minority on this view,
+>but I think that putting Queue into the Collection hierarchy is
+congenitally
+>flawed (see the "Queue is a Collection, not producer / consumer model?"
+>thread in the archives).  I just want clean interfaces specific to the
+Queue
+>problem domain, without the Collection cruft.
+
+>I believe that David Walend also agrees, if I interpret his comments
+>correctly.  As he puts it, "SomnifugiJMS is built on [the] Putable and
+>Takable interfaces. If those interfaces don't survive, I'll probably
+create
+>my own just to keep myself out of trouble. If you need them as well, then
+>maybe it is worth our lobbying for them here."
+
+>          --- Noel
+
+Me too, see my response to Doug. In my view Collection as an interface is
+close to
+useless since it doesn't guarantee anything. Every operation "might" fail,
+every
+iterator "might" fail, the only guarantee apparently is against a
+NoSuchMethodError
+at runtime :)
+
+Plus I don't really know how to go about this business of abstractions,
+since several
+implementations of queues offer absolutely no common abstraction other than
+the Puttable/Takable
+interfaces, then that should be the common abstraction.
+
+I don't believe in abstractions without some meat ( "you can call this
+method but it might fail").
+I also don't see my self writing generic algorithms to operate on
+collections and feeding queues
+to them.
+
+
+
+
+
+From Costin.Cozianu@tabs.toshiba.com  Tue May 13 23:23:00 2003
+From: Costin.Cozianu@tabs.toshiba.com (Costin.Cozianu@tabs.toshiba.com)
+Date: Tue, 13 May 2003 15:23:00 -0700
+Subject: [concurrency-interest] Costin Cozianu's observations
+Message-ID: <OFA0FD497E.21DA7D64-ON88256D25.0070AA1F@tais.net>
+
+Hi,
+
+Just a few annoying comments :) Mostly I am concerned that the new JSR will
+come out and I'll have to branch off
+using my old and trusted and modified ad-hock concurrent package.
+
+
+One more quick question: is within the scope of this JSR to provide some
+more substantial guarantees with
+regards to ensuring some properties of the Java concurrent programs ?
+
+I mean the guarantees offerred by the synchronized wait notifyAll are kind
+of weak, and I know I'm not
+the first to complain ? Are there any synchronization primitives offerred
+by this package that have stronger properties ?
+
+
+See my other comments with regards to collections:
+
+
+
+
+>First a few "it's really not as bad as you think" comments...
+
+>> it
+>> must also implement and expose the Collection methods: add, addAll,
+clear,
+>> contains, containsAll, equals, hashCode, isEmpty, iterator, remove,
+>
+>Most of these are done automagically just by extending one of the
+>Abstract collection classes (there will also be an AbstractQueue
+>extending AbstractCollection). The ones I listed are the ones you
+>minimally need.
+
+Most people will take issue with using inheritance just so that we can
+mix in some trivial, inefficient and mostly useless algorithms.
+
+The right question to ask in my opinion are as follows :
+     - what are the minimal interfaces that users of queues need ?
+     - can we think of an important use case where we want to masquerade
+       Queues as a collection ?
+
+I think I previously talked about my needs, other than noraml queueu
+operations
+I just need to be able to iterate (including the possibility of removing
+the current element)
+over a consistent image of the queue while the queue is being blocked for
+the duration of
+the iteration,  and one of the most efficient and safe way to do it is
+iterate
+internally, so that I get a consistent point in time view of the queue
+without interference from producers/consumers threads.
+
+I find external iterator considerably less useful for the reasons I
+mentioned, and
+most of the collection methods as well as masquerading the queue as a
+Collection
+close to useless.  As an aside , I never even once used
+java.util.Collection in my Java code,
+it's just too weak in its specification.
+
+In any case should there be a need to masquerade a queue as a collection a
+toArray()/toList()
+would suffice. Notwithstanding a spectacular implementation trick vis-a-vis
+the current API
+I just don't see how the new package can match my needs. Do we get some
+access to the source code ?
+
+What's the exact "meaning" of the external iterator for a concurrently
+accessible queue ?
+
+
+>> in a distributed model, a possible solution might be something similar
+to an
+>> NNTP control message, but that is up to the implementation, and there is
+no
+>> guarantee that a message can be removed/cancelled.
+
+>Right. Remove(x) is useful as perhaps only one ingredient of message etc
+>cancellation, where you might try to kill it from a queue if there, else
+>try a "please ignore", and so on.
+
+
+Ok, collection require Remove(x) where x is an object. What I need for my
+queues is remove(x)
+where x is a predicate (typically primary key / ID = something). Overriding
+equals is kind of
+a hack and not always desirable. Iterating until I meet the final element
+knowing that the iterator offers me absolutely no guarantee doesn't sound a
+great deal to me.
+
+
+Actually, I'm currently contemplating adding insertAtCurrentPosition(Object
+o) to the internal iteration interface of LinkedQueue. I need to be able to
+insert at least in the front position. This complicates things even
+further, but just because the implementation of the LinkedQueue makes it
+easy for me to implement, and it is convenient anmd safe for resolving
+otherwise non-trivial use cases, I'd say why not ? So, in my experience, my
+usage for LinkedQueue is way, way different than my usage for java.util.Set
+or java.util.List (I never ever used java.util.Collection).
+
+I wonder if anybody else has realistic examples of wanting to manipulate
+the Queue as a java.util.Collection
+
+
+Best regards,
+Costin Cozianu
+
+
+
+
+
+
+
+
+From dawidk@mathcs.emory.edu  Tue May 13 23:26:38 2003
+From: dawidk@mathcs.emory.edu (Dawid Kurzyniec)
+Date: Tue, 13 May 2003 18:26:38 -0400
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <OF14DF687F.0B30C666-ON88256D25.007432B0@tais.net>
+References: <OF14DF687F.0B30C666-ON88256D25.007432B0@tais.net>
+Message-ID: <200305131826.38109.dawidk@mathcs.emory.edu>
+
+On Tuesday 13 May 2003 05:45 pm, Costin.Cozianu@tabs.toshiba.com wrote:
+
+> The other problem is what I mentioned in my other email wrt Runnable not
+> returning a
+> value and losing exception information. This is something really annoying
+> and smells of a
+> hackery that can trivially be avoided. Runnable is really a bad interface.
+
+At some point, I have been arguing to make Executors accept Callables and 
+return Futures - the Future would hold returned value and/or exception 
+information, plus maybe it could provide a cancellation handle. For some 
+time, the API was like that but then it was changed back to the "void 
+Executor.execute(runnable)". Ultimately my proposal to change it back again 
+has been rejected; you can review the full discussion starting at:
+
+http://altair.cs.oswego.edu/pipermail/concurrency-interest/2002-September/000238.html
+
+(point #3 in the original posting)
+
+Provided that EG tried both variants of the API, and that the discussion went 
+on for couple of weeks, it seems unlikely that they would change it again. 
+And I can understand that there are quite good arguments in favor of the 
+current model, although I would strongly prefer the other one in my 
+application domain (distributed computing and asynchronous communication).
+
+Dawid
+
+
+From jozart@csi.com  Wed May 14 00:35:19 2003
+From: jozart@csi.com (Joseph Bowbeer)
+Date: Tue, 13 May 2003 16:35:19 -0700
+Subject: [concurrency-interest] Runnable with result (was: Possible Lock and Condition API changes)
+References: <OF11CF93B4.F21F2EB7-ON88256D21.0056AA7B@tais.net>
+Message-ID: <005e01c319a8$50e79420$df9a7cce@REPLICANT2>
+
+Costin Cozianu writes:
+
+> The other problem is what I mentioned in my other email wrt Runnable
+> not returning a value and loosing exception information [see below].
+
+We hoped FutureTask would serve your needs in this respect.  Does it?  It's
+a Runnable, so it can be handed to an Executor, and it also acts as a place
+holder for the value produced (or exception thrown) in the future.
+
+
+FWIW, there some sample code showing Futures combined with RMI in this
+article:
+
+http://java.sun.com/products/jfc/tsc/articles/threads/threads3.html#remote-table
+
+
+
+----- Original Message ----- 
+From: <Costin.Cozianu@tabs.toshiba.com>
+To: <dl@altair.cs.oswego.edu>
+Cc: <concurrency-interest@altair.cs.oswego.edu>;
+<concurrency-interest-admin@altair.cs.oswego.edu>
+Sent: Friday, May 09, 2003 12:13 PM
+Subject: Re: [concurrency-interest] Possible Lock and Condition API changes
+
+[...]
+
+By the way, speaking of composing execution contexts, I modified my local
+copy of executor framework (actually I wrappoed around Doug's classes rather
+than butchering his code ) so that every execution returns a result which is
+:
+
+class CallResult{
+     boolean success; // the computation performed successfully
+     Object result;
+     Object reasonForFailure; // typically an exception
+}
+
+So that if I want to perform a computation in a different thread, possibly
+in  a different VM,etc, I still have a convenient way to get back the
+results, also know exactly the underlying Java exception that is thrown and
+not a generic wrapped exception (like rmi.RemoteException). Unfortunately
+Java's type system doesn't support sum types.
+
+
+
+
+From dholmes@dltech.com.au  Wed May 14 00:39:07 2003
+From: dholmes@dltech.com.au (David Holmes)
+Date: Wed, 14 May 2003 09:39:07 +1000
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <OFA0FD497E.21DA7D64-ON88256D25.0070AA1F@tais.net>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOEIJDCAA.dholmes@dltech.com.au>
+
+Costin Cozianu wrote:
+> I mean the guarantees offerred by the synchronized wait
+> notifyAll are kind of weak, and I know I'm not
+> the first to complain ? Are there any synchronization
+> primitives offerred by this package that have stronger properties ?
+
+I'm not sure what you mean by "weak", but some of the limitations of
+the existing sync facilities are being addressed through the Lock and
+Condition interfaces, plus the concrete implementations of those.
+However, there will be, and can be, no changes to the existing
+semantics of synchronized, or the Object monitor methods.
+
+> As an aside , I never even once used
+> java.util.Collection in my Java code,
+> it's just too weak in its specification.
+
+I think perhaps you are missing the point of a high-level interface
+like Collection. It's main role is not within application code - where
+invariably you need to know more than just that you some collection -
+but within the collections framework itself. It provides a unifying
+type that allows a subset of operations to be applied to any
+collection regardless of type.
+
+David Holmes
+
+
+From Costin.Cozianu@tabs.toshiba.com  Wed May 14 02:08:09 2003
+From: Costin.Cozianu@tabs.toshiba.com (Costin.Cozianu@tabs.toshiba.com)
+Date: Tue, 13 May 2003 18:08:09 -0700
+Subject: [concurrency-interest] Runnable with result (was: Possible Lock and
+ Condition API changes)
+Message-ID: <OFD0E9C338.A2B42BC7-ON88256D26.00063071@tais.net>
+
+I think I mentioned in the previous email, that my main desire is to have
+executors composable as seemingly
+as possible so that I can add different aspects to the particular execution
+conditions of a computation.
+
+After consulting the archive, thanks to Dawid, I think you encline more
+towards viewing the executors like more of
+a threading facility, that's fine but doesn't suit my needs. Plus, I'd
+rather see that as easy to just add to java.lang.Thread.
+
+
+Currently I wouldn't even be contemplating an Executor framework if I
+didn't have the possibility to transport
+across processes. FutureTask is not transportable across processes, and
+this is a hard requirement on my part for which
+I wrote my own executors.
+
+Currently I'm interested in these aspects of an execution of a computation:
+    - thread pooling
+    - queueing of computational asks
+    - flexible priority
+    - timed execution (if it doesn't finnish on time it's an error and
+should be cancelled automatically by
+     the executor, and not by the client - the client might as well have
+forgotten about it)
+    - ability to cancel relatively safely in 2 steps, first a normal cancel
+request to the Cancellable if applicable,
+     second a forced cancel which is, in my case a Unix kill on the process
+and its subprocesses.
+    - isolation: a crash in the computation being handed to an executor
+should not affect the client context
+
+I think this requirement are not exactly out of the ordinary.
+
+It was kind of obvious to me that one executor class should embody one of
+these aspects, and executors should
+be composable such that relatively orthogonal aspects should be composed,
+of course not all composition might
+make sense, but this is the responsibility of the guy who construct the
+composition to figure it out.
+
+So my current solution: everything is based on Doug's Callable but I make
+sure that the client context will receive a
+CallResult which contains either the Object returned by Callable.call(), or
+the original (unmodified and unpackaged
+by RmiException ) exception, or one of the underlying executor's exception
+for example TimeoutException or RmiException,
+the rule being that the closest to the final point executor that gets an
+exception, doesn't propagate it just return
+CallResult.exception(ex), so that unnecessary packaging will not occur.
+
+One more thing: when I have a computation that doesn't return a result I
+just return using the factory method
+"return CallResult.success(null);"  there's no big deal about it.
+This is rather trivial and easy, while the reverse : packaging computations
+with results using some kind of side-effect gimmicks
+it's kind of trivial both but rather boring and definitely ugly looking
+code for the client and  for the implementors of various executors.
+
+
+So it is true that some of these things are addressed individually by
+FutureTask as well as the Executors utility class, but as a whole it
+doesn't
+suit my needs unless I'll be doing an annoying porting exercise from the
+old concurrent to the new concurrent package.
+As things stand now, I kind of don't see the value of doing that.
+
+
+
+Costin Cozianu
+costin.cozianu@tabs.toshiba.com
+Senior Software Engineer                 (949) 462-6779
+Toshiba American Business Solution
+Mobile                                              (310) 463-5940
+Alternate Email                                 c_cozianu@hotmail.com
+
+
+
+                                                                                                                                 
+                    "Joseph Bowbeer"                                                                                             
+                    <jozart@csi.com>                      To:     Costin Cozianu/DSE/IRV/TOSHIBA-TABS@TOSHIBA-TABS               
+                    Sent by:                              cc:     <concurrency-interest@altair.cs.oswego.edu>                    
+                    concurrency-interest-admin@cs.        Subject:     [concurrency-interest] Runnable with result (was:         
+                    oswego.edu                            Possible Lock and Condition API changes)                               
+                                                                                                                                 
+                                                                                                                                 
+                    05/13/2003 04:35 PM                                                                                          
+                                                                                                                                 
+                                                                                                                                 
+
+
+
+
+Costin Cozianu writes:
+
+> The other problem is what I mentioned in my other email wrt Runnable
+> not returning a value and loosing exception information [see below].
+
+We hoped FutureTask would serve your needs in this respect.  Does it?  It's
+a Runnable, so it can be handed to an Executor, and it also acts as a place
+holder for the value produced (or exception thrown) in the future.
+
+
+FWIW, there some sample code showing Futures combined with RMI in this
+article:
+
+http://java.sun.com/products/jfc/tsc/articles/threads/threads3.html#remote-table
+
+
+
+
+----- Original Message -----
+From: <Costin.Cozianu@tabs.toshiba.com>
+To: <dl@altair.cs.oswego.edu>
+Cc: <concurrency-interest@altair.cs.oswego.edu>;
+<concurrency-interest-admin@altair.cs.oswego.edu>
+Sent: Friday, May 09, 2003 12:13 PM
+Subject: Re: [concurrency-interest] Possible Lock and Condition API changes
+
+[...]
+
+By the way, speaking of composing execution contexts, I modified my local
+copy of executor framework (actually I wrappoed around Doug's classes
+rather
+than butchering his code ) so that every execution returns a result which
+is
+:
+
+class CallResult{
+     boolean success; // the computation performed successfully
+     Object result;
+     Object reasonForFailure; // typically an exception
+}
+
+So that if I want to perform a computation in a different thread, possibly
+in  a different VM,etc, I still have a convenient way to get back the
+results, also know exactly the underlying Java exception that is thrown and
+not a generic wrapped exception (like rmi.RemoteException). Unfortunately
+Java's type system doesn't support sum types.
+
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+
+
+From dl@cs.oswego.edu  Wed May 14 14:04:14 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Wed, 14 May 2003 09:04:14 -0400
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <OFA0FD497E.21DA7D64-ON88256D25.0070AA1F@tais.net>
+References: <OFA0FD497E.21DA7D64-ON88256D25.0070AA1F@tais.net>
+Message-ID: <16066.16078.503963.952752@altair.cs.oswego.edu>
+
+A few replies about API design issues:
+
+> The right question to ask in my opinion are as follows :
+>      - what are the minimal interfaces that users of queues need ?
+
+Library providers for a language used by millions of programmers
+cannot rely so heavily on this criterion. For example, with
+Collections, it would lead you to create an interface containing each
+single method (because there is some use out there that minimally
+requires only that one), and then pairs, triples, etc, which would in
+turn lead you to define the entire power set of interface types, which
+would be unacceptable. So while relatively fat interfaces and
+occasional reliance of potential UnsupportedOperationExceptions may
+not sound so nice in theory, it appears to be the best solution in
+practice. (The collections framework has been voted "best Java
+framework" a few times in polls, so it clearly meets most needs.)
+
+>      - can we think of an important use case where we want to masquerade
+>        Queues as a collection ?
+
+(Attempted) cancellation. Printing. Monitoring. etc etc.  Or put
+differently, many of those contexts in which people previously used
+Lists mainly as queues.  In all of these cases, the need for extra
+operations is rare, but when programmers need them and don't have
+them, they are forced to build their own implementations. It is a high
+priority for us to avoid people writing from scratch a Queue, Map,
+Set, etc that differs only in supplying such operations.
+
+(Aside: One difference between dl.u.c and j.u.c is that dl.u.c
+declares nearly all fields/methods as "protected", but j.u.c almost
+always uses "private" or package-private.  Use of "protected"
+simplifies life for expert users like Costin, but is unacceptable in
+the long term for a JDK package that needs to minimize exposed
+implementation so as to enable future major changes when they become
+necessary.)
+
+> Ok, collection require Remove(x) where x is an object. What I need for my
+> queues is remove(x)
+> where x is a predicate (typically primary key / ID = something). Overriding
+> equals is kind of
+> a hack and not always desirable. Iterating until I meet the final element
+> knowing that the iterator offers me absolutely no guarantee doesn't sound a
+> great deal to me.
+
+Sorry, I don't understand what guarantees you want but don't have?
+
+
+-Doug
+
+
+
+
+From Costin.Cozianu@tabs.toshiba.com  Wed May 14 17:01:48 2003
+From: Costin.Cozianu@tabs.toshiba.com (Costin.Cozianu@tabs.toshiba.com)
+Date: Wed, 14 May 2003 09:01:48 -0700
+Subject: [concurrency-interest] Costin Cozianu's observations
+Message-ID: <OF64DBFBC6.BFCF7424-ON88256D26.0055E7B4@tais.net>
+
+Hi ,
+
+Thanks for youir responses. See my comments below.
+
+
+Best,
+
+Costin Cozianu
+costin.cozianu@tabs.toshiba.com
+Senior Software Engineer                 (949) 462-6779
+Toshiba American Business Solution
+Mobile                                              (310) 463-5940
+Alternate Email                                 c_cozianu@hotmail.com
+
+
+
+
+
+>A few replies about API design issues:
+
+>> The right question to ask in my opinion are as follows :
+>>      - what are the minimal interfaces that users of queues need ?
+
+>Library providers for a language used by millions of programmers
+>cannot rely so heavily on this criterion. For example, with
+>Collections, it would lead you to create an interface containing each
+>single method (because there is some use out there that minimally
+>requires only that one), and then pairs, triples, etc, which would in
+>turn lead you to define the entire power set of interface types, which
+>would be unacceptable. So while relatively fat interfaces and
+>occasional reliance of potential UnsupportedOperationExceptions may
+>not sound so nice in theory, it appears to be the best solution in
+>practice. (The collections framework has been voted "best Java
+>framework" a few times in polls, so it clearly meets most needs.)
+
+Well, I always look for minimal interfaces supported most users need.
+As opposed to - how do you say that in English - "There's seven ways to
+skin a cat".
+
+I don't contest the utility of java collection framework (I just mention
+that I never ever used java.util.Collection as an abstraction because it is
+too weak to be of any use to me),
+particulatrly within a relatively constrained language.
+But incidentally it didn't meet my needs, when I had to derive
+SortedCollection,
+SortedList, SortedIterator than MergeIterator and so on
+(collection/iterator that always maintain the order of their element, and
+provide efficient algorithms), I couldn't easily override java.util.List or
+any other useful base class. And I'm not sure it was very fun implementing
+all the operation in java.util.Collection, particularly when I didn't need
+them. That's another discussion altogether, however.
+
+
+
+>>      - can we think of an important use case where we want to masquerade
+>>        Queues as a collection ?
+
+>(Attempted) cancellation. Printing. Monitoring. etc etc.  Or put
+>differently, many of those contexts in which people previously used
+>Lists mainly as queues.  In all of these cases, the need for extra
+>operations is rare, but when programmers need them and don't have
+>them, they are forced to build their own implementations. It is a high
+>priority for us to avoid people writing from scratch a Queue, Map,
+>Set, etc that differs only in supplying such operations.
+
+Ok, I had those needs so I modified LinkedQueue to support them.
+
+All of these needs are met by internal iteration, without writing more
+lines of code
+ than strictly necessary.
+
+
+>(Aside: One difference between dl.u.c and j.u.c is that dl.u.c
+>declares nearly all fields/methods as "protected", but j.u.c almost
+>always uses "private" or package-private.  Use of "protected"
+>simplifies life for expert users like Costin, but is unacceptable in
+>the long term for a JDK package that needs to minimize exposed
+>implementation so as to enable future major changes when they become
+>necessary.)
+
+Yet inspite that the easiest way to adjust LinkedQueue to my needs was to
+modify it :)
+Now I'm bound by the license of the JDK *not to* modify any java.**.
+
+>> Ok, collection require Remove(x) where x is an object. What I need for
+my
+>> queues is remove(x)
+>> where x is a predicate (typically primary key / ID = something).
+Overriding
+>> equals is kind of
+>> a hack and not always desirable. Iterating until I meet the final
+element
+>> knowing that the iterator offers me absolutely no guarantee doesn't
+sound a
+>> great deal to me.
+
+>Sorry, I don't understand what guarantees you want but don't have?
+
+Like the underlying collection is not modified by competing threads or
+anything close to it.
+That's what I currently have in my modified version of LinkedQueue. The
+currently api doc for this
+mentions nothing.
+
+What willl exactly happen, will I get a ConcurrentModificationException or
+will I get a point in time
+copy image ?
+
+
+
+
+
+From noel@devtech.com  Thu May 15 07:10:54 2003
+From: noel@devtech.com (Noel J. Bergman)
+Date: Thu, 15 May 2003 02:10:54 -0400
+Subject: [concurrency-interest] Takable and Puttable in JSR 166  :-)
+In-Reply-To: <16065.3936.878883.311858@altair.cs.oswego.edu>
+Message-ID: <NBBBJGEAGJAKLIDBKJOPGECMBLAB.noel@devtech.com>
+
+Doug,
+
+> ... And a counter-offer:
+
+> > Tell me please, Doug, would it be a problem to preserve Takable and
+Puttable
+> > type interfaces, and to define Queue as:
+> >    interface Queue extends Takable, Puttable, Collection { ... }
+
+> Well, this would be a problem, but we COULD handle the following
+> change to BlockingQueue. What do you think?
+
+>   interface Puttable<E> {
+>     void put(E x) throws IE;
+>     void offer(E x, long time, Timunit, unit) throws IE;
+>   }
+
+>   interface Takable<E> {
+>     E take() throws IE;
+>     E poll(long time, Timunit, unit) threows IE;
+>   }
+
+>   interface BlockingQueue<E> extends Puttable<E>, Takable<E>, Queue<E> {
+>     int maximumSize();
+>   }
+
+> Where Queue remains as:
+
+>   interface Queue<E> extends Collection<E> {
+>      boolean offer(E x);
+>      E poll();
+>      E remove() throws NoSuchElementException;
+>      E peek();
+>      E element() throws NoSuchElementException;
+>   }
+
+I took some time to look over the JSR 166 Javadocs and the util.concurrent
+Javadocs, just to see the impact before replying, and I consider that you've
+proposed a reasonable compromise.
+
+By the way, what I am missing with respect to peek?  I notice that in
+util.concurrent, you also introduced the peek operation in Channel.  Other
+than the obvious and documented usage caveats, why isn't a form of peek
+operation part of the Takable interface?  If peek is acceptable at all in
+Channel/Queue, wouldn't the same reasons/limitations apply to Takable?
+
+	--- Noel
+
+
+From noel@devtech.com  Thu May 15 09:32:29 2003
+From: noel@devtech.com (Noel J. Bergman)
+Date: Thu, 15 May 2003 04:32:29 -0400
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <003b01c31907$5d3f4980$809a7cce@REPLICANT2>
+Message-ID: <NBBBJGEAGJAKLIDBKJOPIEDABLAB.noel@devtech.com>
+
+> FWIW, another constraint imposed by "Queue extends Collection" is:
+>  size <= Integer.MAX_VALUE  (since size returns an int, List and array
+> indices are ints, etc.)  Does this matter to you?
+
+Hmmm ... I hope that 2^31 is more than sufficient for a queue length.  But I
+do remember the infamous "No one will ever need more than 640K of RAM" ...
+
+> I'm also curious to know if you think Queue implementations should as a
+rule
+> implement Serializable, and whether you think they are different in this
+> respect from Collections.
+
+Oh gosh ... totally shooting from the hip ...
+
+If the Queue were a proxy for an external mechanism then you could serialize
+information on how to reconnect with the external implementation, e.g., a
+socket, JDBC data source, JMS, whatever.  You would not actually be
+responsible for persisting the queue content, only how to access it.  This
+is probably safe.  I expect that much of my own use will be with queues of
+this nature, whether serialized or not.
+
+On the other hand, all of the Queue implementations currently in the
+Javadocs maintain their own contents, and appear to be normally serializable
+(except for PriorityQueue).  I don't see why they would be different from
+other Collection classes.  You have the same usage issues as you do with
+Collection in general, although one can predict that the usage pattern for
+Queue is more commonly going to expose those issues than for Collection,
+e.g., separately serialized object webs sharing a Queue.  So, yes, I think
+that programmers are more likely to shoot themselves in the
+pick-your-body-part with Queue objects than Collections, but that's a usage
+pattern issue.  Anticipating the problem, and providing good usage examples
+for shared queues, should help lower the occurrence of pilot error.
+
+Is that what you had in mind?
+
+Speaking of Queue as Collection ... what is the semantic related to
+Queue.iterator()?  Does Iterator.next() call Queue.poll() for me, which is
+the semantic I would expect from a non-Collection-based Queue, or does it
+iterate over the contents of the Collection without removing, which is the
+semantic that seems to have been implied by recent e-mails?  I don't see
+anything in the JSR 166 Javadoc that is really explicit about this issue.
+
+	--- Noel
+
+
+From dl@cs.oswego.edu  Thu May 15 11:44:00 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Thu, 15 May 2003 06:44:00 -0400
+Subject: [concurrency-interest] Takable and Puttable in JSR 166  :-)
+In-Reply-To: <NBBBJGEAGJAKLIDBKJOPGECMBLAB.noel@devtech.com>
+References: <16065.3936.878883.311858@altair.cs.oswego.edu>
+ <NBBBJGEAGJAKLIDBKJOPGECMBLAB.noel@devtech.com>
+Message-ID: <16067.28528.191414.716624@altair.cs.oswego.edu>
+
+Great! We'll make sure there aren't any hidden problems lurking, and
+assuming not, add Takable and Puttable to JSR-166 versions.
+
+> By the way, what I am missing with respect to peek?  
+
+Nothing. It should be there. Sorry for omitting it my mistake!
+
+-Doug
+
+
+From dl@cs.oswego.edu  Thu May 15 12:22:03 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Thu, 15 May 2003 07:22:03 -0400
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <NBBBJGEAGJAKLIDBKJOPIEDABLAB.noel@devtech.com>
+References: <003b01c31907$5d3f4980$809a7cce@REPLICANT2>
+ <NBBBJGEAGJAKLIDBKJOPIEDABLAB.noel@devtech.com>
+Message-ID: <16067.30811.886378.322297@altair.cs.oswego.edu>
+
+> Speaking of Queue as Collection ... what is the semantic related to
+> Queue.iterator()? 
+
+Good questions. The spec for Queue.iterator will be clarified to say that
+
+1. Like other Collection iterators, it is a pure read-only traversal.
+
+2. Like other Collection iterators, it MAY fast-fail during traversal
+   if the queue is being concurrently modified. (Alternatively, the
+   traversal will represent a consistent snaphot of queue at or since
+   Iterator construction.)  In general, if you need an iterator that
+   represents the exact state of queue at a given point and which
+   cannot fast-fail, it is better to use toArray to get a snaphot and
+   iterate over that. And as in yesterday's post, if you need to
+   block the queue while traversing, then you need to embed all usage
+   in an external lock.
+
+3. It does NOT necessarily return elements in poll() order.  There is
+   no way to guarantee any relation between iterator.next() and
+   poll(). For example, consider a RandomQueue class (which might
+   actually be useful, although not useful enough to supply) in which
+   poll() returns a random element.  All the FIFO queue
+   implementations will in fact return items in poll() order and will
+   say so. But PriorityQueue, BlockingPriorityQueue, and DelayQueue
+   will NOT guarantee to iterate in poll() order or even priority
+   order. People who really need to inspect in priority order can sort
+   toArray, but they still cannot guarantee this will be poll() order
+   because ties in priority are decided arbitrarily in poll() in these
+   classes. 
+
+
+Note: PriorityQueue, BlockingPriorityQueue, and DelayQueue all use
+pq-heap implementations that are in general most efficient and
+scalable, but can be surprising because they don't guarantee FIFOness
+for tied priorities. We'll add some better explanations of this in
+javadocs, and explain the easy ways to obtain FIFOness when it is
+necessary, most simply by using sequence numbers as secondary keys in
+compareTo.
+
+
+-Doug
+
+From noel@devtech.com  Thu May 15 17:20:49 2003
+From: noel@devtech.com (Noel J. Bergman)
+Date: Thu, 15 May 2003 12:20:49 -0400
+Subject: [concurrency-interest] Takable and Puttable in JSR 166  :-)
+In-Reply-To: <16067.28528.191414.716624@altair.cs.oswego.edu>
+Message-ID: <NBBBJGEAGJAKLIDBKJOPIEENBLAB.noel@devtech.com>
+
+> Great! We'll make sure there aren't any hidden problems lurking, and
+> assuming not, add Takable and Puttable to JSR-166 versions.
+
+:-)
+
+> > By the way, what I am missing with respect to peek?
+
+> Nothing. It should be there. Sorry for omitting it my mistake!
+
+That would make it:
+
+  interface Takable<E> {
+    E take() throws IE;
+    E poll(long timeout, TimeUnit granularity) throws IE;
+    E peek(long timeout, TimeUnit granularity) throws IE;
+  }
+
+and still:
+
+  interface Puttable<E> {
+    void put(E x) throws IE;
+    void offer(E x, long timeout, TimeUnit granularity) throws IE;
+  }
+
+if I understand the pattern you have in mind for JSR 166?
+
+What do you expect as ETA for a 1.3/1.4 compatible test build of JSR 166?
+
+	--- Noel
+
+From noel@devtech.com  Thu May 15 20:20:15 2003
+From: noel@devtech.com (Noel J. Bergman)
+Date: Thu, 15 May 2003 15:20:15 -0400
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <OF14DF687F.0B30C666-ON88256D25.007432B0@tais.net>
+Message-ID: <NBBBJGEAGJAKLIDBKJOPKEFMBLAB.noel@devtech.com>
+
+> I guess things like the Posix API might help, even as elementary as
+> getting the PID of a spawned process. I view this idea that we have
+> 100% pure Java, as absolutely unrealistic.
+
+> In my experience Java just cannot interoperate nicely with other
+> languages. Fixing the design of Runtime.getRuntime.exec() and fixing
+> the implementation of it, and making it usable might also be a step
+forward.
+
+Java follows a network computing model.  Inter-process communication uses
+network mechanisms.  I don't hear a widespread desire to change that in the
+standard distribution, but if you want POSIX support:
+
+  http://www.bmsi.com/java/posix/package.html
+  http://www.amug.org/~glguerin/sw/easyposix/overview.html
+
+etc.
+
+	--- Noel
+
+
+From Costin.Cozianu@tabs.toshiba.com  Thu May 15 20:22:14 2003
+From: Costin.Cozianu@tabs.toshiba.com (Costin.Cozianu@tabs.toshiba.com)
+Date: Thu, 15 May 2003 12:22:14 -0700
+Subject: [concurrency-interest] Costin Cozianu's observations
+Message-ID: <OF5DAE14DB.3FE5D98B-ON88256D27.005EDAFD@tais.net>
+
+With all due respect Doug, I think you are proposing something that is
+totally unworkable for many users of a queue,
+"among whom I am first" :)
+
+I agree with you that a point in time image is a perfect duplicate of
+toArray() functionality.
+
+With regards to iterators failing fast:
+
+An iterator that "fast fails" is useless for the clients of the queue: what
+am I, as a client programmer, supposed to do with a failing iterator ?
+Reiterate again, I don't think so I'd have to know the details of the queue
+implementation and of the external settings in which it is used to have a
+vague guarantee that a second (3rd, 4th , etc) failure is not likely to
+happen. That is in breach of David Parnas' information hiding principle. I
+don't want to know what's behind
+an interface. How about displaying an error message to the user "Sorry, I
+cannot display the queue at this time". I'm affraid this later case will
+make me look like a hopeless users to my managers, QA and marketing
+department. "What does that mean , you cannot display a queue, are you nuts
+???" And they'd be right.
+
+The only workable solution for iterations is therefore to synchronize
+externally with both the producer and consumer threads. That is prety bad
+solution
+in my opinion,because this will be a common pattern among lots of client
+code of the queue therefore it will be a prime candidate to factoring
+in as common functionality .The queue implementation already has the
+necerssary details to be able to synchronize all it's client threads
+(consumers, producers and iterators), and do that much more efficiently and
+safely than most of its externally orchestrated clients.
+
+So why not let the implementor of the queue do this synchronization
+himself, cause that's where it is absolutely the best place to implement it
+?
+
+The only reasonable answer that I know for why not do it this way is
+because of external iteration. In the external iteration pattern the
+implemenation of the queue doesn't control the scope of the iteration
+process (or the iterator object for that matter), therefore blocking
+producers and consumers for the iterator is exceedingly difficult. That's
+what drove me to implement internal iteration over the LinkedQueue as an
+absolutely no brainer, the obvious and well designed way to solve my needs.
+
+I couldn't care less if next version of the queue has to implement external
+iterator for the sake of java.util.Collection: it is unworkable for my
+needs (and I frankly don't see any programmer happy to use an iterator with
+the only gurantee "if it works than it works, if not not" ). One obvious
+way to implement Collection interface is to throw operation not supported
+right away on queue.iterator() :)
+
+best regards,
+
+Costin Cozianu
+costin.cozianu@tabs.toshiba.com
+Senior Software Engineer                 (949) 462-6779
+Toshiba American Business Solution
+Mobile                                              (310) 463-5940
+Alternate Email                                 c_cozianu@hotmail.com
+
+
+
+                                                                                                                                 
+                    Doug Lea <dl@cs.oswego.edu>                                                                                  
+                    Sent by:                              To:     <concurrency-interest@altair.cs.oswego.edu>                    
+                    concurrency-interest-admin@cs.        cc:                                                                    
+                    oswego.edu                            Subject:     RE: [concurrency-interest] Costin Cozianu's observations  
+                                                                                                                                 
+                                                                                                                                 
+                    05/15/2003 04:22 AM                                                                                          
+                                                                                                                                 
+                                                                                                                                 
+
+
+
+
+> Speaking of Queue as Collection ... what is the semantic related to
+> Queue.iterator()?
+
+Good questions. The spec for Queue.iterator will be clarified to say that
+
+1. Like other Collection iterators, it is a pure read-only traversal.
+
+2. Like other Collection iterators, it MAY fast-fail during traversal
+   if the queue is being concurrently modified. (Alternatively, the
+   traversal will represent a consistent snaphot of queue at or since
+   Iterator construction.)  In general, if you need an iterator that
+   represents the exact state of queue at a given point and which
+   cannot fast-fail, it is better to use toArray to get a snaphot and
+   iterate over that. And as in yesterday's post, if you need to
+   block the queue while traversing, then you need to embed all usage
+   in an external lock.
+
+3. It does NOT necessarily return elements in poll() order.  There is
+   no way to guarantee any relation between iterator.next() and
+   poll(). For example, consider a RandomQueue class (which might
+   actually be useful, although not useful enough to supply) in which
+   poll() returns a random element.  All the FIFO queue
+   implementations will in fact return items in poll() order and will
+   say so. But PriorityQueue, BlockingPriorityQueue, and DelayQueue
+   will NOT guarantee to iterate in poll() order or even priority
+   order. People who really need to inspect in priority order can sort
+   toArray, but they still cannot guarantee this will be poll() order
+   because ties in priority are decided arbitrarily in poll() in these
+   classes.
+
+
+Note: PriorityQueue, BlockingPriorityQueue, and DelayQueue all use
+pq-heap implementations that are in general most efficient and
+scalable, but can be surprising because they don't guarantee FIFOness
+for tied priorities. We'll add some better explanations of this in
+javadocs, and explain the easy ways to obtain FIFOness when it is
+necessary, most simply by using sequence numbers as secondary keys in
+compareTo.
+
+
+-Doug
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+
+From william.hoyle@bulletinwireless.com  Thu May 15 23:36:52 2003
+From: william.hoyle@bulletinwireless.com (William Hoyle)
+Date: Fri, 16 May 2003 10:36:52 +1200
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <OF5DAE14DB.3FE5D98B-ON88256D27.005EDAFD@tais.net>
+Message-ID: <EAEMLHDOJLGFCNFNJDHNMEBPIAAA.william.hoyle@bulletinwireless.com>
+
+> With all due respect Doug, I think you are proposing something that is
+> totally unworkable for many users of a queue,
+> "among whom I am first" :)
+> 
+> I agree with you that a point in time image is a perfect duplicate of
+> toArray() functionality.
+> 
+> With regards to iterators failing fast:
+> 
+> An iterator that "fast fails" is useless for the clients of the queue: what
+> am I, as a client programmer, supposed to do with a failing iterator ?
+> Reiterate again, I don't think so I'd have to know the details of the queue
+> implementation and of the external settings in which it is used to have a
+> vague guarantee that a second (3rd, 4th , etc) failure is not likely to
+> happen. That is in breach of David Parnas' information hiding principle. I
+> don't want to know what's behind
+> an interface. How about displaying an error message to the user "Sorry, I
+> cannot display the queue at this time". I'm affraid this later case will
+> make me look like a hopeless users to my managers, QA and marketing
+> department. "What does that mean , you cannot display a queue, are you nuts
+> ???" And they'd be right.
+
+>From the javadoc for LinkedList (and all the other concrete Collections in
+java.util):
+
+    Note that the fail-fast behavior of an iterator cannot be guaranteed as it
+    is, generally speaking, impossible to make any hard guarantees in the 
+    presence of unsynchronized concurrent modification. Fail-fast iterators 
+    throw ConcurrentModificationException on a best-effort basis. Therefore, 
+    it would be wrong to write a program that depended on this exception for 
+    its correctness: the fail-fast behavior of iterators should be used only 
+    to detect bugs.
+
+> The only workable solution for iterations is therefore to synchronize
+> externally with both the producer and consumer threads. That is prety bad
+> solution
+
+Once you implement the Collection interface getting a point-in-time copy 
+can be as simple as:
+
+    synchronized (queue) {
+        ArrayList browsable = new ArrayList(queue);		
+    }
+    // browse away
+
+> in my opinion,because this will be a common pattern among lots of client
+> code of the queue therefore it will be a prime candidate to factoring
+> in as common functionality .The queue implementation already has the
+> necerssary details to be able to synchronize all it's client threads
+> (consumers, producers and iterators), and do that much more efficiently and
+> safely than most of its externally orchestrated clients.
+> 
+> So why not let the implementor of the queue do this synchronization
+> himself, cause that's where it is absolutely the best place to implement it
+> ?
+> 
+> The only reasonable answer that I know for why not do it this way is
+> because of external iteration. In the external iteration pattern the
+> implemenation of the queue doesn't control the scope of the iteration
+> process (or the iterator object for that matter), therefore blocking
+> producers and consumers for the iterator is exceedingly difficult. That's
+> what drove me to implement internal iteration over the LinkedQueue as an
+> absolutely no brainer, the obvious and well designed way to solve my needs.
+> 
+> I couldn't care less if next version of the queue has to implement external
+> iterator for the sake of java.util.Collection: it is unworkable for my
+> needs (and I frankly don't see any programmer happy to use an iterator with
+> the only gurantee "if it works than it works, if not not" ). One obvious
+> way to implement Collection interface is to throw operation not supported
+> right away on queue.iterator() :)
+> 
+> best regards,
+> 
+> Costin Cozianu
+> costin.cozianu@tabs.toshiba.com
+> Senior Software Engineer                 (949) 462-6779
+> Toshiba American Business Solution
+> Mobile                                              (310) 463-5940
+> Alternate Email                                 c_cozianu@hotmail.com
+> 
+> 
+> 
+>                                                                                               
+>                                    
+>                     Doug Lea <dl@cs.oswego.edu>                                               
+>                                    
+>                     Sent by:                              To:     
+> <concurrency-interest@altair.cs.oswego.edu>                    
+>                     concurrency-interest-admin@cs.        cc:                                 
+>                                    
+>                     oswego.edu                            Subject:     RE: 
+> [concurrency-interest] Costin Cozianu's observations  
+>                                                                                               
+>                                    
+>                                                                                               
+>                                    
+>                     05/15/2003 04:22 AM                                                       
+>                                    
+>                                                                                               
+>                                    
+>                                                                                               
+>                                    
+> 
+> 
+> 
+> 
+> > Speaking of Queue as Collection ... what is the semantic related to
+> > Queue.iterator()?
+> 
+> Good questions. The spec for Queue.iterator will be clarified to say that
+> 
+> 1. Like other Collection iterators, it is a pure read-only traversal.
+> 
+> 2. Like other Collection iterators, it MAY fast-fail during traversal
+>    if the queue is being concurrently modified. (Alternatively, the
+>    traversal will represent a consistent snaphot of queue at or since
+>    Iterator construction.)  In general, if you need an iterator that
+>    represents the exact state of queue at a given point and which
+>    cannot fast-fail, it is better to use toArray to get a snaphot and
+>    iterate over that. And as in yesterday's post, if you need to
+>    block the queue while traversing, then you need to embed all usage
+>    in an external lock.
+> 
+> 3. It does NOT necessarily return elements in poll() order.  There is
+>    no way to guarantee any relation between iterator.next() and
+>    poll(). For example, consider a RandomQueue class (which might
+>    actually be useful, although not useful enough to supply) in which
+>    poll() returns a random element.  All the FIFO queue
+>    implementations will in fact return items in poll() order and will
+>    say so. But PriorityQueue, BlockingPriorityQueue, and DelayQueue
+>    will NOT guarantee to iterate in poll() order or even priority
+>    order. People who really need to inspect in priority order can sort
+>    toArray, but they still cannot guarantee this will be poll() order
+>    because ties in priority are decided arbitrarily in poll() in these
+>    classes.
+> 
+> 
+> Note: PriorityQueue, BlockingPriorityQueue, and DelayQueue all use
+> pq-heap implementations that are in general most efficient and
+> scalable, but can be surprising because they don't guarantee FIFOness
+> for tied priorities. We'll add some better explanations of this in
+> javadocs, and explain the easy ways to obtain FIFOness when it is
+> necessary, most simply by using sequence numbers as secondary keys in
+> compareTo.
+> 
+> 
+> -Doug
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+> 
+> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+From Costin.Cozianu@tabs.toshiba.com  Fri May 16 00:19:44 2003
+From: Costin.Cozianu@tabs.toshiba.com (Costin.Cozianu@tabs.toshiba.com)
+Date: Thu, 15 May 2003 16:19:44 -0700
+Subject: [concurrency-interest] Costin Cozianu's observations
+Message-ID: <OFC8874712.9DF5434D-ON88256D27.007FBDD4@tais.net>
+
+
+
+
+> From the javadoc for LinkedList (and all the other concrete Collections
+in
+> java.util):
+[...]
+
+Thanks for the javadoc extract. I thought we were talking about queues
+specifically designed with concurrency support in mind.
+
+
+>> The only workable solution for iterations is therefore to synchronize
+>> externally with both the producer and consumer threads. That is prety
+bad
+>> solution
+
+>Once you implement the Collection interface getting a point-in-time copy
+>can be as simple as:
+
+>    synchronized (queue) {
+>        ArrayList browsable = new ArrayList(queue);
+>    }
+>    // browse away
+
+That's wrong. Who's gonna tell you that synchronizing on the queue is gonna
+do anything ?
+As a matter of fact you can currently synchronize on Doug's LinkedQueue and
+the effect with regards to
+preventing concurrent modification will be 0.
+
+The correct behaviour is that toArray() *should* provide a consistent point
+in time image (without any other requirements on its usage) and I think
+this needs documented.
+
+In any case, toArray() will not fit the needs of the user who will want to
+iterate the queue while preventing
+concurrent modifications.
+
+Costin
+
+
+
+
+
+
+From dl@cs.oswego.edu  Fri May 16 00:28:00 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Thu, 15 May 2003 19:28:00 -0400
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <OFC8874712.9DF5434D-ON88256D27.007FBDD4@tais.net>
+References: <OFC8874712.9DF5434D-ON88256D27.007FBDD4@tais.net>
+Message-ID: <16068.8832.965815.144350@altair.cs.oswego.edu>
+
+> The correct behaviour is that toArray() *should* provide a consistent point
+> in time image (without any other requirements on its usage) and I think
+> this needs documented.
+
+Yes, it is, and will be documented as such.  (We are still stuck not
+being able to push out a bunch of updates to API website because there
+is no javadoc out yet for the generics compiler, and our workarounds
+don't work around now that we have dependencies on unreleased JVM
+changes as well as generics. Soon we hope. Please bear with us.)
+
+-Doug
+
+
+From dholmes@dltech.com.au  Fri May 16 01:16:08 2003
+From: dholmes@dltech.com.au (David Holmes)
+Date: Fri, 16 May 2003 10:16:08 +1000
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <OF5DAE14DB.3FE5D98B-ON88256D27.005EDAFD@tais.net>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEJODCAA.dholmes@dltech.com.au>
+
+> Costin.Cozianu@tabs.toshiba.com wrote:
+>
+> With all due respect Doug, I think you are proposing
+> something that is totally unworkable for many users of a queue,
+
+Costin, I think you are misunderstanding the role of Queue. It is
+java.util.Queue not java.util.Concurrent.Queue. The Queue interface is
+not intended to represent concurrently modifiable collections.
+
+The BoundedQueue interface is intended for concurrently accessed
+collections and hence the implementations of that within
+java.util.concurrent are intended for such usage. All of those
+implementations need to clearly document what the concurrency
+properties of each method are - and they will. Our apologies that this
+is not currently the case as it is adding to the confusion.
+
+Now even when documented clearly, the properties of the
+implementations may not (and I'm fairly sure they won't) match your
+direct requirements. For example, some implementations are intended
+for true concurrent access and so you cannot, directly, lock out all
+threads while an iteration is in progress, for example - there is no
+internal lock that will do this. If you want to get atomic snapshots
+and atomic iteration then you'll either need to use a different
+implementation, or provide a wrapper implementation that introduces
+the necessary locking.
+
+If you can bear with us until the documentation is updated to reflect
+the current situation accurately, then we may be in a position to
+discuss what your requirements are and how they can be achieved (if
+they can) with the proposed framework.
+
+Thanks.
+
+David Holmes
+
+
+From dl@cs.oswego.edu  Fri May 16 01:20:55 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Thu, 15 May 2003 20:20:55 -0400
+Subject: [concurrency-interest] Takable and Puttable in JSR 166  :-)
+In-Reply-To: <NBBBJGEAGJAKLIDBKJOPIEENBLAB.noel@devtech.com>
+References: <16067.28528.191414.716624@altair.cs.oswego.edu>
+ <NBBBJGEAGJAKLIDBKJOPIEENBLAB.noel@devtech.com>
+Message-ID: <16068.12007.884898.516202@altair.cs.oswego.edu>
+
+> That would make it:
+> ...
+
+Almost;, it should inclue the no-wait versions as well:
+
+   interface Puttable<E> {
+     void put(E x) throws IE;
+     void offer(E x, long time, Timunit, unit) throws IE;
+     void offer(E x);
+   }
+
+   interface Takable<E> {
+     E take() throws IE;
+     E poll(long time, Timunit, unit) threows IE;
+     E poll();
+     E peek();
+   }
+
+> What do you expect as ETA for a 1.3/1.4 compatible test build of JSR 166?
+
+The most likely order of events is:
+  1. 1.5 preliminary release before JavaOne
+  2. JCP community review soon thereafter
+  3. TCK (compatibility/test suite) by July 30.
+  4. Backward-compatible package soon thereafter.
+
+(#1 and 3 are inflexible so have precedence.)
+
+I'll also bury here at the end of unrelated mail a preview: After
+preliminary test release, we will be asking you folks on c-i list for
+help in putting together good functionality, performance, and
+compatibility tests, by stripping down old code you might have using
+dl.u.c or new code using j.u.c into small test cases. (The notion is
+to test usages in more realistic contexts than typically seen in test
+code.)  So you too will be able to contribute to the success of
+JSR-166 :-)
+
+-Doug
+
+From dholmes@dltech.com.au  Fri May 16 01:23:56 2003
+From: dholmes@dltech.com.au (David Holmes)
+Date: Fri, 16 May 2003 10:23:56 +1000
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <OFC8874712.9DF5434D-ON88256D27.007FBDD4@tais.net>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMEJODCAA.dholmes@dltech.com.au>
+
+> Thanks for the javadoc extract. I thought we were talking
+> about queues specifically designed with concurrency support in mind.
+
+See my other response. Queue is not for concurrent collections.
+
+> That's wrong. Who's gonna tell you that synchronizing on
+> the queue is gonna do anything ?
+
+The provider of the implementation is responsible for informing you of
+the concurrency properties of the implementation and how/if you can
+interact with the concurrency control. With the existing synchronized
+collections the idiomatic usage is to synchronize on the collection
+object - that is the way they are defined.
+
+> In any case, toArray() will not fit the needs of the user
+> who will want to iterate the queue while preventing
+> concurrent modifications.
+
+No it won't. The external iteration model makes it difficult to do
+this - as you have noted. But as with the synchronized collections, an
+implementation may tell you how to achieve atomic iteration. It may
+require acquiring an exported lock object, or maybe an implementation
+will provide a withLock style of method.
+
+David Holmes
+
+
+From Costin.Cozianu@tabs.toshiba.com  Fri May 16 02:42:36 2003
+From: Costin.Cozianu@tabs.toshiba.com (Costin.Cozianu@tabs.toshiba.com)
+Date: Thu, 15 May 2003 18:42:36 -0700
+Subject: [concurrency-interest] Costin Cozianu's observations
+Message-ID: <OF4B2FD72E.A0BB312D-ON88256D28.0003D0E0@tais.net>
+
+Hi David,
+
+See my notes below, and please excuse my almost obnoxious insistence on the
+subject, but I think of  myself as the prototypical user of queues, I work
+on printing stuff, and I drink, eat , smoke and you name what with queues
+everyday.
+
+Plus I work on embedded systems with limited processing powers, so if I
+don't queue correctly I probably don't get anything done, I can say that my
+job itself depends on the queues  :)
+
+As Doug just wrote :
+
+> After preliminary test release, we will be asking you folks
+> on c-i list for help in putting together good functionality,
+> performance, and compatibility tests, by stripping down old
+> code you might have using dl.u.c or new code using j.u.c into
+> small test cases.
+
+Well, as things stand now I currently will not be able to port
+much of my code.
+
+
+
+
+Costin Cozianu
+costin.cozianu@tabs.toshiba.com
+Senior Software Engineer                 (949) 462-6779
+Toshiba American Business Solution
+Mobile                                              (310) 463-5940
+Alternate Email                                 c_cozianu@hotmail.com
+
+
+
+
+
+
+> See my other response. Queue is not for concurrent collections.
+
+Well, you do have a point. I was misled that the name of the JSR has
+"Concurrency" in it :)
+
+However of all collections Queue is *the* prototypical collection to be
+used concurrently. Otherwise if I needed non-concurrent queues,
+java.util.LinkedList is more than enough for all non-concurrent usage. And
+as a far as I can see I don't see any usage of jabva.util.PriorityQueue for
+which the current java.util.TreeSet is not more than enough.
+
+>> That's wrong. Who's gonna tell you that synchronizing on
+>> the queue is gonna do anything ?
+
+>The provider of the implementation is responsible for informing you of
+>the concurrency properties of the implementation and how/if you can
+>interact with the concurrency control. With the existing synchronized
+>collections the idiomatic usage is to synchronize on the collection
+>object - that is the way they are defined.
+
+Well, for some reasons I don't think that documenting external
+synchronization on a particular object, be it the collection itself, is a
+great design that should be encouraged. The idiomatic usage as far as I
+could see and as far as I used was to use Collections.synchronizedXXX
+(maybe that was not the perfect design either).
+
+>> In any case, toArray() will not fit the needs of the user
+>> who will want to iterate the queue while preventing
+>> concurrent modifications.
+
+> No it won't.
+> The external iteration model makes it difficult to do this - as you have
+noted.
+
+Then I hope that the committee will drop the external iteration as a model
+to follow for accessing the contents of concurrent queues. It can be made
+to work only with some pains and with a more fragile contract between the
+clients and the implementor.
+
+> But as with the synchronized collections, an
+> implementation may tell you how to achieve atomic iteration. It may
+> require acquiring an exported lock object, or maybe an implementation
+> will provide a withLock style of method.
+
+I don't think that aquiring an exported lock and doing external iteration
+is a great design. Why not design this properly using internal iteration
+and consecrate it in a common interface ? Can you see no value in this ?
+
+After all if the implementors find it too difficult to supply this stuff,
+they can always throw UnsupportedOperationException. At least I know that
+if I port my queues to support the new API I'll promptly throw that when
+asked for an external iterator, and from my point of view it is trivial to
+implement.
+
+Another point is that the quality of a framework can be measured by how
+many times users *do not* need to extend, override, wrap around or come up
+with new implementations altogether, that's why I'm noisy about it, so that
+I can find support for my usage of queues (which I don't think is too
+uncommon) in the framework itself.
+
+
+Costin Cozianu
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+
+From dholmes@dltech.com.au  Fri May 16 03:22:15 2003
+From: dholmes@dltech.com.au (David Holmes)
+Date: Fri, 16 May 2003 12:22:15 +1000
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <OF4B2FD72E.A0BB312D-ON88256D28.0003D0E0@tais.net>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMEKCDCAA.dholmes@dltech.com.au>
+
+Hello Costin,
+
+> However of all collections Queue is *the* prototypical
+> collection to be used concurrently.
+
+As I stated plain Queue, as per the other collection interfaces in not
+for concurrent collections. Of course you can implement a concurrent
+collection that supports the Queue interface - but then you have to
+decide what concurrency properties each Queue method will have. That
+is what we are doing with the java.util.concurrent implementations of
+Queue/BoundedQueue.
+
+> Well, for some reasons I don't think that documenting external
+> synchronization on a particular object, be it the
+> collection itself, is a great design that should be encouraged. The
+> idiomatic usage as far as I could see and as far as I used was to
+use
+> Collections.synchronizedXXX
+
+When using a synchronized Collection, obtained via
+Collections.synchronizedXXX the specified means to iterate over the
+collection without getting concurrent modifications is to hold the
+lock of the collection.
+
+I agree that client-side synchronization protocols are not the best
+from a design stand-point, in general, but as an extension of an
+internal (or server-side) synchronization protocol they work quite
+well.
+
+> Why not design this properly using internal iteration
+> and consecrate it in a common interface ? Can you see no
+> value in this ?
+
+It really comes down to a matter of style, whether this:
+
+  Lock lock = myCollection.getLock(); // or implicit 'this' for
+synchronized
+  lock.lock();
+  try {
+      // atomic operations on my collection
+   }
+   catch(...) { /* maintain invariants */ }
+   finally {
+     lock.unlock();
+   }
+
+is better/preferable to:
+
+  myCollection.withLock( new Runnable() {
+      public void run() {
+           // atomic operations on my collection
+      }
+  });
+
+In terms of general concurrent collections not all implementations
+will directly support lock based atomicity of this kind.
+
+So, while I'm sympathetic to your needs, and am personally becoming
+accustomed to such Runnable-taking methods in different contexts, I'm
+not yet clear on how and where such a facility should be expressed in
+the current framework.
+
+David Holmes
+
+
+From dl@cs.oswego.edu  Fri May 16 14:21:01 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Fri, 16 May 2003 09:21:01 -0400
+Subject: [concurrency-interest] Costin Cozianu's observations
+In-Reply-To: <OF5DAE14DB.3FE5D98B-ON88256D27.005EDAFD@tais.net>
+References: <OF5DAE14DB.3FE5D98B-ON88256D27.005EDAFD@tais.net>
+Message-ID: <16068.58813.517104.698872@altair.cs.oswego.edu>
+
+Costin, 
+
+It seems that we have failed to clearly enough express the intent of
+Queue and BlockingQueue. We'll have to work on this.
+
+The APIs here encourage implementations of Queue and BlockingQueue
+geared to usage scenarios in which 99.9+% of all operations are
+enqueues and dequeues (using the method that gives desired policy wrt
+blocking and timeouts).  The APIs permit implementations that focus on
+providing good performance and scalability of these basic operations.
+But they still support methods such as remove(x), toString(), and so
+on that are commonly needed but only rarely called.  Thus,
+implementations that maximize (estimated probablilty of call) times
+(efficiency of implementation) of each method will perform some of
+these Collection operations inefficiently.  And further, there is
+always SOME way (but not always a simple way) to achieve even more
+rarely needed functionality.
+
+This clearly does not favor usage patterns in which applications need
+to frequently atomically traverse through and manipulate elements
+(which is why you are complaining so much :-). However, in these
+applications, Queues seem to be inapproriate abstractions.  Instead,
+it sounds like you want a List in which items are normally added in
+rear and removed from front, but other List operations are supported
+as well, and none of them are favored so strongly by implementations
+that others suffer.
+
+And so my conclusion is that what you actually want, but JSR-166 does
+not now provide, is a new List class that is both designed for
+concurrent usage and supports append/removeFirst more efficiently than
+the existing Vector class.
+
+That's a valid and interesting request. Thanks for making it! :-) We'll
+think it over.
+
+-Doug
+
+
+
+
+
+From jmanson@wam.umd.edu  Fri May 16 16:17:02 2003
+From: jmanson@wam.umd.edu (Jeremy Manson)
+Date: Fri, 16 May 103 16:16:28 -0400 (EDT)
+Subject: [concurrency-interest] ThreadLocals and runInIsolation
+Message-ID: <200305162016.QAA28071@rac1.wam.umd.edu>
+
+Hi folks,
+
+My name is Jeremy Manson, and I am a grad student working with Bill Pugh
+on JSR-133 stuff.  This is the first time I've posted to this list, but
+I've been lurking for a while.
+
+Working on JSR-133, we have come across a problem with the memory
+semantics of Executor/Thread Pool-style patterns; this stems from the fact
+that multiple Runnables can be part of one Thread, and don't have the
+semantics of multiple threads. 
+
+The fix we have proposed involves adding a method called (say) public void
+java.lang.System.runInIsolation(Runnable), which invokes the run() method
+of its parameter.  Anything run inside this method is treated as a
+separate thread for the purposes of our interests (a corner case of the
+new immutable semantics for final fields).
+
+This would obviously have implications with the new util.concurrent
+package, including Executors.  There are other implications it /could/
+have, as well, and this is why I bring it up here.
+
+For example, imagine we have two Runnables, r1 and r2.  You want to have a
+ThreadLocal that is not shared between r1 and r2.  One possibility is that
+if the run() method is invoked via runInIsolation, the ThreadLocal might
+not be shared.  This would have positive boons for security...
+
+Are there other places where this might have a positive impact?  What do
+you folks think? 
+
+					Jeremy
+
+From dl@cs.oswego.edu  Sat May 17 21:58:46 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sat, 17 May 2003 16:58:46 -0400
+Subject: [concurrency-interest] ThreadLocals and runInIsolation
+In-Reply-To: <200305162016.QAA28071@rac1.wam.umd.edu>
+References: <200305162016.QAA28071@rac1.wam.umd.edu>
+Message-ID: <16070.41606.564147.914902@altair.cs.oswego.edu>
+
+Jeremy,
+
+Sorry this reply starts out with some rambling about background that
+you mostly know, but I figured that others might be interested in some
+of the context.
+
+Once upon a time, I would have said that the effect of your
+runInIsolation would be a natural aspect of
+Thread.removeAllThreadLocals(), and that it would be completely
+uncontroversial to include these semantics in that method.
+
+But it turns out that removeAllThreadLocals is itself so controversial
+that we dropped it from consideration in JSR-166.  The main issue here
+is that there is no reasonable way to control calls to
+removeAllThreadLocals. And an unwanted call to it could ruin an
+application. Here are some reconstructions of issues raised in
+EG discussions:
+
+   Programmers may be relying on a library whose implementation uses
+   ThreadLocals internally and depends on those ThreadLocals _not_
+   being wiped out.  As a simple example, suppose you use a
+   ThreadLocal to assign unique long IDs to threads for the purpose of
+   logging.  This works great now, but would fall flat on its face in
+   the face of involuntary remove of all ThreadLocal values.
+
+   The whole idea of the method is to turn a used thread into a new 
+   thread, but you can never do that.  You can take steps in that 
+   direction, but it is always possible that some third party has stored 
+   some association with the thread using an ad hoc mechanism.  You'll 
+   *never* be able to do away with the association without the assistance 
+   of the third party.  Since it's impossible to offer the desired 
+   functionality, we should stop trying. 
+
+   It's the same sort of issue as the accursed
+   System.runFinalizersOnExit.  It allows a single caller to screw
+   everyone else up.
+
+   Removing thread locals doesn't completely solve all such problems.
+   For example, people can leave threads with messed up priorities.
+
+One argument in favor of keeping the method is that the kinds of
+ThreadLocals most likely to be affected should have idempotent
+initialValue() functions anyway.  But this is not a winning argument
+in a language designed to minimize the presence of hidden razor blades
+for the unwary.
+
+Among the alternative suggestions were to create a
+ResettableThreadLocal subclass of ThreadLocal, where only those thread
+locals declared as ResettableThreadLocal would be reset by a call to
+removeAllThreadLocals. Or a ResetableThread subclass of thread that
+contained this method, or most simply to declare method
+removeAllThreadLocals as "protected" in class Thrread so you would
+have to explicitly subclass to call it. But none of these seemed to
+adequately address the issues that the people want
+removeAllThreadLocals actually have -- to kill off waste and
+contamination that is not useful or desired within the current
+second-outermost run() method that a thread is executing.
+
+OK, finally back to runInIsolation (which as Miles mentioned, would if
+nothing else need a new name to avoid confusion with JSR-1212 APIs.)
+Any variant of System.runInIsolation that wiped out ThreadLocals
+(which I think it must to catch any bad finals?) can be seen as
+yet another variant of this set of options. While arguably less prone
+to accident, it still has the problem that, for example, a ThreadLocal
+transaction ID would be lost and some people will be unhappy.
+
+My conclusion at the moment is that you just can't win here.  Use of
+worker threads should be restricted to situations where you trust the
+Runnables run in them about equally (equally trustworthy, or even
+equally untrustworthy). Luckily, this seems to be the most common
+case, so they are still useful, even without guarantees.  While
+unwanted/wrong thread-local state of worker threads used in pools is
+always a potential problem, and as surprising and weird as
+bad-final-field and unexpected-ThreadLocal-value problems are, they
+are probably no more so than the surprising weirdnesses that would
+otherwise result from unexpected clobbering.
+
+Under the status quo, the solution to contamination surprises is to
+pay a bit more overhead and generate new threads for new tasks (which,
+BTW can be done in j.u.c. just by configuring Executors differently).
+And in cases where that is not enough isolation, people will be able
+to use the JSR-121 Isolate API.
+
+But under any of these proposals, there is no solution to the opposite
+problens of unexpected clobbers short of rewriting code, which might
+not even be your code.
+
+(Note that all of the above rests on my interpretation that
+runInIsolation requires removal of ThreadLocals. If you can see a way
+out of that, then it becomes an easier issue.)
+
+-Doug
+
+From jmanson@wam.umd.edu  Sat May 17 22:37:02 2003
+From: jmanson@wam.umd.edu (Jeremy Manson)
+Date: Sat, 17 May 103 22:36:06 -0400 (EDT)
+Subject: [concurrency-interest] ThreadLocals and runInIsolation
+Message-ID: <200305180236.WAA19138@rac1.wam.umd.edu>
+
+Hi,
+
+Apologies if this is a resend, I am having problems with mail.
+
+Looking back at my last message, I am not sure that I communicated what I
+had in mind effectively.  My notion was that for the duration of
+runInIsolation, for the purposes of ThreadLocal, the thread would
+"believe" it is another thread.  The effect would be that the invocation
+of runInIsolation would act as a push of a (new) thread id, and the exit
+would act as a pop.
+
+In other words, we don't actually change the values of any ThreadLocals.  
+We change the effective Thread ID, so the ThreadLocals are pointing at
+something else.  When the runInIsolation is done, we just change the ID
+back.
+
+I may be misinterpreting your concerns, but they seemed to be that
+removeAllThreadLocals / ResettableThreadLocal could clobber values visible
+outside the runInIsolation() method.  This would not be the case: the
+isolated (yes, you're right, that name had better be changed) runnable
+couldn't access the ThreadLocals for the rest of the Thread.
+
+This would require some rejiggering of Thread / ThreadLocal, but I think
+it would be backwards-compatible.  Thread.threadLocals being implemented
+as a stack is the first thing that comes to mind, but that may not be
+correct / enough.
+
+Finally, if you want to have the same ThreadLocals both outside and inside
+of runInIsolation (i.e., to allow clobbering), you could overload the
+definition of InheritableThreadLocal.  But that would be a pretty clear
+signal that those were the semantics you wanted.
+
+I hope that is a useful way of expressing isolation for Executors.  
+Honestly, I am a little concerned about having a runInIsolation method
+that is only useful for what is a corner case of the memory model - people
+wouldn't necessarily use it.  And, as usual with memory model issues, not
+using it could cause some bizarre, difficult to debug errors to occur.
+
+Another way to do this, which I am just making up off of the top of my
+head (so is probably ill-conceived), would be to give such Runnables their
+own Thread-like object that subsumes some of the functions of the real
+Thread object.  This would add the benefit that other threads could, for
+example, join() with the Runnable without having to wait for the
+SingleThreadedExecutor (or whatever) to finish.  Implemented something
+like:
+
+Runnable r = new someRunnable();
+InlineThread representingThread = new InlineThread(r);
+representingThread.start();
+
+and you could add a method 
+
+void execute(InlineThread command) 
+
+to Executors.  That's just an idle thought, though: there is probably
+something ghastly about it I am missing.
+
+					Jeremy
+
+
+From dl@cs.oswego.edu  Sun May 18 14:30:10 2003
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Sun, 18 May 2003 09:30:10 -0400
+Subject: [concurrency-interest] ThreadLocals and runInIsolation
+In-Reply-To: <200305180236.WAA19138@rac1.wam.umd.edu>
+References: <200305180236.WAA19138@rac1.wam.umd.edu>
+Message-ID: <16071.35554.625017.24706@altair.cs.oswego.edu>
+
+> In other words, we don't actually change the values of any ThreadLocals.  
+
+It can have the same effect though.  Consider a system that uses
+ThreadLocals for transaction IDs (some appear to do this). And J2EE
+app code:
+
+  void evadeTransactionControl() {
+     System.runInIsolation(new Runnable() { 
+       public void run() { updateDataBase(); }
+     });
+  }
+
+This is not much different than the removeAllThreadLocals problem.
+(Consider a runnable that calls restartMyEntireApp() or somesuch.)
+
+But maybe there is a path to success here....
+
+This kind of unwanted usage can be avoided by requiring calls to
+removeAllThreadLocals/runInIsolation to have a superset of the
+security permissions that are needed to create a new Thread.  J2EE
+providers in particular would be happy with this because they turn
+off thread creation permissions for contained applications anyway.
+
+This would NOT prevent usages that are OK security-wise but not
+encapsulation-wise, which is an equal concern here. But I might be
+coerced into believing that this, or some better variant, is an
+acceptable place to draw the line between encapsulation and
+manageability. And it is just barely conceivable that we could get
+enough consensus in expert groups and wider communities to do this.
+To be as conservative about it as we'd need to be to make this widely
+acceptable, the permissions to call at all (even if you have thread
+creation permissions) should be turned off, so people will have to
+consciously change policies to enable use.
+
+Security checking would add to the overhead of these methods, but
+surely not enough to dissuade use as an optional feature when you
+need/want the semantics.
+
+> ResettableThreadLocal could clobber values visible
+> outside the runInIsolation() method. 
+
+Right. The difference between runInIsolation and removeAllThreadLocals
+(assuming that it folds in the forget-cached-bad-finals semantics) is
+the block-scoping. When used in j.u.c. Executors, non-block-scoped is
+more convenient, since it would allow the call to be made inside an
+optional beforeExecute hook. So if something like this is adopted,
+removeAllThreadLocals would fit in more nicely. Although the
+runInIsolation version can be made to work if there are needs for
+block-scoping elsewhere.
+
+
+> ... give such Runnables their
+> own Thread-like object that subsumes some of the functions of the real
+> Thread object. 
+
+Along these lines, I should have mentioned proposal to add a new
+Thread constructor
+  Thread(Thread deadThread)
+that allows the implementation to reuse the bookkeeping of deadThread
+(that must be terminated) for a new Thread. The main argument against
+this is that JVMs can already reuse internal bookkeeping of dead
+threads, and they can do so without making dumb mistakes or requiring
+a new constructor. One likely reason they tend not to do this is that
+Java-level (as opposed to OS-level) (re)initialization is a
+significant part of thread construction, so there may not be much
+savings to be had here.
+
+-Doug
+
+From jmanson@wam.umd.edu  Sun May 18 11:41:01 2003
+From: jmanson@wam.umd.edu (Jeremy Manson)
+Date: Sun, 18 May 103 11:40:50 -0400 (EDT)
+Subject: [concurrency-interest] ThreadLocals and runInIsolation
+Message-ID: <200305181540.LAA26136@rac2.wam.umd.edu>
+
+Doug Lea wrote:
+
+> Consider a system that uses ThreadLocals for transaction IDs (some
+> appear to do this). And J2EE app code:
+>
+>  void evadeTransactionControl() {
+>     System.runInIsolation(new Runnable() { 
+>       public void run() { updateDataBase(); }
+>     });
+>  }
+>
+>This is not much different than the removeAllThreadLocals problem.
+>(Consider a runnable that calls restartMyEntireApp() or somesuch.)
+>
+>But maybe there is a path to success here....
+>
+>This kind of unwanted usage can be avoided by requiring calls to
+>removeAllThreadLocals/runInIsolation to have a superset of the
+>security permissions that are needed to create a new Thread.  J2EE
+>providers in particular would be happy with this because they turn
+>off thread creation permissions for contained applications anyway.
+>
+[snip]
+
+>ResettableThreadLocal could clobber values visible
+>outside the runInIsolation() method. 
+>
+>
+>Right. The difference between runInIsolation and removeAllThreadLocals
+>(assuming that it folds in the forget-cached-bad-finals semantics) is
+>the block-scoping. When used in j.u.c. Executors, non-block-scoped is
+>more convenient, since it would allow the call to be made inside an
+>optional beforeExecute hook. So if something like this is adopted,
+>removeAllThreadLocals would fit in more nicely. Although the
+>runInIsolation version can be made to work if there are needs for
+>block-scoping elsewhere.
+>
+
+I guess that my real problem with something like removeAllThreadLocals is
+that it doesn't really convey the "This is a conceptually separate thread"
+notion for the memory model.  A compromise solution would potentially use
+the InlineThread notion that I mentioned in my previous message, but add a
+method "inheritsThreadLocals(boolean)" to it, so that whether it uses its
+parent's ThreadLocals could still be determined in an optional
+beforeExecute hook; if it does, you would still get the block scoping.  
+And the parent doesn't kill its own ThreadLocals, and no one can
+maliciously affect anyone else's ThreadLocals.
+
+As for the security issues you mention, inheritsThreadLocals can default
+to true, and must be called before InlineThread.start().  But the
+programmer would now, at least, have the ability to use hie own
+ThreadLocals for the duration of the task.
+
+The other nice thing about using something like an InlineThread object to
+represent these isolated Runnables would be that it would make the
+security notion that you can only run them if you have thread creation
+permission more intuitive.
+
+>>... give such Runnables their
+>>own Thread-like object that subsumes some of the functions of the real
+>>Thread object. 
+>
+>
+>Along these lines, I should have mentioned proposal to add a new
+>Thread constructor
+>  Thread(Thread deadThread)
+>that allows the implementation to reuse the bookkeeping of deadThread
+>(that must be terminated) for a new Thread. The main argument against
+>this is that JVMs can already reuse internal bookkeeping of dead
+>threads, and they can do so without making dumb mistakes or requiring
+>a new constructor. 
+>
+
+Yes, a JVM should be smart enough to do that if it is efficiently written.
+
+>One likely reason they tend not to do this is that
+>Java-level (as opposed to OS-level) (re)initialization is a
+>significant part of thread construction, so there may not be much
+>savings to be had here.
+>
+
+I'll completely expose my ignorance, then: where, exactly, is the
+overhead?  Since an InlineThread would be run in the same thread (but with
+a different Thread ID), would that ameliorate some of it?
+
+Feel free to take this offline if you think it is no longer of interest to
+the group at large.
+
+					Jeremy
+
+From jerry@acm.org  Sun May 18 19:21:23 2003
+From: jerry@acm.org (Jerry Schwarz)
+Date: Sun, 18 May 2003 11:21:23 -0700
+Subject: [concurrency-interest] ThreadLocals and runInIsolation
+Message-ID: <5.2.0.9.2.20030518112119.0169d358@rgmstimap.oraclecorp.com>
+
+At 06:30 AM 5/18/2003, Doug Lea wrote:
+
+
+>Along these lines, I should have mentioned proposal to add a new
+>Thread constructor
+>   Thread(Thread deadThread)
+>that allows the implementation to reuse the bookkeeping of deadThread
+>(that must be terminated) for a new Thread. The main argument against
+>this is that JVMs can already reuse internal bookkeeping of dead
+>threads, and they can do so without making dumb mistakes or requiring
+>a new constructor. One likely reason they tend not to do this is that
+>Java-level (as opposed to OS-level) (re)initialization is a
+>significant part of thread construction, so there may not be much
+>savings to be had here.
+>
+>-Doug
+
+
+I think this is exactly what is wanted here. As far as I can tell the only 
+reason for reusing an existing thread in this situation is to avoid the 
+performance overheads of creating a new thread. Using Thread(Thread) makes 
+it explicitly clear that this is what the code is doing.  No one has 
+suggested a reason to have any continuity at all between the different uses 
+of the thread.
+
+Unlike Doug, I suspect it is OS level considerations that disuade VM's from 
+maintaining a free pool  of Threads.  If a Java thread holds onto a lot of 
+memory (for its stack) or to a real OS thread these are valuable resources 
+that need to be reclaimed even if they are expensive to acquire/return to 
+the OS.
+
+
+
+From pugh@cs.umd.edu  Sun May 18 21:17:14 2003
+From: pugh@cs.umd.edu (Bill Pugh)
+Date: Sun, 18 May 2003 16:17:14 -0400
+Subject: [concurrency-interest] ThreadLocals and runInIsolation
+In-Reply-To: <16071.35554.625017.24706@altair.cs.oswego.edu>
+References: <200305180236.WAA19138@rac1.wam.umd.edu>
+ <16071.35554.625017.24706@altair.cs.oswego.edu>
+Message-ID: <p05210604baed99608477@[192.168.1.100]>
+
+At 9:30 AM -0400 5/18/03, Doug Lea wrote:
+>
+>Along these lines, I should have mentioned proposal to add a new
+>Thread constructor
+>   Thread(Thread deadThread)
+>that allows the implementation to reuse the bookkeeping of deadThread
+>(that must be terminated) for a new Thread.
+
+One reason not to do this is that any class that extends Thread 
+implements Runnable.
+
+So there is a possible confusion in invoking
+
+	new Thread(deadThread)
+
+two different constructors could be invoked. Now, there is a rule 
+that says when two different methods/constructors could be invoked, 
+the more specific one wins (so the Thread(Thread deadThread) 
+constructor is invoked). But I hate depending upon that.
+
+At a minimum, I would make this an obscure factory method, rather 
+than something which gets equal billing with the Thread(Runnable r) 
+constructor. This is just a weird corner tweak for efficiency that is 
+going to confuse people.
+
+	Bill
+
+From noel@devtech.com  Sun May 18 22:07:35 2003
+From: noel@devtech.com (Noel J. Bergman)
+Date: Sun, 18 May 2003 17:07:35 -0400
+Subject: [concurrency-interest] ThreadLocals and runInIsolation
+In-Reply-To: <200305181540.LAA26136@rac2.wam.umd.edu>
+Message-ID: <NBBBJGEAGJAKLIDBKJOPOEOOBLAB.noel@devtech.com>
+
+Jeremy,
+
+I went back to the start of this thread to make sure that I kept your
+context in mind, and I realize that you are talking about the situation
+where we have a worker thread that serially executes Runnable tasks.
+
+One could propose the following addition to Thread.  It provides isolation
+between multiple Runnable tasks, and matches the Thread model, in that it
+emulates what would happen if the Runnable were actually run in a separate
+Thread.
+
+  static public void runScoped(Runnable target)
+  {
+    currentThread().runScoped0(target, false);
+  }
+
+  private void runScoped0(Runnable target, boolean inheritAllLocals)
+  {
+    if (target != null)
+    {
+      // remember current thread state
+      boolean daemon = this.daemon;
+      int priority = this.priority;
+      char[] name = this.name;
+      ThreadLocal.ThreadLocalMap threadLocals = this.threadLocals;
+      ThreadLocal.ThreadLocalMap inheritableThreadLocals =
+this.inheritableThreadLocals;
+
+      // initialize or copy thread local values
+      this.threadLocals = (this.threadLocals == null || !inheritAllLocals) ?
+null
+                          :
+ThreadLocal.createInheritedMap(this.threadLocals);
+
+      // this use of ?: may look odd, but if the condition were to change, I
+want to
+      // ensure that the value is always initialized, and never accidentally
+left to
+      // point to the current contents
+      this.inheritableThreadLocals = (this.inheritableThreadLocals == null)
+? null
+                          :
+ThreadLocal.createInheritedMap(this.inheritableThreadLocals);
+
+      try
+      {
+        target.run();
+      }
+      finally
+      {
+        // restore thread state
+        this.threadLocals = threadLocals;
+        this.inheritableThreadLocals = inheritableThreadLocals;
+        this.daemon = daemon;
+        setPriority0(this.priority = priority);
+        this.name = name;
+      }
+    }
+  }
+
+I would bet that the code is wrong, since it is off-the-cuff, but the idea
+should be clear.
+
+In the context of this change, I took a look at some of Doug's earlier
+issues:
+
+  - a library whose implementation uses ThreadLocals internally
+    and depends on those ThreadLocals _not_ being wiped out.
+
+The Thread could be viewed as new, and thus would have new ThreadLocals.  As
+Doug pointed out, the ThreadLocals most likely to be affected should have
+idempotent initialValue() functions anyway.  However ...
+
+As an alternative, if it is deemed OK for runScoped() to copy existing
+ThreadLocal values, I've indicated in the code how that could be done.  This
+would be a deviation from emulating what would happen if the Runnable were
+run on a separate thread, but the nature of that deviation would appear to
+be correct.
+
+[NB: the code as written would not work unless the implementation of
+ThreadLocal.childValue() were changed to return parentValue instead of
+throwing a UOE, or an alternative means to clone the map were provided.]
+
+  - it is always possible that some third party has stored some
+    association with the thread using an ad hoc mechanism.
+
+Such an issue would have an impact in any model that passes executable tasks
+to worker threads.  The thir party's solution may or may not introduce
+problems, but that would appear to be an orthogonal issue to the one at
+hand.
+
+  - allows a single caller to screw everyone else up.
+
+This solution should not permit that to happen.  But, again, it is so
+off-the-cuff that I am curious to hear the response.  I don't believe that I
+missed anything too incredibly stupid.
+
+	--- Noel
+
+
+From Costin.Cozianu@tabs.toshiba.com  Mon May 19 18:44:20 2003
+From: Costin.Cozianu@tabs.toshiba.com (Costin.Cozianu@tabs.toshiba.com)
+Date: Mon, 19 May 2003 10:44:20 -0700
+Subject: [concurrency-interest] Costin Cozianu's observations
+Message-ID: <OF3B2BAA60.E025BC7E-ON88256D2B.0058B6B1@tais.net>
+
+Doug,
+
+If you failed to communicate clearly, so have I :) So let me try it the
+last time, very briefly and with a concrete proposal.
+
+If it's not accepted so be it, I can always rely on my own code :) I
+certainly don't want to waste too much of people's time on arguing
+this subject.
+
+You said:
+
+>The APIs here encourage implementations of Queue and BlockingQueue
+>geared to usage scenarios in which 99.9+% of all operations are
+>enqueues and dequeues (using the method that gives desired policy wrt
+>blocking and timeouts).
+
+This exactly what I need also. Except there's always the 0.1% where I
+absolutely need to be able to iterate. And if for that 0.1% I set up my
+external locks, than that kind of defeats the purpose of the
+super-optimizations for which I gave up the simple API convenience, isn't
+it ?
+
+You also said:
+
+>And so my conclusion is that what you actually want, but JSR-166 does
+>not now provide, is a new List class that is both designed for
+>concurrent usage and supports append/removeFirst more efficiently than
+>the existing Vector class.
+
+No thanks, I don't want that. I want a concurrent minded queue over which I
+have the ability to iterate from time to time (those 0.1%). A modified
+ArrayList or LinkedList or something like that wouldn't fit my purpose. The
+proof that I know what I actually want and I'm definitely "after" your
+Queues (the jewel in the crown :) is that I was able to modify your
+LinkedQueue implementation in less than 1 screen of code and get what I
+needed (unless you show me that I did something really stupid and
+LinkedQueue cannot be easily modified after all :) ).
+I'm also willing to work diligently and voluntarily if given access to the
+source code, to prove that most of the existing implementation of
+concurrent queues in java.util.concurrent can be fitted with internal
+iterations over 1 or 2 weekends.
+
+The only potential conflict I could see in really supporting iterations
+over queues, is with super-optimized implementation of queues that don't
+need to lock on objects (I once wrote a quick TWOMaxFifoSempahore that with
+the new atomic variables won't need object locks anymore). Obviously, those
+would be much harder to wriote or impossible if they needed to support
+iterations. However, I see the later case very rarely in practice ( a proof
+of that is that Java has been doing just fine performance-wise for quite a
+few years with spectacularly "better safe than sorry" performance options
+viz. String, StringBuffer, and many other things), so I don't see why the
+mainstream needs should be sacrificed for the extreme performance needs.
+
+And for the exteme performance needs they can always throw a
+OperationNotSupported or something.
+
+
+Therefore my proposal is to add the following to the BlockingQueue :
+
+ /**
+  * iterates over the current elements of the queue (the putters and takers
+are blocked)
+  * see also Visitor and VisitorAccess
+  */
+ public void visit(Visitor visitor);
+
+ /**
+  * Helper for internal queue iteratioon
+  */
+ public static interface VisitorAccess {
+
+     /**
+      * Test if the current position is the end of the queue
+      * past the last element. This can happen as a result on calling
+      * remove(). For example calling remove() when the iteration is
+      *on last element
+      */
+       public boolean endOfQueue() ;
+
+       /**
+       * get the current element. It will always succeed with the exception
+       * when the visitor has called remove(). In that case it should
+either
+        * wait for the next step iteration or test for the end of the queue
+       * with endOfQueue()
+       */
+       public Object getCurrent() ;
+
+       /**
+       * removes the current iterated element from the queue
+       */
+       public void removeCurrent() ;
+  }
+
+
+  public static interface Visitor {
+       /**
+        * callback for iterating the objects in the queue
+        * @param access
+        * @return boolean - true if the iteration should continue, false if
+        * it should not (return false if you want to break out fo the
+iteration)
+        */
+       public boolean visit( VisitorAccess access);
+  }
+
+The visitor access interface is refactored as an interface from my code
+where it is currently a concrete class inside the LinkedQueue. To prove
+that it doesn't put an excessive burden on implementor's shoulder --
+although I do think implementors should always take more than excessive
+burdens, I'll post here my current implementation which is inside
+LinkedQueue :
+
+
+  public void visit( Visitor visitor) {
+    if (isEmpty()) return;
+
+    // first block the putters
+    synchronized(putLock_) {
+    // then block the takers
+     synchronized (this){
+           VisitorAccess access = new VisitorAccess();
+           do { if ( ! visitor.visit(access)) break; }
+           while ( access.advance());
+          }
+      }
+   }
+
+  public class VisitorAccess {
+       LinkedNode previous= head_;
+
+     // if we remove the current element
+     // then we don't need to advance the previous pointer
+     boolean skipAdvancing= false;
+
+       public boolean endOfQueue() {     return previous.next == null; }
+
+       boolean advance() {
+        if (skipAdvancing) {  skipAdvancing=false;
+                              return (previous.next!=null); }
+        if (previous.next== null)
+                 throw new RuntimeException("Read past the end of queue");
+        previous= previous.next;
+        return previous.next != null; }
+
+       public Object getCurrent(){ return previous.next.value;    }
+
+       public void removeCurrent() {
+        if (previous.next == null)
+                    throw new RuntimeException("Read past the end of queue"
+);
+        previous.next= previous.next.next;
+        if (previous.next==null) last_= previous;
+        skipAdvancing= true;  }
+  }
+
+
+
+Best regards,
+
+Costin Cozianu
+
+P.S.: The above is also very performance minded, for example think that the
+client code has a queue with Jobs 1 ... 100, and it wants to eliminate jobs
+number 2 4 6 8 ... 98 (Just kidding and exaggerating, but think of a fixed
+set of jobs or a predicate). Using internal iteration things happen
+smoothly.
+
+If I just use the remove(X) mechanism, then first I get a performance
+penalty, then the user may see incosistenmt results if I don;t serialize on
+extrenal locks with putters and getters, for example  I can succed in
+cancelling the jobs  2 4 , then my QueuedExecutor will execute job number
+6, then I succeed on cancelling 8,  and you get the picture.
+
+
+
+
+                                                                                                                                 
+                    Doug Lea <dl@cs.oswego.edu>                                                                                  
+                    Sent by:                              To:     concurrency-interest@altair.cs.oswego.edu                      
+                    concurrency-interest-admin@cs.        cc:                                                                    
+                    oswego.edu                            Subject:     RE: [concurrency-interest] Costin Cozianu's observations  
+                                                                                                                                 
+                                                                                                                                 
+                    05/16/2003 06:21 AM                                                                                          
+                                                                                                                                 
+                                                                                                                                 
+
+
+
+
+
+Costin,
+
+It seems that we have failed to clearly enough express the intent of
+Queue and BlockingQueue. We'll have to work on this.
+
+The APIs here encourage implementations of Queue and BlockingQueue
+geared to usage scenarios in which 99.9+% of all operations are
+enqueues and dequeues (using the method that gives desired policy wrt
+blocking and timeouts).  The APIs permit implementations that focus on
+providing good performance and scalability of these basic operations.
+But they still support methods such as remove(x), toString(), and so
+on that are commonly needed but only rarely called.  Thus,
+implementations that maximize (estimated probablilty of call) times
+(efficiency of implementation) of each method will perform some of
+these Collection operations inefficiently.  And further, there is
+always SOME way (but not always a simple way) to achieve even more
+rarely needed functionality.
+
+This clearly does not favor usage patterns in which applications need
+to frequently atomically traverse through and manipulate elements
+(which is why you are complaining so much :-). However, in these
+applications, Queues seem to be inapproriate abstractions.  Instead,
+it sounds like you want a List in which items are normally added in
+rear and removed from front, but other List operations are supported
+as well, and none of them are favored so strongly by implementations
+that others suffer.
+
+
+That's a valid and interesting request. Thanks for making it! :-) We'll
+think it over.
+
+-Doug
+
+
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+

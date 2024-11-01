@@ -1,0 +1,454 @@
+From ben.manes at gmail.com  Mon Jan  4 17:28:44 2021
+From: ben.manes at gmail.com (Benjamin Manes)
+Date: Mon, 4 Jan 2021 14:28:44 -0800
+Subject: [concurrency-interest] CompletableFuture dependent ordering
+Message-ID: <CAGu0=MO9wXvr6BxXnvw7c30doB-pNnGqgZhhSLADgJKH-RgP8w@mail.gmail.com>
+
+Hi everyone,
+
+CompletableFuture maintains a Treiber stack for processing dependents, such
+as "thenAccept" and "whenComplete" actions. I couldn't find a previous
+discussion on this design decision. Can you please educate me on why a LIFO
+stack was preferred over a FIFO queue?
+
+The current behavior seems less intuitive and a lack of awareness can cause
+subtle surprises. While chaining against the dependent can resolve these
+gotchas most of the time, there are scenarios where it is more correct to
+work with the original future instance and to chain dependents on the side.
+This has come up a few times regarding an asynchronous cache and while I
+have educated users on this behavior, a workaround within the cache would
+merely shift the pain by no longer returning the user's supplied future
+instance. While I can understand the stack might have been preferred as a
+more elegant implementation, I do not yet see why it would be better by its
+external behavior.
+
+Thanks and happy new year.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20210104/0a9a158f/attachment.htm>
+
+From oleksandr.otenko at gmail.com  Mon Jan  4 18:28:38 2021
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 4 Jan 2021 23:28:38 +0000
+Subject: [concurrency-interest] CompletableFuture dependent ordering
+In-Reply-To: <CAGu0=MO9wXvr6BxXnvw7c30doB-pNnGqgZhhSLADgJKH-RgP8w@mail.gmail.com>
+References: <CAGu0=MO9wXvr6BxXnvw7c30doB-pNnGqgZhhSLADgJKH-RgP8w@mail.gmail.com>
+Message-ID: <CANkgWKhuTO_aVufv=PiOzuT4u-FPoc0oqojB8yXSTA5Fy1dkjA@mail.gmail.com>
+
+I think you can only safely assume the happens-before between the
+computation of the value consumed and the computation consuming that value.
+
+That is, dependencies are ordered only through explicit chaining.
+CompletionStage doesn't seem to guarantee any other order.
+
+Alex
+
+On Mon, 4 Jan 2021, 22:32 Benjamin Manes via Concurrency-interest, <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Hi everyone,
+>
+> CompletableFuture maintains a Treiber stack for processing dependents,
+> such as "thenAccept" and "whenComplete" actions. I couldn't find a previous
+> discussion on this design decision. Can you please educate me on why a LIFO
+> stack was preferred over a FIFO queue?
+>
+> The current behavior seems less intuitive and a lack of awareness can
+> cause subtle surprises. While chaining against the dependent can resolve
+> these gotchas most of the time, there are scenarios where it is more
+> correct to work with the original future instance and to chain dependents
+> on the side. This has come up a few times regarding an asynchronous cache
+> and while I have educated users on this behavior, a workaround within the
+> cache would merely shift the pain by no longer returning the user's
+> supplied future instance. While I can understand the stack might have been
+> preferred as a more elegant implementation, I do not yet see why it would
+> be better by its external behavior.
+>
+> Thanks and happy new year.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20210104/89f82a05/attachment.htm>
+
+From viktor.klang at gmail.com  Tue Jan  5 04:17:54 2021
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Tue, 5 Jan 2021 09:17:54 +0000
+Subject: [concurrency-interest] CompletableFuture dependent ordering
+In-Reply-To: <CANkgWKhuTO_aVufv=PiOzuT4u-FPoc0oqojB8yXSTA5Fy1dkjA@mail.gmail.com>
+References: <CAGu0=MO9wXvr6BxXnvw7c30doB-pNnGqgZhhSLADgJKH-RgP8w@mail.gmail.com>
+ <CANkgWKhuTO_aVufv=PiOzuT4u-FPoc0oqojB8yXSTA5Fy1dkjA@mail.gmail.com>
+Message-ID: <CANPzfU8+SgmvyV+BGBetjR8-rUjDaDEUCDwkApeDq4ySYK7Tog@mail.gmail.com>
+
+It's similar for Scala Futures—happens-before can only be assumed for
+chained effects, as "callbacks" registered to the same Future can
+potentially run in parallel.
+
+On Mon, Jan 4, 2021 at 11:31 PM Alex Otenko via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> I think you can only safely assume the happens-before between the
+> computation of the value consumed and the computation consuming that value.
+>
+> That is, dependencies are ordered only through explicit chaining.
+> CompletionStage doesn't seem to guarantee any other order.
+>
+> Alex
+>
+> On Mon, 4 Jan 2021, 22:32 Benjamin Manes via Concurrency-interest, <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>> Hi everyone,
+>>
+>> CompletableFuture maintains a Treiber stack for processing dependents,
+>> such as "thenAccept" and "whenComplete" actions. I couldn't find a previous
+>> discussion on this design decision. Can you please educate me on why a LIFO
+>> stack was preferred over a FIFO queue?
+>>
+>> The current behavior seems less intuitive and a lack of awareness can
+>> cause subtle surprises. While chaining against the dependent can resolve
+>> these gotchas most of the time, there are scenarios where it is more
+>> correct to work with the original future instance and to chain dependents
+>> on the side. This has come up a few times regarding an asynchronous cache
+>> and while I have educated users on this behavior, a workaround within the
+>> cache would merely shift the pain by no longer returning the user's
+>> supplied future instance. While I can understand the stack might have been
+>> preferred as a more elegant implementation, I do not yet see why it would
+>> be better by its external behavior.
+>>
+>> Thanks and happy new year.
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+-- 
+Cheers,
+√
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20210105/7a92b212/attachment.htm>
+
+From dl at cs.oswego.edu  Tue Jan  5 06:57:26 2021
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 5 Jan 2021 06:57:26 -0500
+Subject: [concurrency-interest] CompletableFuture dependent ordering
+In-Reply-To: <CAGu0=MO9wXvr6BxXnvw7c30doB-pNnGqgZhhSLADgJKH-RgP8w@mail.gmail.com>
+References: <CAGu0=MO9wXvr6BxXnvw7c30doB-pNnGqgZhhSLADgJKH-RgP8w@mail.gmail.com>
+Message-ID: <00bde571-7ef0-72c2-672c-7e5092d00135@cs.oswego.edu>
+
+On 1/4/21 5:28 PM, Benjamin Manes via Concurrency-interest wrote:
+>
+> CompletableFuture maintains a Treiber stack for processing dependents, 
+> such as "thenAccept" and "whenComplete" actions. I couldn't find a 
+> previous discussion on this design decision. Can you please educate me 
+> on why a LIFO stack was preferred over a FIFO queue?
+
+There was some implicit discussion of this when people discovered that 
+the initial trial versions tended to blow call stacks and retain 
+unneeded heap pointers in recursive usages. As others have noted, 
+there's no guarantee about triggering order, so choosing one that tends 
+to use fewer resources (in the trampoline-like postComplete() method) 
+seems to be the best option. In some applications, the triggering order 
+can be surprising, but his would be true no matter what choice was made.
+
+
+
+From ben.manes at gmail.com  Tue Jan  5 07:04:55 2021
+From: ben.manes at gmail.com (Benjamin Manes)
+Date: Tue, 5 Jan 2021 04:04:55 -0800
+Subject: [concurrency-interest] CompletableFuture dependent ordering
+In-Reply-To: <00bde571-7ef0-72c2-672c-7e5092d00135@cs.oswego.edu>
+References: <CAGu0=MO9wXvr6BxXnvw7c30doB-pNnGqgZhhSLADgJKH-RgP8w@mail.gmail.com>
+ <00bde571-7ef0-72c2-672c-7e5092d00135@cs.oswego.edu>
+Message-ID: <CAGu0=MO3TV6U02jMH5hKU57N=Zk-5Oc1QnEFKDunM59rtB_RFw@mail.gmail.com>
+
+Thank you.  I recall some of those early issues so that makes sense. I
+agree no ordering should be relied upon but lacked a good explanation for
+the implementation preference.
+
+On Tue, Jan 5, 2021 at 3:59 AM Doug Lea via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> On 1/4/21 5:28 PM, Benjamin Manes via Concurrency-interest wrote:
+> >
+> > CompletableFuture maintains a Treiber stack for processing dependents,
+> > such as "thenAccept" and "whenComplete" actions. I couldn't find a
+> > previous discussion on this design decision. Can you please educate me
+> > on why a LIFO stack was preferred over a FIFO queue?
+>
+> There was some implicit discussion of this when people discovered that
+> the initial trial versions tended to blow call stacks and retain
+> unneeded heap pointers in recursive usages. As others have noted,
+> there's no guarantee about triggering order, so choosing one that tends
+> to use fewer resources (in the trampoline-like postComplete() method)
+> seems to be the best option. In some applications, the triggering order
+> can be surprising, but his would be true no matter what choice was made.
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20210105/22414c12/attachment-0001.htm>
+
+From peter.levart at gmail.com  Tue Jan  5 14:43:53 2021
+From: peter.levart at gmail.com (Peter Levart)
+Date: Tue, 5 Jan 2021 20:43:53 +0100
+Subject: [concurrency-interest] Continuously re-spawning a
+ stopped/killed thread
+In-Reply-To: <CAP7pH7tQVXf_jkn-FBP71jMPfuzZkT2N-Af_MCLk-41yn3zejg@mail.gmail.com>
+References: <CAP7pH7tmmx1DW4k942drLObeQVaXb6JiKaLuXo+8B6ut+AMK7A@mail.gmail.com>
+ <CAP7pH7trS+wMA1QyeR8FgP=0jM8AYQ8BMrFzYwXTknC8JVm3rA@mail.gmail.com>
+ <1e580b9d-5ed8-e17e-d67b-721c3e82d207@freigmbh.de>
+ <CAP7pH7tQVXf_jkn-FBP71jMPfuzZkT2N-Af_MCLk-41yn3zejg@mail.gmail.com>
+Message-ID: <c003fadc-5b0f-1c9a-2f16-6b81efcb00ed@gmail.com>
+
+Hi,
+
+On 12/18/20 1:15 PM, Volkan Yazıcı via Concurrency-interest wrote:
+> I want to return back to the first simple form where I only catch 
+> Exceptions, but then I need to get the thread automatically respawned 
+> on unintended deaths. I thought of leveraging the "unhandled exception 
+> handler" mechanism of Executors for this automatic respawning. What do 
+> you think?
+
+
+Well, the only difference between recovering from Error(s) in the same 
+thread and letting the thread die and spawning another thread to 
+continue with processing is in ThreadLocal variables. If you continue 
+processing in existing thread you keep them, if you spawn another 
+thread, you start fresh.
+
+In both occasions the shared state (heap objects reachable from old/new 
+thread) is the one that might get corrupted when a thread throws 
+ThreadDeath as a result of another thread calling Thread.stop() on it. 
+The only way to avoid such corruption is for all code executing in such 
+thread to very carefully perform modifications to state that would still 
+be reachable to the thread after it recovers from ThreadDeath (or to 
+another thread). Each modification (assignment) must leave behind 
+reachable state that is valid. This is very hard to achieve if you use 
+common data structures that are not designed with that in mind, let 
+alone code that you don't control executing in that thread. 
+Theoretically it is doable, but nobody does that.
+
+So I would say that if you refrain from calling Thread.stop() in your 
+code, you've done your part. If anybody else is using your code and 
+calls Thread.stop() in their code, it is their problem, not yours.
+
+
+Regards, Peter
+
+
+
+
+
+From martinrb at google.com  Mon Jan 18 18:14:51 2021
+From: martinrb at google.com (Martin Buchholz)
+Date: Mon, 18 Jan 2021 15:14:51 -0800
+Subject: [concurrency-interest] CompletableFuture dependent ordering
+In-Reply-To: <CAGu0=MO3TV6U02jMH5hKU57N=Zk-5Oc1QnEFKDunM59rtB_RFw@mail.gmail.com>
+References: <CAGu0=MO9wXvr6BxXnvw7c30doB-pNnGqgZhhSLADgJKH-RgP8w@mail.gmail.com>
+ <00bde571-7ef0-72c2-672c-7e5092d00135@cs.oswego.edu>
+ <CAGu0=MO3TV6U02jMH5hKU57N=Zk-5Oc1QnEFKDunM59rtB_RFw@mail.gmail.com>
+Message-ID: <CA+kOe08qaqT2PJFgqFjrT3JNE3osU25PPVJMayAk6s8tCffC1Q@mail.gmail.com>
+
+During my work maintaining CompletableFuture, ordering of dependent actions
+was never a goal.
+But efficiency was.
+
+On Tue, Jan 5, 2021 at 4:05 AM Benjamin Manes via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Thank you.  I recall some of those early issues so that makes sense. I
+> agree no ordering should be relied upon but lacked a good explanation for
+> the implementation preference.
+>
+> On Tue, Jan 5, 2021 at 3:59 AM Doug Lea via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>> On 1/4/21 5:28 PM, Benjamin Manes via Concurrency-interest wrote:
+>> >
+>> > CompletableFuture maintains a Treiber stack for processing dependents,
+>> > such as "thenAccept" and "whenComplete" actions. I couldn't find a
+>> > previous discussion on this design decision. Can you please educate me
+>> > on why a LIFO stack was preferred over a FIFO queue?
+>>
+>> There was some implicit discussion of this when people discovered that
+>> the initial trial versions tended to blow call stacks and retain
+>> unneeded heap pointers in recursive usages. As others have noted,
+>> there's no guarantee about triggering order, so choosing one that tends
+>> to use fewer resources (in the trampoline-like postComplete() method)
+>> seems to be the best option. In some applications, the triggering order
+>> can be surprising, but his would be true no matter what choice was made.
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20210118/eb5ce24f/attachment.htm>
+
+From JanecekPetr at seznam.cz  Fri Jan 29 06:05:17 2021
+From: JanecekPetr at seznam.cz (=?utf-8?q?Petr_Jane=C4=8Dek?=)
+Date: Fri, 29 Jan 2021 12:05:17 +0100 (CET)
+Subject: [concurrency-interest] Phaser.arrive() memory consistency effects
+Message-ID: <D0h.1PlZ.1wYbtydgaF{.1W4{lj@seznam.cz>
+
+Hello,
+I've been using Phaser a lot recently. It's very fast and works
+great overall. Thank you.
+
+That said, whenever I use it I feel slight guilt and a fear that
+my usage might break in the future. I can see the OpenJDK code
+and the current implied memory consistency effects, however I
+cannot see them stated anywhere in the docs.
+
+The package JavaDoc says:
+> Actions prior to calling [...] Phaser.awaitAdvance (as well as
+> its variants) happen-before actions [...] subsequent to a
+> successful return from the corresponding await in other threads
+This is OK.
+
+However, I cannot find any information about the arrive() method,
+or the effects of getPhase(). Because some of my threads do want
+to wait while the others sometimes don't, they simply want to
+publish a write (or read shared state) and move on without
+waiting.
+
+Would you please consider specifying the memory consistency
+effects of Phaser in greater detail, so that we can safely use it?
+
+Thank you,
+Petr Janeček
+
+From martinrb at google.com  Fri Jan 29 12:28:39 2021
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 29 Jan 2021 09:28:39 -0800
+Subject: [concurrency-interest] Phaser.arrive() memory consistency
+ effects
+In-Reply-To: <D0h.1PlZ.1wYbtydgaF{.1W4{lj@seznam.cz>
+References: <D0h.1PlZ.1wYbtydgaF{.1W4{lj@seznam.cz>
+Message-ID: <CA+kOe0_2bOgQRrfXQ_U3=rEw-anRsSOgKuYmR2d7Ef_PNq59mQ@mail.gmail.com>
+
+Filed as https://bugs.openjdk.java.net/browse/JDK-8260664
+
+On Fri, Jan 29, 2021 at 3:08 AM Petr Janeček via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Hello,
+> I've been using Phaser a lot recently. It's very fast and works
+> great overall. Thank you.
+>
+> That said, whenever I use it I feel slight guilt and a fear that
+> my usage might break in the future. I can see the OpenJDK code
+> and the current implied memory consistency effects, however I
+> cannot see them stated anywhere in the docs.
+>
+> The package JavaDoc says:
+> > Actions prior to calling [...] Phaser.awaitAdvance (as well as
+> > its variants) happen-before actions [...] subsequent to a
+> > successful return from the corresponding await in other threads
+> This is OK.
+>
+> However, I cannot find any information about the arrive() method,
+> or the effects of getPhase(). Because some of my threads do want
+> to wait while the others sometimes don't, they simply want to
+> publish a write (or read shared state) and move on without
+> waiting.
+>
+> Would you please consider specifying the memory consistency
+> effects of Phaser in greater detail, so that we can safely use it?
+>
+> Thank you,
+> Petr Janeček
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20210129/2a155f9b/attachment.htm>
+
+From dl at cs.oswego.edu  Sat Jan 30 10:21:47 2021
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Sat, 30 Jan 2021 10:21:47 -0500
+Subject: [concurrency-interest] Phaser.arrive() memory consistency
+ effects
+In-Reply-To: <D0h.1PlZ.1wYbtydgaF{.1W4{lj@seznam.cz>
+References: <D0h.1PlZ.1wYbtydgaF{.1W4{lj@seznam.cz>
+Message-ID: <7636c8e2-3e10-fafe-6006-ac90b3e32e57@cs.oswego.edu>
+
+On 1/29/21 6:05 AM, Petr Janeček via Concurrency-interest wrote:
+> The package JavaDoc says:
+>> Actions prior to calling [...] Phaser.awaitAdvance (as well as
+>> its variants) happen-before actions [...] subsequent to a
+>> successful return from the corresponding await in other threads
+> This is OK.
+>
+> However, I cannot find any information about the arrive() method,
+> or the effects of getPhase(). Because some of my threads do want
+> to wait while the others sometimes don't, they simply want to
+> publish a write (or read shared state) and move on without
+> waiting.
+>
+> Would you please consider specifying the memory consistency
+> effects of Phaser in greater detail, so that we can safely use it?
+
+Good suggestion; thanks! We can at least flesh out arrive vs advance. I 
+don't think we can say anything further that isn't implied by this about 
+getPhase. In particular, a call to getPhase can race with an advance. So:
+
+*
+  * <p>Memory consistency effects: Actions prior to any form of arrive
+  * method <a href="package-summary.html#MemoryVisibility">
+  * <i>happen-before</i></a> a corresponding phase advance and
+  * onAdvance actions (if present), which in turn <i>happen-before</i>
+  * actions following the phase advance.
+  *
+
+
+
+
+From JanecekPetr at seznam.cz  Sun Jan 31 17:48:33 2021
+From: JanecekPetr at seznam.cz (=?utf-8?q?Petr_Jane=C4=8Dek?=)
+Date: Sun, 31 Jan 2021 23:48:33 +0100 (CET)
+Subject: [concurrency-interest] 
+	=?utf-8?q?Phaser=2Earrive=28=29_memory_co?=
+	=?utf-8?q?nsistency_effects?=
+References: <D0h.1PlZ.1wYbtydgaF{.1W4{lj@seznam.cz>
+ <7636c8e2-3e10-fafe-6006-ac90b3e32e57@cs.oswego.edu>
+Message-ID: <FXd.1Pkh.3oKDMugkXtC.1W5pF1@seznam.cz>
+
+>  * <p>Memory consistency effects: Actions prior to any form of arrive
+>  * method <a href="package-summary.html#MemoryVisibility">
+>  * <i>happen-before</i></a> a corresponding phase advance and
+>  * onAdvance actions (if present), which in turn <i>happen-before</i>
+>  * actions following the phase advance.
+
+Thank you for a fast reply, that sounds adequate.
+
+PJ
+

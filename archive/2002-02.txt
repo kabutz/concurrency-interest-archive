@@ -1,0 +1,2768 @@
+From mda@discerning.com Fri, 1 Feb 2002 15:13:03 -0800
+Date: Fri, 1 Feb 2002 15:13:03 -0800
+From: Mark D. Anderson mda@discerning.com
+Subject: comments on Executor
+
+A few comments on Executor based on my attempt to use dl's concurrent package in
+a web application.
+In the below I'm kind of intermixing the interfaces in the proposed java.util.concurrent
+and in dl's  concurrent, but I believe they apply in either case.
+
+1. task groups vs. executor groups.
+It would be useful to have an object which groups callables (or futures or whatever) which
+is different from the object which is executing the Executor strategy.
+For example, in a web application I might have 30 tasks I can do in parallel to satisfy
+a single web request. If that is the only request in the system, I might be ok with that.
+But If I have multiple requests in the system, I want to constrain my total consumption.
+If I create a new Executor for every request, I might for example constrain myself to
+using 5 concurrent threads for those 30 tasks.
+This approach is sub-optimal in light load, and will likely too aggressive for heavy load.
+Maybe there is some clever way this can be done with concurrent, where I continue
+to create a PooledExecutor per request, but I somehow get it to use a shared underlying
+pool across all existing PooledExecutors.
+
+Some of the operations on this callable group:
+- I'd naturally like to be able to cancel all tasks in that callable group if I want to abandon
+all processing of this particular request.
+- I'd like to be able to configure it so that all tasks are cancelled if any of them fails (if I want that).
+- I'd like timeout to be set at the group level.
+
+2. More support for cancellation.
+Right now, FutureResult has 3 possible states: 
+   running = !isReady()
+   finished_exception = (getException() != null)
+   finished_ok = (getException() == null)
+There is no easy way that I can see to determine that the future was killed.
+(There is also no way to tell if the work on the result has started, by the way).
+To tell if it was killed, I supposed i can check for:
+  getException() != null && getException() instanceof InterruptedException
+but that doesn't strike me as particularly clean.
+
+Also, neither FutureResult nor Callable have a cancel() function that would be
+used when the Executor shuts it down before it is ready.
+If the result finishes on its own (even with its own exception other than InterruptedException),
+then cleanup is its own duty. But if someone is going to shoot it in the head, it'd be
+nice if they'd call the cancel() function first. This would be particularly helpful
+for Callables that are wrappers to async interfaces.
+Otherwise I would have to determine that they got killed, and find them, and clean
+them up gracefully. Or trust a finalizer.
+
+3. Accessors.
+The Executor has no exposed way to iterate over its current Runnables.
+The Future returned by Executor has no way to retrieve its underlying Callable.
+These things might not bother me except for the issues in 1 and 2 -- to work around
+them, i would need this. As it is, I end up building up parallel data structures duplicating
+what must be on the inside of the implementation.
+
+-mda
+
+
+
+
+
+
+
+From dl@cs.oswego.edu Fri, 1 Feb 2002 21:06:16 -0500
+Date: Fri, 1 Feb 2002 21:06:16 -0500
+From: Doug Lea dl@cs.oswego.edu
+Subject: Interface Condition - bind/unbind ?!
+
+> Why would an explicit way (without a need to "re-initialize")
+> to *change* the associated lock would make some problems with
+> respect to errors (error checking) and/or efficiency?
+> 
+
+If rebinding were a standard feature, I would expect/want an
+IllegalStateException if I attempted to rebind the condition while a
+thread was in the midst of waiting on it.  This adds state-tracking
+overhead.  Also, to conform to memory model, the internal field
+recording the owner lock would at least need to be volatile (rather
+than final), or maybe even use an inner lock to access both the owner
+lock and execution state to make sure they are in sync.
+
+You could get away with a lighter version if you use it in code that
+you know either won't misbehave or don't care what happens if it does.
+But I'm very hesitent to build this functionality into a library class
+that hopefully thousands of programmers of varying abilities will use.
+By not allowing rebinding, we can make usage both simpler and faster.
+I might change my mind if I knew of a really compelling use case though.
+
+
+-Doug
+
+
+
+
+From dl@cs.oswego.edu Sat, 2 Feb 2002 10:49:33 -0500
+Date: Sat, 2 Feb 2002 10:49:33 -0500
+From: Doug Lea dl@cs.oswego.edu
+Subject: comments on Executor
+
+Mark Anderson wrote...
+
+> A few comments on Executor based on my attempt to use dl's concurrent package in
+> a web application.
+
+(Background for others: Mark had also written me about some related
+issues in dl. util.concurrent. My reply mixes some details about
+current versions of Executor and JSR-166 plans).
+
+Answering these out of order...
+
+> 2. More support for cancellation.
+
+I agree that the more simple things we can do to simplify cancellation
+the better.  Various forms of cancellation seem to be extremely
+common, and common design problems, in multithreaded Java
+applications. At least I get a lot of mail about it.
+
+Some common issues are easy and worthwhile to deal with. As very briefly
+mentioned in
+  http://gee.cs.oswego.edu/dl/concurrency-interest/aims.html
+it is worth supplying a simple Runnable class that maintains a
+completion/cancellation status field. This is needed in a lot of
+applications, so ought to be standardized.  For the sake of
+concreteness, I just updated sketch of a trial version. 
+Javadocs at:
+  http://gee.cs.oswego.edu/dl/concurrent/index.html
+Raw source at:
+  http://gee.cs.oswego.edu/dl/concurrent/java/util/concurrent/
+See class RunnableTask, as well as revised Executor and
+AbstractExecutor. (RunnableTask could stand having a better name.
+Suggestions welcome.) API design note: Since abstract class
+RunnableTask implements Runnable, the method to execute one must have
+a different name than just "execute" to avoid Java static dispatching
+surprises.
+
+Similar ideas and implementations apply to Futures, but for now
+only the Runnable version is there.
+
+Just this minimal support suffices in many cases -- if you want to
+track completion or be able to cancel execution before it starts, you
+would choose RunnableTask over Runnable.  But it cannot automatically
+deal with asynchronous interruption.  Cancellation status can only be
+checked automatically before execution, although programmers can also
+put in their own code inside their own run() methods to check
+isDone/isCancelled status.
+
+Doing more than this requires tie-ins with Thread.interrupt mechanics
+to deal with the problem that a cancelled RunnableTask can stay
+blocked in a wait, since cancellation status cannot be linked
+automatically to Thread.interrupt status. And interruption does not
+now interact very nicely with some forms of Executor.  Executors allow
+one thread to run many runnables. Possibly even the caller thread. So
+you don't necessarily want to terminate the thread running the
+Runnable. Yet most people write interruption handling code assuming
+that the thread will terminate (mainly because all other courses of
+action are at best poorly supported in Java).  This is one reason that
+interrupted threads are just thrown away, replaced with fresh ones in
+PooledExecutor.
+
+In dl.util.concurrent, Joe Bowbeer and I evaded this in one specific
+case by putting in a TimedCallable class that cancels upon timeout,
+but only works with thread-per-call (i.e., each one is run in a fresh
+thread), not arbitrary Executors. Again, this is because you don't
+know in the general case which thread to interrupt upon cancellation,
+and even if you did, you can only cleanly interrupt if you are sure it
+is OK for that thread to terminate.
+
+It would be possible to do something similar with Executors in general
+(by recording which thread was running which runnable) only if we
+required that all Executor implementations be written such that it is
+OK to terminate any given thread running a runnable. This is not quite
+true even for current PooledExecutor under the default policy of the
+caller thread executing the runnable when pool is saturated. (BTW,
+this works now because interruptAll only interrupts threads in the
+pool.) Another possibility is to somehow make an Executor subinterface
+covering implementations with this property.  Or maybe something
+better.
+
+In other words, I don't at the moment have a good plan for integrating
+thread interruption and task cancellation. And for now, if you need
+full asynch interruption support, I am afraid that you will be need to
+create your own custom Executor class rather than than just plugging
+in PooledExecutor. I guess my best recommendation is to first consider
+whther you can live with the RunnableTask approach, which you COULD
+use with simple extensions of PooledExecutor that includes an
+executeTask method.  You might be able to just copy/paste/hack my
+prototype code.
+
+Consider this all as fodder for rethinking Thread.interrupt in general.
+
+> 1. task groups vs. executor groups.
+
+I think you are looking for a CompositeRunnableTask (as in the GoF
+Composite pattern), where each of the elements can be run in parallel,
+but are cancellable as a unit. It would not be hard to build this
+on top of RunnableTask and a simple specialized Executor method. But
+it still faces the task-cancellation vs thread-interruption issues above.
+
+> 3. Accessors.
+> The Executor has no exposed way to iterate over its current Runnables.
+
+In PooledExecutor, the Runnables aren't necessarily all in one place
+at any given time.  Some Runnables are sitting in queues (see method
+drain()), while others are in the process of being dequeued and run.
+PooledExecutor doesn't itself have a way to iterate over them. It
+never needs to.  If applications need to track them, they have to
+record them in separately. Considering that different applications
+will want to specially track various Runnables for different
+application-specific reasons anyway, I think this is the right
+approach.
+
+-Doug
+
+
+
+
+
+From TEREKHOV@de.ibm.com Sat, 2 Feb 2002 20:46:03 +0100
+Date: Sat, 2 Feb 2002 20:46:03 +0100
+From: Alexander Terekhov TEREKHOV@de.ibm.com
+Subject: Interface Condition - bind/unbind ?!
+
+
+> > Why would an explicit way (without a need to "re-initialize")
+> > to *change* the associated lock would make some problems with
+> > respect to errors (error checking) and/or efficiency?
+> >
+>
+> If rebinding were a standard feature, I would expect/want an
+> IllegalStateException if I attempted to rebind the condition while a
+> thread was in the midst of waiting on it.  This adds state-tracking
+> overhead.  Also, to conform to memory model, the internal field
+> recording the owner lock would at least need to be volatile (rather
+> than final), or maybe even use an inner lock to access both the owner
+> lock and execution state to make sure they are in sync.
+
+Yes, I see it now, thank you! I think that I've just got
+used too much to C/C++ way of placing "undefined" behaviors
+all around. ;-) I guess the same/similar considerations
+would speak against having totally "unbound" - Pthread-style
+condition variables, right?
+
+I have one more question, though...
+
+I am just struggling to understand how Java conditions
+are supposed to work together with "java.util.concurrent.Lock"s,
+given that in Pthreads, condvars only work with *mutexes*
+(including recursive, but IFF lock count == 1, AFAIK),
+which *do NOT throw on lock/acquire operation* (I mean
+Pthread thread cancellation[1], which, BTW, due its[2]
+rather simple (AFAIK) always-rethrow/stopping-is-illegal
+nature, I personally like somewhat more than Java's
+"interrupt" model, IMHO)
+
+Could you please clarify this bit as well?
+(I mean what happens if a thread gets interrupted
+ while contending for a *lock*, AFTER consuming a
+ signal/timeout, and perhaps the ideas behind
+ interruptible *mutex* locking in general...,
+ well, interruptible semaphores are OK, but
+ mutexes... hmmm)
+
+Thanks!
+
+regards,
+alexander.
+
+[1] a lock/mutex is re-acquired even if awaiting
+    thread gets canceled (or timedout), to allow
+    shared data cleanup -- "waiters count" or
+    something like that.
+
+[2] including pthread_exit()
+
+
+
+Doug Lea <dl@cs.oswego.edu>@altair.cs.oswego.edu on 02/02/2002 03:06:16 AM
+
+Please respond to dl@cs.oswego.edu
+
+Sent by:  concurrency-interest-admin@altair.cs.oswego.edu
+
+
+To:   concurrency-interest@altair.cs.oswego.edu
+cc:
+Subject:  Re: Interface Condition - bind/unbind ?!
+
+
+
+
+> Why would an explicit way (without a need to "re-initialize")
+> to *change* the associated lock would make some problems with
+> respect to errors (error checking) and/or efficiency?
+>
+
+If rebinding were a standard feature, I would expect/want an
+IllegalStateException if I attempted to rebind the condition while a
+thread was in the midst of waiting on it.  This adds state-tracking
+overhead.  Also, to conform to memory model, the internal field
+recording the owner lock would at least need to be volatile (rather
+than final), or maybe even use an inner lock to access both the owner
+lock and execution state to make sure they are in sync.
+
+You could get away with a lighter version if you use it in code that
+you know either won't misbehave or don't care what happens if it does.
+But I'm very hesitent to build this functionality into a library class
+that hopefully thousands of programmers of varying abilities will use.
+By not allowing rebinding, we can make usage both simpler and faster.
+I might change my mind if I knew of a really compelling use case though.
+
+
+-Doug
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+
+
+
+From mda@discerning.com Sat, 2 Feb 2002 12:14:39 -0800
+Date: Sat, 2 Feb 2002 12:14:39 -0800
+From: Mark D. Anderson mda@discerning.com
+Subject: comments on Executor
+
+> Javadocs at:
+>   http://gee.cs.oswego.edu/dl/concurrent/index.html
+> Raw source at:
+>   http://gee.cs.oswego.edu/dl/concurrent/java/util/concurrent/
+> See class RunnableTask, as well as revised Executor and
+> AbstractExecutor. (RunnableTask could stand having a better name.
+> Suggestions welcome.) 
+
+> Just this minimal support suffices in many cases -- if you want to
+> track completion or be able to cancel execution before it starts, you
+> would choose RunnableTask over Runnable.  But it cannot automatically
+> deal with asynchronous interruption.  Cancellation status can only be
+> checked automatically before execution, although programmers can also
+> put in their own code inside their own run() methods to check
+> isDone/isCancelled status.
+
+I can't at the moment see where this interface is useful, since the interface has
+no way to determine whether execution has started, and therefore it is
+safe to cancel (according to your stated constraint that async interruption is
+not supported).  So maybe it should then be called cancelIfNotStarted() or
+cancelStart() or cancelRequest() instead of just cancel(). 
+
+I feel a compulsion to ask for isStarted(), though I do recognize this only encourages
+unsafe practices like:
+  if (!r.isStarted()) r.cancel();
+
+I've read some of your previous discussions on thread interruption, but  guess I'm
+still missing something. An example of what I want to be able to do is something like this:
+
+class CancellableRead extends Cancellable {
+    java.net.Socket s_;
+    java.io.InputStream is_;
+    byte[] bytes_;
+
+    CancellableRead(java.net.Socket s, byte[] bytes) {s_ = s; is_ = s_.getInputStream(); bytes_ = bytes;}
+    public Object call(Object args) {read(); return null;}
+    public void read() {is_.read(bytes);}
+    public void cancelImpl() {s_.close();}
+}
+
+the Cancellable class is something like:
+
+abstract class Cancellable {
+   public abstract void cancelImpl();
+   public abstract Object call(Object args);
+   // for use by Executor or whoever is cancelling. will set cancel bit and call cancelImpl
+   public void cancel();
+   // for use either by subclass code or by external caller.
+   public boolean isCancelled();
+}
+
+Now, even if you believe that socket closing is no more reliable than thread interruption,
+this still makes for a lot of convenience.
+Furthermore, if you look at what is coming up in jdk1.4 for java.nio.channels.Channel,
+it appears that sun is promising async interruption of IO.
+So when that is officially supported, I'd naturally like the new concurrent package to
+interact with it. See:
+http://java.sun.com/j2se/1.4/docs/api/java/nio/channels/InterruptibleChannel.html
+It is unclear how this is supposed to work without fixing core JVM issues (it is certainly
+more than just some new jsdk code right?). But it does seem like they are working on it.
+
+To give another example, some servers offer a protocol-level cancel for async requests:
+
+class CancellableAsync extends Cancellable {
+    Object handle_;
+    SomeRequest req_;
+
+    CancellableAsync(SomeRequest req) {handle_ = null; req_ = req;}
+    public Object call(Object args) {handle_ = req_.execute();}
+    public void cancelImpl() {req_.cancel(handle_);}
+}
+
+Now it may very well be true that the software I'm calling downstream is lying when they
+claim that they handle async cancellation.
+But if they are not lying (or if they won't be lying in jdk1.4), then concurrent should
+make it convenient to work with them.
+
+btw, just to be clear, what I'd like is for the Executor or CompositeRunnable
+to cancel the tasks, when I tell the container to do so.
+In fact, I would think it would be easier to implement if the contract was that
+if I've handed over a Runnable to an Executor, then I only cancel that Runnable
+by calling an Executor method, not be messing with the Runnable directly.
+I might mess directly with a FutureResult obtained from the Executor, but since
+the Executor made it, it can hook what it is doing.
+
+btw, whose responsibility would it be to protect against cancel() methods that
+themselves block forever?
+
+> I think you are looking for a CompositeRunnableTask (as in the GoF
+> Composite pattern), where each of the elements can be run in parallel,
+> but are cancellable as a unit. It would not be hard to build this
+> on top of RunnableTask and a simple specialized Executor method. But
+> it still faces the task-cancellation vs thread-interruption issues above.
+
+.... and the fact that it still doesn't get me the critical code of how to share a pool
+of threads among multiple composites.
+I'd like to be able to have 4 composites of 5 tasks each to be all concurrent
+if i have a shared pool of 20 threads (or 21 to include a house-keeping thread).
+But if I have just 12 threads, i'd like that global limit to be enforced.
+At this point, i don't care about the scheduling algorithm (give each of the 4 composites
+3 threads, or run 2 composites to completion at a time).
+
+> 
+> > 3. Accessors.
+> > The Executor has no exposed way to iterate over its current Runnables.
+> 
+> In PooledExecutor, the Runnables aren't necessarily all in one place
+> at any given time.  Some Runnables are sitting in queues (see method
+> drain()), while others are in the process of being dequeued and run.
+> PooledExecutor doesn't itself have a way to iterate over them. It
+> never needs to.  If applications need to track them, they have to
+> record them in separately. Considering that different applications
+> will want to specially track various Runnables for different
+> application-specific reasons anyway, I think this is the right
+> approach.
+
+hmmm, well then maybe it'd help me if there were additional methods on Executor:
+  executeResult(Future result);
+  executeResults(Future[] results);
+As it is, right now I have to maintain an array of both the original Callables,
+and an array of the FutureResults.
+If I won't be given a method where i can retrieve the underlying Callable from
+a FutureResult (which would eliminate my first array), then let me construct
+the FutureResult so i can subclass it with extra state, and provide it to the
+Executor.
+
+-mda
+
+
+
+
+
+
+From dl@cs.oswego.edu Sat, 2 Feb 2002 16:18:50 -0500
+Date: Sat, 2 Feb 2002 16:18:50 -0500
+From: Doug Lea dl@cs.oswego.edu
+Subject: comments on Executor
+
+Hi Mark,
+
+If you do want something heavier than a simple cancelled bit,
+you can actually interrupt the thread inside cancel. As in:
+
+class MyRunnableTask extends RunnableTask {
+  private Thread runner;
+
+  public void run() {
+    synchronized(this) {
+      if (!isDone()) 
+        runner = Thread.currentThread();
+      else return;
+    }
+    action();
+  }
+
+  public synchronized void cancel() {
+    if (!isDone()) return;
+    super.cancel();
+    if (runner != null)
+      runner.interrupt();
+  }
+}
+
+As mentioned before, you need to be sure that it is OK to actually
+interrupt the thread, no matter what context the Runnable finds itself
+being run in.  The main interaction with Executor classes is that any
+interrupted thread should normally be discarded from the pool and
+replaced with a fresh one. Doing this regularly makes thread pools
+less efficient than using a thread per task. While there is no
+guarantee that a given Executor implementation is faster/cheaper than
+using threads, their typical much better performance when used for
+running many short runnable tasks is one of the main reasons they are
+used. I want to make sure that the required properties of all
+Executors stay small, to ensure that very fast ones can still be
+built, while still of course allowing implementations with extended,
+heavier capabilities.
+
+> Furthermore, if you look at what is coming up in jdk1.4 for java.nio.channels.Channel,
+> it appears that sun is promising async interruption of IO.
+
+I was on the nio JSR expert group. Yes, IO on nio channels really is
+interruptible. If you discover otherwise, submit a bug report!
+
+> .... and the fact that it still doesn't get me the critical code of how to share a pool
+> of threads among multiple composites.
+> I'd like to be able to have 4 composites of 5 tasks each to be all concurrent
+> if i have a shared pool of 20 threads (or 21 to include a house-keeping thread).
+> But if I have just 12 threads, i'd like that global limit to be enforced.
+> At this point, i don't care about the scheduling algorithm (give each of the 4 composites
+> 3 threads, or run 2 composites to completion at a time).
+> 
+
+I'm not sure what you mean here. Suppose you have something like:
+
+class CompositeTask {
+  void runAll(Executor exec) {
+    for each task 
+      exec.execute(task)
+  }
+  void cancelAll() {
+    for each task 
+      task.cancel();
+  }
+}
+
+So you can use any number of CompositeTasks with the same executor,
+and cancel each composite independently. Is there something else you
+need?
+
+
+> hmmm, well then maybe it'd help me if there were additional methods on Executor:
+>   executeResult(Future result);
+
+Good point. We'll strongly consider it.
+
+-Doug
+
+
+
+
+
+From dl@cs.oswego.edu Sat, 2 Feb 2002 16:40:33 -0500
+Date: Sat, 2 Feb 2002 16:40:33 -0500
+From: Doug Lea dl@cs.oswego.edu
+Subject: Interface Condition - bind/unbind ?!
+
+Alexander wrote:
+
+> Could you please clarify this bit as well?
+> (I mean what happens if a thread gets interrupted
+>  while contending for a *lock*, AFTER consuming a
+>  signal/timeout, and perhaps the ideas behind
+>  interruptible *mutex* locking in general...,
+>  well, interruptible semaphores are OK, but
+>  mutexes... hmmm)
+
+There are two methods, Condition.await() and
+Condition.awaitUninterrupibly().  (And similarly Lock.acquire() and
+Lock.acquireUninterruptibly()) 
+
+The awaitUninterrupibly method is like POSIX. I agree that sometimes
+you want a completely uncancellable wait, but not often; mainly for
+use in recovery code and the like. Otherwise it makes life difficult
+for people trying to manage cancellation. See today's other thread.
+
+The plain await() method may throw an InterruptedException only while
+waiting to be notified, but must use acquireUninterruptibly upon lock
+reacquisition.  (See the CondVar class in dl.util.concurrent for one
+way to do this.)
+
+You are right that a ReentrantLock class will have to save and restore
+lock count, but we make this possible by associating Condition
+implementations with their Lock classes, so the implementators can get
+at internal lock state to accomplish this. 
+
+We will surely nail down the relationships between notification and
+interruption very carefully, since the lack of precision about such
+things with Object.wait has been a concern of several of us on the
+expert group for many years now.
+
+-Doug
+
+
+
+
+From mda@discerning.com Sat, 2 Feb 2002 14:09:55 -0800
+Date: Sat, 2 Feb 2002 14:09:55 -0800
+From: Mark D. Anderson mda@discerning.com
+Subject: comments on Executor
+
+> If you do want something heavier than a simple cancelled bit,
+> you can actually interrupt the thread inside cancel. As in:
+> ...
+
+i think we need to clarify purposes, perhaps by changing the function names:
+1. a cancel() which is a method somehow connected to an Executor which cancels
+a started task. This means it should:
+- do the appropriate things in the Executor data structures
+- call any hook methods in the particular runnable/future
+- carry out whatever the Executor's thread interruption policy is (interrupt, kill, etc.)
+2. like (1), except for a task that has no yet been started. Its behavior is similar to (1).
+3. a cancel() which is the hook method of a particular Callable/Future subclass,
+which implements how it'd like to cancel an operation that has been started.
+
+An implementation of cancel() that just sets a bit doesn't accomplish any of the above.
+
+>   public synchronized void cancel() {
+>     if (!isDone()) return;
+>     super.cancel();
+>     if (runner != null)
+>       runner.interrupt();
+>   }
+> }
+
+to amplify, i don't see how the above could work with an arbitrary Executor when it
+has no idea, when it is calling a Callable.cancel(), whether it does something as innocuous as
+setting a bit, or as severe as interrupting.
+unless, that is, runner.interrupt() is somehow connected to the Executor instance,
+so it can tell after calling cancel() that it shouldn't do an interrupt as well.
+Or maybe cancel() could return a boolean indicating that it has done the interrupt,
+or a boolean indicating that the caller may do an interrupt.
+Or maybe RunnableTask could have an isInterrupted() bit. Or something like that.
+
+> As mentioned before, you need to be sure that it is OK to actually
+> interrupt the thread, no matter what context the Runnable finds itself
+> being run in.
+
+In my mind, having a cancel() hook makes thread interruption more viable.
+The Executor can do something like this:
+- call cancel()
+- check if the future is done now.
+it might be, because the cancel might have
+interrupted or otherwise caused the run() to throw an exception.
+- if the future is still not done, and the executor configuration says so (or cancel() return value,
+or !task.isInterrupted()), then interrupt it.
+
+Thus there is sort of an escalation, where cancel() can be used for a graceful termination,
+and if that doesn't work, the more severe steps can be taken.
+
+BTW, is there a reason that RunnableTask has an isDone(), while Future has a isAvailable()?
+
+> I was on the nio JSR expert group. Yes, IO on nio channels really is
+> interruptible. If you discover otherwise, submit a bug report!
+
+I haven't touched the jdk1.4 yet, sorry.
+
+since you are certainly quite familiar with both the nio and concurrent projects :),
+how would you for example perform concurrent reads from 5 channels
+that implement both ReadableByteChannel and InterruptibleChannel,
+using an Executor?
+
+might as well get started on that wonderful documentation now :).
+
+> I'm not sure what you mean here. Suppose you have something like:
+> 
+> class CompositeTask {
+>   void runAll(Executor exec) {
+>     for each task 
+>       exec.execute(task)
+>   }
+>   void cancelAll() {
+>     for each task 
+>       task.cancel();
+>   }
+> }
+> 
+> So you can use any number of CompositeTasks with the same executor,
+> and cancel each composite independently. Is there something else you
+> need?
+
+Well, for example, I need a way to wait up to msecs on just the tasks in the CompositeTask.
+The methods shutdownAfterProcessingCurrentlyQueuedTasks() and
+awaitTerminationAfterShutdown(msecs) apply to everything in the Executor.
+
+I'm also not clear (as per top of this message) whether task.cancel() is seen by the Executor
+or not.
+
+-mda
+
+
+
+
+
+From jozart@csi.com Sat, 2 Feb 2002 14:41:50 -0800
+Date: Sat, 2 Feb 2002 14:41:50 -0800
+From: Joseph Bowbeer jozart@csi.com
+Subject: comments on Executor
+
+Mark,
+
+I view RunnableTask / Executor as the analog of java.util.TimerTask / Timer.
+
+The TimerTask's cancel method works as a latch that can only prevent a task
+from running -- but not actively stop a running task.  However,
+implementations can still override cancel to detect isCancelled and to do
+something more proactive.
+
+If RunnableTask.cancel is intended to do something different, we should
+change the name to avoid confusion with TimerTask.  (However, I'm OK with
+TimerTask's behavior.)
+
+
+----- Original Message -----
+From: "Mark D. Anderson" <mda@discerning.com>
+To: <concurrency-interest@altair.cs.oswego.edu>
+Sent: Saturday, February 02, 2002 2:09 PM
+Subject: Re: comments on Executor
+
+> If you do want something heavier than a simple cancelled bit,
+> you can actually interrupt the thread inside cancel. As in:
+> ...
+
+i think we need to clarify purposes, perhaps by changing the function names:
+1. a cancel() which is a method somehow connected to an Executor which
+cancels
+a started task. This means it should:
+- do the appropriate things in the Executor data structures
+- call any hook methods in the particular runnable/future
+- carry out whatever the Executor's thread interruption policy is
+(interrupt, kill, etc.)
+2. like (1), except for a task that has no yet been started. Its behavior is
+similar to (1).
+3. a cancel() which is the hook method of a particular Callable/Future
+subclass,
+which implements how it'd like to cancel an operation that has been started.
+
+
+
+
+
+
+
+
+From TEREKHOV@de.ibm.com Sat, 2 Feb 2002 23:56:21 +0100
+Date: Sat, 2 Feb 2002 23:56:21 +0100
+From: Alexander Terekhov TEREKHOV@de.ibm.com
+Subject: Interface Condition - bind/unbind ?!
+
+
+> The awaitUninterrupibly method is like POSIX. I agree that sometimes
+> you want a completely uncancellable wait, but not often; mainly for
+> use in recovery code and the like. Otherwise it makes life difficult
+> for people trying to manage cancellation.
+
+hmmm... here is the POSIX Rationale:
+
+"There are several important blocking routines that
+ are specifically not made cancelation points:
+ - pthread_mutex_lock()
+ If pthread_mutex_lock() were a cancelation point,
+ every routine that called it would also become a
+ cancelation point (that is, any routine that touched
+ shared state would automatically become a cancelation
+ point). For example, malloc(), free(), and rand()
+ would become cancelation points under this scheme.
+ Having too many cancelation points makes programming
+ very difficult, leading to either much disabling and
+ restoring of cancelability or much difficulty in trying
+ to arrange for reliable cleanup at every possible
+ place.
+ Since pthread_mutex_lock() is not a cancelation point,
+ threads could result in being blocked uninterruptibly
+ for long periods of time if mutexes were used as a
+ general synchronization mechanism. As this is normally
+ not acceptable, mutexes should only be used to protect
+ resources that are held for small fixed lengths of time
+ where not being able to be canceled will not be a problem.
+ Resources that need to be held exclusively for long periods
+ of time should be protected with condition variables.
+ - pthread_barrier_wait()
+ Canceling a barrier wait will render a barrier unusable.
+ Similar to a barrier timeout (which the standard developers
+ rejected), there is no way to guarantee the consistency
+ of a barrier's internal data structures if a barrier wait
+ is canceled***.
+ - pthread_spin_lock()
+ As with mutexes, spin locks should only be used to protect
+ resources that are held for small fixed lengths of time where
+ not being cancelable will not be a problem."
+
+Also, it is my understanding that in POSIX, cancellation
+points do not throw once the process is already underway.
+
+> See today's other thread.
+
+You mean Executor stuff? Well, I am moving very slowly ;-)
+I am still on the level of locks and condvars! ;-) For
+example, general semantics/interactions/use-cases for
+waiting and signaling on condvars associated with
+read{write}locks, semas (in "non-mutex" mode), etc
+is still in total darkness for me. :(
+
+regards,
+alexander.
+
+[***] This, I guess, explains why you have
+      boolean CyclicBarrier.isBroken() and
+      BrokenBarrierException.
+
+
+Doug Lea <dl@cs.oswego.edu>@altair.cs.oswego.edu on 02/02/2002 10:40:33 PM
+
+Please respond to dl@cs.oswego.edu
+
+Sent by:  concurrency-interest-admin@altair.cs.oswego.edu
+
+
+To:   concurrency-interest@altair.cs.oswego.edu
+cc:
+Subject:  Re: Interface Condition - bind/unbind ?!
+
+
+
+
+Alexander wrote:
+
+> Could you please clarify this bit as well?
+> (I mean what happens if a thread gets interrupted
+>  while contending for a *lock*, AFTER consuming a
+>  signal/timeout, and perhaps the ideas behind
+>  interruptible *mutex* locking in general...,
+>  well, interruptible semaphores are OK, but
+>  mutexes... hmmm)
+
+There are two methods, Condition.await() and
+Condition.awaitUninterrupibly().  (And similarly Lock.acquire() and
+Lock.acquireUninterruptibly())
+
+The awaitUninterrupibly method is like POSIX. I agree that sometimes
+you want a completely uncancellable wait, but not often; mainly for
+use in recovery code and the like. Otherwise it makes life difficult
+for people trying to manage cancellation. See today's other thread.
+
+The plain await() method may throw an InterruptedException only while
+waiting to be notified, but must use acquireUninterruptibly upon lock
+reacquisition.  (See the CondVar class in dl.util.concurrent for one
+way to do this.)
+
+You are right that a ReentrantLock class will have to save and restore
+lock count, but we make this possible by associating Condition
+implementations with their Lock classes, so the implementators can get
+at internal lock state to accomplish this.
+
+We will surely nail down the relationships between notification and
+interruption very carefully, since the lack of precision about such
+things with Object.wait has been a concern of several of us on the
+expert group for many years now.
+
+-Doug
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+
+
+
+From mda@discerning.com Sat, 2 Feb 2002 15:23:53 -0800
+Date: Sat, 2 Feb 2002 15:23:53 -0800
+From: Mark D. Anderson mda@discerning.com
+Subject: comments on Executor
+
+> The TimerTask's cancel method works as a latch that can only prevent a task
+> from running -- but not actively stop a running task. 
+
+hmm, ok, so maybe what i've been talking about should be called abort(),
+a method on Abortable.
+
+in fact, in something like aio or other system that returns async request handles,
+the abort concept is (i.e. once the task has been started) is the one of interest.
+
+[aside, note that this notion of aio is not what is coming down the pipe with jdk1.4,
+which is more akin to non-blocking io, even though people sometimes refer to it
+as "async io". 
+jdk1.4 nio can still provide an example of the abort() concept, not because it
+has operation handles, but because it promises that outstanding io requests can be interrupted
+by a close operation on the underlying channel (vs. aio where you can cancel
+particular requests).]
+
+-mda
+
+
+
+
+
+
+From dl@cs.oswego.edu Sat, 2 Feb 2002 18:59:39 -0500
+Date: Sat, 2 Feb 2002 18:59:39 -0500
+From: Doug Lea dl@cs.oswego.edu
+Subject: comments on Executor
+
+Mark wrote:
+
+> i think we need to clarify purposes, perhaps by changing the function names:
+> 1. a cancel() which is a method somehow connected to an Executor which cancels
+> a started task.
+
+Oh, I think that this is where we are on different wavelengths.  You
+can cancel a RunnableTask, but the way these are currently designed,
+you cannot ask an Executor to do so.
+
+Using the "stronger" interruptible version of Runnable task from my
+last mail, when you cancel a task, one of two things happen: (1) If
+the task is still in a queue, its cancellation bit set so that its run
+method will return immediately when dequeud and executed by some
+worker thread. (2) If running, then the worker thread will be
+interrupted, die, and be replaced by a new thread if/when needed to
+service other tasks.  The Executor-object doesn't know anything about
+these things except to replace dead worker threads with fresh ones.
+This is the best way I know to design thread pools.
+
+
+> how would you for example perform concurrent reads from 5 channels
+> that implement both ReadableByteChannel and InterruptibleChannel,
+> using an Executor?
+
+Some slides at
+  http://gee.cs.oswego.edu/dl/cpjslides/nio.pdf
+show some of the basic designs options here. I think you'll
+see how to go about it from there.
+
+> > So you can use any number of CompositeTasks with the same executor,
+> > and cancel each composite independently. Is there something else you
+> > need?
+> 
+> Well, for example, I need a way to wait up to msecs on just the tasks in the CompositeTask.
+
+You can use a java.util.Timer task to send out a
+CompositeTask.cancelAll at the timeout period. (It is harmless if the
+cancel goes out even though they are all finished, and probably
+cheaper to leave it this way rather than cancelling the cancellation.)
+
+-Doug
+
+
+
+
+
+From dl@cs.oswego.edu Sat, 2 Feb 2002 19:33:45 -0500
+Date: Sat, 2 Feb 2002 19:33:45 -0500
+From: Doug Lea dl@cs.oswego.edu
+Subject: Interface Condition - bind/unbind ?!
+
+Oops. I wrote:
+
+> > The awaitUninterrupibly method is like POSIX.
+
+No, sorry. Condition.await() is just like POSIX pthread_cond_wait,
+which is interruptible. Condition.awaitUninterruptibly is like a wait
+in which you temporarily disable interrupts.
+
+-Doug
+
+
+
+
+
+
+
+From mda@discerning.com Sat, 2 Feb 2002 19:53:57 -0800
+Date: Sat, 2 Feb 2002 19:53:57 -0800
+From: Mark D. Anderson mda@discerning.com
+Subject: [concurrency-interest]Re: comments on Executor
+
+> Using the "stronger" interruptible version of Runnable task from my
+> last mail, 
+>...
+> The Executor-object doesn't know anything about
+> these things except to replace dead worker threads with fresh ones.
+
+In the lines of your sample code:
+  public synchronized void cancel() {
+    if (!isDone()) return;
+that "!" shouldn't be there, right?
+
+Also, how does the Executor know not to interrupt the thread if the cancel() has done so?
+Does it check isCancelled() or isInterrupted() first?
+If the Executor is one of the ones that runs things in its own thread, wouldn't
+it be anti-social for cancel() to kill itself (and take out the Executor too)?
+
+> > > So you can use any number of CompositeTasks with the same executor,
+> > > and cancel each composite independently. Is there something else you
+> > > need?
+> > 
+> > Well, for example, I need a way to wait up to msecs on just the tasks in the CompositeTask.
+> 
+> You can use a java.util.Timer task to send out a
+> CompositeTask.cancelAll at the timeout period. (It is harmless if the
+> cancel goes out even though they are all finished, and probably
+> cheaper to leave it this way rather than cancelling the cancellation.)
+
+Unless i'm missing something, that isn't sufficient because it provides no synchronization.
+What i want is something that says "wait at most msecs for everything to be done; if they
+all finish sooner, return as soon as that is true; if some are not done at msecs, then
+cancel/interrupt them and return".
+
+Even better would be if CompositeTask had methods like:
+   int getNumberDoneOk();
+   int getNumberDoneException();
+   int getNumberCancelled(); // cancel() called before they were started
+   int getNumberTimeout(); // started but not done by the timeout
+Those being the 4 possible final states I can imagine.
+
+It would be ok if those above functions can only be called after I have called my desired:
+  void waitAll(long msecs); // wait at most msecs for all to be done; kill the ones not done by then
+
+-mda
+
+
+
+
+
+
+From msabin@interx.com Sun, 3 Feb 2002 08:20:34 -0000
+Date: Sun, 3 Feb 2002 08:20:34 -0000
+From: Miles Sabin msabin@interx.com
+Subject: [concurrency-interest]RE: comments on Executor
+
+Doug Lea wrote,
+> The main interaction with Executor classes is that any interrupted 
+> thread should normally be discarded from the pool and replaced with 
+> fresh one. Doing this regularly makes thread pools less efficient 
+> than using a thread per task.
+
+What's the rationale for this?
+
+The only things I can think of that discarding the thread helps with 
+are ThreadLocals which might be left in inconsistent states by 
+cancellation. But surely that's just a special (and perhaps relatively 
+uncommon) case of general global state needing to be managed carefully 
+in cancellable contexts?
+
+So, if in the general case tasks have to clean up on cancellation,
+then why not also require them to do threadLocal.set(null), or
+something equivalent, if cancellation has left threadLocal in a bad 
+state?
+
+Cheers,
+
+
+Miles
+
+-- 
+Miles Sabin                                     InterX
+Internet Systems Architect                      27 Great West Road
++44 (0)20 8817 4030                             Middx, TW8 9AS, UK
+msabin@interx.com                               http://www.interx.com/
+
+
+
+
+
+From dl@cs.oswego.edu Sun, 3 Feb 2002 07:46:14 -0500
+Date: Sun, 3 Feb 2002 07:46:14 -0500
+From: Doug Lea dl@cs.oswego.edu
+Subject: [concurrency-interest]RE: comments on Executor
+
+Miles wrote:
+
+> Doug Lea wrote,
+> > The main interaction with Executor classes is that any interrupted 
+> > thread should normally be discarded from the pool and replaced with 
+> > fresh one. Doing this regularly makes thread pools less efficient 
+> > than using a thread per task.
+> 
+> What's the rationale for this?
+
+A confluence of small reasons, that might each be addressible, but together
+made this the best choice at least for dl.util.concurrent
+
+* ThreadLocals, as you note
+* It can otherwise be difficult to distinguish an interruption
+  originating from inside tasks versus interruptions from the Executor
+  itself to shut down the thread or pool. 
+* People used to report that in some JVMs, interrupted threads seemed
+  to randomly misbehave after a while. This was presumably due to JVM
+  bugs (hopefully now fixed) or maybe the user code was broken, but
+  after I adopted this (about 2 years ago?), complaints stopped.  (One
+  difference between designing my package and creating an official
+  spec is that I was obligated to make many things work across common
+  JVM bugs and oddities. A spec shouldn't.)
+  
+> So, if in the general case tasks have to clean up on cancellation,
+> then why not also require them to do threadLocal.set(null), or
+> something equivalent, if cancellation has left threadLocal in a bad 
+> state?
+
+This is difficult for user code to pull off.  As you know, there is no
+way to clear ALL the ThreadLocals for a given thread, and security
+concerns argue against having such a method. Although it might be
+worth investigating having a specialized version that can be called
+only within trusted code base?
+
+-Doug
+
+PS List Adminstrivia: I set the ("mailman" based) mailing list settings
+to prefix list mail subject lines with "[concurrency-interest]" so
+they are easier to distinguish.
+
+
+
+
+From msabin@interx.com Sun, 3 Feb 2002 13:06:00 -0000
+Date: Sun, 3 Feb 2002 13:06:00 -0000
+From: Miles Sabin msabin@interx.com
+Subject: [concurrency-interest]RE: comments on Executor
+
+Doug Lea wrote,
+> Miles Sabin wrote,
+> > So, if in the general case tasks have to clean up on cancellation,
+> > then why not also require them to do threadLocal.set(null), or
+> > something equivalent, if cancellation has left threadLocal in a 
+> > bad state?
+>
+> This is difficult for user code to pull off.  As you know, there is 
+> no way to clear ALL the ThreadLocals for a given thread, and 
+> security concerns argue against having such a method. Although it 
+> might be worth investigating having a specialized version that can 
+> be called only within trusted code base?
+
+Isn't this just an application design issue tho'? User code intended
+for interruptible contexts ought to be able to clean up after itself
+(which might mean keeping references to ThreadLocals handy, amongst
+other things), and we shouldn't have to worry about system code,
+because that's guaranteed to behave correctly, obviously ;-)
+
+So, I guess my worry is that the rationale boils down to defensivness
+in the face of broken JVMs and/or user code which isn't designed to
+cope with cancellation. That's not unreasonable, but it does impose a
+significant performance penalty where cancellation is used heavily.
+
+That said, I'm open to the counter-argument that software which makes 
+heavy use of async cancellation gets what it deserves.
+
+Cheers,
+
+
+Miles
+
+-- 
+Miles Sabin                                     InterX
+Internet Systems Architect                      27 Great West Road
++44 (0)20 8817 4030                             Middx, TW8 9AS, UK
+msabin@interx.com                               http://www.interx.com/
+
+
+
+
+
+From dl@cs.oswego.edu Sun, 3 Feb 2002 08:10:33 -0500
+Date: Sun, 3 Feb 2002 08:10:33 -0500
+From: Doug Lea dl@cs.oswego.edu
+Subject: [concurrency-interest]Re: comments on Executor
+
+Mark wrote:
+
+> In the lines of your sample code:
+>   public synchronized void cancel() {
+>     if (!isDone()) return;
+> that "!" shouldn't be there, right?
+
+Yes, sorry.
+
+> 
+> Also, how does the Executor know not to interrupt the thread if the cancel() has done so?
+
+PooledExecutor interrupts worker threads, it doesn't know anything
+about the tasks they run. PooledExecutor.interruptAll and related
+shutdown methods just invokes interrupt on all worker threads. So it
+is indeed possible for a task to be cancelled from inside user code,
+but before it has completely terminated, for the pool to be shut down.
+User task code must deal sensibly with receiving multiple
+interruptions.  But this is is no different than writing cancellation
+code in general: you must always be prepared to be interrupted in the
+midst of dealing with another interruption.  If your cancellation
+strategy is "get out quick after minimal cleanup", all is usually well.
+
+> wouldn't
+> it be anti-social for cancel() to kill itself 
+
+You can do all sorts of anti-social things with interruption/cancellation!
+
+> What i want is something that says "wait at most msecs for everything to be done; if they
+> all finish sooner, return as soon as that is true; if some are not done at msecs, then
+> cancel/interrupt them and return".
+
+You can build a custom CompositeRunnableTask that does all this and more.
+I'm not at the moment convinced that there's a more general version
+that would be worth officially supporting.
+
+-Doug
+
+
+
+
+From dholmes@dltech.com.au Mon, 4 Feb 2002 09:43:39 +1000
+Date: Mon, 4 Feb 2002 09:43:39 +1000
+From: David Holmes dholmes@dltech.com.au
+Subject: [concurrency-interest]RE: comments on Executor
+
+> Mark D. Anderson wrote:
+> Also, neither FutureResult nor Callable have a cancel() function
+> that would be used when the Executor shuts it down before it is ready.
+> If the result finishes on its own (even with its own exception
+> other than InterruptedException), then cleanup is its own duty. But if
+> someone is going to shoot it  in the head, it'd be nice if they'd call
+> the cancel() function first.
+
+It is not clear to me what the issue is here. My understanding is that
+executors execute tasks to completion before commencing with the next task.
+This means that a "task group" that was cancelled would consist, at worst,
+of a set of completed tasks, a set of unstarted tasks and a current task
+that could be at any point in its execution. There is obviously no cleanup
+issue with regard to the completed or unstarted tasks.
+
+The task that is in the midst of execution can not be "shot in the head" -
+this is Java - all you can do is ask something to "shoot itself". A
+cancellation request will become evident to a task via an exception -
+typically InterruptedException - and that exception should lead to abrupt
+termination of the task and ultimately the executor thread will lets itself
+die. This means that clean-up is purely within the control of the task
+itself, simply by catching the exception before allowing it to propogate -
+just as if it had been its own exception.
+
+David Holmes
+
+
+
+
+
+From TEREKHOV@de.ibm.com Mon, 4 Feb 2002 08:49:48 +0100
+Date: Mon, 4 Feb 2002 08:49:48 +0100
+From: Alexander Terekhov TEREKHOV@de.ibm.com
+Subject: [concurrency-interest]java.util.concurrent.AtomicX classes and VOLATILE-ACQUIRE/RELEASE memory
+ synchronization semantics
+
+G'Day,
+
+Do java.util.concurrent.AtomicX classes have any
+VOLATILE-ACQUIRE/RELEASE memory synchronization
+semantics? I mean something along the lines of:
+
+http://www.cs.umd.edu/~pugh/java/memoryModel/archive/0855.html
+
+If *NO* then how (preferred/expected way, please)
+one would "insert" extra "memory barriers"?
+
+Thanks!
+
+regards,
+alexander.
+
+
+
+
+
+
+From dl@cs.oswego.edu Mon, 4 Feb 2002 06:09:07 -0500
+Date: Mon, 4 Feb 2002 06:09:07 -0500
+From: Doug Lea dl@cs.oswego.edu
+Subject: [concurrency-interest]java.util.concurrent.AtomicX classes and VOLATILE-ACQUIRE/RELEASE memory
+ synchronization semantics
+
+> Do java.util.concurrent.AtomicX classes have any
+> VOLATILE-ACQUIRE/RELEASE memory synchronization
+> semantics? 
+
+Yes. Hardly any of the javadoc for the AtomicX classes
+is currently in place, but they will say this.
+
+It's nice to have an easy question for a change :-)
+
+-Doug
+
+
+
+
+From TEREKHOV@de.ibm.com Mon, 4 Feb 2002 14:06:01 +0100
+Date: Mon, 4 Feb 2002 14:06:01 +0100
+From: Alexander Terekhov TEREKHOV@de.ibm.com
+Subject: [concurrency-interest]Re: Interface Condition - bind/unbind ?!
+
+[...Condition.await() and Condition.awaitUninterrupibly()...]
+
+Personally, I would greatly appreciate if the level of presented
+details/description with respect to condvars/locks/etc would
+match (at least ;-) the following***:
+
+http://www.opengroup.org/onlinepubs/007904975/functions/pthread_cond_wait.html
+http://www.opengroup.org/onlinepubs/007904975/functions/pthread_cond_signal.html
+http://www.opengroup.org/onlinepubs/007904975/xrat/xsh_chap02.html#tag_03_02_09
+
+regards,
+alexander.
+
+[***] Brand new and now official POSIX.1-2001/SUSv3 PDF-links:
+
+http://www.opengroup.org/publications/mem-online/c950/c950.pdf
+http://www.opengroup.org/publications/mem-online/c951/c951.pdf
+http://www.opengroup.org/publications/mem-online/c952/c952.pdf
+http://www.opengroup.org/publications/mem-online/c953/c953.pdf
+http://www.opengroup.org/publications/mem-online/c610/c610.pdf
+
+Registration and free membership to get access:
+
+http://www.opengroup.org/austin
+
+regards,
+alexander.
+
+---------------------- Forwarded by Alexander Terekhov/Germany/IBM on
+02/04/2002 02:02 PM ---------------------------
+
+
+
+
+
+Alexander Terekhov
+02/02/2002 11:56 PM
+
+
+To:   concurrency-interest@altair.cs.oswego.edu
+cc:
+
+From: Alexander Terekhov/Germany/IBM@IBMDE
+Subject:  Re: Interface Condition - bind/unbind ?!
+Importance:    Normal
+
+
+
+> The awaitUninterrupibly method is like POSIX. I agree that sometimes
+> you want a completely uncancellable wait, but not often; mainly for
+> use in recovery code and the like. Otherwise it makes life difficult
+> for people trying to manage cancellation.
+
+hmmm... here is the POSIX Rationale:
+
+"There are several important blocking routines that
+ are specifically not made cancelation points:
+ - pthread_mutex_lock()
+ If pthread_mutex_lock() were a cancelation point,
+ every routine that called it would also become a
+ cancelation point (that is, any routine that touched
+ shared state would automatically become a cancelation
+ point). For example, malloc(), free(), and rand()
+ would become cancelation points under this scheme.
+ Having too many cancelation points makes programming
+ very difficult, leading to either much disabling and
+ restoring of cancelability or much difficulty in trying
+ to arrange for reliable cleanup at every possible
+ place.
+ Since pthread_mutex_lock() is not a cancelation point,
+ threads could result in being blocked uninterruptibly
+ for long periods of time if mutexes were used as a
+ general synchronization mechanism. As this is normally
+ not acceptable, mutexes should only be used to protect
+ resources that are held for small fixed lengths of time
+ where not being able to be canceled will not be a problem.
+ Resources that need to be held exclusively for long periods
+ of time should be protected with condition variables.
+ - pthread_barrier_wait()
+ Canceling a barrier wait will render a barrier unusable.
+ Similar to a barrier timeout (which the standard developers
+ rejected), there is no way to guarantee the consistency
+ of a barrier's internal data structures if a barrier wait
+ is canceled***.
+ - pthread_spin_lock()
+ As with mutexes, spin locks should only be used to protect
+ resources that are held for small fixed lengths of time where
+ not being cancelable will not be a problem."
+
+Also, it is my understanding that in POSIX, cancellation
+points do not throw once the process is already underway.
+
+> See today's other thread.
+
+You mean Executor stuff? Well, I am moving very slowly ;-)
+I am still on the level of locks and condvars! ;-) For
+example, general semantics/interactions/use-cases for
+waiting and signaling on condvars associated with
+read{write}locks, semas (in "non-mutex" mode), etc
+is still in total darkness for me. :(
+
+regards,
+alexander.
+
+[***] This, I guess, explains why you have
+      boolean CyclicBarrier.isBroken() and
+      BrokenBarrierException.
+
+Doug Lea <dl@cs.oswego.edu>@altair.cs.oswego.edu on 02/02/2002 10:40:33 PM
+
+Please respond to dl@cs.oswego.edu
+
+Sent by:  concurrency-interest-admin@altair.cs.oswego.edu
+
+
+To:   concurrency-interest@altair.cs.oswego.edu
+cc:
+Subject:  Re: Interface Condition - bind/unbind ?!
+
+
+
+
+Alexander wrote:
+
+> Could you please clarify this bit as well?
+> (I mean what happens if a thread gets interrupted
+>  while contending for a *lock*, AFTER consuming a
+>  signal/timeout, and perhaps the ideas behind
+>  interruptible *mutex* locking in general...,
+>  well, interruptible semaphores are OK, but
+>  mutexes... hmmm)
+
+There are two methods, Condition.await() and
+Condition.awaitUninterrupibly().  (And similarly Lock.acquire() and
+Lock.acquireUninterruptibly())
+
+The awaitUninterrupibly method is like POSIX. I agree that sometimes
+you want a completely uncancellable wait, but not often; mainly for
+use in recovery code and the like. Otherwise it makes life difficult
+for people trying to manage cancellation. See today's other thread.
+
+The plain await() method may throw an InterruptedException only while
+waiting to be notified, but must use acquireUninterruptibly upon lock
+reacquisition.  (See the CondVar class in dl.util.concurrent for one
+way to do this.)
+
+You are right that a ReentrantLock class will have to save and restore
+lock count, but we make this possible by associating Condition
+implementations with their Lock classes, so the implementators can get
+at internal lock state to accomplish this.
+
+We will surely nail down the relationships between notification and
+interruption very carefully, since the lack of precision about such
+things with Object.wait has been a concern of several of us on the
+expert group for many years now.
+
+-Doug
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+
+
+
+
+
+From mda@discerning.com Mon, 4 Feb 2002 19:12:20 -0800
+Date: Mon, 4 Feb 2002 19:12:20 -0800
+From: Mark D. Anderson mda@discerning.com
+Subject: [concurrency-interest]proposal for Executor, Future, SharedExecutor
+
+Below is proposal with code for the following:
+
+- a "FutureExecutor" interface that seems better to me than existing proposals
+
+- a "SharedExecutor" that implements FutureExecutor and allows a set of Runnables
+to be managed as a group, yet actually be executed by a separate FutureExecutor
+that can be shared by multiple wrapping SharedExecutors.
+
+- a subclass of dl's PooledExecutor that also implements FutureExecutor.
+It is used by SharedExecutor as a demonstration.
+
+Some comments:
+
+- the code is written (and tested) using dl's existing EDU package. Wherever
+a FutureResult is, imagine a Future.
+
+- there are calls to a Log package which is not included but which does the
+obvious thing.
+
+- the EDU package has execute() raising an InterruptedException, while it
+does not in the java.util proposal. I'm following the newer proposal.
+
+- the EDU package has a Callable with no args, while the java.util proposal 
+has one arg. I'm following the older package. It is easy enough to bind
+a closure, even in java. Carrying around the extra arg is inconvenient, 
+while still not being compatible with any other class, say with
+java.lang.reflect.Method.
+
+- Except I withdrew all use of Callable in my (Future)Executor interface anyway.
+It is just too messy dealing with all these task-like objects: Callable,
+Runnable, Future, RunnableTask, TimerTask, etc.
+So now I am just using Runnable and FutureResult (aka Future) in the interface.
+In most cases I can imagine, a Callable will get wrapped by a Future
+anyway. And Executors just want to know about Runnables.
+
+- I have provided a FutureExecutorAbstract implementation class that provides
+convenience execute() functions that handle the different task-like
+objects through a subclass of Future(Result) called MyFuture.
+
+- Note that there is no CompositeTask interface. Instead I'm just using my
+(modified) FutureExecutor interface for that purpose. I consider the concept I
+want for task grouping to be more akin to an Executor than a Runnable, and
+anyway I think some interesting things (as shown here with a stacked executor)
+can be done if the interfaces are reused.
+
+- I have added interruption to the FutureExecutor interface. I could imagine
+that it could be added as an expanded FutureResult interface, but really,
+the Executor is the one that knows about threads, so I think it belongs there.
+
+- I have also put cancellation into FutureExecutor, except that I have
+called it "unqueue" :). In this terminology, an "unqueue" is an action that
+Executors do to prevent an unrun task from being run.
+A  particular Future/FutureResult/Callable/etc. might
+implement a cancel() function their desired behavior
+if they never get run (because they are unqueued), or if they discover
+isCancelled while running, or because they want cancel() to be called
+prior to interrupt().
+According to a policy class TBD, Executor calls that cancel() function upon
+unqueue().
+
+- I have put a cancel() (in the non-unqueue sense) function in MyFuture.
+I think that putting cancel() into yet a 3rd interface ("RunnableTask"
+or whatever) just gets really ungainly, unless in practice the classes
+actually used will implement multiple interfaces.
+Otherwise there just get to be too many "execute()" methods, etc.
+I think it should be added to Future, since that has other state methods
+anyway.
+
+- I have a waitAll() method in FutureExecutor which I find more
+convenient and easier to decipher than the interface in DL's PooledExecutor,
+which is a combination of shutdownAfterProcessingCurrentlyQueuedTasks(), 
+awaitTerminationAfterShutdown(msecs) and shutdownNow().
+It also takes a parameter for timeout policy, which includes interrupting
+or not.
+
+-mda
+------------------------------
+/* 
+ * Mark D. Anderson, mda@discerning.com. 
+ * February 2002. 
+ * Released under the same public domain terms as Doug Lea's concurrent package.
+*/
+package whatever;
+import Log;
+
+import EDU.oswego.cs.dl.util.concurrent.Callable;
+import EDU.oswego.cs.dl.util.concurrent.FutureResult;
+import EDU.oswego.cs.dl.util.concurrent.PooledExecutor;
+import EDU.oswego.cs.dl.util.concurrent.TimeoutException;
+
+import java.lang.reflect.InvocationTargetException;
+import java.lang.InterruptedException;
+import java.util.Iterator;
+import java.util.Collection;
+
+public class Concurrent {
+
+   /**
+    * A Future with conventient constructors for use with Callable and Runnable.
+    * Also has a cancel() function.
+    */
+   public static class MyFuture extends FutureResult /* implements Future */ {
+      Runnable runnable_;
+
+      public Runnable getRunnable() {return runnable_;}
+      public void setRunnable(Runnable runnable) {runnable_ = runnable;}
+      /**
+       * Create a another runnable which will call this wrapped runnable and
+       * then set the value to null.
+       * Does not change the state of this object.
+       */
+      public Runnable wrap(final Runnable runnable) {
+         return new Runnable() {
+               public void run() {
+                  try {
+                     runnable.run();
+                     set(null);
+                  }
+                  catch(Throwable ex) {
+                     setException(ex);
+                  }
+               }
+            };
+      }
+      public void setWrappedRunnable(Runnable runnable) {setRunnable(wrap(runnable));}
+
+      public MyFuture(Callable callable) {setRunnable(this.setter(callable));}
+
+      /**
+       * The runnable stored in the instance is actually a wrapping Runnable, not
+       * the one passed in.
+       */
+      public MyFuture(Runnable runnable) {setWrappedRunnable(runnable);}
+
+      boolean isCancelled_ = false;
+      public synchronized void setCancelled(boolean isCancelled) {isCancelled_ = isCancelled;}
+      public synchronized boolean isCancelled() {return isCancelled_;}
+      /**
+       * The base class implementation does nothing but set a boolean.
+       */
+      public synchronized void cancel() {setCancelled(true);}
+    };
+
+
+   /**
+    * handler to implement policy about timed out Runnables
+    */
+   interface FutureTimeoutHandler {
+      /**
+       * @return true if the handling was successful, whatever that is considered to mean
+       */
+      boolean timeout(FutureResult future, Runnable runnable);
+   }
+
+
+   /**
+    * Execute a set of Runnables.
+    */
+   interface FutureExecutor /* extends Executor */ {
+      /**
+       * Execute the supplied Runnable, which will result in setting this Future.
+       * It is up to the caller to tie them together, before calling this method.
+       * (The supplied Runnable might for example come from calling the FutureResult's setter() method.)
+       * <p>
+       * (TBD: can any control be done through the FutureResult/Future?)
+       * (Note: unlike EDU package, this does not throw InterruptedException)
+       * (TBD: allow future to be null, if just execution is desired?)
+       */
+      void execute(FutureResult future, Runnable runnable); 
+
+      /**
+       * Collection of all the Futures
+       */
+      java.util.Collection futures();
+
+      /**
+       * Collection of all the Runnables
+       */
+      java.util.Collection runnables();
+
+      /**
+       * Wait up to msecs for all to complete.
+       * If all complete sooner, then return when that happens.
+       * If some are not done at the timeout point, then the timeout_handler
+       * is called on each of them (if timeout_handler is not null, in which
+       * case they are left as is.)
+       * <p>
+       * (TBD: also whether to call cancel() on the incomplete ones, if
+       * the Runnable or FutureResult has such a method.)
+       *
+       * @return the number which were not done at the timeout point
+       *   (returns 0 if all got done before timeout).
+       * @exception InterruptedException if this is interrupted (should not generally happen)
+       */
+      int waitAll(long msecs, FutureTimeoutHandler timeout_handler) throws InterruptedException;
+
+      /** 
+       * interrupt the given Runnable if it is currently running (assigned to a thread).
+       * if it is not yet running, it is unqueue'd (TBD: make this controllable?).
+       * <p>
+       * (TBD: this could take a FutureResult as a parameter instead.)
+       * (TBD: if the Runnable or FutureResult is a class that has a cancel() function, it gets called.)
+       * (Note: this is called "interruptTask" just for my clarity; for symmetry it should
+       * just be called "interrupt").
+       *
+       * @return true if it was running, and an interrupt was delivered, or 
+       *   if it was not yet running, the result of unqueue().
+       * @exception IllegalArgumentException Might throw upon an unknown Runnable.
+       */
+      boolean interruptTask(Runnable runnable);
+
+      /** 
+       * Unqueue the particular runnable. 
+       * If it is already running or done, the Executor does nothing and returns false.
+       * If it is not yet running, the Executor arranges to never run it, and returns
+       * true if it was not previously unqueued.
+       * <p>
+       * (TBD: if the Runnable or FutureResult is a class that has a cancel() function, it gets called.)
+       * (TBD: this could take a FutureResult as a parameter instead.)
+       * <p>
+       * Note that unqueue() and interruptTask() do not actually remove a runnable from an Executor;
+       * they just change the state. (TBD: need a "List drain()" function too? unqueueAll?)
+       *
+       * @return returns true if it was not yet running, and it was not previously unqueued.
+       */
+      boolean unqueue(Runnable runnable);
+   }
+
+
+   /**
+    * extra convenience methods
+    */
+   public static abstract class FutureExecutorAbstract implements FutureExecutor {
+      /**
+       * A FutureTimeoutHandler that cancel's if supported, and interrupts.
+       */
+      public class InterruptHandler implements FutureTimeoutHandler {
+         public boolean timeout(FutureResult future, Runnable runnable) {
+            // maybe cancel it
+            try {
+               // if has a cancel() function, cancel it
+               // TBD: this is ugly; perhaps we could just insist on Future having a cancel().
+               if (runnable instanceof java.util.TimerTask) { ((java.util.TimerTask)runnable).cancel(); }
+               if (future instanceof MyFuture) { ((MyFuture)future).cancel(); }
+            }
+            catch(Throwable e) {Log.warn("got exception while canceling", e);}
+
+            // interrupt it.
+            // TODO: avoid duplicate interrupts somehow
+            try {
+               return interruptTask(runnable);
+            }
+            catch(Throwable e) {Log.warn("got exception while interrupting", e);}
+            return false;
+         }
+      }
+
+      /**
+       * Same as execute(future, future.getRunnable()).
+       * @return the parameter.
+       */
+      MyFuture execute(MyFuture future) {execute(future, future.getRunnable()); return future;}
+
+      /**
+       * Same as execute(new MyFuture(callable)).
+       * Returns the MyFuture created, and from that you can extract the Runnable that
+       * is going to be used.
+       */
+      MyFuture execute(Callable callable) {return execute(new MyFuture(callable));}
+
+      /**
+       * Same as execute(new MyFuture(runnable)).
+       * Note that the parameter runnable is <em>not</em> the one used by the Executor;
+       * rather a wrapping one is used, which may be retrieved by future.getRunnable().
+       * <p>
+       * (temporary: using "executeTask" to avoid potential conflict with EDU "void execute(Runnable)")
+       */
+      MyFuture executeTask(Runnable runnable) {return execute(new MyFuture(runnable));}
+
+      /**
+       * Same as waitAll(msecs, interrupt_incomplete ? new InterruptHandler() : null);
+       * if interrupt_incomplete is false, then the ones not done are just
+       * left as they are.
+       */
+      int waitAll(long msecs, boolean interrupt_incomplete) throws InterruptedException {
+         return waitAll(msecs, interrupt_incomplete ? new InterruptHandler() : null);
+      }
+
+      /**
+       * implementation of waitAll. Requires that the subclass implement getRunnable
+       * if it doesn't override waitAll.
+       */
+      protected abstract Runnable getRunnable(FutureResult future, int index);
+
+      public int waitAll(long max_msecs, FutureTimeoutHandler timeout_handler) {
+         long wait_msecs = max_msecs;
+         long start_msecs = System.currentTimeMillis();
+         boolean is_time_left = true;
+         int num_unready = 0;
+         int ind = 0;
+         for(Iterator it=futures().iterator(); it.hasNext(); ++ind) {
+            FutureResult future = (FutureResult)it.next();
+            /*
+            if (!future.isReady()) {
+               future.timedGet(wait_msecs);
+            }
+            */
+
+            // TODO: isn't there a risk i'll block on synchronize?
+            synchronized(future) {
+               // RunnableTask.isDone()
+               // java.util.concurrent.Future.isAvailable
+               boolean is_done = future.isReady();
+               if (!is_done) {
+                  // some time remaining, wait on it 
+                  if (is_time_left) {
+                     // assumes that a future will notify
+                     try {future.wait(wait_msecs);} // InterruptedException
+                     catch(InterruptedException e) {Log.warn("got exception while waiting for future " + ind + ": " + e);}
+                     is_done = future.isReady();
+
+                     wait_msecs = max_msecs - (System.currentTimeMillis() - start_msecs);
+                     if (wait_msecs <= 0) is_time_left = false;
+                     else {if (!is_done) Log.warn("time still left, yet future is still not done: " + wait_msecs + " msecs");}
+                  }
+                  if (!is_done) {
+                     num_unready++; 
+                     Log.debug("future timed out, index ", ind);
+                     if (timeout_handler != null) {
+                        timeout_handler.timeout(future, getRunnable(future, ind));
+                     }
+                  }
+               }
+            }
+         }
+         return num_unready;
+      }
+
+
+
+      /** 
+       * iterates through the list interrupting each one.
+       *
+       * @return the number for which interruptTask() returned true.
+       * @exception IllegalArgumentException Might throw upon an unknown Runnable.
+       */
+      public int interruptAll(Iterator runnables) {
+         int count = 0;
+         while(runnables.hasNext()) {
+            Runnable command = (Runnable)runnables.next(); 
+            if (interruptTask(command)) ++count;
+         }
+         return count;
+      }
+
+      /** 
+       * Interrupts all Runnables which are currently running (assigned to a thread).
+       * (Note: temporarily named "interruptAllTasks" to avoid conflict with PooledExecutor.)
+       * 
+       * @return the number for which interruptTask() returned true.
+       */
+      //int interruptAll();
+      int interruptAllTasks() {return interruptAll(runnables().iterator());}
+   }
+
+
+   /**
+    * subclass of DL's PooledExecutor so that:
+    * <ul>
+    * <li>i can track what Runnable each Worker is doing.
+    * <li>i can implement cancellation
+    * <li>the other functions in FutureExecutor
+    * </ul>
+    *
+    */
+   public static class MyPooledExecutor extends PooledExecutor implements FutureExecutor {
+      /*
+       * additional instance variables
+       */
+      java.util.Map cancelled_ = new java.util.HashMap();
+      protected java.util.Map getCancelled() {return cancelled_;}
+
+      /*
+       * subclass PooledExecutor.Worker so i can track the current task, and so
+       * i can avoid running cancelled ones
+       */
+      protected class MyWorker /*implements Runnable*/ extends PooledExecutor.Worker {
+         protected Runnable currentTask_;
+
+         // protected MyWorker(Runnable firstTask) { currentTask_ = firstTask; }
+         protected MyWorker(Runnable firstTask) { super(null); currentTask_ = firstTask; }
+
+         
+         public synchronized boolean interruptIf(Runnable task, Thread t) {
+            if (task == currentTask_) {t.interrupt(); return true;}
+            return false;
+         }
+         public synchronized Runnable nextTask() throws InterruptedException {
+            while (true) {
+               currentTask_ = getTask(); // InterruptedException
+               if (currentTask_ == null || !getCancelled().containsKey(currentTask_)) 
+                  return currentTask_;
+               Log.debug("skipping removed task");
+               getCancelled().remove(currentTask_);
+            }
+         }
+         
+         public void run() {
+            try {
+               if (currentTask_ != null)
+                  currentTask_.run();
+
+               while (nextTask() != null)
+                  currentTask_.run();
+
+            }
+            catch (InterruptedException ex) { } // fall through
+            finally {
+               workerDone(this);
+            }
+         }
+      }
+
+      /*
+       * constructor
+       */
+
+      public MyPooledExecutor(int max_threads) {super(max_threads);}
+
+      /*
+       * stuff to implement the FutureExecutor interface, or pretend to.
+       * the ones that aren't really implemented properly (futures(), 
+       * runnables(), waitAll()) are also not currently used by SharedExecutor.
+       */
+      public void execute(FutureResult future, Runnable runnable) {
+         // TODO: when can this throw? the new proposed Executor interface doesn't do so
+         try {execute(runnable);}
+         catch(InterruptedException e) {
+            Log.warn("execute got interrupted", e); 
+            throw new Error("execute got interrupted: " + e.getMessage());
+         }
+      }
+      public Collection futures() {throw new Error("unimplemented");}
+      public Collection runnables() {throw new Error("unimplemented");}
+      public int waitAll(long max_msecs, FutureTimeoutHandler timeout_handler) throws InterruptedException {
+         shutdownAfterProcessingCurrentlyQueuedTasks();
+         if (awaitTerminationAfterShutdown(max_msecs)) {
+            // BUG: we assume that if timeout_handler is not null, we want to interrupt
+            if (timeout_handler != null) shutdownNow();
+            // BUG: no convenient way to know how many we interrupted
+            return 1;
+         }
+         return 0;
+      }
+
+      /**
+       * remove a task that does not yet have a worker.
+       * <p>
+       * doing this with handOff_ looks horrifically ugly, like
+       * draining them all, then putting back the ones that were not removed.
+       * so instead we maintain a hash of cancelled ones, and skip
+       * them when they are taken.
+       */
+      public synchronized boolean unqueue(Runnable command) {
+         cancelled_.put(command, null);
+         // BUG: we have no way to easily tell if it is queued, so we always return true.
+         return true;
+      }
+
+      /**
+       * interrupt the particular Runnable.
+       * <p>
+       * synchronized since doing things with threads_.
+       * addThread is inside synchronized(this), so maybe this is sufficient?
+       * except that shutdown_ is set true in PooledExecutor to prevent queuing/handoff.
+       * so are we in danger of a task being moved between handoff_ and threads_
+       * while we are doing this?
+       * we could set shutdown_ = true, but then that might cause an error if a
+       * new task comes into execute. what we want to do is prevent just new taking,
+       * not new executing.
+       */
+      public synchronized boolean interruptTask(Runnable command) {
+         for (Iterator it = threads_.entrySet().iterator(); it.hasNext(); ) {
+            java.util.Map.Entry entry = (java.util.Map.Entry)it.next();
+            MyWorker w = (MyWorker)entry.getKey();
+            if (w.interruptIf(command, (Thread)(entry.getValue()) ) ) {
+               Log.debug("interrupted runnable " + command);
+               return true;
+            }
+            /*if (w.currentTask_ == command) {
+               Thread t = (Thread)(entry.getValue());
+               t.interrupt();
+               return true;
+            }*/
+         }
+         Log.warn("did not find a worker running task " + command + "; making sure it isn't queued");
+         return unqueue(command);
+      }
+
+      // override base class method to use MyWorker
+      protected void addThread(Runnable command) {
+         Worker worker = new MyWorker(command);
+         Thread thread = getThreadFactory().newThread(worker);
+         threads_.put(worker, thread);
+         ++poolSize_;
+         thread.start();
+      }
+
+      // could override workerDone too, if wanted to not have to subclass Worker
+      /*
+      protected synchronized void workerDone(MyWorker w) {
+         threads_.remove(w);
+         if (--poolSize_ == 0 && shutdown_) {
+            maximumPoolSize_ = minimumPoolSize_ = 0; // disable new threads
+            notifyAll(); // notify awaitTerminationAfterShutdown
+         }
+      }
+      */
+
+   }
+
+
+   /**
+    * A FutureExecutor which allows group-wise operations on the tasks submitted to it,
+    * but actual execution is controlled by an underlying FutureExecutor shared among
+    * multiple SharedExecutors.
+    * <p>
+    * This is not thread safe, though we rely on the shared Executor underneath us to be so.
+    * We do not expect to have more execute'd while we are waiting, 
+    * and we use ArrayList.
+    */
+   public static class SharedExecutor extends FutureExecutorAbstract { 
+      java.util.List runnables_;
+      java.util.List futures_;
+
+      FutureExecutor shared_;
+      //MyPooledExecutor shared_;
+
+      public SharedExecutor(/*MyPooledExecutor*/FutureExecutor executor, int capacity) {
+         super();
+         shared_ = executor;
+         runnables_ = new java.util.ArrayList(capacity);
+         futures_ = new java.util.ArrayList(capacity);
+      }
+
+      public Collection futures() {return futures_;}
+      public Collection runnables() {return runnables_;}
+      public Runnable getRunnable(FutureResult future, int ind) {return (Runnable)runnables_.get(ind);}
+
+      public void execute(FutureResult future, Runnable runnable) {
+         futures_.add(future);
+         runnables_.add(runnable);
+         shared_.execute(future, runnable);
+      }
+
+      public boolean interruptTask(Runnable runnable) {
+         return shared_.interruptTask(runnable);
+      }
+
+      public boolean unqueue(Runnable runnable) {
+         return shared_.unqueue(runnable);
+      }
+   }
+}
+
+
+
+
+
+From mda@discerning.com Mon, 4 Feb 2002 21:51:36 -0800
+Date: Mon, 4 Feb 2002 21:51:36 -0800
+From: Mark D. Anderson mda@discerning.com
+Subject: [concurrency-interest]proposal for Executor, Future, SharedExecutor
+
+of course, now that i've posted this i've already started thinking of changes.
+in particular, i'm now thinking that forcing the runnables() and futures() methods
+on the interface is too onerous, and not necessary.
+
+i've also been brainstorming.other ways of dealing with the Future/Runnable/Callable
+problem, and having a handle to ask the Executor to do things (interrupt, unqueue, wait).
+
+but the proposal as it stands should still be enough for discussion.
+
+-mda
+
+
+
+
+
+
+From paul@paulhaahr.com Tue,  5 Feb 2002 13:42:08 -0800 (PST)
+Date: Tue,  5 Feb 2002 13:42:08 -0800 (PST)
+From: Paul Haahr paul@paulhaahr.com
+Subject: [concurrency-interest]some superficial comments
+
+Having spent a little while catching up on Doug's aims page and the mail
+to this list, I have little to add about the cancellation issues already
+being discussed:  RunnableTask looks clean and sufficient to me, though
+the resetCompletionStatus method bugs me.
+
+But, I would like to throw my two cents in on some naming and syntactic
+issues that are in the air:
+
+Locks:
+
+  Rather than the name attempt, I'd much prefer to use tryAcquire.
+
+Queues:
+
+  I hate the name HandOff.  Why not SynchronousQueue or RendezvousQueue?
+  (Yes, I know calling it a queue might be misleading since it doesn't
+  contain any elements, but I'd argue that, since it implements the
+  Queue interface, it's a queue.)
+
+Barriers:
+
+  I like the name BrokenBarrierException -- it's clear.
+
+Executors:
+
+  I agree with Mark that there doesn't appear to be a good reason to
+  make Callable take an argument:  this should typically just be a inner
+  class closure, like Runnable.
+
+SynchronizationAttributes:
+
+  These attributes objects seem like conceptual overhead.  I'd rather
+  just see the predicates as methods in the Lock objects.
+
+--p
+
+
+
+
+From mda@discerning.com Wed, 6 Feb 2002 09:48:36 -0800
+Date: Wed, 6 Feb 2002 09:48:36 -0800
+From: Mark D. Anderson mda@discerning.com
+Subject: [concurrency-interest]yet another proposal for Executor
+
+my previous proposal does cover additional things (in particular, SharedExecutor), but
+here is another idea that actually comes back to being closer to DL's proposal.
+
+i like this one even better :)
+
+Some features:
+
+- now cancel() is part of Callable()
+
+- instead of unqueue() and interrupt() being part of Executor, they
+are part of the ControllableFuture (don't you like that name?) which
+is returned by FutureExecutor.execute().
+This is convenient for the client programmer and more efficient for implementor.
+
+- using the interfaces, waitAll() can now be an external static function
+
+-mda
+------------
+
+public interface Callable {
+  Object call() throws Exception;
+  /** to be called before interrupting or unqueueing */
+  void cancel();
+}
+
+public interface ControllableFuture extends Future {
+  /** 
+   * States are: QUEUED, UNQUEUED, RUNNING, DONE_EXCEPTION, DONE_OK
+   * Note that there is no INTERRUPTED, since we can't know how that'll be dealt with.
+   * isAvailable() == (state == DONE_EXCEPTION || state == DONE_OK)
+   */
+  int getState();
+  boolean unqueue();
+  boolean interrupt();
+  boolean isInterrupted();
+  /** something to synchronize() on to prevent change in state, etc. */
+  Object getSynchronizable()
+  /** something to wait() on if it is not done. should be done inside synchronize. */
+  Object getWaitable();
+}
+
+public interface FutureExecutor {
+  ControllableFuture execute(Runnable runnable);
+  ControllableFuture execute(Callable callable);
+}
+
+public interface FutureTimeoutHandler {
+   boolean timeout(ControllableFuture future, int index);
+}
+
+public static int waitAll(Iterator controllable_futures, long max_msecs, FutureTimeoutHandler timeout_handler) {
+  long wait_msecs = max_msecs;
+  long start_msecs = System.currentTimeMillis();
+  boolean is_time_left = true;
+  int num_unqueued = 0;
+  int num_timed_out = 0;
+  int ind = -1;
+  while(controllable_futures.hasNext()) {
+    ControllableFuture future = (ControllableFuture)controllable_futures.next();
+    ++ind;
+
+    // TODO: isn't there a risk i'll block on synchronize?
+    synchronized(future.getSynchronizable()) {
+      int state = future.getState();
+      if (state == STATE_UNQUEUED) {++num_unqueued; continue;}
+      if (state == STATE_DONE_OK || state == STATE_DONE_EXCEPTION) {continue;}
+
+      boolean timed_out = true;
+      // some time remaining, wait on it 
+      if (is_time_left) {
+         // assumes that a future will notify
+         try {future.getWaitable().wait(wait_msecs);} // InterruptedException
+         catch(InterruptedException e) {Log.warn("got exception while waiting for future " + ind + ": " + e);}
+         timed_out = !future.isAvailable();
+
+         wait_msecs = max_msecs - (System.currentTimeMillis() - start_msecs);
+         if (wait_msecs <= 0) is_time_left = false;
+         else {if (timed_out) Log.warn("time still left, yet future is still not done: " + wait_msecs + " msecs");}
+      }
+      if (timed_out) {
+         ++num_timed_out; 
+          Log.debug("future timed out, index ", ind);
+          if (timeout_handler != null) {
+             timeout_handler.timeout(future, ind);
+          }
+          // TODO: maybe see if this made it change its state? can it do so while we are synchronized?
+       }
+     }
+  }
+  return num_unqueued + num_timed_out;
+}
+
+
+
+
+
+
+From dholmes@dltech.com.au Thu, 7 Feb 2002 07:56:20 +1000
+Date: Thu, 7 Feb 2002 07:56:20 +1000
+From: David Holmes dholmes@dltech.com.au
+Subject: [concurrency-interest]yet another proposal for Executor
+
+Mark D. Anderson wrote:
+> public interface Callable {
+>   Object call() throws Exception;
+>   /** to be called before interrupting or unqueueing */
+>   void cancel();
+> }
+
+I'm a little unclear on exactly how cancel() is intended to be used. From
+what I recall it is meant to be a "cleanup function" of some sorts, but is
+to be called *before* actually unqueing/interrupting - right? But if it is
+called before unqueuing then cancel() and run() have to coordinate to ensure
+that if the task is executed before it is unqueued then it won't do anything
+that conflicts with the cancel (presumably check a cancel flag and return).
+But if that is the case then why not unqueue the task first? It would seem
+to me that it is far easier for cancel() to work out what to do if it knows
+that none of the tasks in the group can still execute.
+
+David Holmes
+
+
+
+
+
+From mda@discerning.com Wed, 6 Feb 2002 16:20:44 -0800
+Date: Wed, 6 Feb 2002 16:20:44 -0800
+From: Mark D. Anderson mda@discerning.com
+Subject: [concurrency-interest]yet another proposal for Executor
+
+> I'm a little unclear on exactly how cancel() is intended to be used. From
+> what I recall it is meant to be a "cleanup function" of some sorts, but is
+> to be called *before* actually unqueing/interrupting - right? But if it is
+> called before unqueuing then cancel() and run() have to coordinate to ensure
+> that if the task is executed before it is unqueued then it won't do anything
+> that conflicts with the cancel (presumably check a cancel flag and return).
+> But if that is the case then why not unqueue the task first? It would seem
+> to me that it is far easier for cancel() to work out what to do if it knows
+> that none of the tasks in the group can still execute.
+
+my notion here is that if the Callable is given to an Executor, then cancel()
+is not called directly.
+rather, interrupt() or unqueue() is called on the Executor (or on a handle
+provided by the Executor such as a ControllableFuture).
+
+after handing it to Executor, then interrupt() or unqueue() will call cancel().
+since the Executor is doing it, it can make sure that apropriate synchronization
+is done. (we might consider making it optional whether cancel() is called;
+right now in my prototype code, both will call cancel(). also if the task
+is not yet running, a call to interrupt() will instead do an unqueue()).
+
+the person implementing cancel() for some Callable should write it so that
+it can be called at any time. An example might be this:
+
+class MyCallable implements Callable {
+   Object handle_ = null;
+   Object result_ = null;
+   Object call() {
+      handle_ = get_request_handle(...); // won't block
+      try {result_ = wait_handle(handle_);} // might block, assume non null return
+      catch (InterruptedException e) {
+          System.out.println("i've been interruted");
+         throw e;
+      }
+   }
+
+   boolean cancel() {
+      if (handle_ == null) return false; // not run yet
+      if (result_ != null) return false; // already done
+      if (cancel_request(handle_)) return true;
+      else {System.out.println("cancellation failed!"); return false;}
+   }
+}
+
+-mda
+
+
+
+
+
+
+From dholmes@dltech.com.au Thu, 7 Feb 2002 10:28:30 +1000
+Date: Thu, 7 Feb 2002 10:28:30 +1000
+From: David Holmes dholmes@dltech.com.au
+Subject: [concurrency-interest]yet another proposal for Executor
+
+> after handing it to Executor, then interrupt() or unqueue() will
+> call cancel().
+
+Okay. The docComment on cancel had me confused as to the intent.
+
+> the person implementing cancel() for some Callable should write it so that
+> it can be called at any time. An example might be this:
+
+With suitable synchronization of course - at least volatile for handle_ and
+result_. :)
+
+Cheers,
+David Holmes
+
+
+
+
+
+From dholmes@dltech.com.au Thu, 7 Feb 2002 10:43:54 +1000
+Date: Thu, 7 Feb 2002 10:43:54 +1000
+From: David Holmes dholmes@dltech.com.au
+Subject: [concurrency-interest]yet another proposal for Executor
+
+> the person implementing cancel() for some Callable should write it so that
+> it can be called at any time.
+
+A further clarification - you don't really mean "any time" in the sense that
+cancel() and call() could be executing concurrently do you? Rather it will
+turn out that cancel() with either be invoked before call() is executed, or
+after call() has been "terminated" ??
+
+> class MyCallable implements Callable {
+>    Object handle_ = null;
+>    Object result_ = null;
+>    Object call() {
+>       handle_ = get_request_handle(...); // won't block
+>       try {result_ = wait_handle(handle_);} // might block,
+> assume non null return
+>       catch (InterruptedException e) {
+>           System.out.println("i've been interruted");
+>          throw e;
+>       }
+>    }
+
+I know this is only an example and not necessarily representative of the
+general case, but even assuming you can cancel a request, why bother with
+the cancel function - why not do the cleanup in the catch clause? That was
+my point in the earlier email - the only way you ever get cancelled is by
+the throwing of an exception, which you can always catch and then perform
+cleanup. Further, the catch clause is more likely to have all the context
+you need to do a proper cleanup - without having to store it in fields.
+
+David Holmes
+
+
+
+
+
+From mda@discerning.com Wed, 6 Feb 2002 17:17:51 -0800
+Date: Wed, 6 Feb 2002 17:17:51 -0800
+From: Mark D. Anderson mda@discerning.com
+Subject: [concurrency-interest]yet another proposal for Executor
+
+> > the person implementing cancel() for some Callable should write it so that
+> > it can be called at any time.
+> 
+> A further clarification - you don't really mean "any time" in the sense that
+> cancel() and call() could be executing concurrently do you? Rather it will
+> turn out that cancel() with either be invoked before call() is executed, or
+> after call() has been "terminated" ??
+
+actually, i did mean concurrent.
+
+in my prototype, cancel() is called both from Executor interrupt() (in the
+middle of a call), or from Executor unqueue() (before a call).
+That policy should probably be configurable when an Executor is created
+or when Executor interrupt() is called, because you are correct that the person implementing
+the Callable may not want cancel() called concurrently.
+
+The reason i want to offer at least the option for concurrent cancel
+(even if that isn't the default behavior) is that i have already experienced
+several cases where that is exactly what i want.
+for example, i might want cancel() to close a socket in order to dislodge
+my run() or call(). Or I might have some other api that supports asynchronous
+cancel (some database apis support asynchronous cancel from another thread
+as one of the few operations that can be done concurrently on a statement handle).
+
+-mda
+
+
+
+
+
+
+From dholmes@dltech.com.au Thu, 7 Feb 2002 11:29:48 +1000
+Date: Thu, 7 Feb 2002 11:29:48 +1000
+From: David Holmes dholmes@dltech.com.au
+Subject: [concurrency-interest]yet another proposal for Executor
+
+> The reason i want to offer at least the option for concurrent cancel
+> (even if that isn't the default behavior) is that i have already
+> experienced several cases where that is exactly what i want.
+> for example, i might want cancel() to close a socket in order to dislodge
+> my run() or call().
+
+Okay but that conflicts with the definition of cancel() as a cleanup
+function. I'm just trying to get clear on the API here - causing
+cancellation and cleaning up after cancellation are two different things in
+my book. I agree that with the current limitations of Thread.interrupt, and
+the fact that interrupt will never know about some API's, then a cancel()
+method is the only reasonable place to put the code that can figure out
+exactly how this task needs to be cancelled. Then, provided the API's you
+are using make cancellation visible (which they should) the actual cleanup
+of cancellation could either by done inline (eg in a catch clause) or via a
+separate handler. The handler would either be invoked as a second part of
+the cancel() function (but watch out as you may not know exactly what state
+your call() is in) or in response to the executor catching the
+"cancellation" exception.
+
+Cheers,
+David Holmes
+
+
+
+
+
+From mda@discerning.com Wed, 6 Feb 2002 19:50:44 -0800
+Date: Wed, 6 Feb 2002 19:50:44 -0800
+From: Mark D. Anderson mda@discerning.com
+Subject: [concurrency-interest]yet another proposal for Executor
+
+> Okay but that conflicts with the definition of cancel() as a cleanup
+> function. 
+
+well, "cleanup" could be used to describe either situation, but i do agree
+that it would probably be clearer to have different functions for the different
+states. 
+
+so we could have cancel() which is only to be called when in the queued stated,
+and call() has not yet been called().
+people might still program defensively, but the intent is that an Executor would
+only call it from an unqueue() operation, which will only succeed on a task not
+yet started.
+
+we could have the other hook function, to be called concurrently while something is running,
+an abort(). This function could do something severe such as closing its own socket,
+or something lighter like setting a bit which might be checked in its call() function.
+
+so then the table would be:
+state             Executor method        Callable method
+QUEUED        unqueue()           cancel()
+RUNNING     interrupt()           abort()
+
+another idea would be to call them the same thing, perhaps:
+state             Executor method        Callable method
+QUEUED        unqueue()           handleUnqueue()
+RUNNING     stop()           handleStop()
+
+-mda
+
+
+
+
+
+
+
+From mda@discerning.com Wed, 6 Feb 2002 19:53:40 -0800
+Date: Wed, 6 Feb 2002 19:53:40 -0800
+From: Mark D. Anderson mda@discerning.com
+Subject: [concurrency-interest]yet another proposal for Executor
+
+upon re-reading david's email, it seems his cancellation was actually what
+i just called abort in my last email.
+oh well.
+hopefully DL will step in soon and straighten us all out :).
+
+-mda
+
+
+
+
+
+
+From dl@cs.oswego.edu Thu, 7 Feb 2002 06:51:53 -0500
+Date: Thu, 7 Feb 2002 06:51:53 -0500
+From: Doug Lea dl@cs.oswego.edu
+Subject: [concurrency-interest]yet another proposal for Executor
+
+> hopefully DL will step in soon and straighten us all out :).
+
+Well, I don't think I can do that, but I've been contemplating ways in
+which we might be able to in JSR-166 establish better integration of
+JVM thread interruption and user task cancellation, so as to simplify
+this for programmers. I'm not sure it will go anywhere, but you've
+provided some good examples for experimenting with the options.
+More on this if/when it looks worth pursuing.
+
+-Doug
+
+
+
+
+
+From tom.may@infospace.com 07 Feb 2002 11:26:43 -0800
+Date: 07 Feb 2002 11:26:43 -0800
+From: Tom May tom.may@infospace.com
+Subject: [concurrency-interest]yet another proposal for Executor
+
+Doug Lea <dl@cs.oswego.edu> writes:
+
+> > hopefully DL will step in soon and straighten us all out :).
+> 
+> Well, I don't think I can do that, but I've been contemplating ways in
+> which we might be able to in JSR-166 establish better integration of
+> JVM thread interruption and user task cancellation, so as to simplify
+> this for programmers.
+
+As a programmer, I would really appreciate that.  IMO, since
+interrupt() is pretty much all we've got, I've often said it should be
+a silver bullet that causes any blocking operation (other than
+obtaining a lock) to throw an Exception.  The obvious problem with
+things like close() to interrupt I/O is that it only works after the
+object has been constructed, and the construction itself may block.
+
+Tom.
+
+
+
+
+From lfarkas@mindmaker.hu Thu, 21 Feb 2002 14:56:31 +0100
+Date: Thu, 21 Feb 2002 14:56:31 +0100
+From: Levente Farkas lfarkas@mindmaker.hu
+Subject: [concurrency-interest]PoolExecutor & Lock
+
+hi,
+although I already send it to DL, but may be the list also interested.
+
+a few comment for java.util.concurrent. a PoolExecutor would be very useful
+in this package too, although but may be with a smaller interface, than
+in DL's original util.concurrent package.
+eg. I prefere one setBlockingPolicy fuction with an exception which was
+thrown when the executable can't execute (eg. the pool, and the queue is 
+full). it's an important to be able to recognize somehow.
+
+another general request would be for all Lock (if there be such an interface
+as sync in your original sync). I always prefer smaller interfaces. lock
+already has 8 functions:-( 
+I REALY prefere symetric names for lock (like lock/unlock/tyrlock or may
+be others), but acquire/release is not my favorite. this names remember
+me to those windows api fucntions like waitforsingleobject... of course
+it's just a matter of taste, but would be cleaner (at least for me:-)
+
+another thing for lock: it'd be usefule if I can mix the "old sytle"
+synchronize and the new acquire. what I mean the lock can be the monitor
+on the lock itself. eg:
+-----------
+Lock l =...
+try
+{
+  l.lock();
+  try
+  {
+    ....
+  }
+  finally 
+  { 
+    l.unlock();
+  }
+}
+catch (InterruptedException e)
+{
+  ...
+}
+-----------
+would be the same as:
+-----------
+Lock l =...
+synchroznied(l)
+{
+...
+}
+-----------
+this means when the synchronization appear in a block than I can do
+the safer and much cleaner code. actually I don't know (since I don't 
+think about it) whether it's possible or not, but the current lock
+semantics are make the code less readable. it'd be useful even if we
+have to change/extend jvm or lang spec
+
+one more thing about it, for ReadWriteLock it'd be also useful if the 
+write lock would be equal to the ReadWriteLock's object lock, ie.:
+-----------
+ReadWriteLock rw =...
+Lock l = rw.getWriteLock();
+try
+{
+  l.lock();
+  try
+  {
+    ....
+  }
+  finally 
+  { 
+    l.unlock();
+  }
+}
+catch (InterruptedException e)
+{
+  ...
+}
+-----------
+would be equal something like:
+-----------
+ReadWriteLock rw =...
+synchroznied(rw)
+{
+}
+-----------
+this style is cleaner, natural and in this case this api realy fit into 
+the current java spec. IMHO.
+yours.
+
+-- 
+  Levente                               "Si vis pacem para bellum!"
+
+
+
+
+From sparmar@necam.com Thu, 21 Feb 2002 10:17:22 -0600
+Date: Thu, 21 Feb 2002 10:17:22 -0600
+From: Sumeet Parmar sparmar@necam.com
+Subject: [concurrency-interest]PoolExecutor & Lock
+
+>
+>
+>I REALY prefere symetric names for lock (like lock/unlock/tyrlock or may
+>be others), but acquire/release is not my favorite. this names remember
+>me to those windows api fucntions like waitforsingleobject... of course
+>it's just a matter of taste, but would be cleaner (at least for me:-)
+>
+My thoughts are same. Windows API forces many such complimentary 
+before-after
+functions. While on the other hand I'm not sure if there's a way around 
+it unless the language
+spec is changed for Lock like objects to be made aware of scope i.e. the 
+enclosing braces.
+
+my two paisas,
+-Sumeet
+
+>
+>
+>another thing for lock: it'd be usefule if I can mix the "old sytle"
+>synchronize and the new acquire. what I mean the lock can be the monitor
+>on the lock itself. eg:
+>-----------
+>Lock l =...
+>try
+>{
+>  l.lock();
+>  try
+>  {
+>    ....
+>  }
+>  finally 
+>  { 
+>    l.unlock();
+>  }
+>}
+>catch (InterruptedException e)
+>{
+>  ...
+>}
+>-----------
+>would be the same as:
+>-----------
+>Lock l =...
+>synchroznied(l)
+>{
+>...
+>}
+>-----------
+>this means when the synchronization appear in a block than I can do
+>the safer and much cleaner code. actually I don't know (since I don't 
+>think about it) whether it's possible or not, but the current lock
+>semantics are make the code less readable. it'd be useful even if we
+>have to change/extend jvm or lang spec
+>
+>one more thing about it, for ReadWriteLock it'd be also useful if the 
+>write lock would be equal to the ReadWriteLock's object lock, ie.:
+>-----------
+>ReadWriteLock rw =...
+>Lock l = rw.getWriteLock();
+>try
+>{
+>  l.lock();
+>  try
+>  {
+>    ....
+>  }
+>  finally 
+>  { 
+>    l.unlock();
+>  }
+>}
+>catch (InterruptedException e)
+>{
+>  ...
+>}
+>-----------
+>would be equal something like:
+>-----------
+>ReadWriteLock rw =...
+>synchroznied(rw)
+>{
+>}
+>-----------
+>this style is cleaner, natural and in this case this api realy fit into 
+>the current java spec. IMHO.
+>yours.
+>
+
+
+
+
+
+
+
+From mario@ifad.dk Fri, 22 Feb 2002 11:12:51 +0100
+Date: Fri, 22 Feb 2002 11:12:51 +0100
+From: Mario Juric mario@ifad.dk
+Subject: [concurrency-interest]Dynamic switching between reader/writer preferencing in read-write locks
+
+In our application I have a case where it was useful to switch between
+reader and writer preferencing in read-write locks. It was a simple task to
+extend ReentrantWriterPreferencedReadWriteLock to support this, but it might
+be useful to have it as a standard property in a general
+ReentrantReadWriteLock instead. More sophisticated users may even find it
+useful if the preferencing behaviour was encapsulated in a strategy pattern.
+These suggestions of course also apply to the non-reentrant versions of the
+read-write locks as well.
+
+Best regards
+Mario Juric
+
+ ---
+Mario Juric, M.Sc. CS, MUSTER Product Manager
+IFAD, Forskerparken 10, DK - 5230 Odense M
+Phone: +45 63 15 71 31 Fax: +45 65 93 29 99
+www: www.ifad.dk e-mail: mario.juric@ifad.dk
+---
+
+
+
+
+
+
+From lfarkas@mindmaker.hu Thu, 28 Feb 2002 17:45:17 +0100
+Date: Thu, 28 Feb 2002 17:45:17 +0100
+From: Levente Farkas lfarkas@mindmaker.hu
+Subject: [concurrency-interest]RunnableTask
+
+hi,
+it'd be useful to add to the RunnableTask whether the it's execution
+already started or not. eg in case of PoolExecutor it'd be useful to
+know that the task just in the queue or already running by a thread.
+
+-- 
+  Levente                               "Si vis pacem para bellum!"
+
+
+
+

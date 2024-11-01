@@ -1,0 +1,2960 @@
+From markus.kohler at gmail.com  Wed Oct  1 04:00:18 2008
+From: markus.kohler at gmail.com (Markus Kohler)
+Date: Wed, 1 Oct 2008 10:00:18 +0200
+Subject: [concurrency-interest] Concurrent BitSet?
+In-Reply-To: <771905290809300750g3a104630ib34d8354ca72c779@mail.gmail.com>
+References: <771905290809300750g3a104630ib34d8354ca72c779@mail.gmail.com>
+Message-ID: <771905290810010100m3e3adaeakac41805b3a28f779@mail.gmail.com>
+
+Hi all,Thanks to all for the quick replies.
+
+I think I might try the approach to start with BitSet and use
+AtomicIntegerArray (or AtomicLongArray ) and see whether it would work for
+my application.
+
+Actually I don't even need to expand the BitSet and it doesn't need to be
+sparse. So maybe I don't even need the complexity of the existing BitSet.
+
+
+Regards,
+Markus
+
+On Tue, Sep 30, 2008 at 4:50 PM, Markus Kohler <markus.kohler at gmail.com>wrote:
+
+> Hi all,
+> boolean[] uses one byte per Array, but allows concurrent access (to
+> different entries), whereas BitSet uses one bit (approximately) per
+> "boolean" but doesn't allow concurrent access.
+> Does anyone here know whether there's an implementation of BitSet that
+> would allow concurrent access but still would (approximately) use one bit?
+>
+> I'm inclined to believe that such a thing should be possible, because one
+> could use AtomIntegerArray as a backup and use striping to allow efficient
+> concurrent access.
+>
+>
+>
+> Regards,
+> Markus
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20081001/d0f66fc2/attachment.html>
+
+From bomba at cboe.com  Tue Oct  7 10:34:49 2008
+From: bomba at cboe.com (Bomba, Craig)
+Date: Tue, 7 Oct 2008 09:34:49 -0500
+Subject: [concurrency-interest] Reusable Latch
+Message-ID: <4BD174404CF4A34C98322DC926CF862B064B3701@MSMAIL.cboent.cboe.com>
+
+Appreciate your feedback.  I took some time to write a sample app that emulates what I want to do with a worker thread and a "shadow thread" that watches the worker only allowing the worker a fixed amount of time to complete or interrupt the worker.  I have attached the sample app hoping you may have an opportunity to comment.  
+
+The app will create 3 workers and 3 shadow threads watching each worker.  I have set the worker to utilize a sleep emulating real work.  The worker is currently randomizing the actual work/sleep time.  I selected a random work/sleep time that is close to time allowed by the shadow thread such that it would expose a boundary condition I wanted to get your feedback on.  That condition is when the worker thread actually finishes just after his allowed time, but before the shadow thread issues the interrupt.  This condition is undesirable since the worker does finish and is no longer in the try/catch for the interrupted condition.  Almost as if I need to check state ahead of really issuing the interrupt.  State checking is not available with the BooleanLatch.  I did check out the PhasedLatch too since it has state (getPhase()).  That too did not seem to provide the security I was looking for.
+
+Appreciate any help.
+Craig
+
+-----Original Message-----
+From: Jed Wesley-Smith [mailto:jed at atlassian.com]
+Sent: Monday, September 15, 2008 1:41 AM
+To: Bomba, Craig
+Cc: concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] Reusable Latch
+
+
+I wrote a simple BooleanLatch that is useful for telling a single 
+waiting thread to continue (or pass through if it hasn't reached the 
+latch yet). The implementation was posted in this forum previously.
+
+My testing showed it is significantly quicker than Condition.await() or 
+ConcurrentQueue.take() on MacOS Java6, and limited testing on Linux Sun 
+Java 5 and 6 backed this up. There was anecdotal evidence that it wasn't 
+quicker for JRockit though.
+
+It is really only suitable for SRSW or SRMW situations though, as in MR 
+situations it behaves semantically the same as Condition.notify() (only 
+allowing a single arbitrary reader though, with no fairness).
+
+I also have a PhasedLatch which is a nod to the new Phaser stuff Doug 
+has (nowhere near as powerful, but it does allow multi-readers to block 
+until a particular phase has been reached and then all be allowed through).
+
+Source is here:
+https://maven.atlassian.com/public/com/atlassian/util/concurrent/atlassian-util-concurrent/0.0.2/atlassian-util-concurrent-0.0.2-sources.jar
+
+Haven't got anonymous SVN access yet: 
+https://studio.atlassian.com/browse/JST-999
+
+BTW. All code is Apache 2.0 licensed.
+
+cheers,
+jed.
+
+Bomba, Craig wrote:
+> Other than a CyclicBarrier, what recommendations are out there for a reusable (i.e. get around the one-shot phenomenon) CountDownLatch?
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: BooleanLatchDemo.java
+Type: application/octet-stream
+Size: 7790 bytes
+Desc: BooleanLatchDemo.java
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20081007/4530143e/attachment.obj>
+
+From ben_manes at yahoo.com  Tue Oct  7 16:46:19 2008
+From: ben_manes at yahoo.com (Ben Manes)
+Date: Tue, 7 Oct 2008 13:46:19 -0700 (PDT)
+Subject: [concurrency-interest] Reusable Latch
+Message-ID: <739133.16713.qm@web38806.mail.mud.yahoo.com>
+
+Unless I've missed something, it looks like you simply want to execute a thread and cancel the work if it exceeds a time limit.  This can be done by using an ExecutorService.
+
+Future<?> response = es.submit(new Worker());
+try {
+    return response.get(timeout, TimeUnit.SECONDS);
+} catch (TimeoutException e) {
+    response.cancel(true);
+} ...
+
+
+
+----- Original Message ----
+From: "Bomba, Craig" <bomba at cboe.com>
+To: concurrency-interest at cs.oswego.edu
+Sent: Tuesday, October 7, 2008 7:34:49 AM
+Subject: Re: [concurrency-interest] Reusable Latch
+
+Appreciate your feedback.  I took some time to write a sample app that emulates what I want to do with a worker thread and a "shadow thread" that watches the worker only allowing the worker a fixed amount of time to complete or interrupt the worker.  I have attached the sample app hoping you may have an opportunity to comment.  
+
+The app will create 3 workers and 3 shadow threads watching each worker.  I have set the worker to utilize a sleep emulating real work.  The worker is currently randomizing the actual work/sleep time.  I selected a random work/sleep time that is close to time allowed by the shadow thread such that it would expose a boundary condition I wanted to get your feedback on.  That condition is when the worker thread actually finishes just after his allowed time, but before the shadow thread issues the interrupt.  This condition is undesirable since the worker does finish and is no longer in the try/catch for the interrupted condition.  Almost as if I need to check state ahead of really issuing the interrupt.  State checking is not available with the BooleanLatch.  I did check out the PhasedLatch too since it has state (getPhase()).  That too did not seem to provide the security I was looking for.
+
+Appreciate any help.
+Craig
+
+-----Original Message-----
+From: Jed Wesley-Smith [mailto:jed at atlassian.com]
+Sent: Monday, September 15, 2008 1:41 AM
+To: Bomba, Craig
+Cc: concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] Reusable Latch
+
+
+I wrote a simple BooleanLatch that is useful for telling a single 
+waiting thread to continue (or pass through if it hasn't reached the 
+latch yet). The implementation was posted in this forum previously.
+
+My testing showed it is significantly quicker than Condition.await() or 
+ConcurrentQueue.take() on MacOS Java6, and limited testing on Linux Sun 
+Java 5 and 6 backed this up. There was anecdotal evidence that it wasn't 
+quicker for JRockit though.
+
+It is really only suitable for SRSW or SRMW situations though, as in MR 
+situations it behaves semantically the same as Condition.notify() (only 
+allowing a single arbitrary reader though, with no fairness).
+
+I also have a PhasedLatch which is a nod to the new Phaser stuff Doug 
+has (nowhere near as powerful, but it does allow multi-readers to block 
+until a particular phase has been reached and then all be allowed through).
+
+Source is here:
+https://maven.atlassian.com/public/com/atlassian/util/concurrent/atlassian-util-concurrent/0.0.2/atlassian-util-concurrent-0.0.2-sources.jar
+
+Haven't got anonymous SVN access yet: 
+https://studio.atlassian.com/browse/JST-999
+
+BTW. All code is Apache 2.0 licensed.
+
+cheers,
+jed.
+
+Bomba, Craig wrote:
+> Other than a CyclicBarrier, what recommendations are out there for a reusable (i.e. get around the one-shot phenomenon) CountDownLatch?
+
+
+
+      
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20081007/ecba7c58/attachment.html>
+
+From sanne.grinovero at gmail.com  Fri Oct 10 04:08:39 2008
+From: sanne.grinovero at gmail.com (Sanne Grinovero)
+Date: Fri, 10 Oct 2008 10:08:39 +0200
+Subject: [concurrency-interest] JTaP article on stateful web apps
+In-Reply-To: <1466c1d60809241529k6a43f35bud2e75e116e351dcb@mail.gmail.com>
+References: <3d242a3d0809241423o3677df8ey3510ba6e2ebacb36@mail.gmail.com>
+	<1466c1d60809241529k6a43f35bud2e75e116e351dcb@mail.gmail.com>
+Message-ID: <50e5f6250810100108v12afac48jbd1c181e834bb088@mail.gmail.com>
+
+Peter, is this tool you are working on open source or somehow available?
+I'm working on this sort of problems for some Hibernate extensions,
+they're very successful open source projects and we could use
+something like that.
+
+2008/9/25 Peter Veentjer <alarmnummer at gmail.com>:
+> As long as the setter is called when the bean is constructed
+> everything will be alright because there (was) is a guaranteed happens
+> before relation between bean creation (inclusive setters) and usage of
+> the bean (not documented btw.. so no guarantee)
+>
+> But once the setter is called later (for example by JMX) you are
+> completely right. Shit could hit the fan.
+>
+> This blogpost contains some info about Spring and visibility problems.
+> http://blog.xebia.com/2007/03/01/spring-and-visibility-problems/
+>
+> I'm currently working on a tool that does runtime analysis on objects
+> to figure out which objects are touched by multiple threads. I have
+> executed it on a few projects and also on Spring batch (one of the
+> spring modules) and there are some visibility issues here as well. It
+> appears that the JMM has not a high priority within Spring Source.
+>
+> ps:
+> Tomcat also suffers from those issues
+>
+> On Wed, Sep 24, 2008 at 11:23 PM, Kris Schneider <kschneider at gmail.com> wrote:
+>> The latest Java Theory and Practice article:
+>>
+>> http://www.ibm.com/developerworks/library/j-jtp09238.html
+>>
+>> exposes some of the concurrency issues that arise from using
+>> HttpSession and ServletContext attributes. At the end of the "Possible
+>> solutions" section, there's a reference to using SpringMVC's
+>> synchronizeOnSession property of AbstractController to serialize
+>> access to the session. After looking at the related code:
+>>
+>> http://springframework.cvs.sourceforge.net/springframework/spring/src/org/springframework/web/servlet/mvc/AbstractController.java?view=markup
+>> http://springframework.cvs.sourceforge.net/springframework/spring/src/org/springframework/web/util/WebUtils.java?view=markup
+>> http://springframework.cvs.sourceforge.net/springframework/spring/src/org/springframework/web/util/HttpSessionMutexListener.java?view=markup
+>>
+>> It seems like it's hiding its own dark corners. For example, in
+>> AbstractController:
+>>
+>> public abstract class AbstractController extends WebContentGenerator
+>> implements Controller {
+>>    private boolean synchronizeOnSession = false;
+>>
+>>    public final void setSynchronizeOnSession(boolean synchronizeOnSession) {
+>>        this.synchronizeOnSession = synchronizeOnSession;
+>>    }
+>>
+>>    public final boolean isSynchronizeOnSession() {
+>>        return this.synchronizeOnSession;
+>>    }
+>>
+>>    public ModelAndView handleRequest(HttpServletRequest request,
+>> HttpServletResponse response) throws Exception {
+>>        // Delegate to WebContentGenerator for checking and preparing.
+>>        checkAndPrepare(request, response, this instanceof LastModified);
+>>
+>>        // Execute handleRequestInternal in synchronized block if required.
+>>        if (this.synchronizeOnSession) {
+>>            HttpSession session = request.getSession(false);
+>>            if (session != null) {
+>>                Object mutex = WebUtils.getSessionMutex(session);
+>>                synchronized (mutex) {
+>>                    return handleRequestInternal(request, response);
+>>                }
+>>            }
+>>        }
+>>
+>>        return handleRequestInternal(request, response);
+>>    }
+>> ...
+>>
+>> If an instance of that class is shared between request threads, isn't
+>> there a visibility (and publication?) issue with synchronizeOnSession?
+>>
+>> The handleRequest method uses WebUtils.getSessionMutex to obtain the
+>> lock object. Here's what that method looks like:
+>>
+>> public static Object getSessionMutex(HttpSession session) {
+>>    Assert.notNull(session, "Session must not be null");
+>>    Object mutex = session.getAttribute(SESSION_MUTEX_ATTRIBUTE);
+>>    if (mutex == null) {
+>>        mutex = session;
+>>    }
+>>    return mutex;
+>> }
+>>
+>> So, if the mutex attribute doesn't exist, the session object itself is
+>> returned. Whether or not that will actually work is completely up to
+>> the servlet container. There are no guarantees from the servlet spec
+>> that the same instance is always returned from calls to
+>> HttpServletRequest.getSession (let alone all the other ways that a
+>> session object can be obtained). To be fair, the documentation for
+>> getSessionMutex alludes to that fact, but then why not do something
+>> like throw IllegalStateException in the case where the attribute
+>> doesn't exist?
+>>
+>> --
+>> Kris Schneider <mailto:kschneider at gmail.com>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From mthornton at optrak.co.uk  Mon Oct 13 07:01:45 2008
+From: mthornton at optrak.co.uk (Mark Thornton)
+Date: Mon, 13 Oct 2008 12:01:45 +0100
+Subject: [concurrency-interest] ForkJoinTask subtask structure
+Message-ID: <48F32A99.50304@optrak.co.uk>
+
+Is it permissable for two (or more) ForkJoinTask's to join another 
+ForkJoinTask. That is for the graph of subtasks to be a DAG rather than 
+a simple tree.
+
+Regards,
+Mark Thornton
+
+From dl at cs.oswego.edu  Mon Oct 13 07:41:16 2008
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 13 Oct 2008 07:41:16 -0400
+Subject: [concurrency-interest] ForkJoinTask subtask structure
+In-Reply-To: <48F32A99.50304@optrak.co.uk>
+References: <48F32A99.50304@optrak.co.uk>
+Message-ID: <48F333DC.4070207@cs.oswego.edu>
+
+Mark Thornton wrote:
+> Is it permissable for two (or more) ForkJoinTask's to join another 
+> ForkJoinTask. That is for the graph of subtasks to be a DAG rather than 
+> a simple tree.
+> 
+
+Yes; completely fine.
+
+-Doug
+
+From bmeike at speakeasy.net  Mon Oct 13 10:32:05 2008
+From: bmeike at speakeasy.net (Blake Meike)
+Date: Mon, 13 Oct 2008 07:32:05 -0700
+Subject: [concurrency-interest] ForkJoinTask subtask structure
+In-Reply-To: <48F32A99.50304@optrak.co.uk>
+References: <48F32A99.50304@optrak.co.uk>
+Message-ID: <A317B888-5948-4DC8-9A88-EDC6309322D0@speakeasy.net>
+
+My spam filter seems to find all this talk of Forkin Join  
+unacceptable.  The whole thread got junked...
+
+-blake
+
+
+On Oct 13, 2008, at 4:01 AM, Mark Thornton wrote:
+
+> Is it permissable for two (or more) ForkJoinTask's to join another  
+> ForkJoinTask. That is for the graph of subtasks to be a DAG rather  
+> than a simple tree.
+>
+> Regards,
+> Mark Thornton
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From alarmnummer at gmail.com  Tue Oct 14 02:58:24 2008
+From: alarmnummer at gmail.com (Peter Veentjer)
+Date: Tue, 14 Oct 2008 08:58:24 +0200
+Subject: [concurrency-interest] JTaP article on stateful web apps
+In-Reply-To: <50e5f6250810100108v12afac48jbd1c181e834bb088@mail.gmail.com>
+References: <3d242a3d0809241423o3677df8ey3510ba6e2ebacb36@mail.gmail.com>
+	<1466c1d60809241529k6a43f35bud2e75e116e351dcb@mail.gmail.com>
+	<50e5f6250810100108v12afac48jbd1c181e834bb088@mail.gmail.com>
+Message-ID: <1466c1d60810132358u450d2eb8h2ebc2dfd7fab4f38@mail.gmail.com>
+
+Hi Sanne,
+
+the tool can be downloaded at
+
+http://code.google.com/p/concurrency-detector/
+
+No official release has been made, so no binaries are available. But
+you can download it from subversion and build it yourself. If you need
+help to get it up and running you can mail me (or add me to you google
+talk buddies).
+
+On Fri, Oct 10, 2008 at 10:08 AM, Sanne Grinovero
+<sanne.grinovero at gmail.com> wrote:
+> Peter, is this tool you are working on open source or somehow available?
+> I'm working on this sort of problems for some Hibernate extensions,
+> they're very successful open source projects and we could use
+> something like that.
+>
+> 2008/9/25 Peter Veentjer <alarmnummer at gmail.com>:
+>> As long as the setter is called when the bean is constructed
+>> everything will be alright because there (was) is a guaranteed happens
+>> before relation between bean creation (inclusive setters) and usage of
+>> the bean (not documented btw.. so no guarantee)
+>>
+>> But once the setter is called later (for example by JMX) you are
+>> completely right. Shit could hit the fan.
+>>
+>> This blogpost contains some info about Spring and visibility problems.
+>> http://blog.xebia.com/2007/03/01/spring-and-visibility-problems/
+>>
+>> I'm currently working on a tool that does runtime analysis on objects
+>> to figure out which objects are touched by multiple threads. I have
+>> executed it on a few projects and also on Spring batch (one of the
+>> spring modules) and there are some visibility issues here as well. It
+>> appears that the JMM has not a high priority within Spring Source.
+>>
+>> ps:
+>> Tomcat also suffers from those issues
+>>
+>> On Wed, Sep 24, 2008 at 11:23 PM, Kris Schneider <kschneider at gmail.com> wrote:
+>>> The latest Java Theory and Practice article:
+>>>
+>>> http://www.ibm.com/developerworks/library/j-jtp09238.html
+>>>
+>>> exposes some of the concurrency issues that arise from using
+>>> HttpSession and ServletContext attributes. At the end of the "Possible
+>>> solutions" section, there's a reference to using SpringMVC's
+>>> synchronizeOnSession property of AbstractController to serialize
+>>> access to the session. After looking at the related code:
+>>>
+>>> http://springframework.cvs.sourceforge.net/springframework/spring/src/org/springframework/web/servlet/mvc/AbstractController.java?view=markup
+>>> http://springframework.cvs.sourceforge.net/springframework/spring/src/org/springframework/web/util/WebUtils.java?view=markup
+>>> http://springframework.cvs.sourceforge.net/springframework/spring/src/org/springframework/web/util/HttpSessionMutexListener.java?view=markup
+>>>
+>>> It seems like it's hiding its own dark corners. For example, in
+>>> AbstractController:
+>>>
+>>> public abstract class AbstractController extends WebContentGenerator
+>>> implements Controller {
+>>>    private boolean synchronizeOnSession = false;
+>>>
+>>>    public final void setSynchronizeOnSession(boolean synchronizeOnSession) {
+>>>        this.synchronizeOnSession = synchronizeOnSession;
+>>>    }
+>>>
+>>>    public final boolean isSynchronizeOnSession() {
+>>>        return this.synchronizeOnSession;
+>>>    }
+>>>
+>>>    public ModelAndView handleRequest(HttpServletRequest request,
+>>> HttpServletResponse response) throws Exception {
+>>>        // Delegate to WebContentGenerator for checking and preparing.
+>>>        checkAndPrepare(request, response, this instanceof LastModified);
+>>>
+>>>        // Execute handleRequestInternal in synchronized block if required.
+>>>        if (this.synchronizeOnSession) {
+>>>            HttpSession session = request.getSession(false);
+>>>            if (session != null) {
+>>>                Object mutex = WebUtils.getSessionMutex(session);
+>>>                synchronized (mutex) {
+>>>                    return handleRequestInternal(request, response);
+>>>                }
+>>>            }
+>>>        }
+>>>
+>>>        return handleRequestInternal(request, response);
+>>>    }
+>>> ...
+>>>
+>>> If an instance of that class is shared between request threads, isn't
+>>> there a visibility (and publication?) issue with synchronizeOnSession?
+>>>
+>>> The handleRequest method uses WebUtils.getSessionMutex to obtain the
+>>> lock object. Here's what that method looks like:
+>>>
+>>> public static Object getSessionMutex(HttpSession session) {
+>>>    Assert.notNull(session, "Session must not be null");
+>>>    Object mutex = session.getAttribute(SESSION_MUTEX_ATTRIBUTE);
+>>>    if (mutex == null) {
+>>>        mutex = session;
+>>>    }
+>>>    return mutex;
+>>> }
+>>>
+>>> So, if the mutex attribute doesn't exist, the session object itself is
+>>> returned. Whether or not that will actually work is completely up to
+>>> the servlet container. There are no guarantees from the servlet spec
+>>> that the same instance is always returned from calls to
+>>> HttpServletRequest.getSession (let alone all the other ways that a
+>>> session object can be obtained). To be fair, the documentation for
+>>> getSessionMutex alludes to that fact, but then why not do something
+>>> like throw IllegalStateException in the case where the attribute
+>>> doesn't exist?
+>>>
+>>> --
+>>> Kris Schneider <mailto:kschneider at gmail.com>
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+
+From sanne.grinovero at gmail.com  Tue Oct 14 10:25:11 2008
+From: sanne.grinovero at gmail.com (Sanne Grinovero)
+Date: Tue, 14 Oct 2008 16:25:11 +0200
+Subject: [concurrency-interest] JTaP article on stateful web apps
+In-Reply-To: <1466c1d60810132358u450d2eb8h2ebc2dfd7fab4f38@mail.gmail.com>
+References: <3d242a3d0809241423o3677df8ey3510ba6e2ebacb36@mail.gmail.com>
+	<1466c1d60809241529k6a43f35bud2e75e116e351dcb@mail.gmail.com>
+	<50e5f6250810100108v12afac48jbd1c181e834bb088@mail.gmail.com>
+	<1466c1d60810132358u450d2eb8h2ebc2dfd7fab4f38@mail.gmail.com>
+Message-ID: <50e5f6250810140725y1451b21fp565e825d028b1a7a@mail.gmail.com>
+
+Thank you very much, this could be a real blessing;
+I've been fixing code written by others (even without
+knowing the purpose of it before) about visibility and
+locking issues.
+
+Sanne
+
+2008/10/14 Peter Veentjer <alarmnummer at gmail.com>:
+> Hi Sanne,
+>
+> the tool can be downloaded at
+>
+> http://code.google.com/p/concurrency-detector/
+>
+> No official release has been made, so no binaries are available. But
+> you can download it from subversion and build it yourself. If you need
+> help to get it up and running you can mail me (or add me to you google
+> talk buddies).
+>
+> On Fri, Oct 10, 2008 at 10:08 AM, Sanne Grinovero
+> <sanne.grinovero at gmail.com> wrote:
+>> Peter, is this tool you are working on open source or somehow available?
+>> I'm working on this sort of problems for some Hibernate extensions,
+>> they're very successful open source projects and we could use
+>> something like that.
+>>
+>> 2008/9/25 Peter Veentjer <alarmnummer at gmail.com>:
+>>> As long as the setter is called when the bean is constructed
+>>> everything will be alright because there (was) is a guaranteed happens
+>>> before relation between bean creation (inclusive setters) and usage of
+>>> the bean (not documented btw.. so no guarantee)
+>>>
+>>> But once the setter is called later (for example by JMX) you are
+>>> completely right. Shit could hit the fan.
+>>>
+>>> This blogpost contains some info about Spring and visibility problems.
+>>> http://blog.xebia.com/2007/03/01/spring-and-visibility-problems/
+>>>
+>>> I'm currently working on a tool that does runtime analysis on objects
+>>> to figure out which objects are touched by multiple threads. I have
+>>> executed it on a few projects and also on Spring batch (one of the
+>>> spring modules) and there are some visibility issues here as well. It
+>>> appears that the JMM has not a high priority within Spring Source.
+>>>
+>>> ps:
+>>> Tomcat also suffers from those issues
+>>>
+>>> On Wed, Sep 24, 2008 at 11:23 PM, Kris Schneider <kschneider at gmail.com> wrote:
+>>>> The latest Java Theory and Practice article:
+>>>>
+>>>> http://www.ibm.com/developerworks/library/j-jtp09238.html
+>>>>
+>>>> exposes some of the concurrency issues that arise from using
+>>>> HttpSession and ServletContext attributes. At the end of the "Possible
+>>>> solutions" section, there's a reference to using SpringMVC's
+>>>> synchronizeOnSession property of AbstractController to serialize
+>>>> access to the session. After looking at the related code:
+>>>>
+>>>> http://springframework.cvs.sourceforge.net/springframework/spring/src/org/springframework/web/servlet/mvc/AbstractController.java?view=markup
+>>>> http://springframework.cvs.sourceforge.net/springframework/spring/src/org/springframework/web/util/WebUtils.java?view=markup
+>>>> http://springframework.cvs.sourceforge.net/springframework/spring/src/org/springframework/web/util/HttpSessionMutexListener.java?view=markup
+>>>>
+>>>> It seems like it's hiding its own dark corners. For example, in
+>>>> AbstractController:
+>>>>
+>>>> public abstract class AbstractController extends WebContentGenerator
+>>>> implements Controller {
+>>>>    private boolean synchronizeOnSession = false;
+>>>>
+>>>>    public final void setSynchronizeOnSession(boolean synchronizeOnSession) {
+>>>>        this.synchronizeOnSession = synchronizeOnSession;
+>>>>    }
+>>>>
+>>>>    public final boolean isSynchronizeOnSession() {
+>>>>        return this.synchronizeOnSession;
+>>>>    }
+>>>>
+>>>>    public ModelAndView handleRequest(HttpServletRequest request,
+>>>> HttpServletResponse response) throws Exception {
+>>>>        // Delegate to WebContentGenerator for checking and preparing.
+>>>>        checkAndPrepare(request, response, this instanceof LastModified);
+>>>>
+>>>>        // Execute handleRequestInternal in synchronized block if required.
+>>>>        if (this.synchronizeOnSession) {
+>>>>            HttpSession session = request.getSession(false);
+>>>>            if (session != null) {
+>>>>                Object mutex = WebUtils.getSessionMutex(session);
+>>>>                synchronized (mutex) {
+>>>>                    return handleRequestInternal(request, response);
+>>>>                }
+>>>>            }
+>>>>        }
+>>>>
+>>>>        return handleRequestInternal(request, response);
+>>>>    }
+>>>> ...
+>>>>
+>>>> If an instance of that class is shared between request threads, isn't
+>>>> there a visibility (and publication?) issue with synchronizeOnSession?
+>>>>
+>>>> The handleRequest method uses WebUtils.getSessionMutex to obtain the
+>>>> lock object. Here's what that method looks like:
+>>>>
+>>>> public static Object getSessionMutex(HttpSession session) {
+>>>>    Assert.notNull(session, "Session must not be null");
+>>>>    Object mutex = session.getAttribute(SESSION_MUTEX_ATTRIBUTE);
+>>>>    if (mutex == null) {
+>>>>        mutex = session;
+>>>>    }
+>>>>    return mutex;
+>>>> }
+>>>>
+>>>> So, if the mutex attribute doesn't exist, the session object itself is
+>>>> returned. Whether or not that will actually work is completely up to
+>>>> the servlet container. There are no guarantees from the servlet spec
+>>>> that the same instance is always returned from calls to
+>>>> HttpServletRequest.getSession (let alone all the other ways that a
+>>>> session object can be obtained). To be fair, the documentation for
+>>>> getSessionMutex alludes to that fact, but then why not do something
+>>>> like throw IllegalStateException in the case where the attribute
+>>>> doesn't exist?
+>>>>
+>>>> --
+>>>> Kris Schneider <mailto:kschneider at gmail.com>
+>>>> _______________________________________________
+>>>> Concurrency-interest mailing list
+>>>> Concurrency-interest at cs.oswego.edu
+>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>>
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>
+>>
+>
+
+From hlship at gmail.com  Tue Oct 14 10:56:04 2008
+From: hlship at gmail.com (Howard Lewis Ship)
+Date: Tue, 14 Oct 2008 07:56:04 -0700
+Subject: [concurrency-interest] ReentrantReadWriteLock, multiple CPUs,
+	lock not released caused deadlock [JDK 1.6]
+Message-ID: <ecd0e3310810140756x4e33603dq7b85794a6dec0bde@mail.gmail.com>
+
+I'm at my wits end with respect to a hard to reproduce deadlock bug in
+the Tapestry 5 code base.
+
+Tapestry 5 has a couple of places where it wants to "serialize" access
+to internal data structures. For context, the serialized access is
+used to periodically check to see if underlying files (class files,
+templates, etc.) have changed, and to clear caches and
+even create new class loaders as necessary. Serializing access to run
+the checks (and react to changes) ensures that behavior of a Tapestry
+application is consistent, even under load, even when files are
+changed, even in production.
+
+The problem my users are seeing is that, in true multi-CPU (or at
+least, multi-core) scenarios, a deadlock related to
+ReentrantReadWriteLock is occuring.
+
+I wrote a wrapper class around ReentrantReadWriteLock for this
+purpose; most code acquires the read lock and does its work.
+Periodically, one thread will acquire the write lock (to serialize
+access) and do the extra work of checking file time stamps and
+clearing caches as necessary.
+
+We use tryLock(), with a timeout, so that on a very busy system, we
+don't wait a very long time for the write lock, but instead defer the
+file update checks for a quieter time.
+
+What's happening is that, rarely, we're getting a deadlock over the
+internal ReentrantReadWriteLock$NonfairSync object inside the lock.
+
+My theory is that the write lock is being locked, but times out, and
+the code continues on without releasing the write lock, leading to a
+deadlock on the read lock. Users have noted this occurs with slower
+(or virtual) machines, which increases the likelihood of a timeout.
+
+This seems to match
+http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6571733, bug that's
+marked as a duplicate of a fixed bug.
+
+Here's a link to the source:
+
+http://tapestry.apache.org/tapestry5/apidocs/src-html/org/apache/tapestry5/ioc/internal/util/ConcurrentBarrier.html
+
+Note that the code is designed for JDK 1.5, so there's some extra
+business with a ThreadLocal to track whether the current thread has
+the read lock or not. All that business about synchronizing the
+ThreadLocal (joy!) is to work around another JDK 1.5 bug related to
+ThreadLocals (http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=5025230).
+ And people ask why the world needs frameworks!
+
+Any guidance on how to further clarify this issue would be of great use.
+
+-- 
+Howard M. Lewis Ship
+
+Creator Apache Tapestry and Apache HiveMind
+
+From oxbow_lakes at hotmail.com  Tue Oct 14 13:05:15 2008
+From: oxbow_lakes at hotmail.com (christopher marshall)
+Date: Tue, 14 Oct 2008 17:05:15 +0000
+Subject: [concurrency-interest] ReentrantReadWriteLock, multiple CPUs,
+	lock not released caused deadlock [JDK 1.6]
+In-Reply-To: <ecd0e3310810140756x4e33603dq7b85794a6dec0bde@mail.gmail.com>
+References: <ecd0e3310810140756x4e33603dq7b85794a6dec0bde@mail.gmail.com>
+Message-ID: <BAY108-W3969B28F6713338E463DEE8D310@phx.gbl>
+
+
+Howard -
+
+I may be wrong here, as I've only spent a few minutes looking into it, but when you restore the read lock, shouldn't you be doing this *before* releasing the write lock? For example:
+
+public  T withWrite(Invokable invokable)
+131        {
+132            boolean readLockedAtEntry = releaseReadLock();
+133    
+134            lock.writeLock().lock();
+135    
+136            try
+137            {
+138                return invokable.invoke();
+139            }
+140            finally
+141            {
+142                //SWAPPED ORDER
+143                restoreReadLock(readLockedAtEntry);
++++              lock.writeLock().unlock();
+144            }
+145        }
+
+----------------------------------------
+> Date: Tue, 14 Oct 2008 07:56:04 -0700
+> From: hlship at gmail.com
+> To: concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] ReentrantReadWriteLock, multiple CPUs,	lock not released caused deadlock [JDK 1.6]
+> 
+> I'm at my wits end with respect to a hard to reproduce deadlock bug in
+> the Tapestry 5 code base.
+> 
+> Tapestry 5 has a couple of places where it wants to "serialize" access
+> to internal data structures. For context, the serialized access is
+> used to periodically check to see if underlying files (class files,
+> templates, etc.) have changed, and to clear caches and
+> even create new class loaders as necessary. Serializing access to run
+> the checks (and react to changes) ensures that behavior of a Tapestry
+> application is consistent, even under load, even when files are
+> changed, even in production.
+> 
+> The problem my users are seeing is that, in true multi-CPU (or at
+> least, multi-core) scenarios, a deadlock related to
+> ReentrantReadWriteLock is occuring.
+> 
+> I wrote a wrapper class around ReentrantReadWriteLock for this
+> purpose; most code acquires the read lock and does its work.
+> Periodically, one thread will acquire the write lock (to serialize
+> access) and do the extra work of checking file time stamps and
+> clearing caches as necessary.
+> 
+> We use tryLock(), with a timeout, so that on a very busy system, we
+> don't wait a very long time for the write lock, but instead defer the
+> file update checks for a quieter time.
+> 
+> What's happening is that, rarely, we're getting a deadlock over the
+> internal ReentrantReadWriteLock$NonfairSync object inside the lock.
+> 
+> My theory is that the write lock is being locked, but times out, and
+> the code continues on without releasing the write lock, leading to a
+> deadlock on the read lock. Users have noted this occurs with slower
+> (or virtual) machines, which increases the likelihood of a timeout.
+> 
+> This seems to match
+> http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6571733, bug that's
+> marked as a duplicate of a fixed bug.
+> 
+> Here's a link to the source:
+> 
+> http://tapestry.apache.org/tapestry5/apidocs/src-html/org/apache/tapestry5/ioc/internal/util/ConcurrentBarrier.html
+> 
+> Note that the code is designed for JDK 1.5, so there's some extra
+> business with a ThreadLocal to track whether the current thread has
+> the read lock or not. All that business about synchronizing the
+> ThreadLocal (joy!) is to work around another JDK 1.5 bug related to
+> ThreadLocals (http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=5025230).
+>  And people ask why the world needs frameworks!
+> 
+> Any guidance on how to further clarify this issue would be of great use.
+> 
+> -- 
+> Howard M. Lewis Ship
+> 
+> Creator Apache Tapestry and Apache HiveMind
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+_________________________________________________________________
+Make a mini you and download it into Windows Live Messenger
+http://clk.atdmt.com/UKM/go/111354029/direct/01/
+
+From dcholmes at optusnet.com.au  Tue Oct 14 13:05:07 2008
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed, 15 Oct 2008 03:05:07 +1000
+Subject: [concurrency-interest] ReentrantReadWriteLock, multiple CPUs,
+ lock not released caused deadlock [JDK 1.6]
+In-Reply-To: <ecd0e3310810140756x4e33603dq7b85794a6dec0bde@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEBMHOAA.dcholmes@optusnet.com.au>
+
+Which version of the JDK are you actually encountering the deadlock on?
+
+Can you produce thread stackdumps to show where the different threads are
+blocked?
+
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Howard
+> Lewis Ship
+> Sent: Wednesday, 15 October 2008 12:56 AM
+> To: concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] ReentrantReadWriteLock, multiple
+> CPUs,lock not released caused deadlock [JDK 1.6]
+>
+>
+> I'm at my wits end with respect to a hard to reproduce deadlock bug in
+> the Tapestry 5 code base.
+>
+> Tapestry 5 has a couple of places where it wants to "serialize" access
+> to internal data structures. For context, the serialized access is
+> used to periodically check to see if underlying files (class files,
+> templates, etc.) have changed, and to clear caches and
+> even create new class loaders as necessary. Serializing access to run
+> the checks (and react to changes) ensures that behavior of a Tapestry
+> application is consistent, even under load, even when files are
+> changed, even in production.
+>
+> The problem my users are seeing is that, in true multi-CPU (or at
+> least, multi-core) scenarios, a deadlock related to
+> ReentrantReadWriteLock is occuring.
+>
+> I wrote a wrapper class around ReentrantReadWriteLock for this
+> purpose; most code acquires the read lock and does its work.
+> Periodically, one thread will acquire the write lock (to serialize
+> access) and do the extra work of checking file time stamps and
+> clearing caches as necessary.
+>
+> We use tryLock(), with a timeout, so that on a very busy system, we
+> don't wait a very long time for the write lock, but instead defer the
+> file update checks for a quieter time.
+>
+> What's happening is that, rarely, we're getting a deadlock over the
+> internal ReentrantReadWriteLock$NonfairSync object inside the lock.
+>
+> My theory is that the write lock is being locked, but times out, and
+> the code continues on without releasing the write lock, leading to a
+> deadlock on the read lock. Users have noted this occurs with slower
+> (or virtual) machines, which increases the likelihood of a timeout.
+>
+> This seems to match
+> http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6571733, bug that's
+> marked as a duplicate of a fixed bug.
+>
+> Here's a link to the source:
+>
+> http://tapestry.apache.org/tapestry5/apidocs/src-html/org/apache/t
+apestry5/ioc/internal/util/ConcurrentBarrier.html
+
+Note that the code is designed for JDK 1.5, so there's some extra
+business with a ThreadLocal to track whether the current thread has
+the read lock or not. All that business about synchronizing the
+ThreadLocal (joy!) is to work around another JDK 1.5 bug related to
+ThreadLocals (http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=5025230).
+ And people ask why the world needs frameworks!
+
+Any guidance on how to further clarify this issue would be of great use.
+
+--
+Howard M. Lewis Ship
+
+Creator Apache Tapestry and Apache HiveMind
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From martinrb at google.com  Tue Oct 14 13:34:23 2008
+From: martinrb at google.com (Martin Buchholz)
+Date: Tue, 14 Oct 2008 10:34:23 -0700
+Subject: [concurrency-interest] ReentrantReadWriteLock, multiple CPUs,
+	lock not released caused deadlock [JDK 1.6]
+In-Reply-To: <ecd0e3310810140756x4e33603dq7b85794a6dec0bde@mail.gmail.com>
+References: <ecd0e3310810140756x4e33603dq7b85794a6dec0bde@mail.gmail.com>
+Message-ID: <1ccfd1c10810141034x25d38a36g9f4f08759dcb5c76@mail.gmail.com>
+
+On Tue, Oct 14, 2008 at 07:56, Howard Lewis Ship <hlship at gmail.com> wrote:
+
+> This seems to match
+> http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6571733, bug that's
+> marked as a duplicate of a fixed bug.
+
+Given that, does your bug appear to be fixed in jdks containing the
+fix for the above (jdk7, openjdk6) and not fixed in others (jdk6u1)?
+
+Martin
+
+From hlship at gmail.com  Tue Oct 14 15:28:59 2008
+From: hlship at gmail.com (Howard Lewis Ship)
+Date: Tue, 14 Oct 2008 12:28:59 -0700
+Subject: [concurrency-interest] Fwd:  ReentrantReadWriteLock, multiple CPUs,
+	lock not released causes deadlock [JDK 1.6]
+In-Reply-To: <ecd0e3310810141139sf36025ald64f4750af3e9a0@mail.gmail.com>
+References: <ecd0e3310810141139sf36025ald64f4750af3e9a0@mail.gmail.com>
+Message-ID: <ecd0e3310810141228r4e803e8du7bf6e2f85934a00c@mail.gmail.com>
+
+---------- Forwarded message ----------
+From: Howard Lewis Ship <hlship at gmail.com>
+Date: Tue, Oct 14, 2008 at 11:39 AM
+Subject: Re: [concurrency-interest] ReentrantReadWriteLock, multiple
+CPUs, lock not released causes deadlock [JDK 1.6]
+To: Martin Buchholz <martinrb at google.com>
+
+
+Thanks for the help.
+
+My users have reported this under 1.6.0_07-b06, on a double core
+Windows box, which should include the fix (the fix was in 1.6.0_02).
+
+About the read lock ... does it make a difference if the read lock is
+acquired the way it is, or should I do an explicit lock downgrade?  My
+intention was to open up a short window where the write lock was
+available (no readers or writers), such that any other threads waiting
+on the write lock could obtain it and quickly see that there was no
+work to be done, and release it.  Then a flood of waiting threads
+could grab the read lock simultaneously.  I realize that this is a
+just a possible scenario , that the runtime behavior is not
+predictable; I didn't want to mandate it, just make it possible.
+
+
+On Tue, Oct 14, 2008 at 10:34 AM, Martin Buchholz <martinrb at google.com> wrote:
+> On Tue, Oct 14, 2008 at 07:56, Howard Lewis Ship <hlship at gmail.com> wrote:
+>
+>> This seems to match
+>> http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6571733, bug that's
+>> marked as a duplicate of a fixed bug.
+>
+> Given that, does your bug appear to be fixed in jdks containing the
+> fix for the above (jdk7, openjdk6) and not fixed in others (jdk6u1)?
+>
+> Martin
+>
+
+
+
+--
+Howard M. Lewis Ship
+
+Creator Apache Tapestry and Apache HiveMind
+
+
+
+-- 
+Howard M. Lewis Ship
+
+Creator Apache Tapestry and Apache HiveMind
+
+From stas.oskin at gmail.com  Tue Oct 14 16:45:57 2008
+From: stas.oskin at gmail.com (Stas Oskin)
+Date: Tue, 14 Oct 2008 22:45:57 +0200
+Subject: [concurrency-interest] ConcurrentLinkedQueue alternatives
+In-Reply-To: <77938bc20810100119p5170da7bh4c75f707b218de8d@mail.gmail.com>
+References: <77938bc20810100119p5170da7bh4c75f707b218de8d@mail.gmail.com>
+Message-ID: <77938bc20810141345g45e50655hf614cf59bbe96ec1@mail.gmail.com>
+
+Hi.
+
+I recently found out that *ConcurrentLinkedQueue *has performance issues on
+multi-core chips:
+http://forums.sun.com/thread.jspa?threadID=5312465
+
+Can someone advice about a viable alternative in JDK6?
+
+Thanks in advance.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20081014/382cdef1/attachment.html>
+
+From dcholmes at optusnet.com.au  Tue Oct 14 17:05:38 2008
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed, 15 Oct 2008 07:05:38 +1000
+Subject: [concurrency-interest] ConcurrentLinkedQueue alternatives
+In-Reply-To: <77938bc20810141345g45e50655hf614cf59bbe96ec1@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEBNHOAA.dcholmes@optusnet.com.au>
+
+Never trust microbenchmarks as an indicator of application performance. Try
+using CLQ in your application and seeing how it performs.
+
+I'm not aware of any alternative to CLQ other than to use a different type
+of Queue - but presumably you were interested in the "concurrent" part.
+
+I don't recall if there were any implementation changes to CLQ between JDK 5
+and 6.
+
+Cheers,
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Stas Oskin
+  Sent: Wednesday, 15 October 2008 6:46 AM
+  To: concurrency-interest at cs.oswego.edu
+  Subject: [concurrency-interest] ConcurrentLinkedQueue alternatives
+
+
+  Hi.
+
+  I recently found out that ConcurrentLinkedQueue has performance issues on
+multi-core chips:
+  http://forums.sun.com/thread.jspa?threadID=5312465
+
+  Can someone advice about a viable alternative in JDK6?
+
+  Thanks in advance.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20081015/11fe0ea5/attachment.html>
+
+From mthornton at optrak.co.uk  Tue Oct 14 17:15:19 2008
+From: mthornton at optrak.co.uk (Mark Thornton)
+Date: Tue, 14 Oct 2008 22:15:19 +0100
+Subject: [concurrency-interest] ConcurrentLinkedQueue alternatives
+In-Reply-To: <77938bc20810141345g45e50655hf614cf59bbe96ec1@mail.gmail.com>
+References: <77938bc20810100119p5170da7bh4c75f707b218de8d@mail.gmail.com>
+	<77938bc20810141345g45e50655hf614cf59bbe96ec1@mail.gmail.com>
+Message-ID: <48F50BE7.8000205@optrak.co.uk>
+
+Stas Oskin wrote:
+> Hi.
+>
+> I recently found out that *ConcurrentLinkedQueue *has performance 
+> issues on multi-core chips:
+> http://forums.sun.com/thread.jspa?threadID=5312465
+>
+> Can someone advice about a viable alternative in JDK6?
+>
+> Thanks in advance.
+That test doesn't seem very realistic --- it creates an enormous queue 
+from which nothing is ever removed. If the internal nodes for a 
+ConcurrentLinkedQueue are larger than those for a BlockingLinkedQueue, 
+then this is more a test of garbage collection and processor cache 
+effects than it is of concurrency.
+
+Mark Thornton
+
+From holger at wizards.de  Tue Oct 14 17:48:36 2008
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Tue, 14 Oct 2008 23:48:36 +0200
+Subject: [concurrency-interest] ConcurrentLinkedQueue alternatives
+In-Reply-To: <77938bc20810141345g45e50655hf614cf59bbe96ec1@mail.gmail.com>
+References: <77938bc20810100119p5170da7bh4c75f707b218de8d@mail.gmail.com>
+	<77938bc20810141345g45e50655hf614cf59bbe96ec1@mail.gmail.com>
+Message-ID: <48F513B4.6030501@wizards.de>
+
+Stas Oskin wrote:
+> I recently found out that *ConcurrentLinkedQueue *has performance issues
+> on multi-core chips:
+> http://forums.sun.com/thread.jspa?threadID=5312465
+
+That benchmark is pretty bogus as nothing is ever removed from the queues.
+Even so, on both my machines CLQ wins by up to almost a factor of two.
+
+-h
+
+
+From hlship at gmail.com  Tue Oct 14 20:03:39 2008
+From: hlship at gmail.com (Howard Lewis Ship)
+Date: Tue, 14 Oct 2008 17:03:39 -0700
+Subject: [concurrency-interest] ReentrantReadWriteLock, multiple CPUs,
+	lock not released causes deadlock [JDK 1.6]
+In-Reply-To: <ecd0e3310810141326g7ca193e3rdc1bf32f1c5058@mail.gmail.com>
+References: <ecd0e3310810141139sf36025ald64f4750af3e9a0@mail.gmail.com>
+	<1ccfd1c10810141257g7d8cee8dq891113d73d8d0cec@mail.gmail.com>
+	<ecd0e3310810141326g7ca193e3rdc1bf32f1c5058@mail.gmail.com>
+Message-ID: <ecd0e3310810141703o7342f940w8108e1fe95a6b4d6@mail.gmail.com>
+
+False alarm.  My user was getting confused between their compilation
+JDK and thier deployment JDK ... they were deploying on a version of
+the JDK that still has the bug.  This is a big relief to me.
+
+On Tue, Oct 14, 2008 at 1:26 PM, Howard Lewis Ship <hlship at gmail.com> wrote:
+> That's the problem; I don't have the environment that reproduces the bug.
+>
+> On Tue, Oct 14, 2008 at 12:57 PM, Martin Buchholz <martinrb at google.com> wrote:
+>> While at Sun, I did a fair amount of work to try to remove
+>> bugs like this from the JDK.
+>> If you can produce the proverbial small reproducible test case,
+>> I might work on gettting a proper fix into the jdk
+>> (no promises).
+>>
+>> Make sure to test against a recent jdk, e.g. jdk7-b37 or so.
+>>
+>> Martin
+>>
+>> On Tue, Oct 14, 2008 at 11:39, Howard Lewis Ship <hlship at gmail.com> wrote:
+>>> Thanks for the help.
+>>>
+>>> My users have reported this under 1.6.0_07-b06, on a double core
+>>> Windows box, which should include the fix (the fix was in 1.6.0_02).
+>>>
+>>> About the read lock ... does it make a difference if the read lock is
+>>> acquired the way it is, or should I do an explicit lock downgrade?  My
+>>> intention was to open up a short window where the write lock was
+>>> available (no readers or writers), such that any other threads waiting
+>>> on the write lock could obtain it and quickly see that there was no
+>>> work to be done, and release it.  Then a flood of waiting threads
+>>> could grab the read lock simultaneously.  I realize that this is a
+>>> just a possible scenario , that the runtime behavior is not
+>>> predictable; I didn't want to mandate it, just make it possible.
+>>>
+>>>
+>>> On Tue, Oct 14, 2008 at 10:34 AM, Martin Buchholz <martinrb at google.com> wrote:
+>>>> On Tue, Oct 14, 2008 at 07:56, Howard Lewis Ship <hlship at gmail.com> wrote:
+>>>>
+>>>>> This seems to match
+>>>>> http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6571733, bug that's
+>>>>> marked as a duplicate of a fixed bug.
+>>>>
+>>>> Given that, does your bug appear to be fixed in jdks containing the
+>>>> fix for the above (jdk7, openjdk6) and not fixed in others (jdk6u1)?
+>>>>
+>>>> Martin
+>>>>
+>>>
+>>>
+>>>
+>>> --
+>>> Howard M. Lewis Ship
+>>>
+>>> Creator Apache Tapestry and Apache HiveMind
+>>>
+>>
+>
+>
+>
+> --
+> Howard M. Lewis Ship
+>
+> Creator Apache Tapestry and Apache HiveMind
+>
+
+
+
+-- 
+Howard M. Lewis Ship
+
+Creator Apache Tapestry and Apache HiveMind
+
+From dcholmes at optusnet.com.au  Tue Oct 14 20:50:30 2008
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed, 15 Oct 2008 10:50:30 +1000
+Subject: [concurrency-interest] ReentrantReadWriteLock, multiple CPUs,
+	lock not released causes deadlock [JDK 1.6]
+In-Reply-To: <ecd0e3310810141703o7342f940w8108e1fe95a6b4d6@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCGEBOHOAA.dcholmes@optusnet.com.au>
+
+It's a relief to some of us as well :-)
+
+Cheers,
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Howard
+> Lewis Ship
+> Sent: Wednesday, 15 October 2008 10:04 AM
+> To: Martin Buchholz; concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] ReentrantReadWriteLock, multiple
+> CPUs,lock not released causes deadlock [JDK 1.6]
+>
+>
+> False alarm.  My user was getting confused between their compilation
+> JDK and thier deployment JDK ... they were deploying on a version of
+> the JDK that still has the bug.  This is a big relief to me.
+>
+> On Tue, Oct 14, 2008 at 1:26 PM, Howard Lewis Ship
+> <hlship at gmail.com> wrote:
+> > That's the problem; I don't have the environment that
+> reproduces the bug.
+> >
+> > On Tue, Oct 14, 2008 at 12:57 PM, Martin Buchholz
+> <martinrb at google.com> wrote:
+> >> While at Sun, I did a fair amount of work to try to remove
+> >> bugs like this from the JDK.
+> >> If you can produce the proverbial small reproducible test case,
+> >> I might work on gettting a proper fix into the jdk
+> >> (no promises).
+> >>
+> >> Make sure to test against a recent jdk, e.g. jdk7-b37 or so.
+> >>
+> >> Martin
+> >>
+> >> On Tue, Oct 14, 2008 at 11:39, Howard Lewis Ship
+> <hlship at gmail.com> wrote:
+> >>> Thanks for the help.
+> >>>
+> >>> My users have reported this under 1.6.0_07-b06, on a double core
+> >>> Windows box, which should include the fix (the fix was in 1.6.0_02).
+> >>>
+> >>> About the read lock ... does it make a difference if the read lock is
+> >>> acquired the way it is, or should I do an explicit lock downgrade?  My
+> >>> intention was to open up a short window where the write lock was
+> >>> available (no readers or writers), such that any other threads waiting
+> >>> on the write lock could obtain it and quickly see that there was no
+> >>> work to be done, and release it.  Then a flood of waiting threads
+> >>> could grab the read lock simultaneously.  I realize that this is a
+> >>> just a possible scenario , that the runtime behavior is not
+> >>> predictable; I didn't want to mandate it, just make it possible.
+> >>>
+> >>>
+> >>> On Tue, Oct 14, 2008 at 10:34 AM, Martin Buchholz
+> <martinrb at google.com> wrote:
+> >>>> On Tue, Oct 14, 2008 at 07:56, Howard Lewis Ship
+> <hlship at gmail.com> wrote:
+> >>>>
+> >>>>> This seems to match
+> >>>>> http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6571733,
+> bug that's
+> >>>>> marked as a duplicate of a fixed bug.
+> >>>>
+> >>>> Given that, does your bug appear to be fixed in jdks containing the
+> >>>> fix for the above (jdk7, openjdk6) and not fixed in others (jdk6u1)?
+> >>>>
+> >>>> Martin
+> >>>>
+> >>>
+> >>>
+> >>>
+> >>> --
+> >>> Howard M. Lewis Ship
+> >>>
+> >>> Creator Apache Tapestry and Apache HiveMind
+> >>>
+> >>
+> >
+> >
+> >
+> > --
+> > Howard M. Lewis Ship
+> >
+> > Creator Apache Tapestry and Apache HiveMind
+> >
+>
+>
+>
+> --
+> Howard M. Lewis Ship
+>
+> Creator Apache Tapestry and Apache HiveMind
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From mthornton at optrak.co.uk  Wed Oct 15 05:42:51 2008
+From: mthornton at optrak.co.uk (Mark Thornton)
+Date: Wed, 15 Oct 2008 10:42:51 +0100
+Subject: [concurrency-interest] ForkJoin and DAG
+Message-ID: <48F5BB1B.7050900@optrak.co.uk>
+
+I have not had any success in getting this to work. I have reduced my 
+code to a simple test case where the task structure is as follows:
+
+p2()
+p3(p2)          p4(p2)
+p5(p3,p2)     p6(p3,p3)
+
+The tasks are p2 ... p6, with the dependencies listed in parentheses. If 
+all the tasks take the same time, then they could be scheduled on two 
+CPUs as shown above. Using a ForkJoinPool with 2 threads, my code fails 
+to complete with both worker threads busy waiting.
+
+Any insight welcome.
+Regards,
+Mark Thornton
+
+import jsr166y.forkjoin.RecursiveAction;
+import jsr166y.forkjoin.ForkJoinPool;
+import jsr166y.forkjoin.RecursiveTask;
+
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.HashMap;
+
+/** Attempt concurrent computation of a DAG of tasks.
+ */
+public class TestDAG4 extends RecursiveAction
+{
+    private static AtomicInteger concurrency = new AtomicInteger(0);
+
+    final String name;
+    int millis;
+    final private HashMap<Integer, ProductTask> productTasks = new 
+HashMap<Integer, ProductTask>();
+
+    public static void main(String[] args)
+    {
+        ForkJoinPool pool = new ForkJoinPool(2);
+        pool.invoke(new TestDAG4("fred", 1000));
+        pool.shutdown();
+    }
+
+    TestDAG4(String name, int millis)
+    {
+        this.name = name;
+        this.millis = millis;
+    }
+
+    ProductTask getProduct(int n)
+    {
+        ProductTask t;
+        synchronized (productTasks)
+        {
+            t = productTasks.get(n);
+            if (t == null)
+            {
+                t = new ProductTask(n);
+                productTasks.put(n, t);
+            }
+        }
+        t.ensureForked();
+        return t;
+    }
+
+    protected void compute()
+    {
+        long millis = System.currentTimeMillis();
+        ProductTask p4 = new ProductTask(4);
+        p4.fork();
+        ProductTask p5 = new ProductTask(5);
+        p5.fork();
+        String result = new ProductTask(6).forkJoin();
+        p4.join();
+        p5.join();
+        millis = System.currentTimeMillis()-millis;
+        System.out.println("Completed "+name+" in elapsed time: 
+"+millis+"ms, result="+result);
+    }
+
+    String delay(String value)
+    {
+        try
+        {
+            System.out.println(name+" computing: "+value+", 
+concurrency="+ concurrency.incrementAndGet());
+            Thread.sleep(millis);
+            System.out.println(name+" finished: "+value);
+            concurrency.decrementAndGet();
+            return value;
+        }
+        catch (InterruptedException e)
+        {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    class ProductTask extends RecursiveTask<String>
+    {
+
+        private final Object monitor = new Object();
+        private boolean hasForked;
+        private final int n;
+
+        ProductTask(int n)
+        {
+            this.n = n;
+        }
+
+        void ensureForked()
+        {
+            synchronized (monitor)
+            {
+                if (!hasForked)
+                {
+                    hasForked = true;
+                    fork();
+                }
+            }
+        }
+
+        protected String compute()
+        {
+            int r = n/2;
+            ProductTask leftTask = null;
+            ProductTask rightTask = null;
+            if (n-r > 1)
+                leftTask = getProduct(n-r);
+            if (r > 1)
+                rightTask = getProduct(r);
+            String left = leftTask != null ? leftTask.join() : "1";
+            String right;
+            if (rightTask == leftTask)
+                right = left;
+            else
+                right = rightTask != null ? rightTask.join() : "1";
+            String result = delay("{"+left+"*"+right+"}");
+            return result;
+        }
+    }
+}
+
+
+
+
+From dl at cs.oswego.edu  Wed Oct 15 09:36:41 2008
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Wed, 15 Oct 2008 09:36:41 -0400
+Subject: [concurrency-interest] ForkJoin and DAG
+In-Reply-To: <48F5BB1B.7050900@optrak.co.uk>
+References: <48F5BB1B.7050900@optrak.co.uk>
+Message-ID: <48F5F1E9.1010706@cs.oswego.edu>
+
+Mark Thornton wrote:
+> I have not had any success in getting this to work. I have reduced my 
+> code to a simple test case where the task structure is as follows:
+> 
+> p2()
+> p3(p2)          p4(p2)
+> p5(p3,p2)     p6(p3,p3)
+> 
+> The tasks are p2 ... p6, with the dependencies listed in parentheses. If 
+> all the tasks take the same time, then they could be scheduled on two 
+> CPUs as shown above. Using a ForkJoinPool with 2 threads, my code fails 
+> to complete with both worker threads busy waiting.
+> 
+
+Thanks for the test code! This is a case (of sibling dependencies)
+that is spec'ed to work but currently doesn't but will soon.
+
+-Doug
+
+From gkorland at gmail.com  Sun Oct 19 07:07:02 2008
+From: gkorland at gmail.com (Guy Korland)
+Date: Sun, 19 Oct 2008 13:07:02 +0200
+Subject: [concurrency-interest] LockSupport.parkUntil(-1/0) behavior
+Message-ID: <79be5fa30810190407y6b3ad651k2ec933460cabebb5@mail.gmail.com>
+
+Hi,
+
+We found that Sun JDK and JRockit react differently.
+While on Sun JDK calling LockSupport.parkUntil(-1) clears that last
+LockSupport.unpark(), on JRockit it throws "Negative timeout".
+
+Also on Sun LockSupport.parkUntil(0) blocks forever while on jrockit it
+returns immediately.
+
+What is the right behavior?
+Is there any formal way to clear LockSupport.unpark()?
+
+-------------
+Guy Korland
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20081019/8390a3e4/attachment.html>
+
+From dcholmes at optusnet.com.au  Sun Oct 19 10:31:00 2008
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Mon, 20 Oct 2008 00:31:00 +1000
+Subject: [concurrency-interest] LockSupport.parkUntil(-1/0) behavior
+In-Reply-To: <79be5fa30810190407y6b3ad651k2ec933460cabebb5@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEDBHOAA.dcholmes@optusnet.com.au>
+
+Guy Korland wrote:
+> We found that Sun JDK and JRockit react differently.
+> While on Sun JDK calling LockSupport.parkUntil(-1) clears that last
+> LockSupport.unpark(), on JRockit it throws "Negative timeout".
+
+There is no specification to throw any exception here. The time is
+milliseconds from the epoch, so as per common convention, a negative value
+here means a time prior to the epoch. So if the permit is available then
+parkUntil(-1) will return immediately and consume the permit; other wise it
+will return immediately because the time is in the past. This is not
+explicitly stated in the spec.
+
+> Also on Sun LockSupport.parkUntil(0) blocks forever while on jrockit it
+returns immediately.
+
+That would seem to be a bug on Sun's part. The epoch is in the past so the
+method should return immediately.
+
+There is also a bug with Sun's implementation of parkNanos(n). It will
+return immediately if n <= 0 but according to the specification it should
+take the permit if it is available.
+
+> Is there any formal way to clear LockSupport.unpark()?
+
+Only the target thread can consume its permit (just as only the target
+thread can clear its interrupt state). Higher-level logic should cause the
+thread to re-park() if conditions had changed - just as-if wait/notify were
+used (you can't take back a notification). Such a method would be very
+difficult to use correctly due to the inherent race with a parked thread.
+
+Cheers,
+David Holmes
+
+
+From dcholmes at optusnet.com.au  Sun Oct 19 10:48:33 2008
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Mon, 20 Oct 2008 00:48:33 +1000
+Subject: [concurrency-interest] LockSupport.parkUntil(-1/0) behavior
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCAEDBHOAA.dcholmes@optusnet.com.au>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEDBHOAA.dcholmes@optusnet.com.au>
+
+I wrote:
+> There is also a bug with Sun's implementation of parkNanos(n). It will
+> return immediately if n <= 0 but according to the specification it should
+> take the permit if it is available.
+
+Actually that's not a bug per-se. The thing is that you can not tell whether
+a permit is available at any given time. In the above case the permit is not
+consumed, which on face value is a bug. But you can argue that the
+implementation is correct as you can not detect any failures due to this
+"bug" because a subsequent park() can return spuriously anyway.
+
+Personally I'd prefer not to a trigger a spurious return ... but then I'd
+never call these methods with time values <= 0.
+
+David Holmes
+
+
+From unmesh_joshi at hotmail.com  Sun Oct 19 12:12:01 2008
+From: unmesh_joshi at hotmail.com (unmesh_joshi at hotmail.com)
+Date: Sun, 19 Oct 2008 09:12:01 -0700
+Subject: [concurrency-interest] Vacation reply
+In-Reply-To: <mailman.1.1224432000.2681.concurrency-interest@cs.oswego.edu>
+Message-ID: <BAY0-MC5-F1894EE7C86E24A16863EB4EF2C0@phx.gbl>
+
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20081019/cdc86ef5/attachment.html>
+
+From jeremy.manson at gmail.com  Mon Oct 20 20:47:22 2008
+From: jeremy.manson at gmail.com (Jeremy Manson)
+Date: Mon, 20 Oct 2008 17:47:22 -0700
+Subject: [concurrency-interest] ConcurrentLinkedQueue alternatives
+In-Reply-To: <48F513B4.6030501@wizards.de>
+References: <77938bc20810100119p5170da7bh4c75f707b218de8d@mail.gmail.com>
+	<77938bc20810141345g45e50655hf614cf59bbe96ec1@mail.gmail.com>
+	<48F513B4.6030501@wizards.de>
+Message-ID: <1631da7d0810201747i13cdfd0br4b154a07954a0afb@mail.gmail.com>
+
+One more data point on this -- I switched a benchmark I use at Google
+from blocking on a LBQ to polling a CLQ, and got a 20% increase in
+performance.
+
+Jeremy
+
+On Tue, Oct 14, 2008 at 2:48 PM, Holger Hoffst?tte <holger at wizards.de> wrote:
+> Stas Oskin wrote:
+>> I recently found out that *ConcurrentLinkedQueue *has performance issues
+>> on multi-core chips:
+>> http://forums.sun.com/thread.jspa?threadID=5312465
+>
+> That benchmark is pretty bogus as nothing is ever removed from the queues.
+> Even so, on both my machines CLQ wins by up to almost a factor of two.
+>
+> -h
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From jseigh_cp00 at xemaps.com  Tue Oct 21 06:03:43 2008
+From: jseigh_cp00 at xemaps.com (Joseph Seigh)
+Date: Tue, 21 Oct 2008 06:03:43 -0400
+Subject: [concurrency-interest] ConcurrentLinkedQueue alternatives
+In-Reply-To: <1631da7d0810201747i13cdfd0br4b154a07954a0afb@mail.gmail.com>
+References: <77938bc20810100119p5170da7bh4c75f707b218de8d@mail.gmail.com>
+	<77938bc20810141345g45e50655hf614cf59bbe96ec1@mail.gmail.com>
+	<48F513B4.6030501@wizards.de>
+	<1631da7d0810201747i13cdfd0br4b154a07954a0afb@mail.gmail.com>
+Message-ID: <48FDA8FF.6070807@xemaps.com>
+
+
+I have a benchmark that uses a CLQ w/ a fast semaphore.  It ran about 6x 
+faster than a LBQ on
+a single core but seems to only run about 3x faster on a Intel Atom 330 
+w/ 4 hardware threads.
+
+Joe Seigh
+
+
+
+Jeremy Manson wrote:
+> One more data point on this -- I switched a benchmark I use at Google
+> from blocking on a LBQ to polling a CLQ, and got a 20% increase in
+> performance.
+>
+> Jeremy
+>
+> On Tue, Oct 14, 2008 at 2:48 PM, Holger Hoffst?tte <holger at wizards.de> wrote:
+>   
+>> Stas Oskin wrote:
+>>     
+>>> I recently found out that *ConcurrentLinkedQueue *has performance issues
+>>> on multi-core chips:
+>>> http://forums.sun.com/thread.jspa?threadID=5312465
+>>>       
+>> That benchmark is pretty bogus as nothing is ever removed from the queues.
+>> Even so, on both my machines CLQ wins by up to almost a factor of two.
+>>
+>> -h
+>>
+>>     
+>
+
+
+From dcholmes at optusnet.com.au  Wed Oct 22 15:19:33 2008
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Thu, 23 Oct 2008 05:19:33 +1000
+Subject: [concurrency-interest] LockSupport.parkUntil(-1/0) behavior
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCAEDBHOAA.dcholmes@optusnet.com.au>
+Message-ID: <NFBBKALFDCPFIDBNKAPCGEDPHOAA.dcholmes@optusnet.com.au>
+
+I wrote:
+> > Also on Sun LockSupport.parkUntil(0) blocks forever while on jrockit it
+> > returns immediately.
+>
+> That would seem to be a bug on Sun's part. The epoch is in the past so the
+> method should return immediately.
+
+I've confirmed this. On all platforms the zero case gets caught by the logic
+for relative times and so is turned into an untimed-park. I will file a
+Hotspot bug for this.
+
+David Holmes
+
+
+From unmesh_joshi at hotmail.com  Thu Oct 23 14:23:34 2008
+From: unmesh_joshi at hotmail.com (Unmesh joshi)
+Date: Thu, 23 Oct 2008 18:23:34 +0000
+Subject: [concurrency-interest] Threads and Task Switching support in
+	microprocessors
+In-Reply-To: <mailman.1.1224777601.20892.concurrency-interest@cs.oswego.edu>
+References: <mailman.1.1224777601.20892.concurrency-interest@cs.oswego.edu>
+Message-ID: <BAY140-W33800CB41AC9D58A2A44D6EF280@phx.gbl>
+
+
+Hi,
+
+Operating systems supporting threads need to do lot of book keeping for executing multiple threads. Is it necessary condition such operating systems to run on processors supporting task switching? e.g. Intel processors explicitly support task switching and preserved task state. 
+What amount of processor support is expected for multi-threaded operating systems to work?
+What happens exactly at processor level when different thread is executed (On Single processor and multi processor)
+
+Thanks,
+
+Unmesh
+_________________________________________________________________
+Want to explore the world? Visit MSN Travel for the best deals.
+http://in.msn.com/coxandkings
+
+From alarmnummer at gmail.com  Fri Oct 24 03:40:21 2008
+From: alarmnummer at gmail.com (Peter Veentjer)
+Date: Fri, 24 Oct 2008 09:40:21 +0200
+Subject: [concurrency-interest] Threads and Task Switching support in
+	microprocessors
+In-Reply-To: <BAY140-W33800CB41AC9D58A2A44D6EF280@phx.gbl>
+References: <mailman.1.1224777601.20892.concurrency-interest@cs.oswego.edu>
+	<BAY140-W33800CB41AC9D58A2A44D6EF280@phx.gbl>
+Message-ID: <1466c1d60810240040n34d97bbft93a66f464c6e3497@mail.gmail.com>
+
+Although I'm not an expert, thread switching can in some cases be
+completely invisible to the OS. Hyperthreading for example where 2
+logical cpu's sit on top of one physical cpu. As soon as one thread
+can't make progress (perhaps an expensive read from main memory) the
+other thread takes over. With the Sun Niagara processors a similar
+approach is used.
+
+On Thu, Oct 23, 2008 at 8:23 PM, Unmesh joshi <unmesh_joshi at hotmail.com> wrote:
+>
+> Hi,
+>
+> Operating systems supporting threads need to do lot of book keeping for executing multiple threads. Is it necessary condition such operating systems to run on processors supporting task switching? e.g. Intel processors explicitly support task switching and preserved task state.
+> What amount of processor support is expected for multi-threaded operating systems to work?
+> What happens exactly at processor level when different thread is executed (On Single processor and multi processor)
+>
+> Thanks,
+>
+> Unmesh
+> _________________________________________________________________
+> Want to explore the world? Visit MSN Travel for the best deals.
+> http://in.msn.com/coxandkings
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From karl.krukow at gmail.com  Sat Oct 25 07:19:22 2008
+From: karl.krukow at gmail.com (Karl Krukow)
+Date: Sat, 25 Oct 2008 13:19:22 +0200
+Subject: [concurrency-interest] Performance tests
+Message-ID: <ED50A5B0-0982-4201-8B26-83C0CD6A5855@gmail.com>
+
+Hello,
+
+I've come to be quite interested in the Clojure programming language  
+and its focus on persistent data structure. In that context I would  
+like to run some tests on the performance of these, e.g., as compared  
+to the java.util.concurrent structures. Specifically, ConcurrentHashMap.
+
+I am looking for open source performance tests for  
+java.util.concurrent. Are such tests available?
+
+Thanks.
+- Karl
+
+From dcholmes at optusnet.com.au  Mon Oct 27 00:14:43 2008
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Mon, 27 Oct 2008 14:14:43 +1000
+Subject: [concurrency-interest] LockSupport.parkUntil(-1/0) behavior
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCGEDPHOAA.dcholmes@optusnet.com.au>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEELHOAA.dcholmes@optusnet.com.au>
+
+Filed bug 6763959
+
+David
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of David
+> Holmes
+> Sent: Thursday, 23 October 2008 5:20 AM
+> To: concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] LockSupport.parkUntil(-1/0) behavior
+> 
+> 
+> I wrote:
+> > > Also on Sun LockSupport.parkUntil(0) blocks forever while on 
+> jrockit it
+> > > returns immediately.
+> >
+> > That would seem to be a bug on Sun's part. The epoch is in the 
+> past so the
+> > method should return immediately.
+> 
+> I've confirmed this. On all platforms the zero case gets caught 
+> by the logic
+> for relative times and so is turned into an untimed-park. I will file a
+> Hotspot bug for this.
+> 
+> David Holmes
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From jdmarshall at gmail.com  Mon Oct 27 03:55:14 2008
+From: jdmarshall at gmail.com (jason marshall)
+Date: Mon, 27 Oct 2008 00:55:14 -0700
+Subject: [concurrency-interest] Implementing classic Future semantics on top
+	of FutureTask
+Message-ID: <3cf41bb90810270055k1629eae1tbcbcfe30c91ae483@mail.gmail.com>
+
+In a local group I was discussing the issue that FutureTask seems not
+to be intended to run outside of a work queue.
+
+My observation was that if you look at 'future' as it was used in
+functional programming for many years, the guarantee of the future was
+that -someone- (possibly you) would perform the calculation
+represented by the future and retain the value for anyone who
+subsequently is interested in the value (ie, lazy evaluation and
+memoizing the return value).
+
+What I want is a Future that executes regardless of whether it was
+returned from an Executor or built by hand.
+
+I believe the following is a correct and/or intended extension of
+FutureTask, but wanted a sanity check:
+
+
+
+    public static class MyFutureTask extends FutureTask
+    {
+        public MyFutureTask(Callable callable) {
+            super(callable);
+        }
+
+        public MyFutureTask(Runnable runnable, Object result) {
+            super(runnable, result);
+        }
+
+        public Object get() throws InterruptedException, ExecutionException {
+            super.run();
+            return super.get();
+        }
+
+        public Object get(long timeout, TimeUnit unit) throws
+InterruptedException, ExecutionException, TimeoutException {
+            super.run();
+            return super.get(timeout, unit);
+        }
+    }
+
+
+
+Basically, if the caller invokes get() before the executor dequeues an
+evaluates the Runnable/Callable, or if there is no queue at all, then
+we drop back to First Caller Pays semantics.  The calling thread
+executes the Callable and returns the result.  The queued call becomes
+a no-op and returns immediately.
+
+
+(I'm fanning out a small number of network fetch operations and
+collecting and evaluating the results in order.  All threads running
+at default priority, with no side effects, and no particularly
+interesting thread-scoped data - thread locals, security privilege or
+priority - involved.  I'm also not terribly concerned with fair load
+balancing, or I wouldn't be trying to get this feature parity in the
+first place).
+
+Thanks,
+Jason
+
+From dcholmes at optusnet.com.au  Mon Oct 27 05:29:57 2008
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Mon, 27 Oct 2008 19:29:57 +1000
+Subject: [concurrency-interest] Implementing classic Future semantics on
+	topof FutureTask
+In-Reply-To: <3cf41bb90810270055k1629eae1tbcbcfe30c91ae483@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCGEEMHOAA.dcholmes@optusnet.com.au>
+
+Hi Jason,
+
+FutureTask doesn't know how it will be computed, it just provides the run()
+that performs the computation. In general I wouldn't want get() to default
+to performing the computation, though that could be a valid response for
+some situations. So your extension looks fine to me.
+
+Cheers,
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of jason
+> marshall
+> Sent: Monday, 27 October 2008 5:55 PM
+> To: concurrency-interest
+> Subject: [concurrency-interest] Implementing classic Future semantics on
+> topof FutureTask
+>
+>
+> In a local group I was discussing the issue that FutureTask seems not
+> to be intended to run outside of a work queue.
+>
+> My observation was that if you look at 'future' as it was used in
+> functional programming for many years, the guarantee of the future was
+> that -someone- (possibly you) would perform the calculation
+> represented by the future and retain the value for anyone who
+> subsequently is interested in the value (ie, lazy evaluation and
+> memoizing the return value).
+>
+> What I want is a Future that executes regardless of whether it was
+> returned from an Executor or built by hand.
+>
+> I believe the following is a correct and/or intended extension of
+> FutureTask, but wanted a sanity check:
+>
+>
+>
+>     public static class MyFutureTask extends FutureTask
+>     {
+>         public MyFutureTask(Callable callable) {
+>             super(callable);
+>         }
+>
+>         public MyFutureTask(Runnable runnable, Object result) {
+>             super(runnable, result);
+>         }
+>
+>         public Object get() throws InterruptedException,
+> ExecutionException {
+>             super.run();
+>             return super.get();
+>         }
+>
+>         public Object get(long timeout, TimeUnit unit) throws
+> InterruptedException, ExecutionException, TimeoutException {
+>             super.run();
+>             return super.get(timeout, unit);
+>         }
+>     }
+>
+>
+>
+> Basically, if the caller invokes get() before the executor dequeues an
+> evaluates the Runnable/Callable, or if there is no queue at all, then
+> we drop back to First Caller Pays semantics.  The calling thread
+> executes the Callable and returns the result.  The queued call becomes
+> a no-op and returns immediately.
+>
+>
+> (I'm fanning out a small number of network fetch operations and
+> collecting and evaluating the results in order.  All threads running
+> at default priority, with no side effects, and no particularly
+> interesting thread-scoped data - thread locals, security privilege or
+> priority - involved.  I'm also not terribly concerned with fair load
+> balancing, or I wouldn't be trying to get this feature parity in the
+> first place).
+>
+> Thanks,
+> Jason
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From joe.bowbeer at gmail.com  Mon Oct 27 12:24:13 2008
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Mon, 27 Oct 2008 09:24:13 -0700
+Subject: [concurrency-interest] Implementing classic Future semantics on
+	top of FutureTask
+In-Reply-To: <3cf41bb90810270055k1629eae1tbcbcfe30c91ae483@mail.gmail.com>
+References: <3cf41bb90810270055k1629eae1tbcbcfe30c91ae483@mail.gmail.com>
+Message-ID: <31f2a7bd0810270924t54e5750boe95a0dfd325d3b36@mail.gmail.com>
+
+Looks good, and I can see that it might be useful for some styles of
+programming.
+
+You might consider packing it as a Future<T> rather than as subclass of
+FutureTask.
+
+If you intend to hand these to executors as well as receive them,
+RunnableFuture<T> would be the proper interface.
+
+--Joe
+
+On Mon, Oct 27, 2008 at 12:55 AM, jason marshall wrote:
+
+> In a local group I was discussing the issue that FutureTask seems not
+> to be intended to run outside of a work queue.
+>
+> My observation was that if you look at 'future' as it was used in
+> functional programming for many years, the guarantee of the future was
+> that -someone- (possibly you) would perform the calculation
+> represented by the future and retain the value for anyone who
+> subsequently is interested in the value (ie, lazy evaluation and
+> memoizing the return value).
+>
+> What I want is a Future that executes regardless of whether it was
+> returned from an Executor or built by hand.
+>
+> I believe the following is a correct and/or intended extension of
+> FutureTask, but wanted a sanity check:
+>
+>
+>
+>    public static class MyFutureTask extends FutureTask
+>    {
+>        public MyFutureTask(Callable callable) {
+>            super(callable);
+>        }
+>
+>        public MyFutureTask(Runnable runnable, Object result) {
+>            super(runnable, result);
+>        }
+>
+>        public Object get() throws InterruptedException, ExecutionException
+> {
+>            super.run();
+>            return super.get();
+>        }
+>
+>        public Object get(long timeout, TimeUnit unit) throws
+> InterruptedException, ExecutionException, TimeoutException {
+>            super.run();
+>            return super.get(timeout, unit);
+>        }
+>    }
+>
+>
+>
+> Basically, if the caller invokes get() before the executor dequeues an
+> evaluates the Runnable/Callable, or if there is no queue at all, then
+> we drop back to First Caller Pays semantics.  The calling thread
+> executes the Callable and returns the result.  The queued call becomes
+> a no-op and returns immediately.
+>
+>
+> (I'm fanning out a small number of network fetch operations and
+> collecting and evaluating the results in order.  All threads running
+> at default priority, with no side effects, and no particularly
+> interesting thread-scoped data - thread locals, security privilege or
+> priority - involved.  I'm also not terribly concerned with fair load
+> balancing, or I wouldn't be trying to get this feature parity in the
+> first place).
+>
+> Thanks,
+> Jason
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20081027/797a70c6/attachment.html>
+
+From jdmarshall at gmail.com  Mon Oct 27 13:50:22 2008
+From: jdmarshall at gmail.com (jason marshall)
+Date: Mon, 27 Oct 2008 10:50:22 -0700
+Subject: [concurrency-interest] Implementing classic Future semantics on
+	top of FutureTask
+In-Reply-To: <31f2a7bd0810270924t54e5750boe95a0dfd325d3b36@mail.gmail.com>
+References: <3cf41bb90810270055k1629eae1tbcbcfe30c91ae483@mail.gmail.com>
+	<31f2a7bd0810270924t54e5750boe95a0dfd325d3b36@mail.gmail.com>
+Message-ID: <3cf41bb90810271050r6129a581v68bd30b9f2a7fa47@mail.gmail.com>
+
+Probably not.  In my case I'm only using this for one user who's
+running in a J2EE environment and has a lot of heartburn about
+lifecycle management of thread pools.  So they asked the previous
+maintainer of this code to have a pool-less option which I'm trying to
+honor at least until I can talk them out of it.  (Although it looks
+like there are some bugs scheduled for fixing in Java 7 relating to
+shutting down an executor, so perhaps they know something I don't).
+
+My normal path will be just to use the ExecutorService, and this is
+used on the corner case.  The code to run it in-situ has some
+complicated locking that I'd like to push down to the FutureTask to
+handle.
+
+It occurred to me as I was hitting Send that maybe the logic in
+run-with-timeout is not quite right, but I'm not sure how to fix that.
+ It's somewhat academic since I don't intend to call that method, but
+I'm not sure it can actually be made to work properly if it's running
+in the foreground thread.
+
+-Jason
+
+On Mon, Oct 27, 2008 at 9:24 AM, Joe Bowbeer <joe.bowbeer at gmail.com> wrote:
+> Looks good, and I can see that it might be useful for some styles of
+> programming.
+>
+> You might consider packing it as a Future<T> rather than as subclass of
+> FutureTask.
+>
+> If you intend to hand these to executors as well as receive them,
+> RunnableFuture<T> would be the proper interface.
+>
+> --Joe
+>
+> On Mon, Oct 27, 2008 at 12:55 AM, jason marshall wrote:
+>>
+>> In a local group I was discussing the issue that FutureTask seems not
+>> to be intended to run outside of a work queue.
+>>
+>> My observation was that if you look at 'future' as it was used in
+>> functional programming for many years, the guarantee of the future was
+>> that -someone- (possibly you) would perform the calculation
+>> represented by the future and retain the value for anyone who
+>> subsequently is interested in the value (ie, lazy evaluation and
+>> memoizing the return value).
+>>
+>> What I want is a Future that executes regardless of whether it was
+>> returned from an Executor or built by hand.
+>>
+>> I believe the following is a correct and/or intended extension of
+>> FutureTask, but wanted a sanity check:
+>>
+>>
+>>
+>>    public static class MyFutureTask extends FutureTask
+>>    {
+>>        public MyFutureTask(Callable callable) {
+>>            super(callable);
+>>        }
+>>
+>>        public MyFutureTask(Runnable runnable, Object result) {
+>>            super(runnable, result);
+>>        }
+>>
+>>        public Object get() throws InterruptedException, ExecutionException
+>> {
+>>            super.run();
+>>            return super.get();
+>>        }
+>>
+>>        public Object get(long timeout, TimeUnit unit) throws
+>> InterruptedException, ExecutionException, TimeoutException {
+>>            super.run();
+>>            return super.get(timeout, unit);
+>>        }
+>>    }
+>>
+>>
+>>
+>> Basically, if the caller invokes get() before the executor dequeues an
+>> evaluates the Runnable/Callable, or if there is no queue at all, then
+>> we drop back to First Caller Pays semantics.  The calling thread
+>> executes the Callable and returns the result.  The queued call becomes
+>> a no-op and returns immediately.
+>>
+>>
+>> (I'm fanning out a small number of network fetch operations and
+>> collecting and evaluating the results in order.  All threads running
+>> at default priority, with no side effects, and no particularly
+>> interesting thread-scoped data - thread locals, security privilege or
+>> priority - involved.  I'm also not terribly concerned with fair load
+>> balancing, or I wouldn't be trying to get this feature parity in the
+>> first place).
+>>
+>> Thanks,
+>> Jason
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+
+
+-- 
+- Jason
+
+From dcholmes at optusnet.com.au  Mon Oct 27 15:20:20 2008
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Tue, 28 Oct 2008 05:20:20 +1000
+Subject: [concurrency-interest] Implementing classic Future semantics
+	ontop of FutureTask
+In-Reply-To: <3cf41bb90810271050r6129a581v68bd30b9f2a7fa47@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOEENHOAA.dcholmes@optusnet.com.au>
+
+Jason Marshall writes:
+> It occurred to me as I was hitting Send that maybe the logic in
+> run-with-timeout is not quite right, but I'm not sure how to fix that.
+>  It's somewhat academic since I don't intend to call that method, but
+> I'm not sure it can actually be made to work properly if it's running
+> in the foreground thread.
+
+Right. The timeout doesn't mean anything if the current thread does the
+evaluation. But there's really no fix for that, and it isn't something I'd
+worry about other than documenting ie "the timeout is the maximum time to
+wait if another thread is responsible for evaluating the result".
+
+Cheers,
+David Holmes
+
+
+From ben_manes at yahoo.com  Mon Oct 27 15:54:35 2008
+From: ben_manes at yahoo.com (Ben Manes)
+Date: Mon, 27 Oct 2008 12:54:35 -0700 (PDT)
+Subject: [concurrency-interest] Implementing classic Future semantics on
+	top of FutureTask
+Message-ID: <281897.81153.qm@web38804.mail.mud.yahoo.com>
+
+I have similar code, which I call a LazyFutureTask, that I use to provide post-processing code for a Future bubbling up from lower layers.  This is especially handy for transformations, when converting from an externalized form (e.g. network textual response) to the client's object form for their consumption.  If they fire-and-forget, the post-processing wasn't needed anyways so its discarded without concern.  I use this, as well as an eager alternative, quite a bit.
+
+
+
+----- Original Message ----
+From: jason marshall <jdmarshall at gmail.com>
+To: concurrency-interest <concurrency-interest at cs.oswego.edu>
+Sent: Monday, October 27, 2008 12:55:14 AM
+Subject: [concurrency-interest] Implementing classic Future semantics on top of FutureTask
+
+In a local group I was discussing the issue that FutureTask seems not
+to be intended to run outside of a work queue.
+
+My observation was that if you look at 'future' as it was used in
+functional programming for many years, the guarantee of the future was
+that -someone- (possibly you) would perform the calculation
+represented by the future and retain the value for anyone who
+subsequently is interested in the value (ie, lazy evaluation and
+memoizing the return value).
+
+What I want is a Future that executes regardless of whether it was
+returned from an Executor or built by hand.
+
+I believe the following is a correct and/or intended extension of
+FutureTask, but wanted a sanity check:
+
+
+
+    public static class MyFutureTask extends FutureTask
+    {
+        public MyFutureTask(Callable callable) {
+            super(callable);
+        }
+
+        public MyFutureTask(Runnable runnable, Object result) {
+            super(runnable, result);
+        }
+
+        public Object get() throws InterruptedException, ExecutionException {
+            super.run();
+            return super.get();
+        }
+
+        public Object get(long timeout, TimeUnit unit) throws
+InterruptedException, ExecutionException, TimeoutException {
+            super.run();
+            return super.get(timeout, unit);
+        }
+    }
+
+
+
+Basically, if the caller invokes get() before the executor dequeues an
+evaluates the Runnable/Callable, or if there is no queue at all, then
+we drop back to First Caller Pays semantics.  The calling thread
+executes the Callable and returns the result.  The queued call becomes
+a no-op and returns immediately.
+
+
+(I'm fanning out a small number of network fetch operations and
+collecting and evaluating the results in order.  All threads running
+at default priority, with no side effects, and no particularly
+interesting thread-scoped data - thread locals, security privilege or
+priority - involved.  I'm also not terribly concerned with fair load
+balancing, or I wouldn't be trying to get this feature parity in the
+first place).
+
+Thanks,
+Jason
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+      
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20081027/c90f0dc0/attachment.html>
+
+From sberlin at gmail.com  Tue Oct 28 10:03:27 2008
+From: sberlin at gmail.com (Sam Berlin)
+Date: Tue, 28 Oct 2008 10:03:27 -0400
+Subject: [concurrency-interest] Concurrent Locks & Stack Traces
+Message-ID: <19196d860810280703u13c14473j4887f1cd5ba7d211@mail.gmail.com>
+
+Hi All,
+
+Is it possible to determine (approximately?) which frame in a stack
+trace locked a j.u.c.Lock?
+
+Consider a deadlock report using synchronize:
+
+"Thread-1" (id=10) BLOCKED on
+java.util.concurrent.locks.ReentrantLock at 1621e42 owned by "Thread-0"
+(id=9)
+	at DeadlockSupport$2.run(DeadlockSupport.java:59)
+	-  blocked on java.util.concurrent.locks.ReentrantLock at 1621e42
+	-  locked java.util.concurrent.locks.ReentrantLock at dc840f
+	at java.lang.Thread.run(Thread.java:619)
+
+"Thread-0" (id=9) BLOCKED on
+java.util.concurrent.locks.ReentrantLock at dc840f owned by "Thread-1"
+(id=10)
+	at DeadlockSupport$1.run(DeadlockSupport.java:41)
+	-  blocked on java.util.concurrent.locks.ReentrantLock at dc840f
+	-  locked java.util.concurrent.locks.ReentrantLock at 1621e42
+	at java.lang.Thread.run(Thread.java:619)
+
+
+Now consider the same report using j.u.c.Lock:
+
+"Thread-1" (id=10) WAITING on
+java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf owned by
+"Thread-0" (id=9)
+	at sun.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:158)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(AbstractQueuedSynchronizer.java:747)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueued(AbstractQueuedSynchronizer.java:778)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:1114)
+	at java.util.concurrent.locks.ReentrantLock$NonfairSync.lock(ReentrantLock.java:186)
+	at java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:262)
+	at DeadlockSupport$2.run(DeadlockSupport.java:58)
+	at java.lang.Thread.run(Thread.java:619)
+
+	Number of locked synchronizers = 1
+	- java.util.concurrent.locks.ReentrantLock$NonfairSync at 1787038
+
+"Thread-0" (id=9) WAITING on
+java.util.concurrent.locks.ReentrantLock$NonfairSync at 1787038 owned by
+"Thread-1" (id=10)
+	at sun.misc.Unsafe.park(Native Method)
+	-  waiting on java.util.concurrent.locks.ReentrantLock$NonfairSync at 1787038
+	at java.util.concurrent.locks.LockSupport.park(LockSupport.java:158)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(AbstractQueuedSynchronizer.java:747)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueued(AbstractQueuedSynchronizer.java:778)
+	at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:1114)
+	at java.util.concurrent.locks.ReentrantLock$NonfairSync.lock(ReentrantLock.java:186)
+	at java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:262)
+	at DeadlockSupport$1.run(DeadlockSupport.java:40)
+	at java.lang.Thread.run(Thread.java:619)
+
+	Number of locked synchronizers = 1
+	- java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf
+
+It's difficult to go through that stack trace and figure out just
+where those locked synchronizers got locked.  With synchronize, the
+ThreadInfo object (from the ThreadMXBean) returns an array of
+MonitorInfo that let you dig into the frame.  It seems that these
+objects aren't available with j.u.c.Locks.  I understand the inherent
+difficult with figuring out what actually locks a j.u.c.Lock (because
+it goes through much more javaland code), but I'm hoping that someone
+smarter than I has figured out a way.
+
+Sam
+
+From bomba at cboe.com  Tue Oct 28 12:08:08 2008
+From: bomba at cboe.com (Bomba, Craig)
+Date: Tue, 28 Oct 2008 11:08:08 -0500
+Subject: [concurrency-interest] Phaser
+Message-ID: <4BD174404CF4A34C98322DC926CF862B064B3785@MSMAIL.cboent.cboe.com>
+
+Is there a mature version of Phaser that is available to use?
+
+Thanks,
+Craig Bomba
+CBOE
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20081028/0cab9521/attachment.html>
+
+From dl at cs.oswego.edu  Tue Oct 28 19:06:37 2008
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 28 Oct 2008 19:06:37 -0400
+Subject: [concurrency-interest] Phaser
+In-Reply-To: <4BD174404CF4A34C98322DC926CF862B064B3785@MSMAIL.cboent.cboe.com>
+References: <4BD174404CF4A34C98322DC926CF862B064B3785@MSMAIL.cboent.cboe.com>
+Message-ID: <49079AFD.1040807@cs.oswego.edu>
+
+Bomba, Craig wrote:
+> Is there a mature version of Phaser that is available to use?
+> 
+
+The current jsr166y version is correct as far as we know
+and performs well. The main incomplete to-do-list item is
+to re-integrate with forkjoin framework (so you can use Phasers
+in ForkJoinTasks, which you cannot yet), which in turn awaits
+some internal FJ enhancements I've been working on but won't
+be out for a while.
+
+So please do use them (but not in FJ, and tell us if you have
+suggestions for improvements, including suggestions for
+improved documentation etc.
+
+Get them at:
+http://gee.cs.oswego.edu/dl/concurrency-interest/index.html
+
+-Doug
+
+
+
+From sberlin at gmail.com  Wed Oct 29 10:29:48 2008
+From: sberlin at gmail.com (Sam Berlin)
+Date: Wed, 29 Oct 2008 10:29:48 -0400
+Subject: [concurrency-interest] Concurrent Locks & Stack Traces
+In-Reply-To: <19196d860810280703u13c14473j4887f1cd5ba7d211@mail.gmail.com>
+References: <19196d860810280703u13c14473j4887f1cd5ba7d211@mail.gmail.com>
+Message-ID: <19196d860810290729h6e7e33fcw11ab82f5066f11b2@mail.gmail.com>
+
+I thought about this question some more, and it seems it would be
+possible to add some information into stacktraces where a j.u.c.Lock
+is locked.  If somewhere in the VM it can keep track of locks (which
+it certainly can) and can keep track of what frames are associated
+with locks (which it can with monitors, atleast), then you can add
+some more accounting to keep track of j.u.c.Lock frames.  If a stack
+frame grabs a lock and then the frame disappears, the locked frame can
+promote itself to it's parent's frame if the lock wasn't released.
+
+So in your typical trace of locking with a j.u.c.Lock:
+
+        at java.util.concurrent.locks.LockSupport.park(LockSupport.java:158)
+<-- Grabs Lock
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterruptAbstractQueuedSynchronizer.java:747)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueued(AbstractQueuedSynchronizer.java:778)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:1114)
+        at java.util.concurrent.locks.ReentrantLock$NonfairSync.lock(ReentrantLock.java:186)
+        at java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:262)
+        at DeadlockSupport$2.run(DeadlockSupport.java:58)
+
+As each frame finishes, the lock is still held until you have:
+
+         at DeadlockSupport$2.run(DeadlockSupport.java:58) <-- Holds Lock
+
+So that if then later DeadlockSupport$2.run calls something else, you
+can print out:
+
+        at DeadlockSupport$2.anotherMethod(...)
+        at DeadlockSupport$2.run(DeadlockSupport.java:##)
+        -  locked java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf
+
+It's not as cut & dry as synchronize(...) because more accounting is
+involved, but I don't see why it isn't possible to include this
+information.  It would make debugging deadlocked stack traces vastly
+easier.
+
+This isn't going to solve all problems (such as forgetting to unlock a
+lock, the thread going out of scope and the lock being lost), but it
+will solve a significant problem.
+
+Does this make sense?  Am I forgetting something else important?
+
+Thanks.
+
+Sam
+
+On Tue, Oct 28, 2008 at 10:03 AM, Sam Berlin <sberlin at gmail.com> wrote:
+> Hi All,
+>
+> Is it possible to determine (approximately?) which frame in a stack
+> trace locked a j.u.c.Lock?
+>
+> Consider a deadlock report using synchronize:
+>
+> "Thread-1" (id=10) BLOCKED on
+> java.util.concurrent.locks.ReentrantLock at 1621e42 owned by "Thread-0"
+> (id=9)
+>        at DeadlockSupport$2.run(DeadlockSupport.java:59)
+>        -  blocked on java.util.concurrent.locks.ReentrantLock at 1621e42
+>        -  locked java.util.concurrent.locks.ReentrantLock at dc840f
+>        at java.lang.Thread.run(Thread.java:619)
+>
+> "Thread-0" (id=9) BLOCKED on
+> java.util.concurrent.locks.ReentrantLock at dc840f owned by "Thread-1"
+> (id=10)
+>        at DeadlockSupport$1.run(DeadlockSupport.java:41)
+>        -  blocked on java.util.concurrent.locks.ReentrantLock at dc840f
+>        -  locked java.util.concurrent.locks.ReentrantLock at 1621e42
+>        at java.lang.Thread.run(Thread.java:619)
+>
+>
+> Now consider the same report using j.u.c.Lock:
+>
+> "Thread-1" (id=10) WAITING on
+> java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf owned by
+> "Thread-0" (id=9)
+>        at sun.misc.Unsafe.park(Native Method)
+>        -  waiting on java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf
+>        at java.util.concurrent.locks.LockSupport.park(LockSupport.java:158)
+>        at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(AbstractQueuedSynchronizer.java:747)
+>        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueued(AbstractQueuedSynchronizer.java:778)
+>        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:1114)
+>        at java.util.concurrent.locks.ReentrantLock$NonfairSync.lock(ReentrantLock.java:186)
+>        at java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:262)
+>        at DeadlockSupport$2.run(DeadlockSupport.java:58)
+>        at java.lang.Thread.run(Thread.java:619)
+>
+>        Number of locked synchronizers = 1
+>        - java.util.concurrent.locks.ReentrantLock$NonfairSync at 1787038
+>
+> "Thread-0" (id=9) WAITING on
+> java.util.concurrent.locks.ReentrantLock$NonfairSync at 1787038 owned by
+> "Thread-1" (id=10)
+>        at sun.misc.Unsafe.park(Native Method)
+>        -  waiting on java.util.concurrent.locks.ReentrantLock$NonfairSync at 1787038
+>        at java.util.concurrent.locks.LockSupport.park(LockSupport.java:158)
+>        at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(AbstractQueuedSynchronizer.java:747)
+>        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueued(AbstractQueuedSynchronizer.java:778)
+>        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(AbstractQueuedSynchronizer.java:1114)
+>        at java.util.concurrent.locks.ReentrantLock$NonfairSync.lock(ReentrantLock.java:186)
+>        at java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:262)
+>        at DeadlockSupport$1.run(DeadlockSupport.java:40)
+>        at java.lang.Thread.run(Thread.java:619)
+>
+>        Number of locked synchronizers = 1
+>        - java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf
+>
+> It's difficult to go through that stack trace and figure out just
+> where those locked synchronizers got locked.  With synchronize, the
+> ThreadInfo object (from the ThreadMXBean) returns an array of
+> MonitorInfo that let you dig into the frame.  It seems that these
+> objects aren't available with j.u.c.Locks.  I understand the inherent
+> difficult with figuring out what actually locks a j.u.c.Lock (because
+> it goes through much more javaland code), but I'm hoping that someone
+> smarter than I has figured out a way.
+>
+> Sam
+>
+
+From dcholmes at optusnet.com.au  Thu Oct 30 00:33:37 2008
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Thu, 30 Oct 2008 14:33:37 +1000
+Subject: [concurrency-interest] Concurrent Locks & Stack Traces
+In-Reply-To: <19196d860810290729h6e7e33fcw11ab82f5066f11b2@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEFGHOAA.dcholmes@optusnet.com.au>
+
+Hi Sam,
+
+I'm not sure this is really feasible. Locking is intended to be "real fast"
+so the idea of making a call into the VM to register the fact that the Lock
+has been acquired seems expensive to me. I also don't see quite see how to
+track things when you don't release in the same frame, or lower - the idea
+of passing info back up to the higher frame implies there is some space
+reserved in the higher frame for that info. It's doable but I don't think
+I'd want to always pay for it.
+
+I agree that for the typical use-case of acquiring and releasing in the same
+frame, that it would be useful to see where a Lock was acquired.
+
+I wonder though, would it be useful if the Lock could record the stacktrace
+of when it was acquired? You could then turn this on only during
+testing/debugging.
+
+Food for thought anyway ...
+
+Cheers,
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Sam
+> Berlin
+> Sent: Thursday, 30 October 2008 12:30 AM
+> To: concurrency-interest
+> Subject: Re: [concurrency-interest] Concurrent Locks & Stack Traces
+>
+>
+> I thought about this question some more, and it seems it would be
+> possible to add some information into stacktraces where a j.u.c.Lock
+> is locked.  If somewhere in the VM it can keep track of locks (which
+> it certainly can) and can keep track of what frames are associated
+> with locks (which it can with monitors, atleast), then you can add
+> some more accounting to keep track of j.u.c.Lock frames.  If a stack
+> frame grabs a lock and then the frame disappears, the locked frame can
+> promote itself to it's parent's frame if the lock wasn't released.
+>
+> So in your typical trace of locking with a j.u.c.Lock:
+>
+>         at
+> java.util.concurrent.locks.LockSupport.park(LockSupport.java:158)
+> <-- Grabs Lock
+>         at
+> java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheck
+> InterruptAbstractQueuedSynchronizer.java:747)
+>         at
+> java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueue
+> d(AbstractQueuedSynchronizer.java:778)
+>         at
+> java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(Abst
+> ractQueuedSynchronizer.java:1114)
+>         at
+> java.util.concurrent.locks.ReentrantLock$NonfairSync.lock(Reentran
+> tLock.java:186)
+>         at
+> java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:262)
+>         at DeadlockSupport$2.run(DeadlockSupport.java:58)
+>
+> As each frame finishes, the lock is still held until you have:
+>
+>          at DeadlockSupport$2.run(DeadlockSupport.java:58) <-- Holds Lock
+>
+> So that if then later DeadlockSupport$2.run calls something else, you
+> can print out:
+>
+>         at DeadlockSupport$2.anotherMethod(...)
+>         at DeadlockSupport$2.run(DeadlockSupport.java:##)
+>         -  locked
+> java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf
+>
+> It's not as cut & dry as synchronize(...) because more accounting is
+> involved, but I don't see why it isn't possible to include this
+> information.  It would make debugging deadlocked stack traces vastly
+> easier.
+>
+> This isn't going to solve all problems (such as forgetting to unlock a
+> lock, the thread going out of scope and the lock being lost), but it
+> will solve a significant problem.
+>
+> Does this make sense?  Am I forgetting something else important?
+>
+> Thanks.
+>
+> Sam
+>
+> On Tue, Oct 28, 2008 at 10:03 AM, Sam Berlin <sberlin at gmail.com> wrote:
+> > Hi All,
+> >
+> > Is it possible to determine (approximately?) which frame in a stack
+> > trace locked a j.u.c.Lock?
+> >
+> > Consider a deadlock report using synchronize:
+> >
+> > "Thread-1" (id=10) BLOCKED on
+> > java.util.concurrent.locks.ReentrantLock at 1621e42 owned by "Thread-0"
+> > (id=9)
+> >        at DeadlockSupport$2.run(DeadlockSupport.java:59)
+> >        -  blocked on java.util.concurrent.locks.ReentrantLock at 1621e42
+> >        -  locked java.util.concurrent.locks.ReentrantLock at dc840f
+> >        at java.lang.Thread.run(Thread.java:619)
+> >
+> > "Thread-0" (id=9) BLOCKED on
+> > java.util.concurrent.locks.ReentrantLock at dc840f owned by "Thread-1"
+> > (id=10)
+> >        at DeadlockSupport$1.run(DeadlockSupport.java:41)
+> >        -  blocked on java.util.concurrent.locks.ReentrantLock at dc840f
+> >        -  locked java.util.concurrent.locks.ReentrantLock at 1621e42
+> >        at java.lang.Thread.run(Thread.java:619)
+> >
+> >
+> > Now consider the same report using j.u.c.Lock:
+> >
+> > "Thread-1" (id=10) WAITING on
+> > java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf owned by
+> > "Thread-0" (id=9)
+> >        at sun.misc.Unsafe.park(Native Method)
+> >        -  waiting on
+> java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf
+> >        at
+> java.util.concurrent.locks.LockSupport.park(LockSupport.java:158)
+> >        at
+> java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheck
+> Interrupt(AbstractQueuedSynchronizer.java:747)
+> >        at
+> java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueue
+> d(AbstractQueuedSynchronizer.java:778)
+> >        at
+> java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(Abst
+> ractQueuedSynchronizer.java:1114)
+> >        at
+> java.util.concurrent.locks.ReentrantLock$NonfairSync.lock(Reentran
+> tLock.java:186)
+> >        at
+> java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:262)
+> >        at DeadlockSupport$2.run(DeadlockSupport.java:58)
+> >        at java.lang.Thread.run(Thread.java:619)
+> >
+> >        Number of locked synchronizers = 1
+> >        - java.util.concurrent.locks.ReentrantLock$NonfairSync at 1787038
+> >
+> > "Thread-0" (id=9) WAITING on
+> > java.util.concurrent.locks.ReentrantLock$NonfairSync at 1787038 owned by
+> > "Thread-1" (id=10)
+> >        at sun.misc.Unsafe.park(Native Method)
+> >        -  waiting on
+> java.util.concurrent.locks.ReentrantLock$NonfairSync at 1787038
+> >        at
+> java.util.concurrent.locks.LockSupport.park(LockSupport.java:158)
+> >        at
+> java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheck
+> Interrupt(AbstractQueuedSynchronizer.java:747)
+> >        at
+> java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueue
+> d(AbstractQueuedSynchronizer.java:778)
+> >        at
+> java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(Abst
+> ractQueuedSynchronizer.java:1114)
+> >        at
+> java.util.concurrent.locks.ReentrantLock$NonfairSync.lock(Reentran
+> tLock.java:186)
+> >        at
+> java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:262)
+> >        at DeadlockSupport$1.run(DeadlockSupport.java:40)
+> >        at java.lang.Thread.run(Thread.java:619)
+> >
+> >        Number of locked synchronizers = 1
+> >        - java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf
+> >
+> > It's difficult to go through that stack trace and figure out just
+> > where those locked synchronizers got locked.  With synchronize, the
+> > ThreadInfo object (from the ThreadMXBean) returns an array of
+> > MonitorInfo that let you dig into the frame.  It seems that these
+> > objects aren't available with j.u.c.Locks.  I understand the inherent
+> > difficult with figuring out what actually locks a j.u.c.Lock (because
+> > it goes through much more javaland code), but I'm hoping that someone
+> > smarter than I has figured out a way.
+> >
+> > Sam
+> >
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From sberlin at gmail.com  Thu Oct 30 09:23:12 2008
+From: sberlin at gmail.com (Sam Berlin)
+Date: Thu, 30 Oct 2008 09:23:12 -0400
+Subject: [concurrency-interest] Concurrent Locks & Stack Traces
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCAEFGHOAA.dcholmes@optusnet.com.au>
+References: <19196d860810290729h6e7e33fcw11ab82f5066f11b2@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCAEFGHOAA.dcholmes@optusnet.com.au>
+Message-ID: <19196d860810300623m50f46d42gb6fc1e30644f21c2@mail.gmail.com>
+
+Thanks for the response, David.
+
+I'm fairly certain the VM already supports (and the JDK already
+handles) registering Lock usage.  ThreadMXBean (in
+java.lang.management) has an isSynchronizerUsageSupported() methods,
+and stack traces already print out the number of owned synchronizers
+per thread.  (This is different than 'monitor' usage, which has it own
+set of methods...  FWIW, I find it very confusing that the synchronize
+keyword maps to the 'monitor' nomenclature and the synchronize
+nomenclature maps to the implementations ReentrantLock &
+ReentrantReadWriteLock.. but oh well.)
+
+It also seems that the VM already supports keeping track of what
+frames lock what monitors.  It'd be a small leap (and one that has no
+founding in knowledge of how the VM works) to think that that notion
+could be extended to support ownable synchronizers.  Of course, it'd
+only be useful if it could done fast.
+
+Your suggestion of recording the stack trace in the Lock itself is
+very neat.  It definitely solves this problem in managed environments,
+where you can turn on/off this kind of behavior.  Unfortunately,
+though, it doesn't seem like it would help much with the use-case I'm
+trying to solve.  I ship a desktop app that has an additional thread
+that periodically polls for deadlocks.  When there is one, it
+generates an error report and attempts to send it back for debugging.
+(It's amazing how well this has worked out.)  In order to capture the
+information I'd need, the stacktrace recording would have to be on all
+the time in all clients, and that would significantly slow down code
+that locks a lot.
+
+Given that all the info I'm looking for exists in some way or another
+for monitors, I'm hoping it's really just a matter of plugging ownable
+synchronizer data into it...  Wishful thinking?
+
+Sam
+
+
+On Thu, Oct 30, 2008 at 12:33 AM, David Holmes <dcholmes at optusnet.com.au> wrote:
+> Hi Sam,
+>
+> I'm not sure this is really feasible. Locking is intended to be "real fast"
+> so the idea of making a call into the VM to register the fact that the Lock
+> has been acquired seems expensive to me. I also don't see quite see how to
+> track things when you don't release in the same frame, or lower - the idea
+> of passing info back up to the higher frame implies there is some space
+> reserved in the higher frame for that info. It's doable but I don't think
+> I'd want to always pay for it.
+>
+> I agree that for the typical use-case of acquiring and releasing in the same
+> frame, that it would be useful to see where a Lock was acquired.
+>
+> I wonder though, would it be useful if the Lock could record the stacktrace
+> of when it was acquired? You could then turn this on only during
+> testing/debugging.
+>
+> Food for thought anyway ...
+>
+> Cheers,
+> David Holmes
+>
+>> -----Original Message-----
+>> From: concurrency-interest-bounces at cs.oswego.edu
+>> [mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Sam
+>> Berlin
+>> Sent: Thursday, 30 October 2008 12:30 AM
+>> To: concurrency-interest
+>> Subject: Re: [concurrency-interest] Concurrent Locks & Stack Traces
+>>
+>>
+>> I thought about this question some more, and it seems it would be
+>> possible to add some information into stacktraces where a j.u.c.Lock
+>> is locked.  If somewhere in the VM it can keep track of locks (which
+>> it certainly can) and can keep track of what frames are associated
+>> with locks (which it can with monitors, atleast), then you can add
+>> some more accounting to keep track of j.u.c.Lock frames.  If a stack
+>> frame grabs a lock and then the frame disappears, the locked frame can
+>> promote itself to it's parent's frame if the lock wasn't released.
+>>
+>> So in your typical trace of locking with a j.u.c.Lock:
+>>
+>>         at
+>> java.util.concurrent.locks.LockSupport.park(LockSupport.java:158)
+>> <-- Grabs Lock
+>>         at
+>> java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheck
+>> InterruptAbstractQueuedSynchronizer.java:747)
+>>         at
+>> java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueue
+>> d(AbstractQueuedSynchronizer.java:778)
+>>         at
+>> java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(Abst
+>> ractQueuedSynchronizer.java:1114)
+>>         at
+>> java.util.concurrent.locks.ReentrantLock$NonfairSync.lock(Reentran
+>> tLock.java:186)
+>>         at
+>> java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:262)
+>>         at DeadlockSupport$2.run(DeadlockSupport.java:58)
+>>
+>> As each frame finishes, the lock is still held until you have:
+>>
+>>          at DeadlockSupport$2.run(DeadlockSupport.java:58) <-- Holds Lock
+>>
+>> So that if then later DeadlockSupport$2.run calls something else, you
+>> can print out:
+>>
+>>         at DeadlockSupport$2.anotherMethod(...)
+>>         at DeadlockSupport$2.run(DeadlockSupport.java:##)
+>>         -  locked
+>> java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf
+>>
+>> It's not as cut & dry as synchronize(...) because more accounting is
+>> involved, but I don't see why it isn't possible to include this
+>> information.  It would make debugging deadlocked stack traces vastly
+>> easier.
+>>
+>> This isn't going to solve all problems (such as forgetting to unlock a
+>> lock, the thread going out of scope and the lock being lost), but it
+>> will solve a significant problem.
+>>
+>> Does this make sense?  Am I forgetting something else important?
+>>
+>> Thanks.
+>>
+>> Sam
+>>
+>> On Tue, Oct 28, 2008 at 10:03 AM, Sam Berlin <sberlin at gmail.com> wrote:
+>> > Hi All,
+>> >
+>> > Is it possible to determine (approximately?) which frame in a stack
+>> > trace locked a j.u.c.Lock?
+>> >
+>> > Consider a deadlock report using synchronize:
+>> >
+>> > "Thread-1" (id=10) BLOCKED on
+>> > java.util.concurrent.locks.ReentrantLock at 1621e42 owned by "Thread-0"
+>> > (id=9)
+>> >        at DeadlockSupport$2.run(DeadlockSupport.java:59)
+>> >        -  blocked on java.util.concurrent.locks.ReentrantLock at 1621e42
+>> >        -  locked java.util.concurrent.locks.ReentrantLock at dc840f
+>> >        at java.lang.Thread.run(Thread.java:619)
+>> >
+>> > "Thread-0" (id=9) BLOCKED on
+>> > java.util.concurrent.locks.ReentrantLock at dc840f owned by "Thread-1"
+>> > (id=10)
+>> >        at DeadlockSupport$1.run(DeadlockSupport.java:41)
+>> >        -  blocked on java.util.concurrent.locks.ReentrantLock at dc840f
+>> >        -  locked java.util.concurrent.locks.ReentrantLock at 1621e42
+>> >        at java.lang.Thread.run(Thread.java:619)
+>> >
+>> >
+>> > Now consider the same report using j.u.c.Lock:
+>> >
+>> > "Thread-1" (id=10) WAITING on
+>> > java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf owned by
+>> > "Thread-0" (id=9)
+>> >        at sun.misc.Unsafe.park(Native Method)
+>> >        -  waiting on
+>> java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf
+>> >        at
+>> java.util.concurrent.locks.LockSupport.park(LockSupport.java:158)
+>> >        at
+>> java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheck
+>> Interrupt(AbstractQueuedSynchronizer.java:747)
+>> >        at
+>> java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueue
+>> d(AbstractQueuedSynchronizer.java:778)
+>> >        at
+>> java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(Abst
+>> ractQueuedSynchronizer.java:1114)
+>> >        at
+>> java.util.concurrent.locks.ReentrantLock$NonfairSync.lock(Reentran
+>> tLock.java:186)
+>> >        at
+>> java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:262)
+>> >        at DeadlockSupport$2.run(DeadlockSupport.java:58)
+>> >        at java.lang.Thread.run(Thread.java:619)
+>> >
+>> >        Number of locked synchronizers = 1
+>> >        - java.util.concurrent.locks.ReentrantLock$NonfairSync at 1787038
+>> >
+>> > "Thread-0" (id=9) WAITING on
+>> > java.util.concurrent.locks.ReentrantLock$NonfairSync at 1787038 owned by
+>> > "Thread-1" (id=10)
+>> >        at sun.misc.Unsafe.park(Native Method)
+>> >        -  waiting on
+>> java.util.concurrent.locks.ReentrantLock$NonfairSync at 1787038
+>> >        at
+>> java.util.concurrent.locks.LockSupport.park(LockSupport.java:158)
+>> >        at
+>> java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheck
+>> Interrupt(AbstractQueuedSynchronizer.java:747)
+>> >        at
+>> java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueue
+>> d(AbstractQueuedSynchronizer.java:778)
+>> >        at
+>> java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(Abst
+>> ractQueuedSynchronizer.java:1114)
+>> >        at
+>> java.util.concurrent.locks.ReentrantLock$NonfairSync.lock(Reentran
+>> tLock.java:186)
+>> >        at
+>> java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:262)
+>> >        at DeadlockSupport$1.run(DeadlockSupport.java:40)
+>> >        at java.lang.Thread.run(Thread.java:619)
+>> >
+>> >        Number of locked synchronizers = 1
+>> >        - java.util.concurrent.locks.ReentrantLock$NonfairSync at fa9cf
+>> >
+>> > It's difficult to go through that stack trace and figure out just
+>> > where those locked synchronizers got locked.  With synchronize, the
+>> > ThreadInfo object (from the ThreadMXBean) returns an array of
+>> > MonitorInfo that let you dig into the frame.  It seems that these
+>> > objects aren't available with j.u.c.Locks.  I understand the inherent
+>> > difficult with figuring out what actually locks a j.u.c.Lock (because
+>> > it goes through much more javaland code), but I'm hoping that someone
+>> > smarter than I has figured out a way.
+>> >
+>> > Sam
+>> >
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+From jim.andreou at gmail.com  Thu Oct 30 13:53:58 2008
+From: jim.andreou at gmail.com (Andreou Dimitris)
+Date: Thu, 30 Oct 2008 19:53:58 +0200
+Subject: [concurrency-interest] MPI in Java?
+Message-ID: <4909F4B6.6030706@csd.uoc.gr>
+
+Hi all,
+
+(Sorry for the overly general question, but)
+Is there a good reference explaining why the MPI programming model is 
+important (or not) for Java? If it is important, should we expect good 
+implementations coming for it? I'm particularly trying to understand the 
+relation between fork/join and MPI in terms of usefulness.
+
+This is a comment from wikipedia[1], about the supposed difficulty of 
+supporting MPI in Java, which I don't quite understand:
+> Some of the most challenging parts of any MPI implementation for Java 
+> arise from the language's own limitations and peculiarities, such as 
+> the lack of explicit pointers and linear memory address space for its 
+> objects , which make transferring multi-dimensional arrays and complex 
+> objects inefficient.
+Any opinions whether this holds true?
+
+Thanks a lot,
+Dimitris Andreou
+
+[1] http://en.wikipedia.org/wiki/Message_Passing_Interface#Java
+

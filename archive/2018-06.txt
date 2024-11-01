@@ -1,0 +1,2806 @@
+From oleksandr.otenko at gmail.com  Fri Jun  1 02:34:13 2018
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Fri, 1 Jun 2018 07:34:13 +0100
+Subject: [concurrency-interest] Unsynchronized lazy conditions
+In-Reply-To: <CAAcqB+s=bz4EKK1HN7t+8egh8sYJ_nOqjCQU+fjkATZu_0EcPg@mail.gmail.com>
+References: <630cefff-433f-4c1d-e336-221a38121a98@anarres.org>
+ <CAAcqB+s=bz4EKK1HN7t+8egh8sYJ_nOqjCQU+fjkATZu_0EcPg@mail.gmail.com>
+Message-ID: <5A23E26F-188C-4E32-8471-695A565049B1@gmail.com>
+
+I would not call the trick Effective Java.
+
+
+Alex
+
+> On 31 May 2018, at 21:06, Carl Mastrangelo via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+> At the cost of about 500 bytes of class size, you could do the trick in Effective Java:
+> 
+> class Foo {
+>    private static class Logged {
+>      static void log() {}
+>  
+>       static {
+>          LOG.warn("Warning");       
+>       }
+>    }
+> 
+>    public void run() {
+>      Logged.log();
+>    }
+> }
+> 
+> On Wed, May 30, 2018 at 10:17 PM Shevek via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+> Hi,
+> 
+> I'd like to issue a warning message a relatively low number of times in 
+> a multi-threaded application. My code is this:
+> 
+> class Foo {
+>    private boolean warned;
+> 
+>    public void run() {
+>      if (!warned) {
+>         LOG.warn("Warning");
+>         warned = true;
+>      }
+>    }
+> }
+> 
+> This is the only access to the variable 'warned', the value change is 
+> deliberately unsynchronized, and monotonic. Am I right to believe that:
+> 
+> * The first call WILL issue a warning.
+> * Any thread will issue the warning AT MOST once.
+> * Some (later) threads may not issue the warning, if the updated value 
+> is flushed to the heap and they load it?
+> 
+> Is there a better way to do this without sacrificing performance? Is 
+> this what the mysterious AtomicBoolean.lazySet, or even 
+> weakCompareAndSet is about?
+> 
+> This is right in the middle of something very concurrent which runs for 
+> a long time, so reducing overhead is far more important than 
+> occasionally issuing too many warnings.
+> 
+> Thank you.
+> 
+> S.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180601/ffc2d96e/attachment.html>
+
+From jini at zeus.net.au  Fri Jun  1 07:32:47 2018
+From: jini at zeus.net.au (Peter)
+Date: Fri, 01 Jun 2018 21:32:47 +1000
+Subject: [concurrency-interest] Unsynchronized lazy conditions
+In-Reply-To: <6917A53B-914E-46A3-A77B-E72CBA25DBC4@gmail.com>
+References: <630cefff-433f-4c1d-e336-221a38121a98@anarres.org>
+ <24389be8-7624-824f-95b3-8b15ca8489c3@redhat.com>
+ <CANPzfU-=dvYYx-bV6M9NUzCd=P=EWK0DNYA9POzytUv1tpcpsw@mail.gmail.com>
+ <6917A53B-914E-46A3-A77B-E72CBA25DBC4@gmail.com>
+Message-ID: <5B112EDF.60906@zeus.net.au>
+
+Agreed, I've got a class that's higly concurrent, trying to log anything 
+was problematic, because of the contention it caused.  Logging can cause 
+significant contention, expecially under stress, so you don't want to be 
+logging unnecessarily.
+
+You know what the best solution was?  A single threaded Executor.  No 
+more contention due to logging.
+
+static void log(Level level, String message, Object[] parameters, 
+Throwable thrown){
+         final LogRecord record = new LogRecord(level, message);
+         record.setParameters(parameters);
+         record.setThrown(thrown);
+     logExec.submit(new Runnable(){
+         public void run() {
+         logger.log(record);
+         }
+     });
+     }
+
+On 31/05/2018 7:58 PM, Alex Otenko via Concurrency-interest wrote:
+> The original requirement was it’s ok to sometimes log Warning several
+> times. All this hacky atomicity is unnecessary. Just declare private
+> volatile boolean warned, and leave the rest of the code as is.
+>
+> Alex
+>
+>> On 31 May 2018, at 10:22, Viktor Klang via Concurrency-interest
+>> <concurrency-interest at cs.oswego.edu
+>> <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>>
+>> Aleksey's suggestion(s) is/are definitely cleaner than mine:
+>>
+>> Depending on performance requirements the following might be cheaper,
+>> of course assuming you can type-wise hide the AtomicBoolean
+>> inheritance from consumer code:
+>>
+>> class Foo extends AtomicBoolean { // No indirection due to the
+>> allocation of AtomicBoolean
+>>    public void run() {
+>>      if (!get() && !getAndSet(true)) { // LOCK XCHG instead of LOCK
+>> CMPXCHG
+>>        LOG.warn("Warning");
+>>      }
+>>    }
+>> }
+>>
+>> On Thu, May 31, 2018 at 9:51 AM, Aleksey Shipilev via
+>> Concurrency-interest <concurrency-interest at cs.oswego.edu
+>> <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>>
+>>     On 05/31/2018 07:07 AM, Shevek via Concurrency-interest wrote:
+>>     > Hi,
+>>     >
+>>     > I'd like to issue a warning message a relatively low number of
+>>     times in a multi-threaded
+>>     > application. My code is this:
+>>     >
+>>     > class Foo {
+>>     >   private boolean warned;
+>>     >
+>>     >   public void run() {
+>>     >     if (!warned) {
+>>     >        LOG.warn("Warning");
+>>     >        warned = true;
+>>     >     }
+>>     >   }
+>>     > }
+>>     >
+>>     > This is the only access to the variable 'warned', the value
+>>     change is deliberately unsynchronized,
+>>     > and monotonic. Am I right to believe that:
+>>     >
+>>     > * The first call WILL issue a warning.
+>>
+>>     Yes.
+>>
+>>     > * Any thread will issue the warning AT MOST once.
+>>
+>>     Yes, I think so. It encroaches on darker corners of JMM, but it
+>>     still does what you want, methinks.
+>>
+>>     > * Some (later) threads may not issue the warning, if the updated
+>>     value is flushed to the heap and
+>>     > they load it?
+>>
+>>     Yes, except that "flushed to heap" part: that one is an
+>>     implementation detail.
+>>
+>>
+>>     > Is there a better way to do this without sacrificing
+>>     performance? Is this what the mysterious
+>>     > AtomicBoolean.lazySet, or even weakCompareAndSet is about?
+>>
+>>     The classic way to do this is to do test and test-and-set:
+>>
+>>     class Foo {
+>>        private final AtomicBoolean warned;
+>>
+>>        public void run() {
+>>          if (!warned.get() && warned.compareAndSet(false, true)) {
+>>            LOG.warn("Warning");
+>>          }
+>>        }
+>>     }
+>>
+>>     This gives you global only-once property, without sacrificing
+>>     performance.
+>>
+>>     There are options how do you represent "warned". I'd start with
+>>     AtomicBoolean, and then switched to
+>>     AtomicIntegerFieldUpdater over volatile field, or VarHandle if
+>>     footprint became a problem. With
+>>     VarHandles, you can even mix the modes: make the first "test" in
+>>     plain mode, and then do the CAS, if
+>>     first volatile check is too costly. But all of this is red
+>>     herring until there is a pressing need.
+>>     One-off guards are doable with just AtomicBoolean.
+>>
+>>     -Aleksey
+>>
+>>
+>>     _______________________________________________
+>>     Concurrency-interest mailing list
+>>     Concurrency-interest at cs.oswego.edu
+>>     <mailto:Concurrency-interest at cs.oswego.edu>
+>>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>     <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>>
+>>
+>>
+>>
+>> --
+>> Cheers,
+>> √
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> <mailto:Concurrency-interest at cs.oswego.edu>
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From valentin.male.kovalenko at gmail.com  Fri Jun  1 13:45:08 2018
+From: valentin.male.kovalenko at gmail.com (Valentin Kovalenko)
+Date: Fri, 1 Jun 2018 11:45:08 -0600
+Subject: [concurrency-interest] Unsynchronized lazy conditions
+Message-ID: <CAO-wXwJ1qzwq=YJ08t--RD5wCkc7_MQWEtJ73qM=k7Cq54=J=Q@mail.gmail.com>
+
+Peter, and now you have contention on logExec.submit. Not to mention that
+logging frameworks like already provide asynchronous logging and Log4J2,
+for example, uses Disruptor (
+https://logging.apache.org/log4j/2.x/manual/async.html), which passes
+messages between threads faster than any bounded queue you will use in
+Executor.submit.
+
+> Peter <
+> Logging can cause
+> significant contention, expecially under stress, so you don't want to be
+> logging unnecessarily.
+>
+> You know what the best solution was?  A single threaded Executor.  No
+> more contention due to logging.
+>
+> static void log(Level level, String message, Object[] parameters,
+> Throwable thrown){
+>          final LogRecord record = new LogRecord(level, message);
+>          record.setParameters(parameters);
+>          record.setThrown(thrown);
+>      logExec.submit(new Runnable(){
+>          public void run() {
+>          logger.log(record);
+>          }
+>      });
+>      }
+
+Regards,
+Valentin
+[image: LinkedIn] <https://www.linkedin.com/in/stIncMale>   [image: GitHub]
+<https://github.com/stIncMale>   [image: YouTube]
+<https://www.youtube.com/user/stIncMale>
+
+On 1 June 2018 at 10:00, <concurrency-interest-request at cs.oswego.edu> wrote:
+
+> Send Concurrency-interest mailing list submissions to
+>         concurrency-interest at cs.oswego.edu
+>
+> To subscribe or unsubscribe via the World Wide Web, visit
+>         http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> or, via email, send a message with subject or body 'help' to
+>         concurrency-interest-request at cs.oswego.edu
+>
+> You can reach the person managing the list at
+>         concurrency-interest-owner at cs.oswego.edu
+>
+> When replying, please edit your Subject line so it is more specific
+> than "Re: Contents of Concurrency-interest digest..."
+>
+>
+> Today's Topics:
+>
+>    1. Re: Unsynchronized lazy conditions (Alex Otenko)
+>    2. Re: Unsynchronized lazy conditions (Peter)
+>
+>
+> ----------------------------------------------------------------------
+>
+> Message: 1
+> Date: Fri, 1 Jun 2018 07:34:13 +0100
+> From: Alex Otenko <oleksandr.otenko at gmail.com>
+> To: Carl Mastrangelo <notcarl at google.com>
+> Cc: shevek at anarres.org, concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] Unsynchronized lazy conditions
+> Message-ID: <5A23E26F-188C-4E32-8471-695A565049B1 at gmail.com>
+> Content-Type: text/plain; charset="utf-8"
+>
+> I would not call the trick Effective Java.
+>
+>
+> Alex
+>
+> > On 31 May 2018, at 21:06, Carl Mastrangelo via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+> >
+> > At the cost of about 500 bytes of class size, you could do the trick in
+> Effective Java:
+> >
+> > class Foo {
+> >    private static class Logged {
+> >      static void log() {}
+> >
+> >       static {
+> >          LOG.warn("Warning");
+> >       }
+> >    }
+> >
+> >    public void run() {
+> >      Logged.log();
+> >    }
+> > }
+> >
+> > On Wed, May 30, 2018 at 10:17 PM Shevek via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu <mailto:concurrency-interest@
+> cs.oswego.edu>> wrote:
+> > Hi,
+> >
+> > I'd like to issue a warning message a relatively low number of times in
+> > a multi-threaded application. My code is this:
+> >
+> > class Foo {
+> >    private boolean warned;
+> >
+> >    public void run() {
+> >      if (!warned) {
+> >         LOG.warn("Warning");
+> >         warned = true;
+> >      }
+> >    }
+> > }
+> >
+> > This is the only access to the variable 'warned', the value change is
+> > deliberately unsynchronized, and monotonic. Am I right to believe that:
+> >
+> > * The first call WILL issue a warning.
+> > * Any thread will issue the warning AT MOST once.
+> > * Some (later) threads may not issue the warning, if the updated value
+> > is flushed to the heap and they load it?
+> >
+> > Is there a better way to do this without sacrificing performance? Is
+> > this what the mysterious AtomicBoolean.lazySet, or even
+> > weakCompareAndSet is about?
+> >
+> > This is right in the middle of something very concurrent which runs for
+> > a long time, so reducing overhead is far more important than
+> > occasionally issuing too many warnings.
+> >
+> > Thank you.
+> >
+> > S.
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest@
+> cs.oswego.edu>
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest <
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> -------------- next part --------------
+> An HTML attachment was scrubbed...
+> URL: <http://cs.oswego.edu/pipermail/concurrency-
+> interest/attachments/20180601/ffc2d96e/attachment-0001.html>
+>
+> ------------------------------
+>
+> Message: 2
+> Date: Fri, 01 Jun 2018 21:32:47 +1000
+> From: Peter <jini at zeus.net.au>
+> To: concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] Unsynchronized lazy conditions
+> Message-ID: <5B112EDF.60906 at zeus.net.au>
+> Content-Type: text/plain; charset=UTF-8; format=flowed
+>
+> Agreed, I've got a class that's higly concurrent, trying to log anything
+> was problematic, because of the contention it caused.  Logging can cause
+> significant contention, expecially under stress, so you don't want to be
+> logging unnecessarily.
+>
+> You know what the best solution was?  A single threaded Executor.  No
+> more contention due to logging.
+>
+> static void log(Level level, String message, Object[] parameters,
+> Throwable thrown){
+>          final LogRecord record = new LogRecord(level, message);
+>          record.setParameters(parameters);
+>          record.setThrown(thrown);
+>      logExec.submit(new Runnable(){
+>          public void run() {
+>          logger.log(record);
+>          }
+>      });
+>      }
+>
+> On 31/05/2018 7:58 PM, Alex Otenko via Concurrency-interest wrote:
+> > The original requirement was it’s ok to sometimes log Warning several
+> > times. All this hacky atomicity is unnecessary. Just declare private
+> > volatile boolean warned, and leave the rest of the code as is.
+> >
+> > Alex
+> >
+> >> On 31 May 2018, at 10:22, Viktor Klang via Concurrency-interest
+> >> <concurrency-interest at cs.oswego.edu
+> >> <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+> >>
+> >> Aleksey's suggestion(s) is/are definitely cleaner than mine:
+> >>
+> >> Depending on performance requirements the following might be cheaper,
+> >> of course assuming you can type-wise hide the AtomicBoolean
+> >> inheritance from consumer code:
+> >>
+> >> class Foo extends AtomicBoolean { // No indirection due to the
+> >> allocation of AtomicBoolean
+> >>    public void run() {
+> >>      if (!get() && !getAndSet(true)) { // LOCK XCHG instead of LOCK
+> >> CMPXCHG
+> >>        LOG.warn("Warning");
+> >>      }
+> >>    }
+> >> }
+> >>
+> >> On Thu, May 31, 2018 at 9:51 AM, Aleksey Shipilev via
+> >> Concurrency-interest <concurrency-interest at cs.oswego.edu
+> >> <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+> >>
+> >>     On 05/31/2018 07:07 AM, Shevek via Concurrency-interest wrote:
+> >>     > Hi,
+> >>     >
+> >>     > I'd like to issue a warning message a relatively low number of
+> >>     times in a multi-threaded
+> >>     > application. My code is this:
+> >>     >
+> >>     > class Foo {
+> >>     >   private boolean warned;
+> >>     >
+> >>     >   public void run() {
+> >>     >     if (!warned) {
+> >>     >        LOG.warn("Warning");
+> >>     >        warned = true;
+> >>     >     }
+> >>     >   }
+> >>     > }
+> >>     >
+> >>     > This is the only access to the variable 'warned', the value
+> >>     change is deliberately unsynchronized,
+> >>     > and monotonic. Am I right to believe that:
+> >>     >
+> >>     > * The first call WILL issue a warning.
+> >>
+> >>     Yes.
+> >>
+> >>     > * Any thread will issue the warning AT MOST once.
+> >>
+> >>     Yes, I think so. It encroaches on darker corners of JMM, but it
+> >>     still does what you want, methinks.
+> >>
+> >>     > * Some (later) threads may not issue the warning, if the updated
+> >>     value is flushed to the heap and
+> >>     > they load it?
+> >>
+> >>     Yes, except that "flushed to heap" part: that one is an
+> >>     implementation detail.
+> >>
+> >>
+> >>     > Is there a better way to do this without sacrificing
+> >>     performance? Is this what the mysterious
+> >>     > AtomicBoolean.lazySet, or even weakCompareAndSet is about?
+> >>
+> >>     The classic way to do this is to do test and test-and-set:
+> >>
+> >>     class Foo {
+> >>        private final AtomicBoolean warned;
+> >>
+> >>        public void run() {
+> >>          if (!warned.get() && warned.compareAndSet(false, true)) {
+> >>            LOG.warn("Warning");
+> >>          }
+> >>        }
+> >>     }
+> >>
+> >>     This gives you global only-once property, without sacrificing
+> >>     performance.
+> >>
+> >>     There are options how do you represent "warned". I'd start with
+> >>     AtomicBoolean, and then switched to
+> >>     AtomicIntegerFieldUpdater over volatile field, or VarHandle if
+> >>     footprint became a problem. With
+> >>     VarHandles, you can even mix the modes: make the first "test" in
+> >>     plain mode, and then do the CAS, if
+> >>     first volatile check is too costly. But all of this is red
+> >>     herring until there is a pressing need.
+> >>     One-off guards are doable with just AtomicBoolean.
+> >>
+> >>     -Aleksey
+> >>
+> >>
+> >>     _______________________________________________
+> >>     Concurrency-interest mailing list
+> >>     Concurrency-interest at cs.oswego.edu
+> >>     <mailto:Concurrency-interest at cs.oswego.edu>
+> >>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >>     <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> >>
+> >>
+> >>
+> >>
+> >> --
+> >> Cheers,
+> >> √
+> >> _______________________________________________
+> >> Concurrency-interest mailing list
+> >> Concurrency-interest at cs.oswego.edu
+> >> <mailto:Concurrency-interest at cs.oswego.edu>
+> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+> ------------------------------
+>
+> Subject: Digest Footer
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> ------------------------------
+>
+> End of Concurrency-interest Digest, Vol 161, Issue 1
+> ****************************************************
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180601/f5283964/attachment-0001.html>
+
+From martinrb at google.com  Mon Jun  4 17:47:31 2018
+From: martinrb at google.com (Martin Buchholz)
+Date: Mon, 4 Jun 2018 14:47:31 -0700
+Subject: [concurrency-interest] Durations in existing JDK APIs
+In-Reply-To: <CACzrW9B0jdvm7YKG77LG1Bjs9EEaJOTaj64dsUgwo32br5wRKQ@mail.gmail.com>
+References: <CAB3z6AiFY7dnVH7BRtFuGzF4=G5kgkqezpP+NDS-NRTukA1DKA@mail.gmail.com>
+ <CAB3z6Ai4pN4ga3V6ZeU=zZJAF23uopTEiJMknRROSqLuGKU4=Q@mail.gmail.com>
+ <CAB3z6AjVdR5STouvSB2ukzkzf1OBnRDt3=e5K+u_DWvOH0R_6g@mail.gmail.com>
+ <CA+kOe08D+0RYqKyu2KJzOp5gHidbTPEt54FNkp0HQPu56BzJtQ@mail.gmail.com>
+ <1236a3de-dd83-b2f6-c9e2-c80ee4603203@cs.oswego.edu>
+ <CA+kOe0-3PGAUHeTSAZw3LZ8nOZBvh6uob1sTbjVvADOBuM8ovw@mail.gmail.com>
+ <CACzrW9B0jdvm7YKG77LG1Bjs9EEaJOTaj64dsUgwo32br5wRKQ@mail.gmail.com>
+Message-ID: <CA+kOe08Yt2+R7zMPGicXAnZasboBhn9iHawPuQNhotCXg9CLqA@mail.gmail.com>
+
+TimeUnit#toDuration is gone.
+
+Here's a non-strawman attempt at TimeUnit#convert(Duration).
+I was astonished how hard it was to get this really correct instead of
+merely mostly correct.
+For negative numbers, the long/int representation of Duration is sort-of a
+"floored" division instead of java's default "truncating" division.
+
+    /**
+     * Converts the given time duration to this unit.
+     *
+     * <p>For any TimeUnit {@code unit},
+     * {@code unit.convert(Duration.ofNanos(n))}
+     * is equivalent to
+     * {@code unit.convert(n, NANOSECONDS)}, and
+     * {@code unit.convert(Duration.of(n, unit.toChronoUnit()))}
+     * is equivalent to {@code n} (in the absence of overflow).
+     *
+     * @param duration the time duration
+     * @return the converted duration in this unit,
+     * or {@code Long.MIN_VALUE} if conversion would negatively overflow,
+     * or {@code Long.MAX_VALUE} if it would positively overflow.
+     * @throws NullPointerException if {@code duration} is null
+     * @see Duration#of(long,TemporalUnit)
+     * @since 11
+     */
+    public long convert(Duration duration) {
+        final long secs = duration.getSeconds();
+        final int nano = duration.getNano();
+        final long s, candidate;
+        if ((s = scale) == SECOND_SCALE)
+            return (secs < 0 && nano > 0) ? secs + 1 : secs;
+        if (s > SECOND_SCALE) {
+            long div = secs / secRatio;
+            if (secs < 0 && nano > 0 && div * secRatio == secs)
+                div++;
+            return div;
+        }
+        return (secs >= 0)
+            ? ((secs > maxSecs
+                || (candidate = secs * secRatio + nano / s) < 0)
+               ? Long.MAX_VALUE : candidate)
+            : ((secs < - maxSecs - 1
+                || (candidate = secs * secRatio + (nano + s - 1) / s) > 0)
+               ? Long.MIN_VALUE : candidate);
+    }
+
+But is it really correct?  Here are some tests as well:
+
+
+    /**
+     * convert(Duration) roundtrips with Duration.ofXXXX and
+Duration.of(long, ChronoUnit)
+     */
+    public void testConvertDuration_roundtripDurationOf() {
+        long n = ThreadLocalRandom.current().nextLong();
+
+        assertEquals(n, NANOSECONDS.convert(Duration.ofNanos(n)));
+        assertEquals(n, NANOSECONDS.convert(Duration.of(n,
+ChronoUnit.NANOS)));
+        assertEquals(n, MILLISECONDS.convert(Duration.ofMillis(n)));
+        assertEquals(n, MILLISECONDS.convert(Duration.of(n,
+ChronoUnit.MILLIS)));
+        assertEquals(n, SECONDS.convert(Duration.ofSeconds(n)));
+        assertEquals(n, SECONDS.convert(Duration.of(n,
+ChronoUnit.SECONDS)));
+        n /= 60;
+        assertEquals(n, MINUTES.convert(Duration.ofMinutes(n)));
+        assertEquals(n, MINUTES.convert(Duration.of(n,
+ChronoUnit.MINUTES)));
+        n /= 60;
+        assertEquals(n, HOURS.convert(Duration.ofHours(n)));
+        assertEquals(n, HOURS.convert(Duration.of(n, ChronoUnit.HOURS)));
+        n /= 24;
+        assertEquals(n, DAYS.convert(Duration.ofDays(n)));
+        assertEquals(n, DAYS.convert(Duration.of(n, ChronoUnit.DAYS)));
+    }
+
+    /**
+     * convert(Duration.ofNanos(n)) agrees with convert(n, NANOSECONDS)
+     */
+    public void testConvertDuration_roundtripDurationOfNanos() {
+        // Test values near unit transitions and near overflow.
+        LongStream.concat(
+                Arrays.stream(TimeUnit.values()).mapToLong(u ->
+u.toNanos(1)),
+                LongStream.of(Long.MAX_VALUE, Long.MIN_VALUE))
+            .flatMap(n -> LongStream.of(n, n + 1, n - 1))
+            .flatMap(n -> LongStream.of(n, n + 1_000_000_000, n -
+1_000_000_000))
+            .flatMap(n -> LongStream.of(n, -n))
+            // .peek(System.err::println)
+            .forEach(n -> Arrays.stream(TimeUnit.values()).forEach(
+                u -> assertEquals(u.convert(n, NANOSECONDS),
+                                  u.convert(Duration.ofNanos(n)))));
+    }
+
+    /**
+     * convert(Duration) doesn't misbehave near Long.MAX_VALUE and
+Long.MIN_VALUE.
+     */
+    public void testConvertDuration_nearOverflow() {
+        ChronoUnit NANOS = ChronoUnit.NANOS;
+        Duration maxDuration = Duration.ofSeconds(Long.MAX_VALUE,
+999_999_999);
+        Duration minDuration = Duration.ofSeconds(Long.MIN_VALUE, 0);
+
+        for (TimeUnit u : TimeUnit.values()) {
+            ChronoUnit cu = u.toChronoUnit();
+            long r;
+            if (u.toNanos(1) > SECONDS.toNanos(1)) {
+                r = u.toNanos(1) / SECONDS.toNanos(1);
+
+                assertThrows(ArithmeticException.class,
+                             () -> Duration.of(Long.MAX_VALUE, cu),
+                             () -> Duration.of(Long.MIN_VALUE, cu));
+            } else {
+                r = 1;
+
+                Duration max = Duration.of(Long.MAX_VALUE, cu);
+                Duration min = Duration.of(Long.MIN_VALUE, cu);
+                assertEquals(Long.MAX_VALUE, u.convert(max));
+                assertEquals(Long.MAX_VALUE - 1, u.convert(max.minus(1,
+NANOS)));
+                assertEquals(Long.MAX_VALUE - 1, u.convert(max.minus(1,
+cu)));
+                assertEquals(Long.MIN_VALUE, u.convert(min));
+                assertEquals(Long.MIN_VALUE + 1, u.convert(min.plus(1,
+NANOS)));
+                assertEquals(Long.MIN_VALUE + 1, u.convert(min.plus(1,
+cu)));
+                assertEquals(Long.MAX_VALUE, u.convert(max.plus(1, NANOS)));
+                if (u != SECONDS) {
+                    assertEquals(Long.MAX_VALUE, u.convert(max.plus(1,
+cu)));
+                    assertEquals(Long.MIN_VALUE, u.convert(min.minus(1,
+NANOS)));
+                    assertEquals(Long.MIN_VALUE, u.convert(min.minus(1,
+cu)));
+                }
+            }
+
+            assertEquals(Long.MAX_VALUE / r, u.convert(maxDuration));
+            assertEquals(Long.MIN_VALUE / r, u.convert(minDuration));
+        }
+    }
+
+
+
+
+On Thu, May 31, 2018 at 12:32 AM, Stephen Colebourne <scolebourne at joda.org>
+wrote:
+
+> I'm not convinced TimeUnit::toDuration(long amount) has enough value.
+> We don't have a similar method on ChronoUnit
+>
+> Duration.of(amount, timeUnit.toChronoUnit()) seems sufficient. Maybe
+> document this in the convert(Duration) method?
+>
+> Stephen
+>
+>
+> On 31 May 2018 at 01:19, Martin Buchholz <martinrb at google.com> wrote:
+> > v.0.2 has both conversion methods in TimeUnit.  The unexpected weirdness
+> is
+> > that convert(Duration) saturates while toDuration throws
+> > ArithmeticException, but both seem author-culture-consistent.  Perhaps
+> > TimeUnit#toDuration doesn't provide enough value in view of the existing
+> > Duration.of and TimeUnit#toChronoUnit.  And most of the time you'd
+> expect to
+> > convert from Duration to long, just before calling a TimeUnit based
+> method.
+> >
+> >     /**
+> >      * Converts the given time duration to this unit.
+> >      *
+> >      * @param duration the time duration
+> >      * @return the converted duration in this unit,
+> >      * or {@code Long.MIN_VALUE} if conversion would negatively overflow,
+> >      * or {@code Long.MAX_VALUE} if it would positively overflow.
+> >      * @throws NullPointerException if {@code duration} is null
+> >      */
+> >     public long convert(Duration duration) {
+> >         long s = convert(duration.getSeconds(), SECONDS);
+> >         if (s == Long.MIN_VALUE) return s;
+> >         long n = convert(duration.getNano(), NANOSECONDS);
+> >         assert n >= 0 && n < 1_000_000_000;
+> >         return (s + n < s) ? Long.MAX_VALUE : s + n;
+> >     }
+> >
+> >     /**
+> >      * Converts the given time duration in this unit to a Duration.
+> >      *
+> >      * @param duration the time duration
+> >      * @return the time duration represented as a Duration
+> >      * @throws ArithmeticException if the duration cannot be represented
+> >      * as a Duration due to numeric overflow
+> >      */
+> >     public Duration toDuration(long duration) {
+> >         return Duration.of(duration, toChronoUnit());
+> >     }
+> >
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180604/bcb24c8d/attachment.html>
+
+From martinrb at google.com  Mon Jun  4 23:52:26 2018
+From: martinrb at google.com (Martin Buchholz)
+Date: Mon, 4 Jun 2018 20:52:26 -0700
+Subject: [concurrency-interest] Durations in existing JDK APIs
+In-Reply-To: <CA+kOe08Yt2+R7zMPGicXAnZasboBhn9iHawPuQNhotCXg9CLqA@mail.gmail.com>
+References: <CAB3z6AiFY7dnVH7BRtFuGzF4=G5kgkqezpP+NDS-NRTukA1DKA@mail.gmail.com>
+ <CAB3z6Ai4pN4ga3V6ZeU=zZJAF23uopTEiJMknRROSqLuGKU4=Q@mail.gmail.com>
+ <CAB3z6AjVdR5STouvSB2ukzkzf1OBnRDt3=e5K+u_DWvOH0R_6g@mail.gmail.com>
+ <CA+kOe08D+0RYqKyu2KJzOp5gHidbTPEt54FNkp0HQPu56BzJtQ@mail.gmail.com>
+ <1236a3de-dd83-b2f6-c9e2-c80ee4603203@cs.oswego.edu>
+ <CA+kOe0-3PGAUHeTSAZw3LZ8nOZBvh6uob1sTbjVvADOBuM8ovw@mail.gmail.com>
+ <CACzrW9B0jdvm7YKG77LG1Bjs9EEaJOTaj64dsUgwo32br5wRKQ@mail.gmail.com>
+ <CA+kOe08Yt2+R7zMPGicXAnZasboBhn9iHawPuQNhotCXg9CLqA@mail.gmail.com>
+Message-ID: <CA+kOe08HA0mddnzpob70yv6y_6jbzjwPeM=D8nnmssEe7B7BDQ@mail.gmail.com>
+
+Looks like if you switch representation for negative Duration, much of the
+hair goes away.
+This version also optimizes for NANOSECONDS, which is very likely to be the
+target in practice:
+
+    public long convert(Duration duration) {
+        long secs = duration.getSeconds();
+        int nano = duration.getNano();
+        if (secs < 0 && nano > 0) {
+            // use representation compatible with integer division
+            secs++;
+            nano -= SECOND_SCALE;
+        }
+        final long s;
+        if ((s = scale) >= SECOND_SCALE)
+            return (s == SECOND_SCALE) ? secs : secs / secRatio;
+        long val = secs * secRatio + ((s == NANO_SCALE) ? nano : nano / s);
+        return ((secs | nano) >= 0)
+            ? ((secs > maxSecs || val < 0) ? Long.MAX_VALUE : val)
+            : ((secs < -maxSecs || val > 0) ? Long.MIN_VALUE : val);
+    }
+
+
+On Mon, Jun 4, 2018 at 2:47 PM, Martin Buchholz <martinrb at google.com> wrote:
+
+> TimeUnit#toDuration is gone.
+>
+> Here's a non-strawman attempt at TimeUnit#convert(Duration).
+> I was astonished how hard it was to get this really correct instead of
+> merely mostly correct.
+> For negative numbers, the long/int representation of Duration is sort-of a
+> "floored" division instead of java's default "truncating" division.
+>
+>     public long convert(Duration duration) {
+>         final long secs = duration.getSeconds();
+>         final int nano = duration.getNano();
+>         final long s, candidate;
+>         if ((s = scale) == SECOND_SCALE)
+>             return (secs < 0 && nano > 0) ? secs + 1 : secs;
+>         if (s > SECOND_SCALE) {
+>             long div = secs / secRatio;
+>             if (secs < 0 && nano > 0 && div * secRatio == secs)
+>                 div++;
+>             return div;
+>         }
+>         return (secs >= 0)
+>             ? ((secs > maxSecs
+>                 || (candidate = secs * secRatio + nano / s) < 0)
+>                ? Long.MAX_VALUE : candidate)
+>             : ((secs < - maxSecs - 1
+>                 || (candidate = secs * secRatio + (nano + s - 1) / s) > 0)
+>                ? Long.MIN_VALUE : candidate);
+>     }
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180604/2acf433e/attachment-0001.html>
+
+From martinrb at google.com  Tue Jun  5 18:41:45 2018
+From: martinrb at google.com (Martin Buchholz)
+Date: Tue, 5 Jun 2018 15:41:45 -0700
+Subject: [concurrency-interest] Durations in existing JDK APIs
+In-Reply-To: <CA+kOe08HA0mddnzpob70yv6y_6jbzjwPeM=D8nnmssEe7B7BDQ@mail.gmail.com>
+References: <CAB3z6AiFY7dnVH7BRtFuGzF4=G5kgkqezpP+NDS-NRTukA1DKA@mail.gmail.com>
+ <CAB3z6Ai4pN4ga3V6ZeU=zZJAF23uopTEiJMknRROSqLuGKU4=Q@mail.gmail.com>
+ <CAB3z6AjVdR5STouvSB2ukzkzf1OBnRDt3=e5K+u_DWvOH0R_6g@mail.gmail.com>
+ <CA+kOe08D+0RYqKyu2KJzOp5gHidbTPEt54FNkp0HQPu56BzJtQ@mail.gmail.com>
+ <1236a3de-dd83-b2f6-c9e2-c80ee4603203@cs.oswego.edu>
+ <CA+kOe0-3PGAUHeTSAZw3LZ8nOZBvh6uob1sTbjVvADOBuM8ovw@mail.gmail.com>
+ <CACzrW9B0jdvm7YKG77LG1Bjs9EEaJOTaj64dsUgwo32br5wRKQ@mail.gmail.com>
+ <CA+kOe08Yt2+R7zMPGicXAnZasboBhn9iHawPuQNhotCXg9CLqA@mail.gmail.com>
+ <CA+kOe08HA0mddnzpob70yv6y_6jbzjwPeM=D8nnmssEe7B7BDQ@mail.gmail.com>
+Message-ID: <CA+kOe08n4Ebjr3zV-gsxBp5DLVYacVGEh3k_CZ79QMn6dVsQGw@mail.gmail.com>
+
+JDK-8204375: Add TimeUnit#convert(Duration)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180605/373c6b90/attachment.html>
+
+From peter.levart at gmail.com  Wed Jun  6 11:17:40 2018
+From: peter.levart at gmail.com (Peter Levart)
+Date: Wed, 6 Jun 2018 17:17:40 +0200
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+Message-ID: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+
+Hello,
+
+I thought I'd ask on this list, whether the following new method on 
+ThreadLocal class would be useful, desirable or undesirable:
+
+     /**
+      * Returns the value in the current thread's copy of this
+      * thread-local variable.  If the variable has no value for the
+      * current thread, null is returned and no value is initialized.
+      *
+      * @return the current thread's value of this thread-local or null
+      */
+     T getIfPresent()
+
+
+Might event be:
+
+     Optional<T> getIfPresent();
+
+
+
+Thanks, Peter
+
+
+From david.lloyd at redhat.com  Wed Jun  6 12:48:39 2018
+From: david.lloyd at redhat.com (David Lloyd)
+Date: Wed, 6 Jun 2018 11:48:39 -0500
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+Message-ID: <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+
+On Wed, Jun 6, 2018 at 10:17 AM, Peter Levart via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+> Hello,
+>
+> I thought I'd ask on this list, whether the following new method on
+> ThreadLocal class would be useful, desirable or undesirable:
+
+I'd find it useful, but adding it (compatibly) would be very
+difficult.  Classes which have overridden get() would have unexpected
+behavior, etc.
+
+
+
+-- 
+- DML
+
+From martinrb at google.com  Wed Jun  6 13:03:09 2018
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 6 Jun 2018 10:03:09 -0700
+Subject: [concurrency-interest] Durations in existing JDK APIs
+In-Reply-To: <CA+kOe08n4Ebjr3zV-gsxBp5DLVYacVGEh3k_CZ79QMn6dVsQGw@mail.gmail.com>
+References: <CAB3z6AiFY7dnVH7BRtFuGzF4=G5kgkqezpP+NDS-NRTukA1DKA@mail.gmail.com>
+ <CAB3z6Ai4pN4ga3V6ZeU=zZJAF23uopTEiJMknRROSqLuGKU4=Q@mail.gmail.com>
+ <CAB3z6AjVdR5STouvSB2ukzkzf1OBnRDt3=e5K+u_DWvOH0R_6g@mail.gmail.com>
+ <CA+kOe08D+0RYqKyu2KJzOp5gHidbTPEt54FNkp0HQPu56BzJtQ@mail.gmail.com>
+ <1236a3de-dd83-b2f6-c9e2-c80ee4603203@cs.oswego.edu>
+ <CA+kOe0-3PGAUHeTSAZw3LZ8nOZBvh6uob1sTbjVvADOBuM8ovw@mail.gmail.com>
+ <CACzrW9B0jdvm7YKG77LG1Bjs9EEaJOTaj64dsUgwo32br5wRKQ@mail.gmail.com>
+ <CA+kOe08Yt2+R7zMPGicXAnZasboBhn9iHawPuQNhotCXg9CLqA@mail.gmail.com>
+ <CA+kOe08HA0mddnzpob70yv6y_6jbzjwPeM=D8nnmssEe7B7BDQ@mail.gmail.com>
+ <CA+kOe08n4Ebjr3zV-gsxBp5DLVYacVGEh3k_CZ79QMn6dVsQGw@mail.gmail.com>
+Message-ID: <CA+kOe0_=AAMg2kb2OkDaKuaek9UTW=o5Vm_=oXQPn1yqCr2=JA@mail.gmail.com>
+
+OK, here is a RFR for low-hanging changes (some of these changes have
+already been reviewed by some of you):
+
+8204375: Add TimeUnit#convert(Duration)
+http://cr.openjdk.java.net/~martin/webrevs/jdk/jsr166-integration/convertDuration/index.html
+https://bugs.openjdk.java.net/browse/JDK-8204375
+
+8204444: java.time cleanup
+http://cr.openjdk.java.net/~martin/webrevs/jdk/time-lint/
+https://bugs.openjdk.java.net/browse/JDK-8204444
+
+8204377: Rename Object#wait parameter name from "timeout" to "timeoutMillis"
+http://cr.openjdk.java.net/~martin/webrevs/jdk/Object-wait-timeout/
+https://bugs.openjdk.java.net/browse/JDK-8204377
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180606/67747ce1/attachment.html>
+
+From peter.levart at gmail.com  Wed Jun  6 13:09:56 2018
+From: peter.levart at gmail.com (Peter Levart)
+Date: Wed, 6 Jun 2018 19:09:56 +0200
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+Message-ID: <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+
+Di David,
+
+On 06/06/18 18:48, David Lloyd wrote:
+> On Wed, Jun 6, 2018 at 10:17 AM, Peter Levart via Concurrency-interest
+> <concurrency-interest at cs.oswego.edu> wrote:
+>> Hello,
+>>
+>> I thought I'd ask on this list, whether the following new method on
+>> ThreadLocal class would be useful, desirable or undesirable:
+> I'd find it useful, but adding it (compatibly) would be very
+> difficult.  Classes which have overridden get() would have unexpected
+> behavior, etc.
+>
+
+Are you thinking about possible "inconsistency" between overridden get() 
+and not overridden getIfPresent() ? Like for example:
+
+
+public class TenTimesThreadLocal extends ThreadLocal<Integer> {
+     @Override
+     public Integer get() {
+         return super.get() == null ? null : super.get() * 10;
+     }
+
+     @Override
+     public void set(Integer value) {
+         super.set(value == null ? null : value / 10);
+     }
+}
+
+
+Peter
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180606/b8d0faa8/attachment.html>
+
+From david.lloyd at redhat.com  Wed Jun  6 13:28:28 2018
+From: david.lloyd at redhat.com (David Lloyd)
+Date: Wed, 6 Jun 2018 12:28:28 -0500
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+Message-ID: <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+
+On Wed, Jun 6, 2018 at 12:09 PM, Peter Levart <peter.levart at gmail.com> wrote:
+> Di David,
+>
+> On 06/06/18 18:48, David Lloyd wrote:
+>
+> On Wed, Jun 6, 2018 at 10:17 AM, Peter Levart via Concurrency-interest
+> <concurrency-interest at cs.oswego.edu> wrote:
+>
+> Are you thinking about possible "inconsistency" between overridden get() and
+> not overridden getIfPresent() ? Like for example:
+
+Exactly.  You could possibly get around the issue by declaring it like this:
+
+public class ThreadLocal<T> {
+    // ...
+    public static <T> T getIfPresent(ThreadLocal<T> tl) {
+        return Thread.currentThread().hasThreadLocalInternal(tl) ?
+tl.get() : null;
+    }
+    // ...
+}
+
+-- 
+- DML
+
+From peter.levart at gmail.com  Wed Jun  6 14:17:41 2018
+From: peter.levart at gmail.com (Peter Levart)
+Date: Wed, 6 Jun 2018 20:17:41 +0200
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+ <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+Message-ID: <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+
+
+
+On 06/06/18 19:28, David Lloyd wrote:
+> On Wed, Jun 6, 2018 at 12:09 PM, Peter Levart <peter.levart at gmail.com> wrote:
+>> Di David,
+>>
+>> On 06/06/18 18:48, David Lloyd wrote:
+>>
+>> On Wed, Jun 6, 2018 at 10:17 AM, Peter Levart via Concurrency-interest
+>> <concurrency-interest at cs.oswego.edu> wrote:
+>>
+>> Are you thinking about possible "inconsistency" between overridden get() and
+>> not overridden getIfPresent() ? Like for example:
+> Exactly.  You could possibly get around the issue by declaring it like this:
+>
+> public class ThreadLocal<T> {
+>      // ...
+>      public static <T> T getIfPresent(ThreadLocal<T> tl) {
+>          return Thread.currentThread().hasThreadLocalInternal(tl) ?
+> tl.get() : null;
+>      }
+>      // ...
+> }
+>
+
+Or there could simply be the following method in ThreadLocal:
+
+/**
+  * @return true if current thread has a value present for this 
+thread-local variable; false if not.
+  */
+public boolean isPresent()
+
+
+Would that be preferable?
+
+Peter
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180606/9bd5c440/attachment.html>
+
+From david.lloyd at redhat.com  Wed Jun  6 14:27:44 2018
+From: david.lloyd at redhat.com (David Lloyd)
+Date: Wed, 6 Jun 2018 13:27:44 -0500
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+ <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+ <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+Message-ID: <CANghgrT7Y6frK9793+pKQSb9ZzWZgeP=wck_m-C6VevhqahVQQ@mail.gmail.com>
+
+On Wed, Jun 6, 2018 at 1:17 PM, Peter Levart <peter.levart at gmail.com> wrote:
+> Or there could simply be the following method in ThreadLocal:
+>
+> /**
+>  * @return true if current thread has a value present for this thread-local
+> variable; false if not.
+>  */
+> public boolean isPresent()
+>
+>
+> Would that be preferable?
+
+That would work assuming no ThreadLocal subclasses have such a method.
+Adding an instance method to a class that can be subclassed is always
+a risk in this way.
+
+-- 
+- DML
+
+From henri.tremblay at gmail.com  Wed Jun  6 14:33:29 2018
+From: henri.tremblay at gmail.com (Henri Tremblay)
+Date: Wed, 6 Jun 2018 14:33:29 -0400
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+ <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+ <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+Message-ID: <CADZL2=unfQqOnFoeY659gX-b7=SdpxJOZLVN8GikowXuRTrbRA@mail.gmail.com>
+
+Hi,
+
+Jumping into the conversation. isPresent would be useful and probably
+enough (better?).
+
+Right now, if you want to mimic the ThreadLocalRandom (and the
+ConcurrentHashMap), you need to have access to the probe.
+
+static final int getProbe() {
+    return UNSAFE.getInt(Thread.currentThread(), PROBE);
+}
+
+And it happened to me a bunch of time to need to know if there's something
+in a ThreadLocal without kicking its initialization. So isPresent would
+nice. Both can be useful, but isPresent is a must have. If can help
+mimicking code like this:
+
+if ((h = ThreadLocalRandom.getProbe()) == 0) {
+    ThreadLocalRandom.localInit();      // force initialization
+    h = ThreadLocalRandom.getProbe();
+    wasUncontended = true;
+}
+
+
+Then... having access to the Probe would be nice too...
+
+Henri
+
+On 6 June 2018 at 14:17, Peter Levart via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+>
+>
+> On 06/06/18 19:28, David Lloyd wrote:
+>
+> On Wed, Jun 6, 2018 at 12:09 PM, Peter Levart <peter.levart at gmail.com> <peter.levart at gmail.com> wrote:
+>
+> Di David,
+>
+> On 06/06/18 18:48, David Lloyd wrote:
+>
+> On Wed, Jun 6, 2018 at 10:17 AM, Peter Levart via Concurrency-interest<concurrency-interest at cs.oswego.edu> <concurrency-interest at cs.oswego.edu> wrote:
+>
+> Are you thinking about possible "inconsistency" between overridden get() and
+> not overridden getIfPresent() ? Like for example:
+>
+> Exactly.  You could possibly get around the issue by declaring it like this:
+>
+> public class ThreadLocal<T> {
+>     // ...
+>     public static <T> T getIfPresent(ThreadLocal<T> tl) {
+>         return Thread.currentThread().hasThreadLocalInternal(tl) ?
+> tl.get() : null;
+>     }
+>     // ...
+> }
+>
+>
+>
+> Or there could simply be the following method in ThreadLocal:
+>
+> /**
+>  * @return true if current thread has a value present for this
+> thread-local variable; false if not.
+>  */
+> public boolean isPresent()
+>
+>
+> Would that be preferable?
+>
+> Peter
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180606/730fc969/attachment.html>
+
+From nathanila at gmail.com  Wed Jun  6 14:40:49 2018
+From: nathanila at gmail.com (Nathan and Ila Reynolds)
+Date: Wed, 6 Jun 2018 12:40:49 -0600
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+ <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+ <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+Message-ID: <ae44cace-17de-7324-b90a-2494ff0b746a@gmail.com>
+
+I think isPresent() should be added no matter what is decided about 
+getIfPresent().  This will allow for "null" being present in ThreadLocal 
+and detecting it.  For example, think of a situation where if the value 
+is not present, you want to do some expensive operation.  At the end of 
+the operation, you decide that nothing should be stored in ThreadLocal, 
+but you want to cache this decision and prevent the expensive operation 
+from being done again.  Without isPresent(), then some dummy Object has 
+to be stored in ThreadLocal.  I have never run into this situation while 
+using ThreadLocal, but it is a situation I bump into in other class designs.
+
+As for getIfPresent(), I thought it was a good addition to the API.  I 
+cannot think about a situation where I would have needed it.  If I did, 
+I probably figured out some workaround.
+
+-Nathan
+
+On 6/6/2018 12:17 PM, Peter Levart via Concurrency-interest wrote:
+>
+>
+> On 06/06/18 19:28, David Lloyd wrote:
+>> On Wed, Jun 6, 2018 at 12:09 PM, Peter Levart<peter.levart at gmail.com>  wrote:
+>>> Di David,
+>>>
+>>> On 06/06/18 18:48, David Lloyd wrote:
+>>>
+>>> On Wed, Jun 6, 2018 at 10:17 AM, Peter Levart via Concurrency-interest
+>>> <concurrency-interest at cs.oswego.edu>  wrote:
+>>>
+>>> Are you thinking about possible "inconsistency" between overridden get() and
+>>> not overridden getIfPresent() ? Like for example:
+>> Exactly.  You could possibly get around the issue by declaring it like this:
+>>
+>> public class ThreadLocal<T> {
+>>      // ...
+>>      public static <T> T getIfPresent(ThreadLocal<T> tl) {
+>>          return Thread.currentThread().hasThreadLocalInternal(tl) ?
+>> tl.get() : null;
+>>      }
+>>      // ...
+>> }
+>>
+>
+> Or there could simply be the following method in ThreadLocal:
+>
+> /**
+>  * @return true if current thread has a value present for this 
+> thread-local variable; false if not.
+>  */
+> public boolean isPresent()
+>
+>
+> Would that be preferable?
+>
+> Peter
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-- 
+-Nathan
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180606/0a7b6ee6/attachment.html>
+
+From peter.levart at gmail.com  Wed Jun  6 15:07:51 2018
+From: peter.levart at gmail.com (Peter Levart)
+Date: Wed, 6 Jun 2018 21:07:51 +0200
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <CANghgrT7Y6frK9793+pKQSb9ZzWZgeP=wck_m-C6VevhqahVQQ@mail.gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+ <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+ <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+ <CANghgrT7Y6frK9793+pKQSb9ZzWZgeP=wck_m-C6VevhqahVQQ@mail.gmail.com>
+Message-ID: <1fd0b5a1-87e7-f604-7c01-f82509600f9a@gmail.com>
+
+
+
+On 06/06/18 20:27, David Lloyd wrote:
+> On Wed, Jun 6, 2018 at 1:17 PM, Peter Levart <peter.levart at gmail.com> wrote:
+>> Or there could simply be the following method in ThreadLocal:
+>>
+>> /**
+>>   * @return true if current thread has a value present for this thread-local
+>> variable; false if not.
+>>   */
+>> public boolean isPresent()
+>>
+>>
+>> Would that be preferable?
+> That would work assuming no ThreadLocal subclasses have such a method.
+> Adding an instance method to a class that can be subclassed is always
+> a risk in this way.
+>
+
+I think the risk is not so big because ThreadLocal instances are 
+typically not publicly exposed. They are usually encapsulated and code 
+accessing them "knows" the semantics of the isPresent() method if such 
+method exists in a subclass. There is a danger though that such method 
+on an existing subclass is not public and not private which would break 
+binary link-ability if such public method was added to ThreadLocal...
+
+The risk can be avoided entirely with a static method taking a 
+ThreadLocal instance. But static method is not so nice-looking when 
+called... :-(
+
+
+
+Peter
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180606/7eb3b90d/attachment.html>
+
+From roger.riggs at oracle.com  Wed Jun  6 16:02:43 2018
+From: roger.riggs at oracle.com (Roger Riggs)
+Date: Wed, 6 Jun 2018 16:02:43 -0400
+Subject: [concurrency-interest] Durations in existing JDK APIs
+In-Reply-To: <CA+kOe0_=AAMg2kb2OkDaKuaek9UTW=o5Vm_=oXQPn1yqCr2=JA@mail.gmail.com>
+References: <CAB3z6AiFY7dnVH7BRtFuGzF4=G5kgkqezpP+NDS-NRTukA1DKA@mail.gmail.com>
+ <CAB3z6Ai4pN4ga3V6ZeU=zZJAF23uopTEiJMknRROSqLuGKU4=Q@mail.gmail.com>
+ <CAB3z6AjVdR5STouvSB2ukzkzf1OBnRDt3=e5K+u_DWvOH0R_6g@mail.gmail.com>
+ <CA+kOe08D+0RYqKyu2KJzOp5gHidbTPEt54FNkp0HQPu56BzJtQ@mail.gmail.com>
+ <1236a3de-dd83-b2f6-c9e2-c80ee4603203@cs.oswego.edu>
+ <CA+kOe0-3PGAUHeTSAZw3LZ8nOZBvh6uob1sTbjVvADOBuM8ovw@mail.gmail.com>
+ <CACzrW9B0jdvm7YKG77LG1Bjs9EEaJOTaj64dsUgwo32br5wRKQ@mail.gmail.com>
+ <CA+kOe08Yt2+R7zMPGicXAnZasboBhn9iHawPuQNhotCXg9CLqA@mail.gmail.com>
+ <CA+kOe08HA0mddnzpob70yv6y_6jbzjwPeM=D8nnmssEe7B7BDQ@mail.gmail.com>
+ <CA+kOe08n4Ebjr3zV-gsxBp5DLVYacVGEh3k_CZ79QMn6dVsQGw@mail.gmail.com>
+ <CA+kOe0_=AAMg2kb2OkDaKuaek9UTW=o5Vm_=oXQPn1yqCr2=JA@mail.gmail.com>
+Message-ID: <a7a3c039-ecbe-7f1a-5c0a-8c59e69dbf44@oracle.com>
+
+Hi Martin,
+
+All three look fine to me.  +3
+
+Roger
+
+
+On 6/6/18 1:03 PM, Martin Buchholz wrote:
+> OK, here is a RFR for low-hanging changes (some of these changes have 
+> already been reviewed by some of you):
+>
+> 8204375: Add TimeUnit#convert(Duration)
+> http://cr.openjdk.java.net/~martin/webrevs/jdk/jsr166-integration/convertDuration/index.html 
+> <http://cr.openjdk.java.net/%7Emartin/webrevs/jdk/jsr166-integration/convertDuration/index.html>
+> https://bugs.openjdk.java.net/browse/JDK-8204375
+>
+> 8204444: java.time cleanup
+> http://cr.openjdk.java.net/~martin/webrevs/jdk/time-lint/ 
+> <http://cr.openjdk.java.net/%7Emartin/webrevs/jdk/time-lint/>
+> https://bugs.openjdk.java.net/browse/JDK-8204444
+>
+> 8204377: Rename Object#wait parameter name from "timeout" to 
+> "timeoutMillis"
+> http://cr.openjdk.java.net/~martin/webrevs/jdk/Object-wait-timeout/ 
+> <http://cr.openjdk.java.net/%7Emartin/webrevs/jdk/Object-wait-timeout/>
+> https://bugs.openjdk.java.net/browse/JDK-8204377
+>
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180606/29f9aaa6/attachment-0001.html>
+
+From martinrb at google.com  Wed Jun  6 16:41:37 2018
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 6 Jun 2018 13:41:37 -0700
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <1fd0b5a1-87e7-f604-7c01-f82509600f9a@gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+ <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+ <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+ <CANghgrT7Y6frK9793+pKQSb9ZzWZgeP=wck_m-C6VevhqahVQQ@mail.gmail.com>
+ <1fd0b5a1-87e7-f604-7c01-f82509600f9a@gmail.com>
+Message-ID: <CA+kOe0_RxgHz8OeLRTCfOUhCsQi=w0s5CwqySQJ8280xUQq5mA@mail.gmail.com>
+
+Conceptually, ThreadLocal is very Map-like and one can examine methods on
+Map to see whether they belong in ThreadLocal.
+I recall being disappointed that remove() (added in 1.5) felt insufficient.
+Something like isPresent could probably be used in ReentrantReadWriteLock.
+You might want to try out any API change with ReentrantReadWriteLock.
+Maybe we want the Map.compute* family of methods (except that the key is
+implicit Thread.currentThread())
+
+
+On Wed, Jun 6, 2018 at 12:07 PM, Peter Levart via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+>
+>
+> On 06/06/18 20:27, David Lloyd wrote:
+>
+> On Wed, Jun 6, 2018 at 1:17 PM, Peter Levart <peter.levart at gmail.com> <peter.levart at gmail.com> wrote:
+>
+> Or there could simply be the following method in ThreadLocal:
+>
+> /**
+>  * @return true if current thread has a value present for this thread-local
+> variable; false if not.
+>  */
+> public boolean isPresent()
+>
+>
+> Would that be preferable?
+>
+> That would work assuming no ThreadLocal subclasses have such a method.
+> Adding an instance method to a class that can be subclassed is always
+> a risk in this way.
+>
+>
+>
+> I think the risk is not so big because ThreadLocal instances are typically
+> not publicly exposed. They are usually encapsulated and code accessing them
+> "knows" the semantics of the isPresent() method if such method exists in a
+> subclass. There is a danger though that such method on an existing subclass
+> is not public and not private which would break binary link-ability if such
+> public method was added to ThreadLocal...
+>
+> The risk can be avoided entirely with a static method taking a ThreadLocal
+> instance. But static method is not so nice-looking when called... :-(
+>
+>
+>
+> Peter
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180606/31ade189/attachment.html>
+
+From james at lightbend.com  Thu Jun  7 01:24:36 2018
+From: james at lightbend.com (James Roper)
+Date: Thu, 7 Jun 2018 15:24:36 +1000
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <1fd0b5a1-87e7-f604-7c01-f82509600f9a@gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+ <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+ <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+ <CANghgrT7Y6frK9793+pKQSb9ZzWZgeP=wck_m-C6VevhqahVQQ@mail.gmail.com>
+ <1fd0b5a1-87e7-f604-7c01-f82509600f9a@gmail.com>
+Message-ID: <CABY0rKN4w9W8R5aoCrEpAZTUQxOPT9fLbwXFcci7G8WF2G_u3A@mail.gmail.com>
+
+On Thu, 7 Jun 2018 at 05:28, Peter Levart via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> I think the risk is not so big because ThreadLocal instances are typically
+> not publicly exposed. They are usually encapsulated and code accessing them
+> "knows" the semantics of the isPresent() method if such method exists in a
+> subclass. There is a danger though that such method on an existing subclass
+> is not public and not private which would break binary link-ability if such
+> public method was added to ThreadLocal...
+>
+
+So what you're saying is if, for example, a popular open source library
+uses ThreadLocal, it's likely to be an internal thing, and so the libraries
+public API would be completely unimpacted by changes to ThreadLocal. So, if
+there was a binary compatibility issue, that open source library would
+break with JDK X, but could easily fix it without breaking their own API.
+Is that right?
+
+The risk can be avoided entirely with a static method taking a ThreadLocal
+> instance. But static method is not so nice-looking when called... :-(
+>
+>
+>
+> Peter
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+-- 
+*James Roper*
+*Senior Developer, Office of the CTO*
+
+Lightbend <https://www.lightbend.com/> – Build reactive apps!
+Twitter: @jroper <https://twitter.com/jroper>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180607/8059975d/attachment.html>
+
+From james at lightbend.com  Thu Jun  7 01:36:03 2018
+From: james at lightbend.com (James Roper)
+Date: Thu, 7 Jun 2018 15:36:03 +1000
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <ae44cace-17de-7324-b90a-2494ff0b746a@gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+ <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+ <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+ <ae44cace-17de-7324-b90a-2494ff0b746a@gmail.com>
+Message-ID: <CABY0rKNhq3PiuWygsp6=A4RJUWn6mf+Fcguqc3m6KnbxWdk8iw@mail.gmail.com>
+
+On Thu, 7 Jun 2018 at 04:59, Nathan and Ila Reynolds via
+Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+
+> I think isPresent() should be added no matter what is decided about
+> getIfPresent().  This will allow for "null" being present in ThreadLocal
+> and detecting it.  For example, think of a situation where if the value is
+> not present, you want to do some expensive operation.  At the end of the
+> operation, you decide that nothing should be stored in ThreadLocal, but you
+> want to cache this decision and prevent the expensive operation from being
+> done again.  Without isPresent(), then some dummy Object has to be stored
+> in ThreadLocal.  I have never run into this situation while using
+> ThreadLocal, but it is a situation I bump into in other class designs.
+>
+> As for getIfPresent(), I thought it was a good addition to the API.  I
+> cannot think about a situation where I would have needed it.  If I did, I
+> probably figured out some workaround.
+>
+Allowing for null to be considered a present value, such that isPresent()
+returns true if you set a thread local to null, presents a big problem for
+gitIfPresent(), since what can getIfPresent() return, that will allow
+distinguishing between a present null, and a non present value? If it
+returns T, then it will return null for both present nulls, and no value.
+If it returns Optional<T>, then there's no way for it to return a present
+null, since Optional cannot contain null. You'd need Optional<Optional<T>>
+to correctly distinguish between a present value, and a null.
+
+But, Optional also offers a good solution to this without introducing
+isPresent. You can encode a present empty value into a thread local today
+by using ThreadLocal<Optional<T>>, and setting it to Optional.empty. This
+makes the programming logic much cleaner, as it makes it clear that this
+thread local is not just storing cached values, it's storing cached empty
+values too, making it much easier to avoid programming mistakes when
+working with it. And of course, this is the entire reason for introducing
+an Optional type in the first place, it allows you to encode the
+presentness or lack thereof into the type system, instead of having to add
+special purpose methods like isPresent everywhere where you have a
+container that may need to indicate whether a value is present or not.
+
+So I actually think that isPresent() isn't as useful, since for the use
+cases you describe using ThreadLocal<Optional<T>> is a better design in the
+first place, but Optional<T> getIfPresent() does have value as a
+convenience for when null means is not present. In an ideal world, we'd
+change get() to return Optional<T>, and then everything would be completely
+explicit, there's never any nulls, but of course we can't do that due to
+backwards compatibility.
+
+I also like Martin's ideas of introducing compute* methods similar to what
+Map offers.
+
+
+
+> -Nathan
+>
+> On 6/6/2018 12:17 PM, Peter Levart via Concurrency-interest wrote:
+>
+>
+>
+> On 06/06/18 19:28, David Lloyd wrote:
+>
+> On Wed, Jun 6, 2018 at 12:09 PM, Peter Levart <peter.levart at gmail.com> <peter.levart at gmail.com> wrote:
+>
+> Di David,
+>
+> On 06/06/18 18:48, David Lloyd wrote:
+>
+> On Wed, Jun 6, 2018 at 10:17 AM, Peter Levart via Concurrency-interest<concurrency-interest at cs.oswego.edu> <concurrency-interest at cs.oswego.edu> wrote:
+>
+> Are you thinking about possible "inconsistency" between overridden get() and
+> not overridden getIfPresent() ? Like for example:
+>
+> Exactly.  You could possibly get around the issue by declaring it like this:
+>
+> public class ThreadLocal<T> {
+>     // ...
+>     public static <T> T getIfPresent(ThreadLocal<T> tl) {
+>         return Thread.currentThread().hasThreadLocalInternal(tl) ?
+> tl.get() : null;
+>     }
+>     // ...
+> }
+>
+>
+>
+> Or there could simply be the following method in ThreadLocal:
+>
+> /**
+>  * @return true if current thread has a value present for this
+> thread-local variable; false if not.
+>  */
+> public boolean isPresent()
+>
+>
+> Would that be preferable?
+>
+> Peter
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing listConcurrency-interest at cs.oswego.eduhttp://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> --
+> -Nathan
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+-- 
+*James Roper*
+*Senior Developer, Office of the CTO*
+
+Lightbend <https://www.lightbend.com/> – Build reactive apps!
+Twitter: @jroper <https://twitter.com/jroper>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180607/b2eda3b8/attachment-0001.html>
+
+From peter.levart at gmail.com  Thu Jun  7 03:16:37 2018
+From: peter.levart at gmail.com (Peter Levart)
+Date: Thu, 7 Jun 2018 09:16:37 +0200
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <CABY0rKN4w9W8R5aoCrEpAZTUQxOPT9fLbwXFcci7G8WF2G_u3A@mail.gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+ <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+ <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+ <CANghgrT7Y6frK9793+pKQSb9ZzWZgeP=wck_m-C6VevhqahVQQ@mail.gmail.com>
+ <1fd0b5a1-87e7-f604-7c01-f82509600f9a@gmail.com>
+ <CABY0rKN4w9W8R5aoCrEpAZTUQxOPT9fLbwXFcci7G8WF2G_u3A@mail.gmail.com>
+Message-ID: <39990d84-0452-543b-f0c4-5b189af37ba2@gmail.com>
+
+
+
+On 06/07/18 07:24, James Roper wrote:
+> On Thu, 7 Jun 2018 at 05:28, Peter Levart via Concurrency-interest 
+> <concurrency-interest at cs.oswego.edu 
+> <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>
+>     I think the risk is not so big because ThreadLocal instances are
+>     typically not publicly exposed. They are usually encapsulated and
+>     code accessing them "knows" the semantics of the isPresent()
+>     method if such method exists in a subclass. There is a danger
+>     though that such method on an existing subclass is not public and
+>     not private which would break binary link-ability if such public
+>     method was added to ThreadLocal...
+>
+>
+> So what you're saying is if, for example, a popular open source 
+> library uses ThreadLocal, it's likely to be an internal thing, and so 
+> the libraries public API would be completely unimpacted by changes to 
+> ThreadLocal. So, if there was a binary compatibility issue, that open 
+> source library would break with JDK X, but could easily fix it without 
+> breaking their own API. Is that right?
+
+Yes, if that library doesn't expose the ThreadLocal API to the user 
+directly, it could simply rename the conflicting method internally. Even 
+if it does expose ThreadLocal API directly, there are four cases:
+
+1 - It exposes a ThreadLocal subtype with public boolean isPresent() 
+method: the users of that API are already aware of the semantics of that 
+method - introducing ThreadLocal.isPresent does not break them
+2 - It exposes a ThreadLocal type, but internally uses a subtype with 
+public boolean isPresent() method: internal code is already aware of the 
+semantics of that method - introducing ThreadLocal.isPresent does not 
+break it
+3 - It exposes a ThreadLocal subtype with public but 
+override-incompatible isPresent() method (say: int isPresent()): this is 
+binary compatible, but source incompatible. This is the only case with 
+no easy way out as both the library and the clients of that library 
+would have to be upgraded at the same time to be compiled with newer JDK.
+4- It exposes a ThreadLocal type, but internally uses a subtype with 
+override-incompatible or linkage-incompatible isPresent() method: the 
+library can fix internal wiring without braking public API
+
+So case 3 is the only really incompatible case. Which is highly 
+unlikely, because of the java beans naming convention. A no-arg instance 
+method called isXyz() typically has boolean return type.
+
+Regards, Peter
+
+>
+>     The risk can be avoided entirely with a static method taking a
+>     ThreadLocal instance. But static method is not so nice-looking
+>     when called... :-(
+>
+>
+>
+>     Peter
+>
+>     _______________________________________________
+>     Concurrency-interest mailing list
+>     Concurrency-interest at cs.oswego.edu
+>     <mailto:Concurrency-interest at cs.oswego.edu>
+>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+> -- 
+> *James Roper*
+> /Senior Developer, Office of the CTO/
+>
+> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+> Twitter: @jroper <https://twitter.com/jroper>
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180607/eef5614f/attachment.html>
+
+From peter.levart at gmail.com  Thu Jun  7 04:02:15 2018
+From: peter.levart at gmail.com (Peter Levart)
+Date: Thu, 7 Jun 2018 10:02:15 +0200
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <CABY0rKNhq3PiuWygsp6=A4RJUWn6mf+Fcguqc3m6KnbxWdk8iw@mail.gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+ <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+ <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+ <ae44cace-17de-7324-b90a-2494ff0b746a@gmail.com>
+ <CABY0rKNhq3PiuWygsp6=A4RJUWn6mf+Fcguqc3m6KnbxWdk8iw@mail.gmail.com>
+Message-ID: <051a0101-ab31-30dd-c2fe-80400b954c11@gmail.com>
+
+Hi James,
+
+On 06/07/18 07:36, James Roper via Concurrency-interest wrote:
+> On Thu, 7 Jun 2018 at 04:59, Nathan and Ila Reynolds via 
+> Concurrency-interest <concurrency-interest at cs.oswego.edu 
+> <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>
+>     I think isPresent() should be added no matter what is decided
+>     about getIfPresent().  This will allow for "null" being present in
+>     ThreadLocal and detecting it. For example, think of a situation
+>     where if the value is not present, you want to do some expensive
+>     operation. At the end of the operation, you decide that nothing
+>     should be stored in ThreadLocal, but you want to cache this
+>     decision and prevent the expensive operation from being done
+>     again.  Without isPresent(), then some dummy Object has to be
+>     stored in ThreadLocal.  I have never run into this situation while
+>     using ThreadLocal, but it is a situation I bump into in other
+>     class designs.
+>
+>     As for getIfPresent(), I thought it was a good addition to the
+>     API.  I cannot think about a situation where I would have needed
+>     it.  If I did, I probably figured out some workaround.
+>
+> Allowing for null to be considered a present value, such that 
+> isPresent() returns true if you set a thread local to null, presents a 
+> big problem for gitIfPresent(), since what can getIfPresent() return, 
+> that will allow distinguishing between a present null, and a non 
+> present value? If it returns T, then it will return null for both 
+> present nulls, and no value. If it returns Optional<T>, then there's 
+> no way for it to return a present null, since Optional cannot contain 
+> null. You'd need Optional<Optional<T>> to correctly distinguish 
+> between a present value, and a null.
+>
+> But, Optional also offers a good solution to this without introducing 
+> isPresent. You can encode a present empty value into a thread local 
+> today by using ThreadLocal<Optional<T>>, and setting it to 
+> Optional.empty. This makes the programming logic much cleaner, as it 
+> makes it clear that this thread local is not just storing cached 
+> values, it's storing cached empty values too, making it much easier to 
+> avoid programming mistakes when working with it. And of course, this 
+> is the entire reason for introducing an Optional type in the first 
+> place, it allows you to encode the presentness or lack thereof into 
+> the type system, instead of having to add special purpose methods like 
+> isPresent everywhere where you have a container that may need to 
+> indicate whether a value is present or not.
+>
+> So I actually think that isPresent() isn't as useful, since for the 
+> use cases you describe using ThreadLocal<Optional<T>> is a better 
+> design in the first place, but Optional<T> getIfPresent() does have 
+> value as a convenience for when null means is not present. In an ideal 
+> world, we'd change get() to return Optional<T>, and then everything 
+> would be completely explicit, there's never any nulls, but of course 
+> we can't do that due to backwards compatibility.
+
+The problem with getIfPresent() returning null for 
+ThreadLocal<Optional<X>> is it violates the convention that methods 
+returning Optional<X> must never return null. So Optional<X> is not a 
+good choice for the T in ThreadLocal<T>.
+
+>
+> I also like Martin's ideas of introducing compute* methods similar to 
+> what Map offers.
+
+Those methods are most welcome in concurrent scenarios where they 
+provide atomicity. In single-threaded scenarios they provide a kind of 
+unification of Map vs. ConcurrentMap API which is good to be able to 
+create common logic that works in both settings. ThreadLocal is not a 
+Map and is never going to be a Map (as a subtype) and is always used in 
+single-threaded scenarios, so compute* -like methods in ThreadLocal 
+would just be an attempt to try to optimize a read-compute-write 
+scenario so that it would involve a single hash-lookup operation. As 
+compute- -like methods need lambdas and lambdas typically have to 
+capture state, the optimization attempt might not be that effective.
+
+But I agree that compute* (or maybe just compute(BinaryOperator)) is a 
+viable alternative to getIfPresent() and/or isPresent() from purely 
+functional standpoint. What I (and others) are trying to achieve is a 
+way to "peek" into the state of ThreadLocal without actually triggering 
+the initialization which might be heavy.
+
+Adding compute to ThreadLocal would also provide another (the third) 
+alternative way of associating a value with current thread:
+
+1 - using get() in combination with initialValue()
+2 - using set()
+3 - using compute()
+
+Is this good or does it complicate the API too much?
+
+Regards, Peter
+
+>
+>     -Nathan
+>
+>     On 6/6/2018 12:17 PM, Peter Levart via Concurrency-interest wrote:
+>>
+>>
+>>     On 06/06/18 19:28, David Lloyd wrote:
+>>>     On Wed, Jun 6, 2018 at 12:09 PM, Peter Levart<peter.levart at gmail.com> <mailto:peter.levart at gmail.com>  wrote:
+>>>>     Di David,
+>>>>
+>>>>     On 06/06/18 18:48, David Lloyd wrote:
+>>>>
+>>>>     On Wed, Jun 6, 2018 at 10:17 AM, Peter Levart via Concurrency-interest
+>>>>     <concurrency-interest at cs.oswego.edu>
+>>>>     <mailto:concurrency-interest at cs.oswego.edu>  wrote:
+>>>>
+>>>>     Are you thinking about possible "inconsistency" between overridden get() and
+>>>>     not overridden getIfPresent() ? Like for example:
+>>>     Exactly.  You could possibly get around the issue by declaring it like this:
+>>>
+>>>     public class ThreadLocal<T> {
+>>>          // ...
+>>>          public static <T> T getIfPresent(ThreadLocal<T> tl) {
+>>>              return Thread.currentThread().hasThreadLocalInternal(tl) ?
+>>>     tl.get() : null;
+>>>          }
+>>>          // ...
+>>>     }
+>>>
+>>
+>>     Or there could simply be the following method in ThreadLocal:
+>>
+>>     /**
+>>      * @return true if current thread has a value present for this
+>>     thread-local variable; false if not.
+>>      */
+>>     public boolean isPresent()
+>>
+>>
+>>     Would that be preferable?
+>>
+>>     Peter
+>>
+>>
+>>
+>>     _______________________________________________
+>>     Concurrency-interest mailing list
+>>     Concurrency-interest at cs.oswego.edu
+>>     <mailto:Concurrency-interest at cs.oswego.edu>
+>>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>     -- 
+>     -Nathan
+>
+>     _______________________________________________
+>     Concurrency-interest mailing list
+>     Concurrency-interest at cs.oswego.edu
+>     <mailto:Concurrency-interest at cs.oswego.edu>
+>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+> -- 
+> *James Roper*
+> /Senior Developer, Office of the CTO/
+>
+> Lightbend <https://www.lightbend.com/> – Build reactive apps!
+> Twitter: @jroper <https://twitter.com/jroper>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180607/3c82ce20/attachment-0001.html>
+
+From peter.levart at gmail.com  Thu Jun  7 04:15:45 2018
+From: peter.levart at gmail.com (Peter Levart)
+Date: Thu, 7 Jun 2018 10:15:45 +0200
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <051a0101-ab31-30dd-c2fe-80400b954c11@gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+ <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+ <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+ <ae44cace-17de-7324-b90a-2494ff0b746a@gmail.com>
+ <CABY0rKNhq3PiuWygsp6=A4RJUWn6mf+Fcguqc3m6KnbxWdk8iw@mail.gmail.com>
+ <051a0101-ab31-30dd-c2fe-80400b954c11@gmail.com>
+Message-ID: <97248520-109a-3831-f4ef-1ea5c715fbf4@gmail.com>
+
+
+
+On 06/07/18 10:02, Peter Levart wrote:
+> But I agree that compute* (or maybe just compute(BinaryOperator)) ....
+
+Well, I meant to say compute(UnaryOperator<T>). That one and the 
+following signature would also be useful:
+
+public <P> T compute(P param, BiFunction<? super P, ? super T, ? extends 
+T> computeFunction)
+
+  ...which would allow passing parameter(s) to non-capturing lambda(s)...
+
+Peter
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180607/c2b81c58/attachment.html>
+
+From david.lloyd at redhat.com  Thu Jun  7 13:47:11 2018
+From: david.lloyd at redhat.com (David Lloyd)
+Date: Thu, 7 Jun 2018 12:47:11 -0500
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <051a0101-ab31-30dd-c2fe-80400b954c11@gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+ <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+ <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+ <ae44cace-17de-7324-b90a-2494ff0b746a@gmail.com>
+ <CABY0rKNhq3PiuWygsp6=A4RJUWn6mf+Fcguqc3m6KnbxWdk8iw@mail.gmail.com>
+ <051a0101-ab31-30dd-c2fe-80400b954c11@gmail.com>
+Message-ID: <CANghgrTF7us=+SePGFTG3SpMeTZC1wSz5kYg3OAgp26yFH6N1w@mail.gmail.com>
+
+On Thu, Jun 7, 2018 at 3:02 AM, Peter Levart via Concurrency-interest
+<concurrency-interest at cs.oswego.edu> wrote:
+> The problem with getIfPresent() returning null for ThreadLocal<Optional<X>>
+> is it violates the convention that methods returning Optional<X> must never
+> return null. So Optional<X> is not a good choice for the T in
+> ThreadLocal<T>.
+
++1 inasmuch as Optional is good for anything, it is definitely not
+good for this.
+
+> I also like Martin's ideas of introducing compute* methods similar to what
+> Map offers.
+>
+> Those methods are most welcome in concurrent scenarios where they provide
+> atomicity. In single-threaded scenarios they provide a kind of unification
+> of Map vs. ConcurrentMap API which is good to be able to create common logic
+> that works in both settings. ThreadLocal is not a Map and is never going to
+> be a Map (as a subtype) and is always used in single-threaded scenarios, so
+> compute* -like methods in ThreadLocal would just be an attempt to try to
+> optimize a read-compute-write scenario so that it would involve a single
+> hash-lookup operation. As compute- -like methods need lambdas and lambdas
+> typically have to capture state, the optimization attempt might not be that
+> effective.
+>
+> But I agree that compute* (or maybe just compute(BinaryOperator)) is a
+> viable alternative to getIfPresent() and/or isPresent() from purely
+> functional standpoint. What I (and others) are trying to achieve is a way to
+> "peek" into the state of ThreadLocal without actually triggering the
+> initialization which might be heavy.
+>
+> Adding compute to ThreadLocal would also provide another (the third)
+> alternative way of associating a value with current thread:
+>
+> 1 - using get() in combination with initialValue()
+> 2 - using set()
+> 3 - using compute()
+>
+> Is this good or does it complicate the API too much?
+
+The get() method can be overridden; what does this mean for the
+semantics of compute()?  And what does compute() actually do with an
+initial value?  Is the initial value constructed and supplied to the
+compute() lambda or do we supply null in this case?
+
+I think that any answer to any of these questions is going to be
+unintuitive and/or annoying for _some_ use case or another.  Sticking
+to isPresent(), get(), and set() keeps things simple and obvious, and
+is probably save for the reasons you outlined above.  The double hash
+lookup sucks, conceptually, but realistically won't all the relevant
+info be very likely to be in L1 cache for the second lookup in most
+cases?  I doubt it's a real problem other than being "itchy".
+
+-- 
+- DML
+
+From david.lloyd at redhat.com  Thu Jun  7 14:18:30 2018
+From: david.lloyd at redhat.com (David Lloyd)
+Date: Thu, 7 Jun 2018 13:18:30 -0500
+Subject: [concurrency-interest] ThreadLocal.getIfPresent()
+In-Reply-To: <CANghgrTF7us=+SePGFTG3SpMeTZC1wSz5kYg3OAgp26yFH6N1w@mail.gmail.com>
+References: <9cc2eae6-97a5-7a48-1d29-04161db53c74@gmail.com>
+ <CANghgrQJ6BuTTH2LM3Rn+SKWT-ZjEo0pk1GGrV8MNuXtDBLBYQ@mail.gmail.com>
+ <e1bd1198-5e6a-10d7-063e-d1f39921861b@gmail.com>
+ <CANghgrT-saRW7DCaPaSdQR-BfGBLFFxATwFMAJMsusmtvA8gig@mail.gmail.com>
+ <aa464db7-c52c-0a64-9c33-f1120d420252@gmail.com>
+ <ae44cace-17de-7324-b90a-2494ff0b746a@gmail.com>
+ <CABY0rKNhq3PiuWygsp6=A4RJUWn6mf+Fcguqc3m6KnbxWdk8iw@mail.gmail.com>
+ <051a0101-ab31-30dd-c2fe-80400b954c11@gmail.com>
+ <CANghgrTF7us=+SePGFTG3SpMeTZC1wSz5kYg3OAgp26yFH6N1w@mail.gmail.com>
+Message-ID: <CANghgrTBHuyf5vM_f13TzrAikkHRV1B9mHcOALkkF5ZSsW-UdA@mail.gmail.com>
+
+On Thu, Jun 7, 2018 at 12:47 PM, David Lloyd <david.lloyd at redhat.com> wrote:
+> I think that any answer to any of these questions is going to be
+> unintuitive and/or annoying for _some_ use case or another.
+
+You know what would be _really_ nice?  Real thread-local fields, via
+e.g. ACC_THREAD, which are managed by the JVM.  I bet the JVM could
+come up with an index strategy that's better than a hash table lookup,
+especially for static thread-local fields.
+
+Hey, if they did it for C, why not for Java :)
+
+
+
+-- 
+- DML
+
+From novitools.novi at web.de  Thu Jun  7 16:01:46 2018
+From: novitools.novi at web.de (Novi)
+Date: Thu, 07 Jun 2018 22:01:46 +0200
+Subject: [concurrency-interest] thread safety of java.lang.reflect.Field
+In-Reply-To: <039101d3f932$834b2f60$89e18e20$@aapt.net.au>
+References: <op.zjvgquu3wcnyyd@novi-pc>
+ <039101d3f932$834b2f60$89e18e20$@aapt.net.au>
+Message-ID: <op.zj88k8lpwcnyyd@novi-pc>
+
+> The java.lang.reflect classes are not specified to be thread-safe. They  
+> probably should be specified that way but they aren't.
+
+Do you see any chance that this is changed in future JDK releases?
+
+-Novi
+
+
+Am 01.06.2018, 00:55 Uhr, schrieb David Holmes <davidcholmes at aapt.net.au>:
+
+> The java.lang.reflect classes are not specified to be thread-safe. They  
+> probably should be specified that way but they aren't.
+>
+> The implementation is quite complex in places and it is hard to  
+> determine whether they are thread-safe in practice. I can see some  
+> initialization race conditions with caching of field state (like  
+> getGenericInfo()) that theoretically could expose default rather than  
+> actual values.
+>
+> David
+>
+>> -----Original Message-----
+>> From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu>  
+>> On Behalf Of Novi via Concurrency-interest
+>> Sent: Thursday, May 31, 2018 7:31 PM
+>> To: concurrency-interest at cs.oswego.edu
+>> Subject: [concurrency-interest] thread safety of java.lang.reflect.Field
+>>
+>> Hello,
+>>
+>> I wonder if instances of java.lang.reflect.Field can be shared between  
+>> multiple threads as long as the accessibility flag is either not
+>> modified or modified exactly once prior to a safe publication of the  
+>> field instances.
+>>
+>> In other words, is it legal to cache instances of j.l.r.Field between  
+>> multiple threads?
+>>
+>> Best Regards,
+>> Novi
+>>
+>>
+>> PS: The Bean Validation reference implementation Hibernate Validator  
+>> seems to cache instances of j.l.r.Field across threads.
+>> However, I couldn't find any clue in the Java API documentation whether  
+>> such a usage is supported or not.
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From davidcholmes at aapt.net.au  Thu Jun  7 17:40:48 2018
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Fri, 8 Jun 2018 07:40:48 +1000
+Subject: [concurrency-interest] thread safety of java.lang.reflect.Field
+In-Reply-To: <op.zj88k8lpwcnyyd@novi-pc>
+References: <op.zjvgquu3wcnyyd@novi-pc>
+ <039101d3f932$834b2f60$89e18e20$@aapt.net.au> <op.zj88k8lpwcnyyd@novi-pc>
+Message-ID: <006b01d3fea8$337c47a0$9a74d6e0$@aapt.net.au>
+
+Novi writes:
+> dholmes writes:
+> > The java.lang.reflect classes are not specified to be thread-safe.
+> > They probably should be specified that way but they aren't.
+> 
+> Do you see any chance that this is changed in future JDK releases?
+
+It seems unlikely given a number of thread-safety issues have been fixed over the years, yet no change to actual specification. See for example the relatively recent:
+
+https://bugs.openjdk.java.net/browse/JDK-8064391
+
+David
+ 
+> -Novi
+> 
+> 
+> Am 01.06.2018, 00:55 Uhr, schrieb David Holmes <davidcholmes at aapt.net.au>:
+> 
+> > The java.lang.reflect classes are not specified to be thread-safe.
+> > They probably should be specified that way but they aren't.
+> >
+> > The implementation is quite complex in places and it is hard to
+> > determine whether they are thread-safe in practice. I can see some
+> > initialization race conditions with caching of field state (like
+> > getGenericInfo()) that theoretically could expose default rather than
+> > actual values.
+> >
+> > David
+> >
+> >> -----Original Message-----
+> >> From: Concurrency-interest
+> >> <concurrency-interest-bounces at cs.oswego.edu>
+> >> On Behalf Of Novi via Concurrency-interest
+> >> Sent: Thursday, May 31, 2018 7:31 PM
+> >> To: concurrency-interest at cs.oswego.edu
+> >> Subject: [concurrency-interest] thread safety of
+> >> java.lang.reflect.Field
+> >>
+> >> Hello,
+> >>
+> >> I wonder if instances of java.lang.reflect.Field can be shared
+> >> between multiple threads as long as the accessibility flag is either
+> >> not modified or modified exactly once prior to a safe publication of
+> >> the field instances.
+> >>
+> >> In other words, is it legal to cache instances of j.l.r.Field between
+> >> multiple threads?
+> >>
+> >> Best Regards,
+> >> Novi
+> >>
+> >>
+> >> PS: The Bean Validation reference implementation Hibernate Validator
+> >> seems to cache instances of j.l.r.Field across threads.
+> >> However, I couldn't find any clue in the Java API documentation
+> >> whether such a usage is supported or not.
+> >> _______________________________________________
+> >> Concurrency-interest mailing list
+> >> Concurrency-interest at cs.oswego.edu
+> >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From martinrb at google.com  Fri Jun 15 13:43:04 2018
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 15 Jun 2018 10:43:04 -0700
+Subject: [concurrency-interest] Durations in existing JDK APIs
+In-Reply-To: <1236a3de-dd83-b2f6-c9e2-c80ee4603203@cs.oswego.edu>
+References: <CAB3z6AiFY7dnVH7BRtFuGzF4=G5kgkqezpP+NDS-NRTukA1DKA@mail.gmail.com>
+ <CAB3z6Ai4pN4ga3V6ZeU=zZJAF23uopTEiJMknRROSqLuGKU4=Q@mail.gmail.com>
+ <CAB3z6AjVdR5STouvSB2ukzkzf1OBnRDt3=e5K+u_DWvOH0R_6g@mail.gmail.com>
+ <CA+kOe08D+0RYqKyu2KJzOp5gHidbTPEt54FNkp0HQPu56BzJtQ@mail.gmail.com>
+ <1236a3de-dd83-b2f6-c9e2-c80ee4603203@cs.oswego.edu>
+Message-ID: <CA+kOe0_0LGY6hPnHOT4JL=a956f4=87BxbVaVL0xhCH_UKN17w@mail.gmail.com>
+
+On Wed, May 30, 2018 at 11:32 AM, Doug Lea <dl at cs.oswego.edu> wrote:
+
+>
+> The original rationale for designing j.u.c.TimeUnit using the Flyweight
+> pattern was to to reduce allocation and GC-related overhead and timing
+> jitter for methods that otherwise may operate on the order of
+> nanoseconds. But there are many cases in which this is not much of a
+> concern (plus JVMs can now sometimes optimize), so people should be
+> given a choice. It would be a lot of tedious work (and aggregate code
+> bulk) to retrofit every time-related j.u.c method though, and it's not
+> clear where to compromise. But at least adding converters should not be
+> controversial.
+>
+
+Re-reading Doug's assessment, Doug seems reluctant but open to adding at
+least some Duration overloads.  Here's  an obvious first candidate in Future
+(yes, we have a test that discovers get(Duration) and checks that get(null)
+throws UOE instead of NPE.).
+(It's a lot of tedious work)
+
+a/util/concurrent/CompletableFuture.java
+===================================================================
+RCS file:
+/export/home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/CompletableFuture.java,v
+retrieving revision 1.212
+diff -u -r1.212 CompletableFuture.java
+--- src/main/java/util/concurrent/CompletableFuture.java 11 Mar 2018
+18:00:05 -0000 1.212
++++ src/main/java/util/concurrent/CompletableFuture.java 15 Jun 2018
+17:39:09 -0000
+@@ -1983,13 +1983,22 @@
+      * while waiting
+      * @throws TimeoutException if the wait timed out
+      */
+-    @SuppressWarnings("unchecked")
+     public T get(long timeout, TimeUnit unit)
+         throws InterruptedException, ExecutionException, TimeoutException {
+-        long nanos = unit.toNanos(timeout);
++        return getNanos(unit.toNanos(timeout));
++    }
++
++    public T get(java.time.Duration timeout)
++        throws InterruptedException, ExecutionException, TimeoutException {
++        return getNanos(TimeUnit.NANOSECONDS.convert(timeout));
++    }
++
++    @SuppressWarnings("unchecked")
++    private T getNanos(long timeoutNanos)
++        throws InterruptedException, ExecutionException, TimeoutException {
+         Object r;
+         if ((r = result) == null)
+-            r = timedGet(nanos);
++            r = timedGet(timeoutNanos);
+         return (T) reportGet(r);
+     }
+
+@@ -2797,6 +2806,8 @@
+             throw new UnsupportedOperationException(); }
+         @Override public T get(long timeout, TimeUnit unit) {
+             throw new UnsupportedOperationException(); }
++        @Override public T get(java.time.Duration duration) {
++            throw new UnsupportedOperationException(); }
+         @Override public T getNow(T valueIfAbsent) {
+             throw new UnsupportedOperationException(); }
+         @Override public T join() {
+Index: src/main/java/util/concurrent/Future.java
+===================================================================
+RCS file:
+/export/home/jsr166/jsr166/jsr166/src/main/java/util/concurrent/Future.java,v
+retrieving revision 1.41
+diff -u -r1.41 Future.java
+--- src/main/java/util/concurrent/Future.java 8 Oct 2016 18:52:37 -0000 1.41
++++ src/main/java/util/concurrent/Future.java 15 Jun 2018 17:39:09 -0000
+@@ -6,6 +6,10 @@
+
+ package java.util.concurrent;
+
++import static java.util.concurrent.TimeUnit.NANOSECONDS;
++
++import java.time.Duration;
++
+ /**
+  * A {@code Future} represents the result of an asynchronous
+  * computation.  Methods are provided to check if the computation is
+@@ -126,7 +130,30 @@
+      * @throws InterruptedException if the current thread was interrupted
+      * while waiting
+      * @throws TimeoutException if the wait timed out
++     * @throws NullPointerException if {@code unit} is null
+      */
+     V get(long timeout, TimeUnit unit)
+         throws InterruptedException, ExecutionException, TimeoutException;
++
++    /**
++     * Waits if necessary for at most the given time for the computation
++     * to complete, and then retrieves its result, if available.
++     *
++     * <p>Equivalent to: <pre> {@code
++     * get(NANOSECONDS.convert(timeout), NANOSECONDS)}</pre>
++     *
++     * @param timeout the maximum time to wait
++     * @return the computed result
++     * @throws CancellationException if the computation was cancelled
++     * @throws ExecutionException if the computation threw an
++     * exception
++     * @throws InterruptedException if the current thread was interrupted
++     * while waiting
++     * @throws TimeoutException if the wait timed out
++     * @throws NullPointerException if {@code timeout} is null
++     */
++    default V get(Duration timeout)
++        throws InterruptedException, ExecutionException, TimeoutException {
++        return get(NANOSECONDS.convert(timeout), NANOSECONDS);
++    }
+ }
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180615/fbbec4e1/attachment.html>
+
+From peter.levart at gmail.com  Mon Jun 18 06:12:51 2018
+From: peter.levart at gmail.com (Peter Levart)
+Date: Mon, 18 Jun 2018 12:12:51 +0200
+Subject: [concurrency-interest] Simulating effects of final fields with
+	memory fences
+Message-ID: <7d173ea1-be01-72fe-9926-42fd0ec7ee22@gmail.com>
+
+Hello,
+
+I would like to ask the list one concurrency related question. Say you 
+have a class with a final reference field:
+
+public class X {
+     private final Y y;
+
+     public X() {
+         y = ...;
+     }
+
+     public void m() {
+         ... use y ...
+     }
+}
+
+And that Y is either an immutable or properly synchronized type so "use 
+y" never has any data races.
+
+Objects of type X can be published via data races, but final modifier on 
+field y guarantees that the field will never be observed as 
+uninitialized (null) in method m.
+
+Now say that class X is modified in the following way:
+
+public class X {
+     private Y y;
+
+     public X() {
+         y = ...;
+         VarHandle.storeStoreFence();
+     }
+
+     public void m() {
+         VarHandle.loadLoadFence();
+         ... use y ...
+     }
+}
+
+- final modifier is removed, storeStoreFence is added as the final 
+action in constructor, loadLoadFence is added as the first action in method.
+
+Would every guarantee that holds for original class X still hold for 
+modified class X ?
+
+
+Thanks, Peter
+
+
+From dl at cs.oswego.edu  Mon Jun 18 07:28:37 2018
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon, 18 Jun 2018 07:28:37 -0400
+Subject: [concurrency-interest] Simulating effects of final fields with
+ memory fences
+In-Reply-To: <7d173ea1-be01-72fe-9926-42fd0ec7ee22@gmail.com>
+References: <7d173ea1-be01-72fe-9926-42fd0ec7ee22@gmail.com>
+Message-ID: <8a8d2ece-1a58-2f53-0f9c-8a52a2e75be4@cs.oswego.edu>
+
+On 06/18/2018 06:12 AM, Peter Levart via Concurrency-interest wrote:
+> Hello,
+> 
+> I would like to ask the list one concurrency related question. Say you
+> have a class with a final reference field:
+> 
+> public class X {
+>     private final Y y;
+> 
+>     public X() {
+>         y = ...;
+>     }
+> 
+>     public void m() {
+>         ... use y ...
+>     }
+> }
+> 
+> And that Y is either an immutable or properly synchronized type so "use
+> y" never has any data races.
+> 
+> Objects of type X can be published via data races, but final modifier on
+> field y guarantees that the field will never be observed as
+> uninitialized (null) in method m.
+> 
+> Now say that class X is modified in the following way:
+> 
+> public class X {
+>     private Y y;
+> 
+>     public X() {
+>         y = ...;
+>         VarHandle.storeStoreFence();
+>     }
+> 
+>     public void m() {
+>         VarHandle.loadLoadFence();
+>         ... use y ...
+>     }
+> }
+
+In the most general case, you should use VarHandle.releaseFence()
+instead of storeStoreFence. See the discussion of Mixed Modes and
+Specializations for Release/Acquire (RA) mode in
+http://gee.cs.oswego.edu/dl/html/j9mm.html
+
+-Doug
+
+> 
+> - final modifier is removed, storeStoreFence is added as the final
+> action in constructor, loadLoadFence is added as the first action in
+> method.
+> 
+> Would every guarantee that holds for original class X still hold for
+> modified class X ?
+
+
+
+
+From martinrb at google.com  Mon Jun 18 09:41:13 2018
+From: martinrb at google.com (Martin Buchholz)
+Date: Mon, 18 Jun 2018 06:41:13 -0700
+Subject: [concurrency-interest] Simulating effects of final fields with
+ memory fences
+In-Reply-To: <8a8d2ece-1a58-2f53-0f9c-8a52a2e75be4@cs.oswego.edu>
+References: <7d173ea1-be01-72fe-9926-42fd0ec7ee22@gmail.com>
+ <8a8d2ece-1a58-2f53-0f9c-8a52a2e75be4@cs.oswego.edu>
+Message-ID: <CA+kOe0-2QodxLFDJ+iP9_K=5EpZ1b4yGsdZph0_XugFTDQAojg@mail.gmail.com>
+
+Programming concurrency is hard even when you have sequential consistency
+as provided by volatile or locks.
+If you retreat from that for performance, then go to release paired with
+acquire, so either VarHandle.releaseFence() and VarHandleAcquireFence() or
+preferably VarHandle.setRelease() paired with VarHandle.getAcquire(). Going
+further to storeStoreFence or loadLoadFence is too hard to get right.
+
+On Mon, Jun 18, 2018 at 4:28 AM, Doug Lea via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> On 06/18/2018 06:12 AM, Peter Levart via Concurrency-interest wrote:
+> > Hello,
+> >
+> > I would like to ask the list one concurrency related question. Say you
+> > have a class with a final reference field:
+> >
+> > public class X {
+> >     private final Y y;
+> >
+> >     public X() {
+> >         y = ...;
+> >     }
+> >
+> >     public void m() {
+> >         ... use y ...
+> >     }
+> > }
+> >
+> > And that Y is either an immutable or properly synchronized type so "use
+> > y" never has any data races.
+> >
+> > Objects of type X can be published via data races, but final modifier on
+> > field y guarantees that the field will never be observed as
+> > uninitialized (null) in method m.
+> >
+> > Now say that class X is modified in the following way:
+> >
+> > public class X {
+> >     private Y y;
+> >
+> >     public X() {
+> >         y = ...;
+> >         VarHandle.storeStoreFence();
+> >     }
+> >
+> >     public void m() {
+> >         VarHandle.loadLoadFence();
+> >         ... use y ...
+> >     }
+> > }
+>
+> In the most general case, you should use VarHandle.releaseFence()
+> instead of storeStoreFence. See the discussion of Mixed Modes and
+> Specializations for Release/Acquire (RA) mode in
+> http://gee.cs.oswego.edu/dl/html/j9mm.html
+>
+> -Doug
+>
+> >
+> > - final modifier is removed, storeStoreFence is added as the final
+> > action in constructor, loadLoadFence is added as the first action in
+> > method.
+> >
+> > Would every guarantee that holds for original class X still hold for
+> > modified class X ?
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180618/f3073e2f/attachment.html>
+
+From peter.levart at gmail.com  Tue Jun 19 03:00:13 2018
+From: peter.levart at gmail.com (Peter Levart)
+Date: Tue, 19 Jun 2018 09:00:13 +0200
+Subject: [concurrency-interest] Simulating effects of final fields with
+ memory fences
+In-Reply-To: <CA+kOe0-2QodxLFDJ+iP9_K=5EpZ1b4yGsdZph0_XugFTDQAojg@mail.gmail.com>
+References: <7d173ea1-be01-72fe-9926-42fd0ec7ee22@gmail.com>
+ <8a8d2ece-1a58-2f53-0f9c-8a52a2e75be4@cs.oswego.edu>
+ <CA+kOe0-2QodxLFDJ+iP9_K=5EpZ1b4yGsdZph0_XugFTDQAojg@mail.gmail.com>
+Message-ID: <455a4680-fc99-8136-9d2b-436839701aa4@gmail.com>
+
+Hi Martin, Doug,
+
+Thanks for pointer to j9mm.
+
+I understand that for general case, it is advisable to use release / 
+acquire. In particular for cases where constructing a "thread-unsafe" 
+object and publishing it for the receiving end to modify it. You want to 
+be sure that the construction of the object (which may involve writes as 
+well as reads) is "isolated" from later consumption by some other thread 
+that is going to perform reads and writes on it.
+
+But if that object is "thread-safe" - meaning that every access to its 
+internal state (including its construction) is properly synchronized by 
+the object itself, then I would really like to know when the use of 
+storeStoreFence (as the last action in container constructor that 
+constructs the containing object and writes the reference to the object) 
+/ loadLoadFence (as the 1st action in a method that dereferences the 
+reference and uses the contained object) can bite me. I really just want 
+to make sure that field 'y' is never seen as null in method m(). Just 
+like it was a primitive field. Is my thinking correct or are there flaws 
+in it?
+
+I'm referring to this code:
+
+public class X {
+     private Y y;
+
+     public X() {
+         y = ... construct y ...;
+         VarHandle.storeStoreFence();
+     }
+
+     public void m() {
+         VarHandle.loadLoadFence();
+         ... use y ...
+     }
+}
+
+
+In this code, Y is a class of a "properly synchronized object" which 
+makes sure that it works correctly even if published via data-race.
+
+
+Regards, Peter
+
+
+On 06/18/18 15:41, Martin Buchholz via Concurrency-interest wrote:
+> Programming concurrency is hard even when you have sequential 
+> consistency as provided by volatile or locks.
+> If you retreat from that for performance, then go to release paired 
+> with acquire, so either VarHandle.releaseFence() and 
+> VarHandleAcquireFence() or preferably VarHandle.setRelease() paired 
+> with VarHandle.getAcquire(). Going further to storeStoreFence or 
+> loadLoadFence is too hard to get right.
+>
+> On Mon, Jun 18, 2018 at 4:28 AM, Doug Lea via Concurrency-interest 
+> <concurrency-interest at cs.oswego.edu 
+> <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>
+>     On 06/18/2018 06:12 AM, Peter Levart via Concurrency-interest wrote:
+>     > Hello,
+>     >
+>     > I would like to ask the list one concurrency related question.
+>     Say you
+>     > have a class with a final reference field:
+>     >
+>     > public class X {
+>     >     private final Y y;
+>     >
+>     >     public X() {
+>     >         y = ...;
+>     >     }
+>     >
+>     >     public void m() {
+>     >         ... use y ...
+>     >     }
+>     > }
+>     >
+>     > And that Y is either an immutable or properly synchronized type
+>     so "use
+>     > y" never has any data races.
+>     >
+>     > Objects of type X can be published via data races, but final
+>     modifier on
+>     > field y guarantees that the field will never be observed as
+>     > uninitialized (null) in method m.
+>     >
+>     > Now say that class X is modified in the following way:
+>     >
+>     > public class X {
+>     >     private Y y;
+>     >
+>     >     public X() {
+>     >         y = ...;
+>     >         VarHandle.storeStoreFence();
+>     >     }
+>     >
+>     >     public void m() {
+>     >         VarHandle.loadLoadFence();
+>     >         ... use y ...
+>     >     }
+>     > }
+>
+>     In the most general case, you should use VarHandle.releaseFence()
+>     instead of storeStoreFence. See the discussion of Mixed Modes and
+>     Specializations for Release/Acquire (RA) mode in
+>     http://gee.cs.oswego.edu/dl/html/j9mm.html
+>     <http://gee.cs.oswego.edu/dl/html/j9mm.html>
+>
+>     -Doug
+>
+>     >
+>     > - final modifier is removed, storeStoreFence is added as the final
+>     > action in constructor, loadLoadFence is added as the first action in
+>     > method.
+>     >
+>     > Would every guarantee that holds for original class X still hold for
+>     > modified class X ?
+>
+>
+>
+>     _______________________________________________
+>     Concurrency-interest mailing list
+>     Concurrency-interest at cs.oswego.edu
+>     <mailto:Concurrency-interest at cs.oswego.edu>
+>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>     <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180619/0bb2fd7f/attachment.html>
+
+From dl at cs.oswego.edu  Tue Jun 19 07:28:10 2018
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 19 Jun 2018 07:28:10 -0400
+Subject: [concurrency-interest] Simulating effects of final fields with
+ memory fences
+In-Reply-To: <455a4680-fc99-8136-9d2b-436839701aa4@gmail.com>
+References: <7d173ea1-be01-72fe-9926-42fd0ec7ee22@gmail.com>
+ <8a8d2ece-1a58-2f53-0f9c-8a52a2e75be4@cs.oswego.edu>
+ <CA+kOe0-2QodxLFDJ+iP9_K=5EpZ1b4yGsdZph0_XugFTDQAojg@mail.gmail.com>
+ <455a4680-fc99-8136-9d2b-436839701aa4@gmail.com>
+Message-ID: <2feae499-44af-02d0-7a30-0b7eddf95675@cs.oswego.edu>
+
+On 06/19/2018 03:00 AM, Peter Levart via Concurrency-interest wrote:
+
+> But if that object is "thread-safe" - meaning that every access to its
+> internal state (including its construction) is properly synchronized by
+> the object itself, then I would really like to know when the use of
+> storeStoreFence (as the last action in container constructor that
+> constructs the containing object and writes the reference to the object)
+> / loadLoadFence (as the 1st action in a method that dereferences the
+> reference and uses the contained object) can bite me. 
+
+As noted in j9mm doc, the storeStore vs release fence microoptimization
+for constructors is based on "nothing need be guaranteed about
+interactions with reads by the constructor", which refers to re-reads of
+non-final fields (for example a final array ref vs a non-final index),
+which would be extended here to pseudo-constructors. Which is usually OK.
+
+-Doug
+
+From martinrb at google.com  Tue Jun 19 09:42:58 2018
+From: martinrb at google.com (Martin Buchholz)
+Date: Tue, 19 Jun 2018 06:42:58 -0700
+Subject: [concurrency-interest] Simulating effects of final fields with
+ memory fences
+In-Reply-To: <455a4680-fc99-8136-9d2b-436839701aa4@gmail.com>
+References: <7d173ea1-be01-72fe-9926-42fd0ec7ee22@gmail.com>
+ <8a8d2ece-1a58-2f53-0f9c-8a52a2e75be4@cs.oswego.edu>
+ <CA+kOe0-2QodxLFDJ+iP9_K=5EpZ1b4yGsdZph0_XugFTDQAojg@mail.gmail.com>
+ <455a4680-fc99-8136-9d2b-436839701aa4@gmail.com>
+Message-ID: <CA+kOe09Li=VNo_MbosjKmU3whVQUfLfSj3SWbzqoV3ySsrwmLg@mail.gmail.com>
+
+I got some of my paranoia reading Hans Boehm.  IIRC he discusses storestore
+somewhere.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20180619/71ce58aa/attachment.html>
+
+From aph at redhat.com  Tue Jun 19 12:26:02 2018
+From: aph at redhat.com (Andrew Haley)
+Date: Tue, 19 Jun 2018 17:26:02 +0100
+Subject: [concurrency-interest] Simulating effects of final fields with
+ memory fences
+In-Reply-To: <455a4680-fc99-8136-9d2b-436839701aa4@gmail.com>
+References: <7d173ea1-be01-72fe-9926-42fd0ec7ee22@gmail.com>
+ <8a8d2ece-1a58-2f53-0f9c-8a52a2e75be4@cs.oswego.edu>
+ <CA+kOe0-2QodxLFDJ+iP9_K=5EpZ1b4yGsdZph0_XugFTDQAojg@mail.gmail.com>
+ <455a4680-fc99-8136-9d2b-436839701aa4@gmail.com>
+Message-ID: <61d00fd5-36b5-7c1b-b581-38ad665720dc@redhat.com>
+
+On 06/19/2018 08:00 AM, Peter Levart via Concurrency-interest wrote:
+> But if that object is "thread-safe" - meaning that every access to
+> its internal state (including its construction) is properly
+> synchronized by the object itself, then I would really like to know
+> when the use of storeStoreFence (as the last action in container
+> constructor that constructs the containing object and writes the
+> reference to the object) / loadLoadFence (as the 1st action in a
+> method that dereferences the reference and uses the contained
+> object) can bite me. I really just want to make sure that field 'y'
+> is never seen as null in method m(). Just like it was a primitive
+> field. Is my thinking correct or are there flaws in it?
+
+Yes, probably.  What none of us here understand is why you seem to
+want to know if it's possible to dance around the rim of the volcano.
+Sure, it's possible.  After a lot of arguing, I was persuaded that
+StoreStore was enough for a constructor.
+
+-- 
+Andrew Haley
+Java Platform Lead Engineer
+Red Hat UK Ltd. <https://www.redhat.com>
+EAC8 43EB D3EF DB98 CC77 2FAD A5CD 6035 332F A671
+

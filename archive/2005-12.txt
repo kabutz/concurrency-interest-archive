@@ -1,0 +1,3438 @@
+From p.veentjer at anchormen.nl  Thu Dec  1 05:23:21 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Thu Dec  1 05:24:26 2005
+Subject: [concurrency-interest] when to use lock and when to
+	uselockInterruptibly
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA1EA124@gerard.anchormen.nl>
+
+Thanks Joe and David.
+
+But what do you mean with?
+========================================
+If you want to be more responsive to interrupts *and* the acquisition of
+the lock is not critical then you might want to always
+lockInterruptibly.
+========================================
+With a lock() you always get the lock? What if the thread is interrupted
+while it wants to acquire a lock with the lock() method. What is going
+to happen? With a lockInterruptibly() a InterruptedException is thrown.
+But what happens with a normal lock() method?
+
+-----Oorspronkelijk bericht-----
+Van: concurrency-interest-bounces@cs.oswego.edu
+[mailto:concurrency-interest-bounces@cs.oswego.edu] Namens David Holmes
+Verzonden: woensdag 30 november 2005 0:13
+Aan: concurrency-interest@altair.cs.oswego.edu
+Onderwerp: Re: [concurrency-interest] when to use lock and when to
+uselockInterruptibly
+
+> When should a lockInterruptibly be used instead of a lock? I guess it 
+> depends on the lock implementation if it supports interruption. Is 
+> this correct? And wouldn`t it be better to always you the 
+> lockInterruptibly (although you have to deal with an
+InterruptedException).
+
+If you want to be more responsive to interrupts *and* the acquisition of
+the lock is not critical then you might want to always
+lockInterruptibly. A lot of the time though that would force propagating
+the InterruptedException from methods that are not truly "blocking" and
+hence don't need to be interruptible.
+
+One situation where you would not want to use interruptible locking is
+when the action you need the lock for must be performed. eg:
+
+   void somemethod() {
+     try {
+         // main code
+      }
+      finally {
+         l.lock();
+         try { updateState(); } finally {
+         lock.unlock(); }
+      }
+   }
+
+Cheers,
+David Holmes
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From tmoolenschot at mhg.co.za  Thu Dec  1 08:26:55 2005
+From: tmoolenschot at mhg.co.za (Tezhe Moolenschot)
+Date: Thu Dec  1 08:30:42 2005
+Subject: [concurrency-interest] Why can signals only be sent from within
+	locks?
+Message-ID: <7a537ff2-626d-11da-855b-0004e2e@rocketseed.mhg.co.za>
+
+
+I am having trouble understanding why wait and signal are dependant on
+locks.  
+
+For example, a producer-consumer can use a concurrent collection instead
+of locks.  If you then want to signal the consumer from the producer
+once something has been produced, a lock must be obtained before
+signalling.  What is the reason for needing this lock?
+
+Thanks for your time
+Tezhe
+
+********************************************************************** 
+                                ------ 
+                                NOTICE 
+                                ------ 
+This message (including attachments)  contains  privileged and confidential information intended only for the person or entity to which it is addressed. 
+
+Any review, retransmission, dissemination, copy or other use of, or taking of any action in reliance upon this information by persons or entities other than the intended recipient, is prohibited.
+
+If you received this message in error, please notify the sender immediately by e-mail, facsimile or telephone and thereafter delete the material from any computer.
+
+Metropolitan Health Group, its subsidiaries or associates do not accept liability for any personal views expressed in this message.
+
+********************************************************************** 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20051201/b2ec31e0/attachment.htm
+From brian at quiotix.com  Thu Dec  1 12:22:36 2005
+From: brian at quiotix.com (Brian Goetz)
+Date: Thu Dec  1 12:23:29 2005
+Subject: [concurrency-interest] Why can signals only be sent from within
+	locks?
+In-Reply-To: <7a537ff2-626d-11da-855b-0004e2e@rocketseed.mhg.co.za>
+References: <7a537ff2-626d-11da-855b-0004e2e@rocketseed.mhg.co.za>
+Message-ID: <438F315C.3040205@quiotix.com>
+
+> For example, a producer-consumer can use a concurrent collection instead
+> of locks. If you then want to signal the consumer from the producer
+> once something has been produced, a lock must be obtained before
+> signalling. What is the reason for needing this lock?
+
+Invariably, you are signalling the other thread of a change in some 
+shared state.  Shared mutable state must be guarded by a lock.  Without 
+requiring the calling thread to acquire the lock that guards this shared 
+state, it opens the door to race conditions.
+
+Consider a work queue.  You cannot take an element from an empty work 
+queue.  So if you arrive at the queue, and find it empty, you wait -- 
+and you never wait if the queue is not empty.
+
+How do you KNOW that the queue is empty?  You can only know this for 
+sure if you hold the lock.  Otherwise its state could change between the 
+time you checked and the time you waited.  Since all wait/notify 
+scenarios share this element, the lock and the condition queue work 
+together to make sure you don't make this mistake.
+
+From dawidk at mathcs.emory.edu  Thu Dec  1 12:28:50 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Thu Dec  1 12:29:43 2005
+Subject: [concurrency-interest] when to use lock and when 
+	touselockInterruptibly
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA1EA124@gerard.anchormen.nl>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA1EA124@gerard.anchormen.nl>
+Message-ID: <438F32D2.1080506@mathcs.emory.edu>
+
+Peter Veentjer - Anchor Men wrote:
+
+>With a lock() you always get the lock? What if the thread is interrupted
+>while it wants to acquire a lock with the lock() method. What is going
+>to happen? With a lockInterruptibly() a InterruptedException is thrown.
+>But what happens with a normal lock() method?
+>
+>  
+>
+Essentially, nothing - at least until the lock is obtained, and some 
+operation later tests the status of the interruption flag. Interrupting 
+a thread merely sets the "interrupted" status flag to true; whether and 
+when the thread responds to interruption is up to that thread. Certain 
+methods, like Object.wait(), Thread.sleep(), Lock.lockInterruptibly(), 
+and Condition.await(), are responsive to interruption, and will throw 
+InterruptedException if the "interrupted" flag is set upon invocation or 
+becomes set while the thread is blocked. In other situations, e.g. if a 
+thread is blocked on "synchronized", lock.lock(), 
+Condition.awaitUninterruptibly(), or I/O operation, or simply if is not 
+blocked at all, the interruption requests do not cause any immediate 
+action except for setting the flag.
+
+Basically, lock.lock() cannot complete in any other way than 
+successfully obtaining the lock; the only other way is to kill the JVM.
+
+Regards,
+Dawid
+
+From dholmes at dltech.com.au  Thu Dec  1 19:50:16 2005
+From: dholmes at dltech.com.au (David Holmes)
+Date: Thu Dec  1 19:51:09 2005
+Subject: [concurrency-interest] Why can signals only be sent from within
+	locks?
+In-Reply-To: <7a537ff2-626d-11da-855b-0004e2e@rocketseed.mhg.co.za>
+References: <7a537ff2-626d-11da-855b-0004e2e@rocketseed.mhg.co.za>
+Message-ID: <20051202003907.M54968@dltech.com.au>
+
+Notwithstanding Brian's response as to why the shared state must be protected 
+by the lock, it isn't semantically essential to actually perform a signal 
+while holding the lock. In Java you must own the monitor before doing a 
+notify/notifyAll and ReentrantLock and its Condition emulate this behaviour. 
+This has some advantages: from the programming perspective it ensures you 
+don't forget to protect access to the shared state; from the implementation 
+perspective it means that the lock/monitor can be used to protect access to 
+the condition-queue/wait-set.
+
+POSIX doesn't require this and allows you to signal without the lock being 
+held. Some people say this is an optimization, but that's generally only true 
+for implementations that don't do what is termed "wait-morphing" - this is 
+where a signal just transfers a thread from the condition queue to the 
+lock/mutex queue (rather than have a signal cause a thread to resume 
+execution and immediately attempt to acquire a mutex that is locked by the 
+thread that did the signal.)
+
+If the signal is done after the lock is released there is more chance that 
+the signalling thread will be switched out between releasing the lock and 
+doing the signal (particularly in real-time systems). This makes the signals 
+somewhat "asynchronous" in nature. But provided you always wait in a loop, 
+testing the right condition, and you always use signal or signalAll 
+correctly, then this will only impact performance not correctness.
+
+Cheers,
+David Holmes
+From dholmes at dltech.com.au  Fri Dec  2 06:01:26 2005
+From: dholmes at dltech.com.au (David Holmes)
+Date: Fri Dec  2 06:02:19 2005
+Subject: [concurrency-interest] when to use lock and when
+	touselockInterruptibly
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA1EA124@gerard.anchormen.nl>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMEGKGJAA.dholmes@dltech.com.au>
+
+Peter,
+
+> But what do you mean with?
+> ========================================
+> If you want to be more responsive to interrupts *and* the acquisition of
+> the lock is not critical then you might want to always
+> lockInterruptibly.
+> ========================================
+
+If you are acquiring the lock before doing anything significant then you
+could choose to make the lock acquisition interruptible, thereby making your
+thread more responsive to interruption. But you then have to propagate the
+exception and that impacts the design of the API - a design where locking is
+an implementation concern and the (short) blocking associated with that is
+not something that necessarily the API should reflect.
+
+If the action you are acquiring the lock for absolutely must be carried out
+then there is no point making the lock acquisition interruptible.
+
+> With a lock() you always get the lock? What if the thread is interrupted
+> while it wants to acquire a lock with the lock() method. What is going
+> to happen? With a lockInterruptibly() a InterruptedException is thrown.
+> But what happens with a normal lock() method?
+
+As Dawid said the normal lock() method will only return once the lock has
+been acquired, and it always returns normally. If you get interrupted while
+trying to acquire it then you remain with your interrupt state set.
+
+David Holmes
+
+From dawidk at mathcs.emory.edu  Fri Dec  2 16:32:18 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Fri Dec  2 16:33:33 2005
+Subject: [concurrency-interest] when to use lock and 
+	whentouselockInterruptibly
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCMEGKGJAA.dholmes@dltech.com.au>
+References: <NFBBKALFDCPFIDBNKAPCMEGKGJAA.dholmes@dltech.com.au>
+Message-ID: <4390BD62.5060605@mathcs.emory.edu>
+
+
+>>With a lock() you always get the lock? What if the thread is interrupted
+>>while it wants to acquire a lock with the lock() method. What is going
+>>to happen? With a lockInterruptibly() a InterruptedException is thrown.
+>>But what happens with a normal lock() method?
+>>    
+>>
+>
+>As Dawid said the normal lock() method will only return once the lock has
+>been acquired, and it always returns normally. If you get interrupted while
+>trying to acquire it then you remain with your interrupt state set.
+>
+>David Holmes
+>
+>  
+>
+A small clarification: when I wrote my answer, I (and David, I guess) 
+had in mind ReentrantLock and ReentrantReadWriteLock. For user-defined 
+locks, the documentation actually allows lock() method to throw 
+unchecked exception (e.g. as a deadlock-avoidance measure). Also, 
+theoretically, lock() can throw OutOfMemoryError even from 
+ReentrantLock.lock (right?) so it is not 100% accurate to say that 
+lock() can never complete abruptly.
+
+It has nothing to do with interruption, though - the lock() method is 
+supposed to block *non-interruptibly* if the lock is not immediately 
+available. I imagine it is possible to write a lock implementation that 
+would violate this and instead throw an unchecked exception upon 
+interruption of lock(), but in my understanding of the API, such 
+implementation would be broken - because the javadoc only allows such 
+exception to be thrown when an *erroneous* use of the lock is detected.
+
+So, to sum up: for properly written lock classes (ReentrantLock in 
+particular), lock() is non-interruptible and, for all practical 
+purposes, cannot complete abruptly, unless really bad things happen from 
+which you probably should not try to recover.
+
+Regards,
+Dawid
+
+From Martin.Buchholz at Sun.COM  Sat Dec  3 13:02:48 2005
+From: Martin.Buchholz at Sun.COM (Martin Buchholz)
+Date: Sat Dec  3 13:03:33 2005
+Subject: [concurrency-interest] J2SE 5.0 Update 6 is Released
+Message-ID: <4391DDC8.2000009@Sun.COM>
+
+J2SE 5.0 Update 6 has been released at this location:
+
+  http://java.sun.com/j2se/1.5.0/download.jsp
+
+This update includes 6 bug fixes related to
+the work of this group.
+
+   6241823 Infinite loop in timed Semaphore.tryAcquire
+   6253848 CyclicBarrier behavior incorrect if "broken" or reset
+   6307455 LinkedBlockingQueue.toArray(x) does not set "one-past"
+element of x to null
+   6197726 (coll) IdentityHashMap.entrySet().toArray(T[] a) is
+incorrectly implemented
+   6310858 (coll) EnumMap.entrySet().toArray(T[] a) is incorrectly
+implemented
+   6215625 LinkedBlockingQueue.extract throws NPE
+
+  http://java.sun.com/j2se/1.5.0/ReleaseNotes.html
+
+Martin
+From john.c.kenworthy at lmco.com  Sat Dec  3 22:18:08 2005
+From: john.c.kenworthy at lmco.com (Kenworthy, John C)
+Date: Sat Dec  3 22:18:56 2005
+Subject: [concurrency-interest] documentation on nested transactions (DSTM
+	Java code)
+Message-ID: <480BB325502EE449B1C4DD0D09055CAB05495A65@emss02m18.us.lmco.com>
+
+I am reading the STM for Dynamic-Sized Data Structures paper.   I am
+interested in nested transactions.  A footnote in this paper indicated
+that they are handled in a "rudimentary form".  However, looking at the
+code package I have (Java DSTM pkg), it looks like any ability to nest
+has been locked out by the logic checks for 'nesting depth'.  
+
+If anyone knows more about the nesting depth implementation, I would
+like to hear about it.  Or, better yet, if you have a source you can
+point me to that documents some discussion about this, that would be
+excellent.  
+
+Thx,
+jc
+
+-----Original Message-----
+From: concurrency-interest-bounces@cs.oswego.edu
+[mailto:concurrency-interest-bounces@cs.oswego.edu] On Behalf Of Dawid
+Kurzyniec
+Sent: Friday, December 02, 2005 2:32 PM
+To: David Holmes
+Cc: concurrency-interest@altair.cs.oswego.edu
+Subject: Re: [concurrency-interest] when to use lock and
+whentouselockInterruptibly
+
+
+>>With a lock() you always get the lock? What if the thread is 
+>>interrupted while it wants to acquire a lock with the lock() method. 
+>>What is going to happen? With a lockInterruptibly() a
+InterruptedException is thrown.
+>>But what happens with a normal lock() method?
+>>    
+>>
+>
+>As Dawid said the normal lock() method will only return once the lock 
+>has been acquired, and it always returns normally. If you get 
+>interrupted while trying to acquire it then you remain with your
+interrupt state set.
+>
+>David Holmes
+>
+>  
+>
+A small clarification: when I wrote my answer, I (and David, I guess)
+had in mind ReentrantLock and ReentrantReadWriteLock. For user-defined
+locks, the documentation actually allows lock() method to throw
+unchecked exception (e.g. as a deadlock-avoidance measure). Also,
+theoretically, lock() can throw OutOfMemoryError even from
+ReentrantLock.lock (right?) so it is not 100% accurate to say that
+lock() can never complete abruptly.
+
+It has nothing to do with interruption, though - the lock() method is
+supposed to block *non-interruptibly* if the lock is not immediately
+available. I imagine it is possible to write a lock implementation that
+would violate this and instead throw an unchecked exception upon
+interruption of lock(), but in my understanding of the API, such
+implementation would be broken - because the javadoc only allows such
+exception to be thrown when an *erroneous* use of the lock is detected.
+
+So, to sum up: for properly written lock classes (ReentrantLock in
+particular), lock() is non-interruptible and, for all practical
+purposes, cannot complete abruptly, unless really bad things happen from
+which you probably should not try to recover.
+
+Regards,
+Dawid
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From peterspaz at comcast.net  Sat Dec  3 21:53:36 2005
+From: peterspaz at comcast.net (peterspaz@comcast.net)
+Date: Sun Dec  4 08:29:32 2005
+Subject: [concurrency-interest] runtime performance statistics in
+	java.util.concurrent
+Message-ID: <120420050253.8243.43925A3000096A86000020332205886442080C0E0D9D0A9B9A0E04D29F@comcast.net>
+
+Greetings,
+
+Are there are runtime performance statistics available within java.util.concurrent? I've looked through the code and documentation, but only found limited stats enabled by COLLECT_STATS for FJTaskRunner.
+
+I am looking for normal queueing level statistics that would tell me the average queue length, service time, and wait time over a sample period.
+
+How do people investigate potential runtime problems where using these methods could cause locking and syncronization problems? Please advise.
+
+Regards,
+Peter
+From Mark.Moir at sun.com  Sun Dec  4 14:09:29 2005
+From: Mark.Moir at sun.com (Mark Moir)
+Date: Sun Dec  4 14:12:47 2005
+Subject: [concurrency-interest] re: documentation on nested transactions
+	(DSTM Java code)
+In-Reply-To: <200512041700.jB4H05jD011960@altair.cs.oswego.edu>
+References: <200512041700.jB4H05jD011960@altair.cs.oswego.edu>
+Message-ID: <43933EE9.5060206@sun.com>
+
+
+
+> Message: 2
+> Date: Sat, 03 Dec 2005 20:18:08 -0700
+> From: "Kenworthy, John C" <john.c.kenworthy@lmco.com>
+> Subject: [concurrency-interest] documentation on nested transactions
+> 	(DSTM	Java code)
+> To: concurrency-interest@altair.cs.oswego.edu
+> Message-ID:
+> 	<480BB325502EE449B1C4DD0D09055CAB05495A65@emss02m18.us.lmco.com>
+> Content-Type: text/plain; charset=us-ascii
+> 
+> I am reading the STM for Dynamic-Sized Data Structures paper.   I am
+> interested in nested transactions.  A footnote in this paper indicated
+> that they are handled in a "rudimentary form".  However, looking at the
+> code package I have (Java DSTM pkg), it looks like any ability to nest
+> has been locked out by the logic checks for 'nesting depth'.  
+
+The "rudimentary form of nesting" we referred to in the paper is just 
+"flattening", i.e., nested transactions become part of the outermost 
+transaction.  This is implemented with a simple nesting depth counter. 
+Our paper and code release were intended to demonstrate the key ideas 
+underlying DSTM, so we resisted the temptation to include many bells and 
+even a few whistles, and this included more sophisticated forms of nesting.
+
+Cheers
+
+Mark
+From moranor at gmail.com  Mon Dec  5 03:17:50 2005
+From: moranor at gmail.com (Moran Or Avigdor)
+Date: Mon Dec  5 06:00:15 2005
+Subject: [concurrency-interest] backport: AtomicLongFieldUpdater support
+In-Reply-To: <438E1EF7.3040306@mathcs.emory.edu>
+References: <98b337d10511300206k57da377fg7f7e554b40e62844@mail.gmail.com>
+	<438D9A02.300@cs.oswego.edu> <438E1EF7.3040306@mathcs.emory.edu>
+Message-ID: <98b337d10512050017u77c1fe62vf765bcec7c40475a@mail.gmail.com>
+
+Dawid,
+Thank you for your feedback.
+
+Isn't the reflection done only once per newUpdater call?
+If a LockedUpdater is supplied then the synchronization should work well for
+its implications.
+
+Although it is not correct to state that on JDK1.4 the underlying JVM
+doesn't supports lockless CompareAndSet for longs, but the
+effect will return the needed Updater.
+
+Am I missing something in my assesment?
+Am I correct to assume that the LockedUpdater should suffice?
+
+Thank you in advance.
+-Moran
+
+
+On 11/30/05, Dawid Kurzyniec <dawidk@mathcs.emory.edu> wrote:
+>
+> Doug Lea wrote:
+>
+> > Moran Or Avigdor wrote:
+> >
+> >> Are there any plans to support a backport version of
+> >> java.util.concurrent.atomic.AtomicLongFieldUpdater ?
+> >> e.g.
+> >>
+> edu.emory.mathcs.backport.java.util.concurrent.atomic.AtomicLongFieldUpdater
+> >>
+> >>
+> >
+> > While it would logically be possible to do this without
+> > Java 5 native support, it would be so pathetically slow that
+> > Dawid is doing you a big favor by not including them. :-)
+> >
+> Yep. It would have to use reflection combined with synchronization. Even
+> despite improvements in reflection performance, this does not seem to be
+> a viable option.
+>
+> Regards,
+> Dawid
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20051205/b106cb26/attachment.htm
+From dawidk at mathcs.emory.edu  Mon Dec  5 11:33:15 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Mon Dec  5 11:34:09 2005
+Subject: [concurrency-interest] backport: AtomicLongFieldUpdater support
+In-Reply-To: <98b337d10512050017u77c1fe62vf765bcec7c40475a@mail.gmail.com>
+References: <98b337d10511300206k57da377fg7f7e554b40e62844@mail.gmail.com><43
+	8D9A02.300@cs.oswego.edu> <438E1EF7.3040306@mathcs.emory.edu> 
+	<98b337d10512050017u77c1fe62vf765bcec7c40475a@mail.gmail.com>
+Message-ID: <43946BCB.9090200@mathcs.emory.edu>
+
+Moran Or Avigdor wrote:
+
+> Dawid,
+> Thank you for your feedback.
+>
+> Isn't the reflection done only once per newUpdater call?
+> If a LockedUpdater is supplied then the synchronization should work 
+> well for its implications.
+>
+> Although it is not correct to state that on JDK1.4 the underlying JVM 
+> doesn't supports lockless CompareAndSet for longs, but the
+> effect will return the needed Updater.
+>
+> Am I missing something in my assesment?
+> Am I correct to assume that the LockedUpdater should suffice?
+>
+I was thinking of something along the lines of the older JSR 166 
+emulation code:
+
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/emulation/java/util/concurrent/atomic/AtomicLongFieldUpdater.java
+
+but it requires, in the best case, two reflective calls 
+(Field.getLong/Field.setLong) per an operation. It may be interesting to 
+test that and see how much overhead that would cause (reflection has a 
+fast path for unchecked accessor methods), but Doug's comments suggest 
+that they've tried it and it was not good.
+
+On the other hand, you're suggesting using sun.misc.Unsafe. This may be 
+quite an interesting idea. The backport already uses sun.misc.Perf for 
+microsecond-precision timer, if the class can be found, and otherwise 
+falling back to System.currentTimeMillis(). Maybe similar approach could 
+be taken for sun.misc.Unsafe?...
+
+On the other hand, why do you need the field updater in the first place? 
+Chances are, you have a non-blocking algorithm that you want to port to 
+1.4. It is usually quite easy to modify such algorithms to use 
+synchronization instead of atomic field updaters. Example of this is 
+ConcurrentSkipListMap and some other classes in j.u.c. that I've 
+backported this way.
+
+(Technically, the algorithm is non-blocking no more, but the locks are 
+held so briefly that it retains very high scalability, for the price of 
+higher single-thread execution overhead.)
+
+Regards,
+Dawid
+
+From moranor at gmail.com  Mon Dec  5 13:56:48 2005
+From: moranor at gmail.com (Moran Or Avigdor)
+Date: Mon Dec  5 14:09:49 2005
+Subject: [concurrency-interest] backport: AtomicLongFieldUpdater support
+In-Reply-To: <43946BCB.9090200@mathcs.emory.edu>
+References: <98b337d10511300206k57da377fg7f7e554b40e62844@mail.gmail.com>
+	<438E1EF7.3040306@mathcs.emory.edu>
+	<98b337d10512050017u77c1fe62vf765bcec7c40475a@mail.gmail.com>
+	<43946BCB.9090200@mathcs.emory.edu>
+Message-ID: <98b337d10512051056k19c8f840s477135654478cfe0@mail.gmail.com>
+
+Dawid,
+
+The port to JDK1.4 is only required for backwards compatibility of JDK1.5code.
+Since the introduction of java.util.concurrent, we rely on
+backport-util-concurrent.jar for
+the relevant compatibility. needless to say, we had to apply some ruling to
+adapt it seamlessly.
+
+Regarding the reflection based implementation -
+1. It might apply an overhead, and to by pass the reflection only a
+"LockableLong" interface can assist.
+This would then define a getLong and setLong methods to safely invoke.
+2. I've noticed that in some usages, a "private static final
+AtomicLongFieldUpdater" was declared,
+which implies that in the LockUpdater the synchronized would lock the Field
+itself. If this class instances
+are numerous, it would deny access to different instances invoking the same
+operation on the same field!
+The "LockableLong" interface can have an indication "isStatic" to lock the
+object itself or the Field.
+
+Regarding the use of sun.misc.Unsafe -
+That was my first intention. But I ran into security access problems and
+decided to look into later.
+But if I understand it correctly, it should provide me with the correct
+result as in JDK1.5
+In cases where it is not defined, falling back on reflection should do the
+trick.
+
+The backwards compatibility is a must if applications need to move forward
+and adopt new concurrent
+methods. That is the major concern for us when looking into newly introduced
+classes.
+
+Thank you.
+-Moran
+
+
+On 12/5/05, Dawid Kurzyniec <dawidk@mathcs.emory.edu> wrote:
+>
+> Moran Or Avigdor wrote:
+>
+> > Dawid,
+> > Thank you for your feedback.
+> >
+> > Isn't the reflection done only once per newUpdater call?
+> > If a LockedUpdater is supplied then the synchronization should work
+> > well for its implications.
+> >
+> > Although it is not correct to state that on JDK1.4 the underlying JVM
+> > doesn't supports lockless CompareAndSet for longs, but the
+> > effect will return the needed Updater.
+> >
+> > Am I missing something in my assesment?
+> > Am I correct to assume that the LockedUpdater should suffice?
+> >
+> I was thinking of something along the lines of the older JSR 166
+> emulation code:
+>
+>
+> http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/emulation/java/util/concurrent/atomic/AtomicLongFieldUpdater.java
+>
+> but it requires, in the best case, two reflective calls
+> (Field.getLong/Field.setLong) per an operation. It may be interesting to
+> test that and see how much overhead that would cause (reflection has a
+> fast path for unchecked accessor methods), but Doug's comments suggest
+> that they've tried it and it was not good.
+>
+> On the other hand, you're suggesting using sun.misc.Unsafe. This may be
+> quite an interesting idea. The backport already uses sun.misc.Perf for
+> microsecond-precision timer, if the class can be found, and otherwise
+> falling back to System.currentTimeMillis(). Maybe similar approach could
+> be taken for sun.misc.Unsafe?...
+>
+> On the other hand, why do you need the field updater in the first place?
+> Chances are, you have a non-blocking algorithm that you want to port to
+> 1.4. It is usually quite easy to modify such algorithms to use
+> synchronization instead of atomic field updaters. Example of this is
+> ConcurrentSkipListMap and some other classes in j.u.c. that I've
+> backported this way.
+>
+> (Technically, the algorithm is non-blocking no more, but the locks are
+> held so briefly that it retains very high scalability, for the price of
+> higher single-thread execution overhead.)
+>
+> Regards,
+> Dawid
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20051205/38cedbdb/attachment.htm
+From dawidk at mathcs.emory.edu  Mon Dec  5 20:00:00 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Mon Dec  5 21:01:05 2005
+Subject: [concurrency-interest] backport: AtomicLongFieldUpdater support
+In-Reply-To: <98b337d10512051056k19c8f840s477135654478cfe0@mail.gmail.com>
+References: <98b337d10511300206k57da377fg7f7e554b40e62844@mail.gmail.com><43
+	8E1EF7.3040306@mathcs.emory.edu><98b337d10512050017u77c1fe62vf765bcec7c404
+	7	5a@mail.gmail.com><43946BCB.9090200@mathcs.emory.edu> 
+	<98b337d10512051056k19c8f840s477135654478cfe0@mail.gmail.com>
+Message-ID: <4394E290.20101@mathcs.emory.edu>
+
+Moran Or Avigdor wrote:
+
+>
+> Regarding the reflection based implementation -
+> 1. It might apply an overhead, and to by pass the reflection only a 
+> "LockableLong" interface can assist.
+> This would then define a getLong and setLong methods to safely invoke.
+
+
+Or, one could follow the original convention of atomic updaters: a 
+factory method that returns an appropriate subclass of the updater: 
+unsafe-based or reflection-based.
+
+> 2. I've noticed that in some usages, a "private static final 
+> AtomicLongFieldUpdater" was declared,
+> which implies that in the LockUpdater the synchronized would lock the 
+> Field itself. If this class instances
+> are numerous, it would deny access to different instances invoking the 
+> same operation on the same field!
+> The "LockableLong" interface can have an indication "isStatic" to lock 
+> the object itself or the Field.
+
+
+I agree with you that the "lock per updater" emulation strategy may be 
+too coarse-grained (I suspect that it was adapted for 
+AtomicLongFieldUpdater.LockedUpdater anyway because of the assumption 
+that most Java 5.0 implementations do natively support atomic long CAS). 
+However, locking on the Field is actually even worse (Fields are also 
+"static"; they belong to the class, not the instance). Locking on the 
+target object, on the other hand, may be too coarse-grained, too, only 
+in a different dimension: a single class may have multiple volatile 
+fields updatable via independent different updaters, and locking on the 
+object would make them mutually exclusive. In fact, finding the right 
+object to synchronize on is a hairy issue if you want both performance 
+and scalability. The best solution that comes to my mind is to use lock 
+stripping - e.g. define a global array of objects, and finding the lock 
+index as an (identity) hash code of the pair (updater,object). Better 
+ideas welcome.
+
+>
+> The backwards compatibility is a must if applications need to move 
+> forward and adopt new concurrent
+> methods. That is the major concern for us when looking into newly 
+> introduced classes.
+>
+It was the motivation behind the backport. But my point of view always 
+has been that, if the overhead introduced by emulation of a certain 
+feature is prohibitively high, it's better to leave it out, rather than 
+having the users learn the hard way - e.g. finding out at deployment 
+time that their application falls apart under load and does not scale 
+beyond 2 CPUs despite using a "scalable", non-blocking algorithm. With 
+the atomics, we're talking about a hardware-supported, JIT-inlined, 
+atomic memory update vs. "synchronized" + two native method calls to a 
+dynamically linked library + other reflection stuff + 
+System.identityHashCode().
+
+Bottom line: I am leaning to try to explore several options for 
+backporting field updaters - both reflection-based and Unsafe-based. 
+(Contributions and comments welcome). But, I will include this in the 
+backport only if it can obtain satisfactory performance (say, no more 
+than 100% overhead over current backported Atomic classes) on most of 
+the current platforms. I have other things on the queue though, so I 
+cannot guarantee a timeline earlier than Feb 2006.
+
+BTW. Since the backport, and the JSR 166 are public domain, you are 
+welcome to do as you please - it's not that hard to take the emulated 
+updater from early JSR 166 and add it locally to your backport to test 
+how things are going.
+
+Regards,
+Dawid
+
+
+From moran at gigaspaces.com  Tue Dec  6 13:59:39 2005
+From: moran at gigaspaces.com (Moran Avigdor)
+Date: Tue Dec  6 14:00:37 2005
+Subject: [concurrency-interest] backport: AtomicLongFieldUpdater support
+In-Reply-To: <4394E290.20101@mathcs.emory.edu>
+References: <98b337d10511300206k57da377fg7f7e554b40e62844@mail.gmail.com><43	8E1EF7.3040306@mathcs.emory.edu><98b337d10512050017u77c1fe62vf765bcec7c404	7	5a@mail.gmail.com><43946BCB.9090200@mathcs.emory.edu>
+	<98b337d10512051056k19c8f840s477135654478cfe0@mail.gmail.com>
+	<4394E290.20101@mathcs.emory.edu>
+Message-ID: <4395DF9B.9020400@gigaspaces.com>
+
+Dawid,
+    There were some insights in your responses that I would also like to 
+pursue.
+    In the meanwhile I have taken the liberty to emulate the updater for 
+my specific needs.
+
+    It would be great if success comes either way and field updaters 
+will be bakported.
+    Thank you very much for your time and patience.
+
+Regards,
+Moran
+
+
+Dawid Kurzyniec wrote:
+> Moran Or Avigdor wrote:
+>
+>>
+>> Regarding the reflection based implementation -
+>> 1. It might apply an overhead, and to by pass the reflection only a 
+>> "LockableLong" interface can assist.
+>> This would then define a getLong and setLong methods to safely invoke.
+>
+>
+> Or, one could follow the original convention of atomic updaters: a 
+> factory method that returns an appropriate subclass of the updater: 
+> unsafe-based or reflection-based.
+>
+>> 2. I've noticed that in some usages, a "private static final 
+>> AtomicLongFieldUpdater" was declared,
+>> which implies that in the LockUpdater the synchronized would lock the 
+>> Field itself. If this class instances
+>> are numerous, it would deny access to different instances invoking 
+>> the same operation on the same field!
+>> The "LockableLong" interface can have an indication "isStatic" to 
+>> lock the object itself or the Field.
+>
+>
+> I agree with you that the "lock per updater" emulation strategy may be 
+> too coarse-grained (I suspect that it was adapted for 
+> AtomicLongFieldUpdater.LockedUpdater anyway because of the assumption 
+> that most Java 5.0 implementations do natively support atomic long 
+> CAS). However, locking on the Field is actually even worse (Fields are 
+> also "static"; they belong to the class, not the instance). Locking on 
+> the target object, on the other hand, may be too coarse-grained, too, 
+> only in a different dimension: a single class may have multiple 
+> volatile fields updatable via independent different updaters, and 
+> locking on the object would make them mutually exclusive. In fact, 
+> finding the right object to synchronize on is a hairy issue if you 
+> want both performance and scalability. The best solution that comes to 
+> my mind is to use lock stripping - e.g. define a global array of 
+> objects, and finding the lock index as an (identity) hash code of the 
+> pair (updater,object). Better ideas welcome.
+>
+>>
+>> The backwards compatibility is a must if applications need to move 
+>> forward and adopt new concurrent
+>> methods. That is the major concern for us when looking into newly 
+>> introduced classes.
+>>
+> It was the motivation behind the backport. But my point of view always 
+> has been that, if the overhead introduced by emulation of a certain 
+> feature is prohibitively high, it's better to leave it out, rather 
+> than having the users learn the hard way - e.g. finding out at 
+> deployment time that their application falls apart under load and does 
+> not scale beyond 2 CPUs despite using a "scalable", non-blocking 
+> algorithm. With the atomics, we're talking about a hardware-supported, 
+> JIT-inlined, atomic memory update vs. "synchronized" + two native 
+> method calls to a dynamically linked library + other reflection stuff 
+> + System.identityHashCode().
+>
+> Bottom line: I am leaning to try to explore several options for 
+> backporting field updaters - both reflection-based and Unsafe-based. 
+> (Contributions and comments welcome). But, I will include this in the 
+> backport only if it can obtain satisfactory performance (say, no more 
+> than 100% overhead over current backported Atomic classes) on most of 
+> the current platforms. I have other things on the queue though, so I 
+> cannot guarantee a timeline earlier than Feb 2006.
+>
+> BTW. Since the backport, and the JSR 166 are public domain, you are 
+> welcome to do as you please - it's not that hard to take the emulated 
+> updater from early JSR 166 and add it locally to your backport to test 
+> how things are going.
+>
+> Regards,
+> Dawid
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+From p.veentjer at anchormen.nl  Wed Dec  7 04:28:31 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Wed Dec  7 04:29:30 2005
+Subject: [concurrency-interest] Question about ThreadPoolExecutor.execute
+	implementation
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA1EA128@gerard.anchormen.nl>
+
+
+I have a question about the implementation of the execute method of the
+ThreadPoolExecutor. The code:
+
+  public void execute(Runnable command) {
+        if (command == null)
+            throw new NullPointerException();
+        for (;;) {
+            if (runState != RUNNING) {
+                reject(command);
+                return;
+            }
+            if (poolSize < corePoolSize &&
+addIfUnderCorePoolSize(command))
+                return;
+            if (workQueue.offer(command))
+                return;
+            Runnable r = addIfUnderMaximumPoolSize(command);
+            if (r == command)
+                return;
+            if (r == null) {
+                reject(command);
+                return;
+            }
+            // else retry
+        }
+    }
+
+If the workqueue is full, and it stays full for a while because the
+tasks take a long time to execute, doesn`t this call keep the cpu busy
+with a busy wait? I don`t see any calls that let the thread wait untill
+there is place.
+
+
+Met vriendelijke groet,
+
+Peter Veentjer
+Anchor Men Interactive Solutions - duidelijk in zakelijke
+internetoplossingen
+
+Praediniussingel 41
+9711 AE Groningen
+
+T: 050-3115222
+F: 050-5891696
+E: p.veentjer@anchormen.nl
+I : www.anchormen.nl
+
+From moran at gigaspaces.com  Wed Dec  7 05:06:10 2005
+From: moran at gigaspaces.com (Moran Avigdor)
+Date: Wed Dec  7 05:07:00 2005
+Subject: [concurrency-interest] Question about ThreadPoolExecutor.execute
+	implementation
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA1EA128@gerard.anchormen.nl>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA1EA128@gerard.anchormen.nl>
+Message-ID: <4396B412.8030209@gigaspaces.com>
+
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20051207/85a1c3b5/attachment.htm
+From p.veentjer at anchormen.nl  Wed Dec  7 05:24:24 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Wed Dec  7 05:25:09 2005
+Subject: [concurrency-interest] Question about ThreadPoolExecutor.execute
+	implementation
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA1EA129@gerard.anchormen.nl>
+
+I have studied the addIfUnderMaximumPoolSize method and understand this
+call doesn`t get into a busy wait. The loop if for increasing the pool
+size to the maximum pool size and some point the pool is completely
+filled and or the task gets executed or is rejected. 
+
+________________________________
+
+Van: Moran Avigdor [mailto:moran@gigaspaces.com] 
+Verzonden: woensdag 7 december 2005 11:06
+Aan: Peter Veentjer - Anchor Men
+CC: concurrency-interest@altair.cs.oswego.edu
+Onderwerp: Re: [concurrency-interest] Question about
+ThreadPoolExecutor.execute implementation
+
+
+If your BlockingQueue is defined with a fixed capacity, then
+workQueue.offer(command) will return false when the queue is full, 
+and will resolve to adding a thread if we are still under the maximum
+thread pool size. No busy wait, since a new thread will take the task.
+Otherwise (reached max pool size), a rejection policy will be invoked.
+
+If your BlockingQueue is defined without a fixed capacity, or
+equivalent to Integer.MAX_VALUE
+<http://java.sun.com/j2se/1.5.0/docs/api/java/lang/Integer.html#MAX_VALU
+E> , then tasks will be queued up until
+a thread becomes free to handle them.
+
+Hope this helps.
+
+Moran
+
+
+Peter Veentjer - Anchor Men wrote: 
+
+	I have a question about the implementation of the execute method
+of the
+	ThreadPoolExecutor. The code:
+	
+	  public void execute(Runnable command) {
+	        if (command == null)
+	            throw new NullPointerException();
+	        for (;;) {
+	            if (runState != RUNNING) {
+	                reject(command);
+	                return;
+	            }
+	            if (poolSize < corePoolSize &&
+	addIfUnderCorePoolSize(command))
+	                return;
+	            if (workQueue.offer(command))
+	                return;
+	            Runnable r = addIfUnderMaximumPoolSize(command);
+	            if (r == command)
+	                return;
+	            if (r == null) {
+	                reject(command);
+	                return;
+	            }
+	            // else retry
+	        }
+	    }
+	
+	If the workqueue is full, and it stays full for a while because
+the
+	tasks take a long time to execute, doesn`t this call keep the
+cpu busy
+	with a busy wait? I don`t see any calls that let the thread wait
+untill
+	there is place.
+	
+	
+	Met vriendelijke groet,
+	
+	Peter Veentjer
+	Anchor Men Interactive Solutions - duidelijk in zakelijke
+	internetoplossingen
+	
+	Praediniussingel 41
+	9711 AE Groningen
+	
+	T: 050-3115222
+	F: 050-5891696
+	E: p.veentjer@anchormen.nl
+	I : www.anchormen.nl
+	
+	_______________________________________________
+	Concurrency-interest mailing list
+	Concurrency-interest@altair.cs.oswego.edu
+	
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+	
+	
+	  
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20051207/b33113ee/attachment.htm
+From p.veentjer at anchormen.nl  Wed Dec  7 05:31:25 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Wed Dec  7 05:32:09 2005
+Subject: [concurrency-interest] toc : Java Concurrency in Practice?
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA1EA12B@gerard.anchormen.nl>
+
+
+Is there a table of content of 'Java Concurrency in Practice'? 
+
+Met vriendelijke groet,
+
+Peter Veentjer
+Anchor Men Interactive Solutions - duidelijk in zakelijke
+internetoplossingen
+
+Praediniussingel 41
+9711 AE Groningen
+
+T: 050-3115222
+F: 050-5891696
+E: p.veentjer@anchormen.nl
+I : www.anchormen.nl
+
+From travis at tabbal.net  Wed Dec  7 09:58:04 2005
+From: travis at tabbal.net (Travis Tabbal)
+Date: Wed Dec  7 09:58:42 2005
+Subject: [concurrency-interest] Timeouts and Executors...
+Message-ID: <2426.10.1.0.2.1133967484.squirrel@www.tabbal.net>
+
+I have an application that has a limited number of outside connections
+available. So I need to limit the pool size to prevent overloading the
+remote server. I also want to be able to queue new tasks for a short time
+to see if a thread becomes available. Is there anything in
+java.util.concurrent to do something like this, or am I going to need to
+write my own Executor?
+
+So something like this:
+
+if (threadsAreAvailable)
+  runTask()
+else
+  if (queue.offer(task, timeout, units))
+  {
+    // It's queued so it can run later
+  }
+  else
+  {
+    // Throw an exception or return an error code
+  }
+
+
+Thanks,
+
+Travis Tabbal
+
+
+From p.veentjer at anchormen.nl  Wed Dec  7 10:17:50 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Wed Dec  7 10:18:39 2005
+Subject: [concurrency-interest] Timeouts and Executors...
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA1EA12C@gerard.anchormen.nl>
+
+the threadpoolexecutor rejects commands (it throws a
+RejectedExecutionException) if the queue is full and the the threadpool
+is filled  to the maximum. So it doesn`t block untill there is space. If
+you deal with the RejectedExecutionException, you could retry later. You
+also can inject a custom verion of the RejectedExecutionHandler.
+
+In some cases I need more control and that is why I have created the
+BlockingExecutor (extends the Executor) and the
+ThreadPoolBlockingExecutor (extends the ThreadPoolExecutor) that adds
+timeout behaviour to the Executor. If you like I can send you the
+sources.
+
+this is the main interface of the BlockingExecutor:
+
+/**
+ * Copyright 2005 Peter Veentjer.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.jph.concurrent.blockingExecutors;
+
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Executor;
+
+/**
+ * The BlockingExecutor is an Exector that gives more control on
+blocking and timeout
+ * behaviour.
+ *
+ * @author Peter Veentjer.
+ */
+public interface BlockingExecutor extends Executor{
+
+	/**
+	 * Offers the given command to be executed at some time in the
+future. This
+	 * call will block until:
+	 * <ul>
+	 * 		<li>the command is offered succesfully. The
+command will be executed.</li>
+	 *      <li>a InterruptedException is thrown. The command won`t
+be executed.</li>
+	 * <ul>
+	 *
+	 * Difference between execute and put:
+	 * <ul>
+	 * 		<li><b>execute</b> can reject a command while
+the executor is
+	 * 			running. The ThreadPoolExecutor will
+reject a command if the
+	 * 			queue is full and the threadpool is
+full.
+	 * 		</li>
+	 * 		<li><b>put</b> can`t reject a command while the
+executor is running but
+	 * 			blocks untill the command can be
+executed (at some time in the future).
+	 * 		</li>
+	 * </ul>
+	 *
+	 * @param command the command to execute.
+	 * @throws InterruptedException if the current thread has been
+interrupted. If that happens,
+	 *                              the command won`t be executed.
+	 * @throws NullPointerException if command is null.
+	 */
+	void put(Runnable command) throws InterruptedException;
+
+	/**
+	 * Offers the given command to be executed at some time in the
+future. This
+	 * call will block until:
+	 * <ul>
+	 * 		<li>the command is offered succesful. The
+command will be executed
+	 * 			at some time in the future.
+	 * 		</li>
+	 * 		<li>a timeout occured. The command won`t be
+executed.</li>
+	 * 		<li>a InterruptedException is thrown. The
+command won`t be executed.</li>
+	 * </ul>
+	 *
+	 * @param command the command to execute.
+	 * @param timeout how long to wait before giving up.
+	 * @param unit    the time unit of the timeout argument
+	 * @return 	true if successful, or false if the specified
+waiting time elapses
+	 * 			before space is available.
+	 * @throws InterruptedException if the current thread has been
+interrupted. If that happens,
+	 *                              the command won`t be executed.
+	 * @throws NullPointerException if command or unit is null.
+	 */
+	boolean offer(Runnable command, long timeout, TimeUnit unit)
+throws InterruptedException;
+}
+
+
+
+-----Oorspronkelijk bericht-----
+Van: concurrency-interest-bounces@cs.oswego.edu
+[mailto:concurrency-interest-bounces@cs.oswego.edu] Namens Travis Tabbal
+Verzonden: woensdag 7 december 2005 15:58
+Aan: concurrency-interest@altair.cs.oswego.edu
+Onderwerp: [concurrency-interest] Timeouts and Executors...
+
+I have an application that has a limited number of outside connections
+available. So I need to limit the pool size to prevent overloading the
+remote server. I also want to be able to queue new tasks for a short
+time to see if a thread becomes available. Is there anything in
+java.util.concurrent to do something like this, or am I going to need to
+write my own Executor?
+
+So something like this:
+
+if (threadsAreAvailable)
+  runTask()
+else
+  if (queue.offer(task, timeout, units))
+  {
+    // It's queued so it can run later
+  }
+  else
+  {
+    // Throw an exception or return an error code
+  }
+
+
+Thanks,
+
+Travis Tabbal
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From p.veentjer at anchormen.nl  Wed Dec  7 10:57:58 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Wed Dec  7 11:00:06 2005
+Subject: [concurrency-interest] Timeouts and Executors...
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA1EA12D@gerard.anchormen.nl>
+
+I have added the sources and the jar (you can find it in the target
+directory).
+
+The project isn`t finished. Some work need to be done with the Repeaters
+and the CapacityQueues. But I have used this project the last few months
+in a few projects and it works. And it is part of
+http://channels.sourceforge.net (another project of mine I`m currently
+working on). 
+
+-----Oorspronkelijk bericht-----
+Van: Travis Tabbal [mailto:travis@tabbal.net] 
+Verzonden: woensdag 7 december 2005 16:52
+Aan: Peter Veentjer - Anchor Men
+Onderwerp: RE: [concurrency-interest] Timeouts and Executors...
+
+Those classes sound interesting. I would love to go over the sources.
+Thanks for the help!
+
+Travis
+
+
+> the threadpoolexecutor rejects commands (it throws a
+> RejectedExecutionException) if the queue is full and the the 
+> threadpool is filled  to the maximum. So it doesn`t block untill there
+
+> is space. If you deal with the RejectedExecutionException, you could 
+> retry later. You also can inject a custom verion of the
+RejectedExecutionHandler.
+>
+> In some cases I need more control and that is why I have created the 
+> BlockingExecutor (extends the Executor) and the 
+> ThreadPoolBlockingExecutor (extends the ThreadPoolExecutor) that adds 
+> timeout behaviour to the Executor. If you like I can send you the 
+> sources.
+
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: concurrent.zip
+Type: application/x-zip-compressed
+Size: 128875 bytes
+Desc: concurrent.zip
+Url : /pipermail/attachments/20051207/43a59090/concurrent-0001.bin
+From holger at wizards.de  Wed Dec  7 11:50:17 2005
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Wed Dec  7 11:51:12 2005
+Subject: [concurrency-interest] Timeouts and Executors...
+In-Reply-To: <2426.10.1.0.2.1133967484.squirrel@www.tabbal.net>
+References: <2426.10.1.0.2.1133967484.squirrel@www.tabbal.net>
+Message-ID: <439712C9.8070003@wizards.de>
+
+Travis Tabbal wrote:
+> I have an application that has a limited number of outside connections
+> available. So I need to limit the pool size to prevent overloading the
+> remote server. I also want to be able to queue new tasks for a short time
+> to see if a thread becomes available. Is there anything in
+> java.util.concurrent to do something like this, or am I going to need to
+> write my own Executor?
+
+You might just need a custom policy, not an entirely new executor (at
+least if I understood you requirement correctly). Since dl.util.concurrent
+contained such a policy I had to retrofit it for a backport project.
+You can find my WaitPolicy here (look on the right side where the package
+classes are listed):
+http://cvs.mule.codehaus.org/viewrep/mule/mule/mule/src/java/org/mule/util/concurrent
+
+I wrote this and a corresponding unit test (same repo but in
+*/mule/test/*) against native util.concurrent and then backported both; it
+seems to work exactly as we required.
+
+hope this helps,
+Holger
+From brian at quiotix.com  Wed Dec  7 12:41:00 2005
+From: brian at quiotix.com (Brian Goetz)
+Date: Wed Dec  7 12:41:51 2005
+Subject: [concurrency-interest] toc : Java Concurrency in Practice?
+In-Reply-To: <24CFCE44DCB015489FB96D38BDF4FCAA1EA12B@gerard.anchormen.nl>
+References: <24CFCE44DCB015489FB96D38BDF4FCAA1EA12B@gerard.anchormen.nl>
+Message-ID: <43971EAC.5070106@quiotix.com>
+
+> Is there a table of content of 'Java Concurrency in Practice'? 
+
+Concurrency
+More concurrency
+Concurrency in the kitchen
+Concurrency on the farm
+Concurrency on holiday
+
+OK, that's not really it.  Here's what we've got (con)currently:
+
+Part I -- Fundamentals
+   Introduction
+   Thread safety
+   Sharing objects safely
+   Designing thread-safe classes
+   Thread-safe building blocks
+Part II -- Structuring concurrent applications
+   Task execution
+   Cancellation and shutdown
+   Applying thread pools
+   GUIs and other single-threaded subsystems
+Part III -- Liveness, performance, and testing
+   Deadlock and other liveness hazards
+   Performance
+   Testing
+Part IV -- Advanced topics
+   Explicit locks
+   Building custom synchronizers
+   Atomic variables and nonblocking synchronization
+Appendices
+   The Java Memory Model
+   Finding concurrency errors with static analysis
+   Documenting concurrency
+
+
+From jason_mehrens at hotmail.com  Wed Dec  7 17:17:01 2005
+From: jason_mehrens at hotmail.com (Jason Mehrens)
+Date: Wed Dec  7 17:17:58 2005
+Subject: [concurrency-interest] SetFromMap and AsLIFOQueue micro suggestions
+Message-ID: <BAY105-F1C3E74D2C1B428187D33583430@phx.gbl>
+
+It seems that the SetFromMap should first perform the identity check on 
+itself before calling equals on the wrapped keyset.  The behavior would be 
+more consistent with the other collections.
+
+The SetFromMap and AsLIFOQueue toString method call the toString methods 
+available from the collections given.  For instance, the key set from the 
+Hashtable has a thread-safe toString method but if you wrap a Hashtable 
+using the SetFromMap you might get a ConcurrentModificationException when 
+invoking toString.  The AsLIFOQueue most likely won't see the 
+ConcurrentModificationException (thank you weakly consistent) but might 
+perform fewer acquire/release of locks like in the LinkedBlockingDeque case.
+
+Regards,
+
+Jason Mehrens
+
+
+From p.veentjer at anchormen.nl  Thu Dec  8 04:17:44 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Thu Dec  8 04:20:06 2005
+Subject: [concurrency-interest] toc : Java Concurrency in Practice?
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA1EA12F@gerard.anchormen.nl>
+
+The toc looks very interesting. 
+
+I have read 'Concurrent Programming in Java' but it is a littlebit out
+of sync with the concurrency library in Java 5. At the moment I`m
+reading 'Java Threads 3ed' from O'Reilly. It explains the new
+concurrency library and it is an easy read (it is a good reference
+manual). But I expect more from 'Java Concurrency in Practice'. So as
+soon as it is released, I`m going to buy it and give it a thourough
+inspection :)
+
+
+-----Oorspronkelijk bericht-----
+Van: Brian Goetz [mailto:brian@quiotix.com] 
+Verzonden: woensdag 7 december 2005 18:41
+Aan: Peter Veentjer - Anchor Men;
+concurrency-interest@altair.cs.oswego.edu
+Onderwerp: Re: [concurrency-interest] toc : Java Concurrency in
+Practice?
+
+> Is there a table of content of 'Java Concurrency in Practice'? 
+
+Concurrency
+More concurrency
+Concurrency in the kitchen
+Concurrency on the farm
+Concurrency on holiday
+
+OK, that's not really it.  Here's what we've got (con)currently:
+
+Part I -- Fundamentals
+   Introduction
+   Thread safety
+   Sharing objects safely
+   Designing thread-safe classes
+   Thread-safe building blocks
+Part II -- Structuring concurrent applications
+   Task execution
+   Cancellation and shutdown
+   Applying thread pools
+   GUIs and other single-threaded subsystems Part III -- Liveness,
+performance, and testing
+   Deadlock and other liveness hazards
+   Performance
+   Testing
+Part IV -- Advanced topics
+   Explicit locks
+   Building custom synchronizers
+   Atomic variables and nonblocking synchronization Appendices
+   The Java Memory Model
+   Finding concurrency errors with static analysis
+   Documenting concurrency
+
+
+
+
+From p.veentjer at anchormen.nl  Thu Dec  8 04:32:29 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Thu Dec  8 04:33:20 2005
+Subject: [concurrency-interest] new threading structure.
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA1EA130@gerard.anchormen.nl>
+
+
+I have been playing with a new threading structure and would like to
+know what other (with more concurrency experience) developers think
+about it.
+
+I have called the structure: Repeater. A Repeaters keeps repeating a
+single task and one of the concrete implementations is the
+ThreadPoolRepeater. The ThreadPoolRepeater has a pool of threads that
+keep repeating a single task (it can be compared to a
+ThreadPoolExecutor). If the task is set to null, all threads go to sleep
+untill a new task is available. The task is a plain old runnable.
+
+I have used this threading component in a few projects and find it very
+usefull. It allows me to remote the thread creating aspect of components
+and now I only have to make them threadsafe.
+
+Example of the repeater:
+It could be used to deal with webrequests.
+
+class ProcessWebrequestTask implements Runnable{
+   void run(){
+       WebRequest request = requestQueue.take();
+       process(request);
+   }
+}
+
+BlockingQueue<WebRequest> requestQueue = new LinkedBlockingQueue();
+//we want to deal with 50 concurrent users.
+RepeaterService repeater = new ThreadPoolRepeater(new
+ProcessWebrequestTask(),50);
+repeater.start();
+
+The repeater functionality isn`t very easy to implement with an executor
+and that is why I have created a new threading component. What do you
+think about it?
+
+
+Met vriendelijke groet,
+
+Peter Veentjer
+Anchor Men Interactive Solutions - duidelijk in zakelijke
+internetoplossingen
+
+Praediniussingel 41
+9711 AE Groningen
+
+T: 050-3115222
+F: 050-5891696
+E: p.veentjer@anchormen.nl
+I : www.anchormen.nl
+
+From p.veentjer at anchormen.nl  Thu Dec  8 10:10:52 2005
+From: p.veentjer at anchormen.nl (Peter Veentjer - Anchor Men)
+Date: Thu Dec  8 10:11:42 2005
+Subject: [concurrency-interest] new threading structure.
+Message-ID: <24CFCE44DCB015489FB96D38BDF4FCAA1EA131@gerard.anchormen.nl>
+
+This is another example. The first is the code that is in the javadoc of
+the ExecutorService.
+
+ class NetworkService {
+    private final ServerSocket serverSocket;
+    private final ExecutorService pool;
+
+    public NetworkService(int port, int poolSize) throws IOException {
+      serverSocket = new ServerSocket(port);
+      pool = Executors.newFixedThreadPool(poolSize);
+    }
+ 
+    public void serve() {
+      try {
+        for (;;) {
+          pool.execute(new Handler(serverSocket.accept()));
+        }
+      } catch (IOException ex) {
+        pool.shutdown();
+      }
+    }
+  }
+
+  class Handler implements Runnable {
+    private final Socket socket;
+    Handler(Socket socket) { this.socket = socket; }
+    public void run() {
+      // read and service request
+    }
+ }
+
+
+This is the networkservice rewritten with a repeater. 
+
+ class NetworkService {
+    private final ServerSocket serverSocket;
+    private final RepeaterService repeater;
+
+	public NetworkService(int port, int poolSize) throws IOException
+{
+		serverSocket = new ServerSocket(port);
+		repeater = new ThreadPoolRepeater(poolsize);      
+	}
+ 
+    public void serve() {
+    	repeater.setTask(new Handler());
+    	repeater.start();
+    }
+
+  	class Handler implements Runnable {    
+    	public void run() {
+    		try{
+    			Socket socket = serverSocket.accept();
+    			// read and service request
+    		}catch(IOException ex){
+    			repeater.shutdown();
+    		}    		
+    	}
+    }
+ } 
+
+The difference is that the serve method doesn`t block anymore. The
+Repeater provides all the threads.
+
+-----Oorspronkelijk bericht-----
+Van: concurrency-interest-bounces@cs.oswego.edu
+[mailto:concurrency-interest-bounces@cs.oswego.edu] Namens Peter
+Veentjer - Anchor Men
+Verzonden: donderdag 8 december 2005 10:32
+Aan: concurrency-interest@altair.cs.oswego.edu
+Onderwerp: [concurrency-interest] new threading structure.
+
+
+I have been playing with a new threading structure and would like to
+know what other (with more concurrency experience) developers think
+about it.
+
+I have called the structure: Repeater. A Repeaters keeps repeating a
+single task and one of the concrete implementations is the
+ThreadPoolRepeater. The ThreadPoolRepeater has a pool of threads that
+keep repeating a single task (it can be compared to a
+ThreadPoolExecutor). If the task is set to null, all threads go to sleep
+untill a new task is available. The task is a plain old runnable.
+
+I have used this threading component in a few projects and find it very
+usefull. It allows me to remote the thread creating aspect of components
+and now I only have to make them threadsafe.
+
+Example of the repeater:
+It could be used to deal with webrequests.
+
+class ProcessWebrequestTask implements Runnable{
+   void run(){
+       WebRequest request = requestQueue.take();
+       process(request);
+   }
+}
+
+BlockingQueue<WebRequest> requestQueue = new LinkedBlockingQueue(); //we
+want to deal with 50 concurrent users.
+RepeaterService repeater = new ThreadPoolRepeater(new
+ProcessWebrequestTask(),50); repeater.start();
+
+The repeater functionality isn`t very easy to implement with an executor
+and that is why I have created a new threading component. What do you
+think about it?
+
+
+Met vriendelijke groet,
+
+Peter Veentjer
+Anchor Men Interactive Solutions - duidelijk in zakelijke
+internetoplossingen
+
+Praediniussingel 41
+9711 AE Groningen
+
+T: 050-3115222
+F: 050-5891696
+E: p.veentjer@anchormen.nl
+I : www.anchormen.nl
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@altair.cs.oswego.edu
+http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From holger at wizards.de  Thu Dec  8 16:34:57 2005
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Thu Dec  8 16:36:17 2005
+Subject: [concurrency-interest] Confusing API: ScheduledThreadPoolExecutor
+	vs. remove()
+Message-ID: <4398A701.9040004@wizards.de>
+
+
+While converting an app to util.concurrent I noticed a (more precisely yet
+another) rather confusing API inconsistency, this time with
+ScheduledThreadPoolExecutor. A Runnable puts itself on the queue and gets
+run() every so often - fine, works as expected. It also needs to remove
+itself from the queue when a certain condition is met. Surprise: remove()
+is overridden from ThreadPoolExecutor and while it accepts a Runnable,
+it's really the ScheduledFuture returned from schedule..() that has to be
+passed in and *cast to Runnable*. This is the case with both backport and
+mustang-b61. Why? The ScheduledFuture interface does not extend Runnable
+(that's ok) while the returned object (a RunnableScheduledFuture) does and
+can successfully be cast, but all this is just very inconsistent. :-(
+I would have expected that if a Runnable can schedule itself that it can
+also remove itself (let the queue figure out the wrapper business).
+Alternatively, if schedule() returns a wrapper object to the Runnable I
+would have expected that I can pass that in without typecasting (it's
+impossible to declare the reference 'correctly') or having to read the source.
+Are there some efforts underway to fix these API bugs, maybe in future
+Mustang builds?
+
+thanks,
+Holger
+
+From tim at peierls.net  Thu Dec  8 18:07:23 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Thu Dec  8 18:08:19 2005
+Subject: [concurrency-interest] Confusing API: ScheduledThreadPoolExecutor
+	vs. remove()
+In-Reply-To: <4398A701.9040004@wizards.de>
+References: <4398A701.9040004@wizards.de>
+Message-ID: <4398BCAB.6080904@peierls.net>
+
+Holger Hoffst?tte wrote:
+> I would have expected that if a Runnable can schedule itself that it can
+> also remove itself (let the queue figure out the wrapper business).
+
+Future.cancel is the usual way to cancel a task. ExecutorService.submit and 
+ScheduledExecutorService.schedule both return a Future. The remove methods of TPE and STPE are 
+provided to allow for custom cancellation policies when simple cancellation isn't enough. For example:
+
+   class MyCustomSTPE extends ScheduledThreadPoolExecutor {
+       protected <V> RunnableScheduledFuture<V> decorateTask(
+               Runnable runnable, RunnableScheduleFuture<V> task) {
+           final ScheduledThreadPoolExecutor exec = this;
+           return new RunnableScheduledFuture<V>() {
+               // delegate to task, except for:
+               public void cancel(boolean mayInterruptIfRunning) {
+                   task.cancel(mayInterruptIfRunning);
+                   exec.remove(this); // try to remove it from queue
+               }
+           };
+       }
+   }
+
+--tim
+
+
+
+From holger at wizards.de  Thu Dec  8 19:16:20 2005
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Thu Dec  8 19:17:15 2005
+Subject: [concurrency-interest] Confusing API: ScheduledThreadPoolExecutor
+	vs. remove()
+In-Reply-To: <4398BCAB.6080904@peierls.net>
+References: <4398A701.9040004@wizards.de> <4398BCAB.6080904@peierls.net>
+Message-ID: <4398CCD4.4020607@wizards.de>
+
+Tim Peierls wrote:
+> Holger Hoffst?tte wrote:
+> 
+>> I would have expected that if a Runnable can schedule itself that it can
+>> also remove itself (let the queue figure out the wrapper business).
+> 
+> Future.cancel is the usual way to cancel a task. ExecutorService.submit
+
+Thank you for pointing that out - ripping the job from the queue certainly
+did feel a little awkward at first glance; cancel() does exactly the right
+thing. I knew about it but I guess it did not occur to me that cancelling
+such a wrapper would also remove it from the queue. Now everything works
+without casting and all objects are happily scheduling themselves. :)
+
+Thanks again!
+Holger
+
+From tim at peierls.net  Thu Dec  8 19:24:51 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Thu Dec  8 19:25:43 2005
+Subject: [concurrency-interest] Confusing API: ScheduledThreadPoolExecutor
+	vs. remove()
+In-Reply-To: <4398CCD4.4020607@wizards.de>
+References: <4398A701.9040004@wizards.de> <4398BCAB.6080904@peierls.net>
+	<4398CCD4.4020607@wizards.de>
+Message-ID: <4398CED3.3080007@peierls.net>
+
+Holger Hoffst?tte wrote:
+> Thank you for pointing that out - ripping the job from the queue certainly
+> did feel a little awkward at first glance; cancel() does exactly the right
+> thing. I knew about it but I guess it did not occur to me that cancelling
+> such a wrapper would also remove it from the queue. Now everything works
+> without casting and all objects are happily scheduling themselves. :)
+
+Glad it's working, but just to be sure: cancel doesn't actually remove from the queue, it just 
+arranges for the runnable not to be run. The code fragment I gave was for situations where it was 
+important to physically remove the runnable from the queue -- something that would only crop up if 
+you had a *lot* of runnables in the queue that were getting cancelled and bogging down the 
+execution service. (Although I'd have my doubts about a design in which this happened.)
+
+--tim
+
+
+
+From holger at wizards.de  Fri Dec  9 11:27:03 2005
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Fri Dec  9 11:28:09 2005
+Subject: [concurrency-interest] Confusing API: ScheduledThreadPoolExecutor
+	vs. remove()
+In-Reply-To: <4398CED3.3080007@peierls.net>
+References: <4398A701.9040004@wizards.de> <4398BCAB.6080904@peierls.net>
+	<4398CCD4.4020607@wizards.de> <4398CED3.3080007@peierls.net>
+Message-ID: <4399B057.10809@wizards.de>
+
+Hi,
+
+Sorry to rehash this but it seems to be a deeper problem.
+
+Tim Peierls wrote:
+> Glad it's working, but just to be sure: cancel doesn't actually remove
+> from the queue, it just arranges for the runnable not to be run. The
+
+OK I slept over it and now understand what's going on.
+
+> code fragment I gave was for situations where it was important to
+> physically remove the runnable from the queue -- something that would
+> only crop up if you had a *lot* of runnables in the queue that were
+> getting cancelled and bogging down the execution service. (Although I'd
+> have my doubts about a design in which this happened.)
+
+The Runnable wants to update its scheduling interval and there's no
+interface-based way to do that, so it needs to remove itself before
+re-queueing with the updated delay. Easy, right? Yes I know I could use
+java.util.Timer but the whole point of the exercise was to create not too
+many Threads and migrate existing classes. So..
+
+- I created a CustomSTPE as you outlined
+
+- since I don't want to scatter all the RunnableScheduledFuture delegate
+methods in my application I created a skeleton
+CustomScheduledRunnableFuture class that wraps the incoming
+RunnableScheduledFuture and delegates to it. The app just creates an
+anonymous inner instance overriding cancel(), as in the example.
+
+- The end result is a ClassCastException in
+ScheduledFutureTask.compareTo() since schedule.. creates a private
+ScheduledFutureTask that I can wrap, but passing my wrapper instance to
+remove() (as in your example) is wrong since I don't inherit from the
+private class (and obviously cannot). compareTo casts to the private class.
+
+- However, passing the wrapped task to remove() works - the wrapper is
+correctly removed from the queue - because only one wrapper exists for a
+given task and this lets the queue remove the correct object at the found
+index, which happens to be my wrapper.
+
+In summary I find the effort required for this simple use case quite
+disturbing because it should be much, much easier to accomplish and
+achievable with less code, not to mention requiring less "accidental
+success" or reading private source code details.
+IMHO ScheduledFutureTask should be made public (just like other
+interface/class pairs) so that customized behaviour can be attached on a
+per-instance-basis (kind of like prototypes) without having to write or
+generate endless amounts of wrapper code. STPE.remove() should probably be
+made protected so that people don't get the wrong ideas about what it
+does, since you effectively have to subclass TPE anyway.
+
+thanks,
+Holger
+From tim at peierls.net  Fri Dec  9 12:17:51 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Fri Dec  9 12:18:43 2005
+Subject: [concurrency-interest] Confusing API: ScheduledThreadPoolExecutor
+	vs. remove()
+In-Reply-To: <4399B057.10809@wizards.de>
+References: <4398A701.9040004@wizards.de> <4398BCAB.6080904@peierls.net>
+	<4398CCD4.4020607@wizards.de> <4398CED3.3080007@peierls.net>
+	<4399B057.10809@wizards.de>
+Message-ID: <4399BC3F.4000809@peierls.net>
+
+Holger Hoffst?tte wrote:
+> The Runnable wants to update its scheduling interval and there's no
+> interface-based way to do that, so it needs to remove itself before
+> re-queueing with the updated delay. 
+
+But why remove? Why not just cancel and schedule again?
+
+
+> - The end result is a ClassCastException in
+> ScheduledFutureTask.compareTo() since schedule.. creates a private
+> ScheduledFutureTask that I can wrap, but passing my wrapper instance to
+> remove() (as in your example) is wrong since I don't inherit from the
+> private class (and obviously cannot). compareTo casts to the private class.
+
+Thanks for pointing this out! That seems like a bug in the implementation of 
+ScheduledFutureTask.compareTo. It's being held in a DelayQueue<RunnableScheduleFuture> so it 
+shouldn't assume that everything is a ScheduledFutureTask.
+
+
+> In summary I find the effort required for this simple use case quite
+> disturbing because it should be much, much easier to accomplish and
+> achievable with less code, not to mention requiring less "accidental
+> success" or reading private source code details.
+
+I sort of agree in general, but in this case, the complication arises because of the attempt to 
+remove the runnable from the queue, not a normal thing at all, and something for which extra 
+effort seems reasonable.
+
+
+> IMHO ScheduledFutureTask should be made public (just like other
+> interface/class pairs) so that customized behaviour can be attached on a
+> per-instance-basis (kind of like prototypes) without having to write or
+> generate endless amounts of wrapper code. 
+
+Or we could provide standard delegating implementations of classes that often need wrapping, like 
+RunnableScheduledFuture.
+
+
+> STPE.remove() should probably be
+> made protected so that people don't get the wrong ideas about what it
+> does, since you effectively have to subclass TPE anyway.
+
+That's a good point, but it's too late now. Once it's public, it has to stay public. (And it would 
+have to be protected in TPE, too.)
+
+--tim
+
+
+
+From holger at wizards.de  Fri Dec  9 13:26:36 2005
+From: holger at wizards.de (=?ISO-8859-1?Q?Holger_Hoffst=E4tte?=)
+Date: Fri Dec  9 13:27:28 2005
+Subject: [concurrency-interest] Confusing API: ScheduledThreadPoolExecutor
+	vs. remove()
+In-Reply-To: <4399BC3F.4000809@peierls.net>
+References: <4398A701.9040004@wizards.de> <4398BCAB.6080904@peierls.net>
+	<4398CCD4.4020607@wizards.de> <4398CED3.3080007@peierls.net>
+	<4399B057.10809@wizards.de> <4399BC3F.4000809@peierls.net>
+Message-ID: <4399CC5C.1080302@wizards.de>
+
+Tim Peierls wrote:
+> Holger Hoffst?tte wrote:
+> 
+>> The Runnable wants to update its scheduling interval and there's no
+>> interface-based way to do that, so it needs to remove itself before
+>> re-queueing with the updated delay. 
+> 
+> But why remove? Why not just cancel and schedule again?
+
+But..wouldn't that fill up the queue over time? I also found TPE.purge()
+and assume that I could use that with a stock STPE instead of all the
+subclassing and removing..looking through the source I could not find any
+autopurging, right?
+
+Obviously I'm missing something here but I don't know what it is. :D
+
+>> - The end result is a ClassCastException in
+>> ScheduledFutureTask.compareTo() since schedule.. creates a private
+>> ScheduledFutureTask that I can wrap, but passing my wrapper instance to
+>> remove() (as in your example) is wrong since I don't inherit from the
+>> private class (and obviously cannot). compareTo casts to the private
+>> class.
+> 
+> Thanks for pointing this out! That seems like a bug in the
+> implementation of ScheduledFutureTask.compareTo. It's being held in a
+> DelayQueue<RunnableScheduleFuture> so it shouldn't assume that
+> everything is a ScheduledFutureTask.
+
+I'm relieved that you agree. Should I file this as a bug, then? It seems
+to affect backport, 1.5.0_05 and Mustang-b61.
+
+> Or we could provide standard delegating implementations of classes that
+> often need wrapping, like RunnableScheduledFuture.
+
+Yes please!
+
+Thanks again for your help.
+Holger
+
+From dawidk at mathcs.emory.edu  Fri Dec  9 14:55:57 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Fri Dec  9 14:57:20 2005
+Subject: [concurrency-interest] Confusing API: 
+	ScheduledThreadPoolExecutorvs.remove()
+In-Reply-To: <4399CC5C.1080302@wizards.de>
+References: <4398A701.9040004@wizards.de> 
+	<4398BCAB.6080904@peierls.net><4398CCD4.4020607@wizards.de> 
+	<4398CED3.3080007@peierls.net><4399B057.10809@wizards.de> 
+	<4399BC3F.4000809@peierls.net> <4399CC5C.1080302@wizards.de>
+Message-ID: <4399E14D.3010504@mathcs.emory.edu>
+
+Holger Hoffst?tte wrote:
+
+>Tim Peierls wrote:
+>  
+>
+>>Holger Hoffst?tte wrote:
+>>
+>>    
+>>
+>>>The Runnable wants to update its scheduling interval and there's no
+>>>interface-based way to do that, so it needs to remove itself before
+>>>re-queueing with the updated delay. 
+>>>      
+>>>
+>>But why remove? Why not just cancel and schedule again?
+>>    
+>>
+>
+>But..wouldn't that fill up the queue over time? I also found TPE.purge()
+>and assume that I could use that with a stock STPE instead of all the
+>subclassing and removing..looking through the source I could not find any
+>autopurging, right?
+>
+>Obviously I'm missing something here but I don't know what it is. :D
+>  
+>
+The stale entries are removed as they approach the head of the list and 
+get extracted by the executor. So, in the long term, there is no 
+accumulation. But yes, this can cause memory problems, especially if you 
+use ScheduledThreadPool with relatively large delays.
+
+I have run into this problem when working on a leasing-based naming 
+service. When entry is added to the NS, I schedule a cleanup task, 
+responsible for removing the entry after lease expires, unless the lease 
+has been renewed. If the lease has been renewed, or if the entry has 
+been removed and possibly re-added, that old cleanup task realizes it 
+upon invocation and does nothing. (If the entry was overwritten or 
+re-added, there is a new cleaner scheduled already). There is a problem, 
+however, if entries are frequently changed, in which case many of those 
+cleaner tasks are created. So, I started cancelling that old cleaner 
+tasks upon remove or overwrite. But, as you noted, cancelled tasks are 
+not immediately removed from the queue. If leases are long, which they 
+may be, this poses a serious memory leak.
+
+Removing the task upon cancel is a bad idea, however, because it 
+requires a linear search.
+
+The best solution I came up with is to purge once every some fixed 
+number of cancels. To count cancels, you can use an atomic integer. Upon 
+cancel, you decrementAndGet, and if you reached 0, you reset to some 
+number (e.g. 10000) and purge. This guarantees that your queue will 
+never had more than a fixed number of garbage entries. (10000 seems to 
+me a reasonable compromise between memory footprint and purging frequency).
+
+Regards,
+Dawid Kurzyniec
+
+
+From kevinb at google.com  Fri Dec  9 15:31:19 2005
+From: kevinb at google.com (Kevin Bourrillion)
+Date: Fri Dec  9 15:32:13 2005
+Subject: [concurrency-interest] navigating enums
+Message-ID: <108fcdeb0512091231r40a79f9cqaff5e88f0c50fd7f@mail.google.com>
+
+Since all enums are Comparable, why is it that Enum{Set,Map} don't implement
+Sorted{Set,Map}, and aren't being retrofitted for Navigable{Set,Map}?
+
+I suppose it can be faked with a method like ...
+
+  static <E extends Enum<E>> NavigableSet<E> toNavigableSet(Set<E>
+backingSet)
+
+... or maybe even like ...
+
+  static <C extends Comparable<? super C>> NavigableSet<C>
+toNavigableSet(Set<C> backingSet)
+
+... but not as efficiently, of course.  Anything I'm missing?
+
+Thanks,
+
+K
+
+--
+http://www/~kevinb/
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20051209/1ea61a48/attachment.htm
+From tim at peierls.net  Fri Dec  9 15:33:41 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Fri Dec  9 15:34:46 2005
+Subject: [concurrency-interest] Confusing API: ScheduledThreadPoolExecutor
+	vs. remove()
+In-Reply-To: <4399CC5C.1080302@wizards.de>
+References: <4398A701.9040004@wizards.de> <4398BCAB.6080904@peierls.net>
+	<4398CCD4.4020607@wizards.de> <4398CED3.3080007@peierls.net>
+	<4399B057.10809@wizards.de> <4399BC3F.4000809@peierls.net>
+	<4399CC5C.1080302@wizards.de>
+Message-ID: <4399EA25.8020207@peierls.net>
+
+Holger Hoffst?tte wrote:
+>>>The Runnable wants to update its scheduling interval and there's no
+>>>interface-based way to do that, so it needs to remove itself before
+>>>re-queueing with the updated delay. 
+>>
+>>But why remove? Why not just cancel and schedule again?
+> 
+> But..wouldn't that fill up the queue over time? 
+
+The underlying queue is unbounded, the wrapper objects are tiny, and the queue is drained by the 
+pool (cancelled tasks are consumed silently). And, as you observed, you can purge the cancelled 
+tasks if they start to build up.
+
+
+> I also found TPE.purge()
+> and assume that I could use that with a stock STPE instead of all the
+> subclassing and removing..looking through the source I could not find any
+> autopurging, right?
+
+No autopurging, and purge is almost certain to be linear in the size of the queue, so probably not 
+something you want to do all the time. But you could schedule a periodic task to purge often 
+enough to ensure that cancelled tasks don't clutter the queue, but not so often that purging gets 
+in the way of real work.
+
+
+
+>>>- The end result is a ClassCastException in
+>>>ScheduledFutureTask.compareTo()  ... compareTo casts to the private class.
+>>
+>>Thanks for pointing this out! That seems like a bug in the
+>>implementation of ScheduledFutureTask.compareTo. It's being held in a
+>>DelayQueue<RunnableScheduleFuture> so it shouldn't assume that
+>>everything is a ScheduledFutureTask.
+> 
+> I'm relieved that you agree. Should I file this as a bug, then? It seems
+> to affect backport, 1.5.0_05 and Mustang-b61.
+
+I'm hoping that someone who knows how to deal with bugs will chime in and agree that it's a bug 
+and take care of it. :-)
+
+
+>>Or we could provide standard delegating implementations of classes that
+>>often need wrapping, like RunnableScheduledFuture.
+> 
+> Yes please!
+
+Wish list:
+
+- DelegatingRunnableFuture
+- DelegatingRunnableScheduledFuture
+- SimpleAbstractExecutorService (need better name, lifecycle methods given
+       trivial implementations so all you need to define is execute)
+- what else?
+
+--tim
+
+
+
+From josh at bloch.us  Fri Dec  9 16:59:45 2005
+From: josh at bloch.us (Joshua Bloch)
+Date: Fri Dec  9 17:00:36 2005
+Subject: [concurrency-interest] navigating enums
+In-Reply-To: <108fcdeb0512091231r40a79f9cqaff5e88f0c50fd7f@mail.google.com>
+References: <108fcdeb0512091231r40a79f9cqaff5e88f0c50fd7f@mail.google.com>
+Message-ID: <b097ac510512091359i2fe6b176v88eb71a59400630a@mail.gmail.com>
+
+Kevin,
+
+I vaguely recall considering it, but I can't recall whether we
+explicitly rejected it with good reason.  We were running very low on
+time when I implemented EnumSet and EnumMap, and it's possible that
+time played a role in our decision.  I'll tell you if I remember any
+more than this (or discover anything in old e-mail logs).
+
+       Regards,
+
+       Josh
+
+On 12/9/05, Kevin Bourrillion <kevinb@google.com> wrote:
+> Since all enums are Comparable, why is it that Enum{Set,Map} don't implement
+> Sorted{Set,Map}, and aren't being retrofitted for Navigable{Set,Map}?
+>
+> I suppose it can be faked with a method like ...
+>
+>   static <E extends Enum<E>> NavigableSet<E> toNavigableSet(Set<E>
+> backingSet)
+>
+> ... or maybe even like ...
+>
+>   static <C extends Comparable<? super C>> NavigableSet<C>
+> toNavigableSet(Set<C> backingSet)
+>
+> ... but not as efficiently, of course.  Anything I'm missing?
+>
+> Thanks,
+>
+> K
+>
+> --
+> http://www/~kevinb/
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+
+From forax at univ-mlv.fr  Sat Dec 10 08:50:21 2005
+From: forax at univ-mlv.fr (=?ISO-8859-1?Q?R=E9mi_Forax?=)
+Date: Sat Dec 10 08:51:12 2005
+Subject: [concurrency-interest] navigating enums
+In-Reply-To: <b097ac510512091359i2fe6b176v88eb71a59400630a@mail.gmail.com>
+References: <108fcdeb0512091231r40a79f9cqaff5e88f0c50fd7f@mail.google.com>
+	<b097ac510512091359i2fe6b176v88eb71a59400630a@mail.gmail.com>
+Message-ID: <439ADD1D.4010807@univ-mlv.fr>
+
+Joshua Bloch a ?crit :
+> Kevin,
+> 
+> I vaguely recall considering it, but I can't recall whether we
+> explicitly rejected it with good reason.  We were running very low on
+> time when I implemented EnumSet and EnumMap, and it's possible that
+> time played a role in our decision.  I'll tell you if I remember any
+> more than this (or discover anything in old e-mail logs).
+> 
+>        Regards,
+> 
+>        Josh
+
+About enums, i've posted a patch last week
+to avoid cloning universe when creating a new enum set.
+
+https://jdk-collaboration.dev.java.net/servlets/ProjectForumMessageView?forumID=1463&messageID=10491
+
+If somebody wants to review it ?
+
+R?mi Forax
+
+From bsder at allcaps.org  Sat Dec 10 21:39:32 2005
+From: bsder at allcaps.org (Andrew Lentvorski)
+Date: Sat Dec 10 21:40:24 2005
+Subject: [concurrency-interest] Future cancel(true) vs. channels/streams
+Message-ID: <439B9164.7080307@allcaps.org>
+
+I was looking at converting some of my Runnable-based code over to 
+Callable-based code.  However, I have some concerns about applying 
+cancel() to a thread which is already running.
+
+cancel(false) doesn't seem to do anything once the thread is running
+cancel(true) seems to cause an InterruptedException
+
+That's okay, but ...
+
+If I'm actually in an I/O operation for a Channel/Stream, wouldn't that 
+InterruptedException cause my Channel/Stream to close?
+
+If that is the case, I can't really use cancel(true) on anything which 
+might have a persistent I/O state.
+
+It would be nice if cancel(false) set some sort of flag which could then 
+be monitored inside the Callable.  Is this possible?  Did I miss 
+something obvious?
+
+Otherwise, I have to have this kind of idiom:
+
+public class CallableSkeleton implements Callable<Foo> {
+	AtomicBoolean flgStopRequested = new AtomicBoolean(false);
+	
+	public boolean isStopRequested() {
+		return this.flgStopRequested.get();
+	}
+
+	public void requestStop() {
+		this.flgStopRequested.set(true);
+	}
+}
+
+which kind of defeats the whole point of using cancel in the first 
+place.  Or, worse, requires that I do both:
+
+callableFuture.cancel(false);
+callable.requestStop();
+
+to make *sure* that I get all of the termination cases (and has to be in 
+that order or you get possible race conditions).
+
+Am I wrong?  Did I miss something obvious?
+
+How should I go about cancelling a Callable which might have persistent 
+I/O state?
+
+-a
+
+
+From dawidk at mathcs.emory.edu  Sat Dec 10 23:16:01 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Sat Dec 10 23:17:07 2005
+Subject: [concurrency-interest] Future cancel(true) vs. channels/streams
+In-Reply-To: <439B9164.7080307@allcaps.org>
+References: <439B9164.7080307@allcaps.org>
+Message-ID: <439BA801.2050705@mathcs.emory.edu>
+
+Andrew Lentvorski wrote:
+
+> I was looking at converting some of my Runnable-based code over to 
+> Callable-based code.  However, I have some concerns about applying 
+> cancel() to a thread which is already running.
+>
+> cancel(false) doesn't seem to do anything once the thread is running
+> cancel(true) seems to cause an InterruptedException
+>
+> That's okay, but ...
+>
+> If I'm actually in an I/O operation for a Channel/Stream, wouldn't 
+> that InterruptedException cause my Channel/Stream to close?
+>
+> If that is the case, I can't really use cancel(true) on anything which 
+> might have a persistent I/O state.
+>
+> It would be nice if cancel(false) set some sort of flag which could 
+> then be monitored inside the Callable.  Is this possible?  Did I miss 
+> something obvious?
+
+
+It seems to me that you can achieve what you want by extending 
+FutureTask and overriding done() like this:
+
+class MyTask extends FutureTask {
+  protected void done() {
+    if (isCancelled()) {
+      // do the I/O cleanup, and close whatever needs to be closed
+    }
+  }
+}
+
+then use executor.execute(myTask), and myTask.cancel(false). 
+Cancellation will set the state to CANCELLED and invoke done(), where 
+you then do your cleanup. (Thread does NOT get interrupted).
+
+Regards,
+Dawid
+
+
+From mike.skells at ebizz-consulting.com  Mon Dec 12 12:51:48 2005
+From: mike.skells at ebizz-consulting.com (Mike Skells)
+Date: Mon Dec 12 12:53:01 2005
+Subject: [concurrency-interest] navigating enums
+In-Reply-To: <439ADD1D.4010807@univ-mlv.fr>
+Message-ID: <01c001c5ff44$b9b39420$0b01a8c0@MikeLaptop>
+
+
+> -----Original Message-----
+> From: concurrency-interest-bounces@cs.oswego.edu 
+> [mailto:concurrency-interest-bounces@cs.oswego.edu] On Behalf 
+> Of R?mi Forax
+> Sent: 10 December 2005 13:50
+> To: concurrency-interest@altair.cs.oswego.edu
+> Subject: Re: [concurrency-interest] navigating enums
+> 
+> Joshua Bloch a ?crit :
+> > Kevin,
+> > 
+> > I vaguely recall considering it, but I can't recall whether we 
+> > explicitly rejected it with good reason.  We were running 
+> very low on 
+> > time when I implemented EnumSet and EnumMap, and it's possible that 
+> > time played a role in our decision.  I'll tell you if I 
+> remember any 
+> > more than this (or discover anything in old e-mail logs).
+> > 
+> >        Regards,
+> > 
+> >        Josh
+> 
+> About enums, i've posted a patch last week to avoid cloning 
+> universe when creating a new enum set.
+> 
+> https://jdk-collaboration.dev.java.net/servlets/ProjectForumMe
+> ssageView?forumID=1463&messageID=10491
+> 
+
+I would love to, but I cant get access to the jdk-collaboration project, as
+it is limitted to jdk-researchers. Is there any way that the patch can be
+made available is another forum,
+Or on this list
+
+
+> If somebody wants to review it ?
+> 
+> R?mi Forax
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+
+
+From dl at cs.oswego.edu  Mon Dec 12 19:10:22 2005
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon Dec 12 19:12:35 2005
+Subject: [concurrency-interest] Confusing API: ScheduledThreadPoolExecutor
+	vs. remove()
+In-Reply-To: <4399EA25.8020207@peierls.net>
+References: <4398A701.9040004@wizards.de>
+	<4398BCAB.6080904@peierls.net>	<4398CCD4.4020607@wizards.de>
+	<4398CED3.3080007@peierls.net>	<4399B057.10809@wizards.de>
+	<4399BC3F.4000809@peierls.net>	<4399CC5C.1080302@wizards.de>
+	<4399EA25.8020207@peierls.net>
+Message-ID: <439E116E.7020302@cs.oswego.edu>
+
+Tim Peierls wrote:
+> Holger Hoffst?tte wrote:
+>>>> 
+>>>> - The end result is a ClassCastException in
+>>>> ScheduledFutureTask.compareTo()  ... compareTo casts to the private 
+>>>> class.
+>>>
+>>> Thanks for pointing this out! That seems like a bug in the
+>>> implementation of ScheduledFutureTask.compareTo. It's being held in a
+>>> DelayQueue<RunnableScheduleFuture> so it shouldn't assume that
+>>> everything is a ScheduledFutureTask.
+
+Holger - thanks! We've replaced the compareTo with a version
+that can cope with arbitrary Delayed's if the argument is
+not a ScheduledFutureTask. This will hopefully make it in Mustang.
+
+-Doug
+
+
+
+From mark at talios.com  Tue Dec 13 01:11:56 2005
+From: mark at talios.com (Mark Derricutt)
+Date: Tue Dec 13 01:12:45 2005
+Subject: [concurrency-interest] BACKPORT - Deadlocks and FixedThreadPool
+	executors...
+Message-ID: <5184347f0512122211h3ec7d3bfu3879398b731bc3e0@mail.gmail.com>
+
+Hi all,
+
+I've been using the backported concurrency library and hitting some locked
+threads which only seem to occur when using a fixed thread pool.
+
+In the first instance I have a ScheduledExecutorServer (
+Executors.newSingleThreadScheduledExecutor) which runs a process every 30
+seconds, this process queues up jobs into fixed thread pool (
+Executors.newFixedThreadPool) if there not currently being processed.
+
+Currently theres 10 jobs being submitted, to a fixed thread pool with a size
+of 5.  Everything seems to run fine for about 10 hours or so, I see jobs
+being processed by 5 threads, and I see the remaining jobs sitting in a
+blocking queue and being pulled out as threads come available.
+
+Slowly thou, I see each of the threads blocking inside a socket read/wait
+from the JavaMail system, eventually all 5 threads block and I start pulling
+my hair out.
+
+Initially I traced things down to a known problem with calling log4j from
+within synchronized methods but the problems still occured.  I switched my
+over to using a cached thread pool and I no longer see any threads getting
+locked, but having a larger number of threads concerns me (not immediately,
+but the number of processes being scheduled is likely to grow exponentially
+as time grows).
+
+Has anyone here seen similar problems?  Or suggestions on improving on what
+I'm doing?
+
+Mark
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20051213/506fb487/attachment.htm
+From gregg at cytetech.com  Tue Dec 13 09:22:27 2005
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Tue Dec 13 09:23:24 2005
+Subject: [concurrency-interest] BACKPORT - Deadlocks and FixedThreadPool
+	executors...
+In-Reply-To: <5184347f0512122211h3ec7d3bfu3879398b731bc3e0@mail.gmail.com>
+References: <5184347f0512122211h3ec7d3bfu3879398b731bc3e0@mail.gmail.com>
+Message-ID: <439ED923.6020406@cytetech.com>
+
+
+
+Mark Derricutt wrote:
+> Slowly thou, I see each of the threads blocking inside a socket read/wait
+> from the JavaMail system, eventually all 5 threads block and I start pulling
+> my hair out.
+
+Do you have a thread dump to share that would show where the threads are getting 
+stuck at?  You can send a SIGQUIT to the JVM on unix like operating systems by 
+typing CTRL-\ if you are running the JVM interactively.  If not, you just need 
+to PID of the process and then you can type "kill -3 <pid>" where <pid> is the 
+process number.  In windows, use CTRL-BREAK to do the same thing to a JVM 
+process that is running interactively in a DOS window.  Also, in JDK1.5 and 
+later you can use JMX to see where there the threads are.  JMX won't show you 
+the locks that are held to help you see circular waiting scenarios though.
+
+Gregg Wonderly
+From dawidk at mathcs.emory.edu  Wed Dec 14 14:02:29 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Wed Dec 14 14:03:54 2005
+Subject: [concurrency-interest] BACKPORT - Deadlocks and 
+	FixedThreadPoolexecutors...
+In-Reply-To: <5184347f0512122211h3ec7d3bfu3879398b731bc3e0@mail.gmail.com>
+References: <5184347f0512122211h3ec7d3bfu3879398b731bc3e0@mail.gmail.com>
+Message-ID: <43A06C45.8080908@mathcs.emory.edu>
+
+Mark Derricutt wrote:
+
+> Hi all,
+>
+> I've been using the backported concurrency library and hitting some 
+> locked threads which only seem to occur when using a fixed thread pool.
+>
+> In the first instance I have a ScheduledExecutorServer 
+> (Executors.newSingleThreadScheduledExecutor ) which runs a process 
+> every 30 seconds, this process queues up jobs into fixed thread pool 
+> (Executors.newFixedThreadPool) if there not currently being processed.
+>
+> Currently theres 10 jobs being submitted, to a fixed thread pool with 
+> a size of 5.  Everything seems to run fine for about 10 hours or so, I 
+> see jobs being processed by 5 threads, and I see the remaining jobs 
+> sitting in a blocking queue and being pulled out as threads come 
+> available.
+>
+> Slowly thou, I see each of the threads blocking inside a socket 
+> read/wait from the JavaMail system, eventually all 5 threads block and 
+> I start pulling my hair out.
+>
+> Initially I traced things down to a known problem with calling log4j 
+> from within synchronized methods but the problems still occured.  I 
+> switched my over to using a cached thread pool and I no longer see any 
+> threads getting locked, but having a larger number of threads concerns 
+> me (not immediately, but the number of processes being scheduled is 
+> likely to grow exponentially as time grows).
+>
+> Has anyone here seen similar problems?  Or suggestions on improving on 
+> what I'm doing?
+
+ From your description, I suspect that you're trying to implement some 
+sort of e-mail monitoring over several accounts. My suspicions are that 
+the reason for the behavior you're seeing are transient network 
+failures/delays. A task tries to check e-mail on a server, and the call 
+usually completes quickly, but occassionally it blocks for a longer 
+time, maybe because the server is busy or because the network is slow. 
+If it happens for all worker threads at the same time, you have a 
+temporary "clog". With a cached pool, you may not notice it, since the 
+throughput does not suffer, and the thing eventually "unclogs" so the 
+symptoms are harder to see. My recommendation, if it is possible to do, 
+would be to put a time constraint on a task. (I.e. if the mailbox cannot 
+be polled in 30 sec., just give up and bail out).
+
+Try to measure time-to-completion of your tasks over a large time 
+interval to find the maximum value, to find out if that's the reason 
+behind the problem.
+
+Other general possibilities (if I didn't guess your application scenario 
+correctly):
+
+1. Your tasks have some hidden dependencies; e.g. the I/O call made by 
+task 1 cannot complete until task 6 is executed, but task 6 is on queue 
+and waits for an available thread -> deadlock. General remedy is to use 
+unbounded pool, or to increase max pool size enough to guarantee that 
+deadlocks cannot happen, if it can be guaranteed at all.
+
+2. The code you're invoking from worker threads is not thread-safe; 
+after some time, one worker thread messes up a data structure used by 
+another thread, which causes that other one to behave badly - in this 
+case, reading from a stream that is not written to.
+
+3. The code you're invoking from worker threads uses thread local 
+variables in some nasty way, so that the behavior of a task is partially 
+dependent on earlier tasks performed by the same worker thread, and you 
+have undeterminism.
+
+
+Regards,
+Dawid
+
+
+From hanson.char at gmail.com  Wed Dec 14 15:45:04 2005
+From: hanson.char at gmail.com (Hanson Char)
+Date: Wed Dec 14 15:45:55 2005
+Subject: [concurrency-interest] Volatile Creature
+Message-ID: <ca53c8f80512141245k6a86649cg541b02e8322ab437@mail.gmail.com>
+
+Is Creature thread-safe ?  If so, is it more performant than if we
+used AtomicLong as suggested in Puzzle 55 of Java Puzzlers ?
+
+Hanson
+
+class Creature {
+    private static volatile long numCreated = 0;
+
+    public Creature() {
+        numCreated++;
+    }
+
+    public static long numCreated() {
+        return numCreated;
+    }
+}
+
+From jmanson at cs.purdue.edu  Wed Dec 14 15:58:56 2005
+From: jmanson at cs.purdue.edu (Jeremy Manson)
+Date: Wed Dec 14 15:59:46 2005
+Subject: [concurrency-interest] Volatile Creature
+In-Reply-To: <ca53c8f80512141245k6a86649cg541b02e8322ab437@mail.gmail.com>
+References: <ca53c8f80512141245k6a86649cg541b02e8322ab437@mail.gmail.com>
+Message-ID: <43A08790.7010809@cs.purdue.edu>
+
+
+Hi Hanson,
+
+This isn't thread safe (depending on your definition of thread safe). 
+The constructor is actually three separate operations:
+
+{
+   r1 = numCreated;
+   r1 = r1 + 1;
+   numCreated = r1;
+}
+
+
+If two Creatures are created simultaneously, then you may have a lost 
+update.
+
+					Jeremy
+
+
+Hanson Char wrote:
+ > Is Creature thread-safe ?  If so, is it more performant than if we
+ > used AtomicLong as suggested in Puzzle 55 of Java Puzzlers ?
+ >
+ > Hanson
+ >
+ > class Creature {
+ >     private static volatile long numCreated = 0;
+ >
+ >     public Creature() {
+ >         numCreated++;
+ >     }
+ >
+ >     public static long numCreated() {
+ >         return numCreated;
+ >     }
+ > }
+ >
+ > _______________________________________________
+ > Concurrency-interest mailing list
+ > Concurrency-interest@altair.cs.oswego.edu
+ > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From tim at peierls.net  Wed Dec 14 16:00:10 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Wed Dec 14 16:01:12 2005
+Subject: [concurrency-interest] Volatile Creature
+In-Reply-To: <ca53c8f80512141245k6a86649cg541b02e8322ab437@mail.gmail.com>
+References: <ca53c8f80512141245k6a86649cg541b02e8322ab437@mail.gmail.com>
+Message-ID: <43A087DA.2050109@peierls.net>
+
+Hanson Char wrote:
+> Is Creature thread-safe ?  If so, is it more performant than if we
+> used AtomicLong as suggested in Puzzle 55 of Java Puzzlers ?
+> 
+> class Creature {
+>     private static volatile long numCreated = 0;
+> 
+>     public Creature() {
+>         numCreated++;
+>     }
+> 
+>     public static long numCreated() {
+>         return numCreated;
+>     }
+> }
+
+No, because the increment operation (++) is not atomic.
+
+--tim
+
+From hanson.char at gmail.com  Wed Dec 14 16:34:18 2005
+From: hanson.char at gmail.com (Hanson Char)
+Date: Wed Dec 14 16:35:07 2005
+Subject: [concurrency-interest] Volatile Creature
+In-Reply-To: <43A08790.7010809@cs.purdue.edu>
+References: <ca53c8f80512141245k6a86649cg541b02e8322ab437@mail.gmail.com>
+	<43A08790.7010809@cs.purdue.edu>
+Message-ID: <ca53c8f80512141334p3d4f812fq52b858a7c8e222a8@mail.gmail.com>
+
+Yes, of course, thanks.
+
+The good old 3-in-1 increment operation.  I promise not t ask this
+very same old question again.
+
+:)
+Hanson
+
+On 12/14/05, Jeremy Manson <jmanson@cs.purdue.edu> wrote:
+>
+> Hi Hanson,
+>
+> This isn't thread safe (depending on your definition of thread safe).
+> The constructor is actually three separate operations:
+>
+> {
+>    r1 = numCreated;
+>    r1 = r1 + 1;
+>    numCreated = r1;
+> }
+>
+>
+> If two Creatures are created simultaneously, then you may have a lost
+> update.
+>
+>                                         Jeremy
+>
+>
+> Hanson Char wrote:
+>  > Is Creature thread-safe ?  If so, is it more performant than if we
+>  > used AtomicLong as suggested in Puzzle 55 of Java Puzzlers ?
+>  >
+>  > Hanson
+>  >
+>  > class Creature {
+>  >     private static volatile long numCreated = 0;
+>  >
+>  >     public Creature() {
+>  >         numCreated++;
+>  >     }
+>  >
+>  >     public static long numCreated() {
+>  >         return numCreated;
+>  >     }
+>  > }
+>  >
+>  > _______________________________________________
+>  > Concurrency-interest mailing list
+>  > Concurrency-interest@altair.cs.oswego.edu
+>  > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+From mattocks at mac.com  Fri Dec 16 12:17:19 2005
+From: mattocks at mac.com (Craig Mattocks)
+Date: Fri Dec 16 12:18:11 2005
+Subject: [concurrency-interest] Then the Whos down in Whoville...
+Message-ID: <6a120485fb211751b7dc73ba08267a18@mac.com>
+
+...  will all cry "Boo-hoo!"
+
+Amazon Items Ordered:
+
+Java Concurrency in Practice, Brian Goetz, et al
+
+Updated Shipping Estimate: February 15, 2006
+Updated Delivery Estimate: February 22, 2006 - February 28, 2006
+
+Seems we'll be carving the Roast Beast a little later than anticipated 
+this year.
+
+Craig
+--------------------------------------------------------------
+"My sweet little tot", the fake Santa Claus lied,
+    "There's a light on this tree that won't light on one side.
+I'll take it back to my workshop, my dear.
+    I'll fix it up there, then I'll bring it back here."
+                 -- Dr. Seuss, "How the Grinch Stole Christmas"
+--------------------------------------------------------------
+
+From brian at quiotix.com  Fri Dec 16 16:37:16 2005
+From: brian at quiotix.com (Brian Goetz)
+Date: Fri Dec 16 16:38:15 2005
+Subject: [concurrency-interest] Then the Whos down in Whoville...
+In-Reply-To: <6a120485fb211751b7dc73ba08267a18@mac.com>
+References: <6a120485fb211751b7dc73ba08267a18@mac.com>
+Message-ID: <43A3338C.2020306@quiotix.com>
+
+> ...  will all cry "Boo-hoo!"
+
+If it makes you feel any better, my family and I, will be joining in 
+that big "boo hoo" with all the Whos of Whoville...
+
+> Amazon Items Ordered:
+> 
+> Java Concurrency in Practice, Brian Goetz, et al
+> 
+> Updated Shipping Estimate: February 15, 2006
+> Updated Delivery Estimate: February 22, 2006 - February 28, 2006
+> 
+> Seems we'll be carving the Roast Beast a little later than anticipated 
+> this year.
+
+To be fair, its quite a Roast Beast that we'll be carving.  And there's 
+not a lot of opportunity for carving it in parallel...
+
+
+From ian.griffiths at yellow-b.com  Sun Dec 18 05:17:16 2005
+From: ian.griffiths at yellow-b.com (Ian Griffiths)
+Date: Sun Dec 18 05:08:37 2005
+Subject: [concurrency-interest] Then the Whos down in Whoville...
+In-Reply-To: <43A3338C.2020306@quiotix.com>
+References: <6a120485fb211751b7dc73ba08267a18@mac.com>
+	<43A3338C.2020306@quiotix.com>
+Message-ID: <WorldClient-F200512181117.AA17160644@yellow-b.com>
+
+You could buy a number of smaller pieces of roast beef.
+And get more than one oven.
+And borrow some carving knives.
+I suppose you've got the plates, knives and forks!
+And the hungry mouths.
+
+You could then produce a modern, improved, version of the dining
+philosophers program.
+
+And see if you can avoid starvation! :-)
+
+PS. Brian, I enjoyed your talks at JavaPolis.
+
+Happy New Year
+
+Ian
+
+-----Original Message-----
+From: Brian Goetz <brian@quiotix.com>
+To: Craig Mattocks <mattocks@mac.com>
+Cc: concurrency-interest@altair.cs.oswego.edu
+Date: Fri, 16 Dec 2005 16:37:16 -0500
+Subject: ***SPAM*** Score/Req: 8.0/8.0 - Re: [concurrency-interest] Then
+the Whos down in Whoville...
+
+> > ...  will all cry "Boo-hoo!"
+> 
+> If it makes you feel any better, my family and I, will be joining in 
+> that big "boo hoo" with all the Whos of Whoville...
+> 
+> > Amazon Items Ordered:
+> > 
+> > Java Concurrency in Practice, Brian Goetz, et al
+> > 
+> > Updated Shipping Estimate: February 15, 2006
+> > Updated Delivery Estimate: February 22, 2006 - February 28, 2006
+> > 
+> > Seems we'll be carving the Roast Beast a little later than
+> anticipated 
+> > this year.
+> 
+> To be fair, its quite a Roast Beast that we'll be carving.  And
+> there's 
+> not a lot of opportunity for carving it in parallel...
+> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From dawidk at mathcs.emory.edu  Mon Dec 19 12:41:42 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Mon Dec 19 12:42:41 2005
+Subject: [concurrency-interest] backport issue: second opinion needed
+Message-ID: <43A6F0D6.4010308@mathcs.emory.edu>
+
+Hello,
+
+the issue has been reported against backport-util-concurrent, related to 
+the use of unfair condition variables. The TCK test 
+ReentrantLockTest.testAwaitUninterruptibly sometimes hangs at 
+Thread.join when run on AIX. I believe that the problem is due to a race 
+condition between interruptions and signals in the JVM, and I think it 
+can also occur on other non-SUN JVMs and on older JVMs. (The problem is 
+that when Thread.interrupt() happens very soon after notify(), the 
+InterruptedException is sometimes thrown from wait(), masking the 
+notification which should have caused the thread to complete normally). 
+SUN 1.4 JVMs does not seem to suffer from this issue.
+
+Most of the code in the backport is written defensively to guard against 
+this race. But it turns out that Condition.awaitUninterruptibly, for 
+conditions of non-fair locks, is affected. The current implementation is 
+as follows:
+
+    public void awaitUninterruptibly() {
+        int holdCount = lock.getHoldCount();
+        if (holdCount == 0) {
+            throw new IllegalMonitorStateException();
+        }
+        boolean wasInterrupted = false;
+        try {
+            synchronized (this) {
+                for (int i=holdCount; i>0; i--) lock.unlock();
+                while (true) {
+                    try {
+                        wait();
+                        break;
+                    }
+                    catch (InterruptedException ex) {
+                        wasInterrupted = true;
+                    }
+                }
+            }
+        }
+        finally {
+            for (int i=holdCount; i>0; i--) lock.lock();
+            if (wasInterrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+
+This works on JVMs which do not have the interrupt/signal race. But to 
+guard against the JVM race, when catching IE, I have to assume that the 
+signal has possibly been masked by the IE. I don't have any way to know 
+for sure, unless I use explicit wait queue management, which will affect 
+performance, and which is already done in the fair version of the 
+condition. So, the only solution that I can see that 1) retains 
+conformance with the specification and 2) does not affect performance is 
+to wake up spuriously upon interrupt:
+
+    public void awaitUninterruptibly() {
+        int holdCount = lock.getHoldCount();
+        if (holdCount == 0) {
+            throw new IllegalMonitorStateException();
+        }
+        // avoid immediate spurious wakeup if the thread is already 
+interrupted
+        boolean wasInterrupted = Thread.interrupted();
+        try {
+            synchronized (this) {
+                for (int i=holdCount; i>0; i--) lock.unlock();
+                try {
+                    wait();
+                }
+                catch (InterruptedException ex) {
+                    // may have masked the signal and there is no way
+                    // to know for sure; we must wake up spuriously
+                    wasInterrupted = true;
+                }
+            }
+        }
+        finally {
+            for (int i=holdCount; i>0; i--) lock.lock();
+            if (wasInterrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+(Note the lack of the "while" loop). This is a little bit bad: 
+"uninterruptible" wait wakes up spuriously upon interrupt. And it would 
+be a change of existing behavior. But it is allowed by the spec.
+
+I would like to ask experts to 1) confirm/refine the diagnosis and 2) 
+comment on whether there is any better way to handle this. Is there 
+something that I am missing?
+
+(BTW. _fair_ ReentrantLock will not suffer from this; there are no 
+spurious wakeups in its case).
+
+Kind regards,
+Dawid Kurzyniec
+
+From dawidk at mathcs.emory.edu  Mon Dec 19 13:34:01 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Mon Dec 19 13:35:12 2005
+Subject: [concurrency-interest] backport issue: second opinion needed (cont.)
+In-Reply-To: <43A6F0D6.4010308@mathcs.emory.edu>
+References: <43A6F0D6.4010308@mathcs.emory.edu>
+Message-ID: <43A6FD19.6050501@mathcs.emory.edu>
+
+Dawid Kurzyniec wrote:
+
+> (...) So, the only solution that I can see that 1) retains conformance 
+> with the specification and 2) does not affect performance is to wake 
+> up spuriously upon interrupt: (...)
+
+Actually, there is also another option, common in dl.u.c: to signal upon 
+interrupt:
+
+    public void awaitUninterruptibly() {
+        int holdCount = lock.getHoldCount();
+        if (holdCount == 0) {
+            throw new IllegalMonitorStateException();
+        }
+        // avoid instant spurious wakeups if thread already interrupted
+        boolean wasInterrupted = Thread.interrupted();
+        try {
+            synchronized (this) {
+                for (int i=holdCount; i>0; i--) lock.unlock();
+                while (true) {
+                    try {
+                        wait();
+                        break;
+                    }
+                    catch (InterruptedException ex) {
+                        wasInterrupted = true;
+                        // may have masked the signal and there is no way
+                        // to tell; defensively propagate the signal, 
+potentially
+                        // causing a spurious wakeup
+                        notify();
+                    }
+                }
+            }
+        }
+        finally {
+            for (int i=holdCount; i>0; i--) lock.lock();
+            if (wasInterrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+However, this causes ANOTHER thread, rather than the interrupted one, to 
+wake up spuriously. Therefore, initially I didn't see any advantage in 
+doing that - a spurious wakeup is a spurious wakeup. But there might be 
+an advantage: if there are no other threads waiting on this condition, 
+which is often the case e.g. in single-producer-single-consumer queues, 
+then there is going to be no spurious wakeups. So now I am leaning 
+towards this solution. But again: aren't I missing something?
+
+Regards,
+Dawid
+
+From dholmes at dltech.com.au  Tue Dec 20 02:07:07 2005
+From: dholmes at dltech.com.au (David Holmes)
+Date: Tue Dec 20 02:08:19 2005
+Subject: [concurrency-interest] backport issue: second opinion needed
+In-Reply-To: <43A6F0D6.4010308@mathcs.emory.edu>
+Message-ID: <NFBBKALFDCPFIDBNKAPCIEEBGKAA.dholmes@dltech.com.au>
+
+Dawid,
+
+> the issue has been reported against backport-util-concurrent, related to
+> the use of unfair condition variables. The TCK test
+> ReentrantLockTest.testAwaitUninterruptibly sometimes hangs at
+> Thread.join when run on AIX. I believe that the problem is due to a race
+> condition between interruptions and signals in the JVM, and I think it
+> can also occur on other non-SUN JVMs and on older JVMs. (The problem is
+> that when Thread.interrupt() happens very soon after notify(), the
+> InterruptedException is sometimes thrown from wait(), masking the
+> notification which should have caused the thread to complete normally).
+> SUN 1.4 JVMs does not seem to suffer from this issue.
+
+<sigh> Yes this was an old problem that Sun Vm's used to suffer from back in
+early 1.2, not sure when it was fixed. Basically the VM logic for doing a
+wait() separates the wakeup mechanism from the interruption check, so when
+the internal blocking call returns the thread does the logical equivalent
+of:
+
+ if (Thread.currentThread().interupted())
+    throw new InterruptedException();
+
+This causes the notification to be lost and is definitely a bug in the VM -
+but one that is hard to argue conclusively from the spec, at least prior to
+5.0
+
+Lots of our older code examples in the tutorials, and CPJ2E if I recall
+correctly. perform the extra notify() on catching IE as a workaround. If you
+already do your own queue management then you can do an explicit signalled
+check, but otherwise the extra notify is best as you rarely expect this to
+get trigerred in practice.
+
+Cheers,
+David Holmes
+
+From alarmnummer at gmail.com  Sat Dec 24 10:17:38 2005
+From: alarmnummer at gmail.com (Peter Veentjer)
+Date: Sat Dec 24 10:18:30 2005
+Subject: [concurrency-interest] best way to figure out how long lock
+	acquisition took.
+Message-ID: <1466c1d60512240717h10816c6fradf3eebe32199f41@mail.gmail.com>
+
+What is the best way to figure out how much time a lock acquisition took?
+
+I need to obtain multiple locks with a timout, and after each lock I need to
+check if there is enough time for the following lock.
+
+so something like this:
+
+boolean foo(long timeout, TimeUnit unit){
+    long timeout, = unit.toUnit(timeOut,TimeOut.NANOS);
+    long startTime = System.timeInNanos();
+
+    if(!lock1.tryLock(timeout,TimeUnit.NANOS))
+         return false;
+
+    try{
+           timeout- = System.timeInNanos()-startTime;
+           if(!lock2.tryLock(timeout,TimeUnit.NANOS))
+                return false;
+
+           try{
+                  ...now do something.
+           }finally{
+                lock2.unlock();
+           }
+    }finally{
+           lock1.unlock();
+    }
+}
+
+Is this the recommended way to do it?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20051224/55a11d02/attachment.htm
+From tim at peierls.net  Sat Dec 24 11:03:24 2005
+From: tim at peierls.net (Tim Peierls)
+Date: Sat Dec 24 11:04:32 2005
+Subject: [concurrency-interest] best way to figure out how long lock
+	acquisition took.
+In-Reply-To: <1466c1d60512240717h10816c6fradf3eebe32199f41@mail.gmail.com>
+References: <1466c1d60512240717h10816c6fradf3eebe32199f41@mail.gmail.com>
+Message-ID: <43AD714C.50203@peierls.net>
+
+Peter Veentjer wrote:
+> I need to obtain multiple locks with a timout, and after each lock I 
+> need to check if there is enough time for the following lock.
+> 
+> so something like this: [snip]
+
+Yes. Here is a version that compiles:
+
+   boolean foo(long timeout, TimeUnit unit) throws InterruptedException {
+       timeout = unit.toNanos(timeout);
+       long startTime = System.nanoTime();
+
+       if (!lock1.tryLock(timeout, TimeUnit.NANOSECONDS))
+           return false;
+       try {
+           timeout -= System.nanoTime() - startTime;
+           if (!lock2.tryLock(timeout, TimeUnit.NANOSECONDS))
+               return false;
+           try {
+               // do something with both locks held
+               return true;
+           } finally {
+               lock2.unlock();
+           }
+       } finally {
+           lock1.unlock();
+       }
+   }
+
+--tim
+
+From alarmnummer at gmail.com  Mon Dec 26 04:20:23 2005
+From: alarmnummer at gmail.com (Peter Veentjer)
+Date: Mon Dec 26 04:21:15 2005
+Subject: [concurrency-interest] how expensive contextswitch blocked thread.
+Message-ID: <1466c1d60512260120v5a48f3eew6a8d62ac8e8147ae@mail.gmail.com>
+
+I have a question about contextswitching and blocked threads. My guess is
+that the operating system doesn`t need to schedule threads that are blocked
+untill they are unblocked. The consequence is that it shouldn`t be to
+expensive having a lot of blocking threads because the operating system
+doesn`t have to restore state to threads that can`t do anything. Is this
+correct? Having 10 running threads would just be as fast as 10 running
+threads and 1000 blocked threads.
+
+The reason I`m asking this is because I would like to understand why non
+blocking io is preferred above blocking io. Non blocking io is considered
+better scalable because it doesn`t have so many blocking threads, but I
+don`t understand the reason why (if the operating system doesn`t schedule
+blocked threads).
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20051226/2d0c971f/attachment.htm
+From ggagne at westminstercollege.edu  Mon Dec 26 11:25:02 2005
+From: ggagne at westminstercollege.edu (Greg Gagne)
+Date: Mon Dec 26 11:26:47 2005
+Subject: [concurrency-interest] how expensive contextswitch blocked thread.
+Message-ID: <s3afb70d.034@MAIL.westminstercollege.edu>
+
+Yes, the operating system only schedules threads that are available to run, not those that cannot run because they are blocking (i.e. for IO reasons, to acquire a lock, etc.) However, the OS must still maintain the necessary in-memory data structures for each thread in the system, regardless whether they are running, eligible to run, or are blocked.. The primary argument against having a substantial number of blocking threads is that a thread is used for maintaining state and a thread is not necessarily a small data structure for storing such state. 
+
+This leads to the non-blocking IO alternative whereby a thread (or perhaps a small number of threads) can multiplex a number of (potentially blocking) channels. The idea is that blocking state does not have to be stored in such a heavy-weight data structure as a thread.
+
+I recall seeing a couple of presentations @ Java One a few years back (2003) about designing scalable servers. Matt Welsh also has done alot of work in this area, notably SEDA
+
+http://www.eecs.harvard.edu/~mdw/proj/seda/
+
+I also believe Doug Lea has done some work in this area as well.....
+
+Lastly, there are some that argue event-oriented IO is "unnatural" and that a threading model leads to a more natural approach (from a programmers perspective.)
+
+>From my experience, unless you are talking hundreds - or thousands - of connections, a thread-per-message approach (where a thread is used to maintain the state of each connection) is sufficient. Of course, engineering answers can best be summed up as "it depends" :-)
+
+If you are unaware of how to use the java.nio package, I gave a workshop at SIGCSE related to this topic:
+
+http://people.westminstercollege.edu/faculty/ggagne/sigcse2003/
+
+This was for educators who had little experience with network programming - or Java for that matter.
+
+Best -
+
+//greg
+
+>>> Peter Veentjer <alarmnummer@gmail.com> 12/26/05 2:20 AM >>>
+I have a question about contextswitching and blocked threads. My guess is
+that the operating system doesn`t need to schedule threads that are blocked
+untill they are unblocked. The consequence is that it shouldn`t be to
+expensive having a lot of blocking threads because the operating system
+doesn`t have to restore state to threads that can`t do anything. Is this
+correct? Having 10 running threads would just be as fast as 10 running
+threads and 1000 blocked threads.
+
+The reason I`m asking this is because I would like to understand why non
+blocking io is preferred above blocking io. Non blocking io is considered
+better scalable because it doesn`t have so many blocking threads, but I
+don`t understand the reason why (if the operating system doesn`t schedule
+blocked threads).
+
+
+From brian at quiotix.com  Mon Dec 26 13:36:57 2005
+From: brian at quiotix.com (Brian Goetz)
+Date: Mon Dec 26 13:37:59 2005
+Subject: [concurrency-interest] how expensive contextswitch blocked thread.
+In-Reply-To: <1466c1d60512260120v5a48f3eew6a8d62ac8e8147ae@mail.gmail.com>
+References: <1466c1d60512260120v5a48f3eew6a8d62ac8e8147ae@mail.gmail.com>
+Message-ID: <43B03849.1070701@quiotix.com>
+
+> I have a question about contextswitching and blocked threads. My guess 
+> is that the operating system doesn`t need to schedule threads that are 
+> blocked untill they are unblocked. The consequence is that it shouldn`t 
+> be to expensive having a lot of blocking threads because the operating 
+> system doesn`t have to restore state to threads that can`t do anything. 
+> Is this correct? Having 10 running threads would just be as fast as 10 
+> running threads and 1000 blocked threads.
+
+Expensive can be interpreted in multiple currencies.  In terms of CPU 
+cycles consumed, you are correct that a larger number of blocked threads 
+will not consume proportionally more CPU cycles.  However, they will 
+consume more memory.  Within reason this is fine, but at some point (1K, 
+10K, 100K threads) you are likely to run out of something -- memory, OS 
+capacity, limitations of scheduling data structures.
+
+> The reason I`m asking this is because I would like to understand why non 
+> blocking io is preferred above blocking io. Non blocking io is 
+> considered better scalable because it doesn`t have so many blocking 
+> threads, but I don`t understand the reason why (if the operating system 
+> doesn`t schedule blocked threads).
+
+I think nonblocking I/O is preferred sometimes in some situations by 
+some people.  The exact calculus is much more complicated.  Older OSes 
+had limits of a few hundred threads; if you wanted to server more 
+clients than this, nonblocking I/O was essential.  It also depends on 
+the cost of context switches.  Nonblocking I/O generates fewer context 
+switches.  OTOH, nonblocking I/O is _much_ more complicated, and Java's 
+facility for it (nio) is NOT easy to use.
+
+My advice is to stick with thread-per-message until the scale of your 
+application makes it clear that TPM will not work, because it is SO much 
+easier.  TPM can work for a surprisingly broad range of applications on 
+modern OS kernels + JVMs.
+
+From dawidk at mathcs.emory.edu  Mon Dec 26 15:44:47 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Mon Dec 26 15:45:55 2005
+Subject: [concurrency-interest] backport issue: second opinion needed
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCIEEBGKAA.dholmes@dltech.com.au>
+References: <NFBBKALFDCPFIDBNKAPCIEEBGKAA.dholmes@dltech.com.au>
+Message-ID: <43B0563F.5020604@mathcs.emory.edu>
+
+David Holmes wrote:
+
+><sigh> Yes this was an old problem that Sun Vm's used to suffer from back in
+>early 1.2, not sure when it was fixed. Basically the VM logic for doing a
+>wait() separates the wakeup mechanism from the interruption check, so when
+>the internal blocking call returns the thread does the logical equivalent
+>of:
+>
+> if (Thread.currentThread().interupted())
+>    throw new InterruptedException();
+>
+>This causes the notification to be lost and is definitely a bug in the VM -
+>but one that is hard to argue conclusively from the spec, at least prior to
+>5.0
+>
+>Lots of our older code examples in the tutorials, and CPJ2E if I recall
+>correctly. perform the extra notify() on catching IE as a workaround. 
+>
+
+A follow-up: the code for waiting on a reentrant lock in the backport 
+(borrowed from dl.u.c.) is the following:
+
+                       try {
+                           do { wait(); } while (owner_ != null);
+                           owner_ = caller;
+                           holds_ = 1;
+                           return;
+                       }
+                       catch (InterruptedException ex) {
+                           notify();
+                           throw ex;
+                       }
+
+It seems to me though that notification is not needed if owner_ != null, 
+since this is the condition the waiters are testing anyway. Could it be 
+safely substituted with "if (owner_ == null) notify()"? In general, to 
+deal with the interruption/signal masking, is the following idiom OK:
+
+when interruption should be preferred:
+
+if (Thread.interrupted()) throw new InterruptedException();
+if (condition) return;
+try {
+   do { wait(); } while (!condition);
+}
+catch (InterruptedException ex) {
+  if (condition) notify();
+  throw ex;
+}
+
+otherwise:
+
+if (condition) return;
+try {
+   do { wait(); } while (!condition);
+}
+catch (InterruptedException ex) {
+  if (!condition) throw ex;
+  else Thread.currentThread().interrupt();
+}
+
+
+Regards,
+Dawid
+
+From dcholmes at optusnet.com.au  Wed Dec 28 06:54:32 2005
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed Dec 28 07:43:22 2005
+Subject: [concurrency-interest] backport issue: second opinion needed
+In-Reply-To: <43B0563F.5020604@mathcs.emory.edu>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEKGGKAA.dcholmes@optusnet.com.au>
+
+Dawid,
+
+> A follow-up: the code for waiting on a reentrant lock in the backport
+> (borrowed from dl.u.c.) is the following:
+>
+>                        try {
+>                            do { wait(); } while (owner_ != null);
+>                            owner_ = caller;
+>                            holds_ = 1;
+>                            return;
+>                        }
+>                        catch (InterruptedException ex) {
+>                            notify();
+>                            throw ex;
+>                        }
+>
+> It seems to me though that notification is not needed if owner_ != null,
+> since this is the condition the waiters are testing anyway. Could it be
+> safely substituted with "if (owner_ == null) notify()"?
+
+If you can easily identify the condition being waited upon (and know for a
+fact that noone will be waiting on that object for any other condition) then
+you could make the notify() conditional. But it is a micro optimization at
+best (interrupt should be rare and a notify is a simple queue transfer) and
+introduces a context sensitivity that the unconditional notify does not
+have.
+
+> when interruption should be preferred:
+>
+> if (Thread.interrupted()) throw new InterruptedException();
+> if (condition) return;
+> try {
+>    do { wait(); } while (!condition);
+> }
+> catch (InterruptedException ex) {
+>   if (condition) notify();
+>   throw ex;
+> }
+> otherwise:
+>
+> if (condition) return;
+> try {
+>    do { wait(); } while (!condition);
+> }
+> catch (InterruptedException ex) {
+>   if (!condition) throw ex;
+>   else Thread.currentThread().interrupt();
+> }
+
+I prefer a simple while loop :) but with the caveat on the use of condition,
+yes these seem fine.
+
+Cheers,
+David Holmes
+
+From dawidk at mathcs.emory.edu  Thu Dec 29 01:25:07 2005
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Thu Dec 29 01:26:19 2005
+Subject: [concurrency-interest] backport issue: second opinion needed
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCCEKGGKAA.dcholmes@optusnet.com.au>
+References: <NFBBKALFDCPFIDBNKAPCCEKGGKAA.dcholmes@optusnet.com.au>
+Message-ID: <43B38143.9060607@mathcs.emory.edu>
+
+David Holmes wrote:
+
+>>if (condition) return;
+>>try {
+>>   do { wait(); } while (!condition);
+>>}
+>>catch (InterruptedException ex) {
+>>  if (!condition) throw ex;
+>>  else Thread.currentThread().interrupt();
+>>}
+>>    
+>>
+>
+>I prefer a simple while loop :)
+>  
+>
+
+Sure; it's just that with timed versions of these, there's a bunch of 
+extra stuff in between (System.nanoTime() etc.), which is worth skipping 
+in the uncontended case.
+
+> but with the caveat on the use of condition,
+> yes these seem fine.
+
+
+Thanks!
+
+Regards,
+Dawid
+
+
+From jv at cs.purdue.edu  Fri Dec 30 18:10:42 2005
+From: jv at cs.purdue.edu (jv@cs.purdue.edu)
+Date: Fri Dec 30 18:11:49 2005
+Subject: [concurrency-interest] Summer School on Concurrency
+Message-ID: <17333.48754.670541.155089@arthur.cs.purdue.edu>
+
+
+Speakers:  Herlihy, Jagannathan, Qadeer, Lea, Sangiorgi, 
+           Saraswat, Sewell, Trystram, Yoshida.
+Dates:     July 24-29, 2006 
+Location:  Bertinoro, Italy
+WWW:       http://www.cs.purdue.edu/homes/jv/events/TiC06
+
+
+
+
+                        Call for Participation
+
+                  First International Summer School on 
+                     Emerging Trends in Concurrency       
+                               TiC'06
+
+                   Bertinoro, Italy, July 24-29, 2006 
+
+
+Concurrency is a pervasive and essential characteristic of modern computer
+systems.  Whether it  is the  design of  new hyperthreading  techniques in
+computer architectures, specification  of non-blocking data structures and
+algorithms, implementation of scalable computer farms for handling massive
+data sets, or the design of a robust software architecture for distributed
+business processes, a deep understanding of mechanisms and foundations for
+expressing and controlling concurrency is required.
+
+The  goal  of  the  school  is  to  expose  graduate  students  and  young
+researchers  to  new  ideas  in  concurrent programming  from  experts  in
+academia  and  industry. The  school  provides  a  unique opportunity  for
+students  to  have  engaging  discussions on  cutting-edge  research  with
+instructors  in a  focused environment.  The  school covers  one week  and
+alternates  monograph  courses of  4/6  hours  and  short courses  of  2/3
+hours. We  also encourage presentations  by participants to  discuss their
+current  research,   and  to  receive  feedback  from   the  audience  and
+instructors.
+
+Speakers:
+
+  * Maurice Herlihy  (Brown)
+  * Suresh Jagannathan (Purdue)
+  * Shaz Qadeer  (Microsoft Research)
+  * Doug Lea  (SUNY Oswego)
+  * Davide Sangiorgi (University of Bologna)
+  * Vijay Saraswat (IBM Research)
+  * Peter Sewell (Cambridge)
+  * Denis Trystram (IMAG)
+  * Nobuko Yoshida  (Imperial College)
+
+
+Venue:
+
+The school  is organised at  the Centro Residenziale Universitario  of the
+University of Bologna, situated in  Bertinoro, a small village on a scenic
+hill  with a wonderful  panorama, in  between Forli  and Cesena  (about 50
+miles south-east of Bologna, 15 miles to the Adriatic sea).
+
+Organizers:
+
+Nadia Busi (University of Bologna), Ananth Grama (Purdue), 
+Suresh Jagannathan (Purdue), Davide Sangiorgi (University of Bologna),
+Jan Vitek (Purdue)
+
+Registration:
+
+Information about registration is available from the school's web page
+(http://www.cs.purdue.edu/homes/jv/events/TiC06).
+A limited number of grants will be  provided to cover the fees for
+young  researchers.

@@ -1,0 +1,751 @@
+From pramalhe at gmail.com  Sun May 17 12:28:59 2015
+From: pramalhe at gmail.com (Pedro Ramalhete)
+Date: Sun, 17 May 2015 18:28:59 +0200
+Subject: [concurrency-interest] Copy-On-Write with wait-free writes
+Message-ID: <CAAApjO2tsRGhHCGWRjC4yokCYjMMveYaHcD8=zwSvYa6eru-Cw@mail.gmail.com>
+
+Hello,
+
+As mentioned a few times before on this mailing list, there are two variants
+of the Copy-On-Write concurrent technique. One of them uses a lock and is
+blocking for mutations, and it is the one currently used in
+CopyOnWriteArrayList.
+The other one uses a compareAndSet loop and it is lock-free for mutations
+but
+extremely unfair.
+Both are wait-free population oblivious for read-only operations, and
+provide linearizability for all concurrent operations, whether mutative
+or read-only, to be applied on the encapsulated object or data structure.
+
+We would like to present (what we believe to be) a new technique that is
+wait-free for mutations and read-only operations, linearizable, which we
+named COWMutationQ.
+The main idea is that all mutative operations are placed in a queue as
+lambdas,
+along with the lambdas parameters, and then create one and only one copy
+of the encapsulated object or data structure per thread, and apply all
+mutations
+in sequence.
+This should _not_ be mistaken for the well known asynchronous technique
+used
+in Actor Models, where mutations are placed in a queue and then a
+Future/Promise
+is kept to get the "result" of the mutation, which is a blocking technique.
+
+
+Although the implementation is easy and the usage even easier, there are a
+few
+tricks and details behind it, which can be seen on the paper describing
+COWMutationQ:
+https://github.com/pramalhe/ConcurrencyFreaks/blob/master/papers/cowmq-2015.pdf
+
+For those of you interested in code, we've made two variants of the
+algorithm,
+one with a wait-free queue, using Alex Kogan and Erez Petrank's queue:
+https://github.com/pramalhe/ConcurrencyFreaks/blob/master/Java/com/concurrencyfreaks/cow/COWMutationQWF.java
+and another with a lock-free queue, using Maged Michael and Michael Scott's
+queue, the same algorithm used in ConcurrentLinkedQueue (very short code):
+https://github.com/pramalhe/ConcurrencyFreaks/blob/master/Java/com/concurrencyfreaks/cow/COWMutationQLF.java
+
+To see how this is used, you can take a look at one of the examples, such
+as the
+one where we transform a TreeMap into a completely wait-free data structure:
+https://github.com/pramalhe/ConcurrencyFreaks/blob/master/Java/com/concurrencyfreaks/cow/CopyOnWriteMQWFTreeMap.java
+or a completely wait-free ArrayList:
+https://github.com/pramalhe/ConcurrencyFreaks/blob/master/Java/com/concurrencyfreaks/cow/CopyOnWriteMQWFArrayList.java
+
+Like the other COW techniques, COWMutationQ isn't scalable for mutations but
+it does have a better throughput and latency than the other two variants
+in many scenarios.
+If you have a mostly read-only workload, and you want to make any object or
+data structure completely wait-free, then this may be of interest to you.
+
+
+Enjoy,
+Pedro & Andreia
+http://www.concurrencyfreaks.com
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150517/b4aef565/attachment.html>
+
+From aaron.grunthal at infinite-source.de  Sun May 17 16:13:35 2015
+From: aaron.grunthal at infinite-source.de (Aaron Grunthal)
+Date: Sun, 17 May 2015 22:13:35 +0200
+Subject: [concurrency-interest] Copy-On-Write with wait-free writes
+In-Reply-To: <CAAApjO2tsRGhHCGWRjC4yokCYjMMveYaHcD8=zwSvYa6eru-Cw@mail.gmail.com>
+References: <CAAApjO2tsRGhHCGWRjC4yokCYjMMveYaHcD8=zwSvYa6eru-Cw@mail.gmail.com>
+Message-ID: <5558F66F.8080700@infinite-source.de>
+
+I think contention in the latency benchmarks in chapter 3.1 be reduced 
+by using weak variants of add()/remove().
+
+E.g. by only attempting the mutation once and if the CAS fails and there 
+is a next-node in the mutations-queue then the it would know that 
+another thread is also trying to do the same work and it can return 
+immediately knowing that the mutation will be performed eventually.
+
+Since the benchmark seems to be producer-consumer in nature the result 
+of the add()/remove() operations do not necessarily need to be 
+immediately visible to the enqueuing thread as long as they remain 
+ordered with respect to each other. I.e. the methods can return early 
+(and thus reduce allocations and cache contention) as long as they made 
+sure that there's another mutator thread that would do the same (or 
+more) work anyway.
+
+- Aaron
+
+On 17.05.2015 18:28, Pedro Ramalhete wrote:
+> Hello,
+>
+> As mentioned a few times before on this mailing list, there are two variants
+> of the Copy-On-Write concurrent technique. One of them uses a lock and is
+> blocking for mutations, and it is the one currently used in
+> CopyOnWriteArrayList.
+> The other one uses a compareAndSet loop and it is lock-free for
+> mutations but
+> extremely unfair.
+> Both are wait-free population oblivious for read-only operations, and
+> provide linearizability for all concurrent operations, whether mutative
+> or read-only, to be applied on the encapsulated object or data structure.
+>
+> We would like to present (what we believe to be) a new technique that is
+> wait-free for mutations and read-only operations, linearizable, which we
+> named COWMutationQ.
+> The main idea is that all mutative operations are placed in a queue as
+> lambdas,
+> along with the lambdas parameters, and then create one and only one copy
+> of the encapsulated object or data structure per thread, and apply all
+> mutations
+> in sequence.
+> This should _not_ be mistaken for the well known asynchronous technique
+> used
+> in Actor Models, where mutations are placed in a queue and then a
+> Future/Promise
+> is kept to get the "result" of the mutation, which is a blocking technique.
+>
+>
+> Although the implementation is easy and the usage even easier, there are
+> a few
+> tricks and details behind it, which can be seen on the paper describing
+> COWMutationQ:
+> https://github.com/pramalhe/ConcurrencyFreaks/blob/master/papers/cowmq-2015.pdf
+>
+> For those of you interested in code, we've made two variants of the
+> algorithm,
+> one with a wait-free queue, using Alex Kogan and Erez Petrank's queue:
+> https://github.com/pramalhe/ConcurrencyFreaks/blob/master/Java/com/concurrencyfreaks/cow/COWMutationQWF.java
+> and another with a lock-free queue, using Maged Michael and Michael Scott's
+> queue, the same algorithm used in ConcurrentLinkedQueue (very short code):
+> https://github.com/pramalhe/ConcurrencyFreaks/blob/master/Java/com/concurrencyfreaks/cow/COWMutationQLF.java
+>
+> To see how this is used, you can take a look at one of the examples,
+> such as the
+> one where we transform a TreeMap into a completely wait-free data structure:
+> https://github.com/pramalhe/ConcurrencyFreaks/blob/master/Java/com/concurrencyfreaks/cow/CopyOnWriteMQWFTreeMap.java
+> or a completely wait-free ArrayList:
+> https://github.com/pramalhe/ConcurrencyFreaks/blob/master/Java/com/concurrencyfreaks/cow/CopyOnWriteMQWFArrayList.java
+>
+> Like the other COW techniques, COWMutationQ isn't scalable for mutations but
+> it does have a better throughput and latency than the other two variants
+> in many scenarios.
+> If you have a mostly read-only workload, and you want to make any object or
+> data structure completely wait-free, then this may be of interest to you.
+>
+>
+> Enjoy,
+> Pedro & Andreia
+> http://www.concurrencyfreaks.com
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+From martinrb at google.com  Mon May 18 15:22:11 2015
+From: martinrb at google.com (Martin Buchholz)
+Date: Mon, 18 May 2015 12:22:11 -0700
+Subject: [concurrency-interest] Copy-On-Write with wait-free writes
+In-Reply-To: <5558F66F.8080700@infinite-source.de>
+References: <CAAApjO2tsRGhHCGWRjC4yokCYjMMveYaHcD8=zwSvYa6eru-Cw@mail.gmail.com>
+	<5558F66F.8080700@infinite-source.de>
+Message-ID: <CA+kOe09w2T8Js0PxpV5ETt+6crSHZZAwT44t1b+jXSXrvD24fQ@mail.gmail.com>
+
+On Sun, May 17, 2015 at 1:13 PM, Aaron Grunthal <
+aaron.grunthal at infinite-source.de> wrote:
+
+> I think contention in the latency benchmarks in chapter 3.1 be reduced by
+> using weak variants of add()/remove().
+>
+> E.g. by only attempting the mutation once and if the CAS fails and there
+> is a next-node in the mutations-queue then the it would know that another
+> thread is also trying to do the same work and it can return immediately
+> knowing that the mutation will be performed eventually.
+>
+>
+But ... this thread has already done (some of) the work and it would be a
+waste not to share it with other threads, assuming the cost of CAS is small
+compared to the cost of a Mutation.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150518/c23120be/attachment.html>
+
+From aaron.grunthal at infinite-source.de  Mon May 18 21:41:31 2015
+From: aaron.grunthal at infinite-source.de (Aaron Grunthal)
+Date: Tue, 19 May 2015 03:41:31 +0200
+Subject: [concurrency-interest] Copy-On-Write with wait-free writes
+In-Reply-To: <CA+kOe09w2T8Js0PxpV5ETt+6crSHZZAwT44t1b+jXSXrvD24fQ@mail.gmail.com>
+References: <CAAApjO2tsRGhHCGWRjC4yokCYjMMveYaHcD8=zwSvYa6eru-Cw@mail.gmail.com>	<5558F66F.8080700@infinite-source.de>
+	<CA+kOe09w2T8Js0PxpV5ETt+6crSHZZAwT44t1b+jXSXrvD24fQ@mail.gmail.com>
+Message-ID: <555A94CB.3020004@infinite-source.de>
+
+Right, to avoid most of the work, especially the allocation a lazy 
+mutation would have to be able to bail out right after enqueuing the 
+work while knowing that some other thread pick up for it.
+
+It seems pretty difficult to offload without violating the wait-free 
+properties of the loops after the enqueue.
+
+
+How about this approach:
+
+* Each node in the queue is colored either black or white.
+* Non-lazy ops always submit white nodes.
+* Lazy ops will try to submit a black node if the tail is a white node.
+  * If submitting a black node is successful they can bail out.
+  * If not they have to submit a white node
+* Threads that submitted a white node will do their work as normal and 
+execute the non-white mutating operations immediately beyond their own node
+
+Some additional checks after the CAS loops to ensure that there really 
+is someone to pick up the work after a non-white node has been submitted 
+will be necessary, but those should be fairly simple.
+
+White nodes essentially are a promise to do a bounded amount of 
+additional work.
+
+
+This way lazy ops can parasitize other threads, depending on the mixture 
+of lazy and non-lazy ops anywhere between 50% and 100% of the time.
+
+Additional colors could narrow that range closer to 100%.
+
+In the contended case this should cut down on CAS operations, 
+allocations and burned CPU cycles by reducing the # of threads doing 
+redundant work.
+
+
+That's for the lock-free variant at least, I haven't checked whether the 
+wait-free one can be extended this way.
+
+
+
+- Aaron
+
+
+On 18.05.2015 21:22, Martin Buchholz wrote:
+>
+>
+> On Sun, May 17, 2015 at 1:13 PM, Aaron Grunthal
+> <aaron.grunthal at infinite-source.de
+> <mailto:aaron.grunthal at infinite-source.de>> wrote:
+>
+>     I think contention in the latency benchmarks in chapter 3.1 be
+>     reduced by using weak variants of add()/remove().
+>
+>     E.g. by only attempting the mutation once and if the CAS fails and
+>     there is a next-node in the mutations-queue then the it would know
+>     that another thread is also trying to do the same work and it can
+>     return immediately knowing that the mutation will be performed
+>     eventually.
+>
+>
+> But ... this thread has already done (some of) the work and it would be
+> a waste not to share it with other threads, assuming the cost of CAS is
+> small compared to the cost of a Mutation.
+
+
+From ben_manes at yahoo.com  Mon May 18 22:31:21 2015
+From: ben_manes at yahoo.com (Ben Manes)
+Date: Tue, 19 May 2015 02:31:21 +0000 (UTC)
+Subject: [concurrency-interest] Copy-On-Write with wait-free writes
+In-Reply-To: <555A94CB.3020004@infinite-source.de>
+References: <555A94CB.3020004@infinite-source.de>
+Message-ID: <545409379.802722.1432002681066.JavaMail.yahoo@mail.yahoo.com>
+
+I suspect that a flat combining version would provide most of the benefits in a much simpler form, with the benefit of reducing copy churn. I don't particularly like the lack of GC hygiene on the removals by keeping an element reference until another write makes it collectable. 
+
+
+     On Monday, May 18, 2015 7:07 PM, Aaron Grunthal <aaron.grunthal at infinite-source.de> wrote:
+   
+
+ Right, to avoid most of the work, especially the allocation a lazy 
+mutation would have to be able to bail out right after enqueuing the 
+work while knowing that some other thread pick up for it.
+
+It seems pretty difficult to offload without violating the wait-free 
+properties of the loops after the enqueue.
+
+
+How about this approach:
+
+* Each node in the queue is colored either black or white.
+* Non-lazy ops always submit white nodes.
+* Lazy ops will try to submit a black node if the tail is a white node.
+? * If submitting a black node is successful they can bail out.
+? * If not they have to submit a white node
+* Threads that submitted a white node will do their work as normal and 
+execute the non-white mutating operations immediately beyond their own node
+
+Some additional checks after the CAS loops to ensure that there really 
+is someone to pick up the work after a non-white node has been submitted 
+will be necessary, but those should be fairly simple.
+
+White nodes essentially are a promise to do a bounded amount of 
+additional work.
+
+
+This way lazy ops can parasitize other threads, depending on the mixture 
+of lazy and non-lazy ops anywhere between 50% and 100% of the time.
+
+Additional colors could narrow that range closer to 100%.
+
+In the contended case this should cut down on CAS operations, 
+allocations and burned CPU cycles by reducing the # of threads doing 
+redundant work.
+
+
+That's for the lock-free variant at least, I haven't checked whether the 
+wait-free one can be extended this way.
+
+
+
+- Aaron
+
+
+On 18.05.2015 21:22, Martin Buchholz wrote:
+>
+>
+> On Sun, May 17, 2015 at 1:13 PM, Aaron Grunthal
+> <aaron.grunthal at infinite-source.de
+> <mailto:aaron.grunthal at infinite-source.de>> wrote:
+>
+>? ? I think contention in the latency benchmarks in chapter 3.1 be
+>? ? reduced by using weak variants of add()/remove().
+>
+>? ? E.g. by only attempting the mutation once and if the CAS fails and
+>? ? there is a next-node in the mutations-queue then the it would know
+>? ? that another thread is also trying to do the same work and it can
+>? ? return immediately knowing that the mutation will be performed
+>? ? eventually.
+>
+>
+> But ... this thread has already done (some of) the work and it would be
+> a waste not to share it with other threads, assuming the cost of CAS is
+> small compared to the cost of a Mutation.
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+  
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150519/d4823768/attachment.html>
+
+From pramalhe at gmail.com  Tue May 19 17:05:32 2015
+From: pramalhe at gmail.com (Pedro Ramalhete)
+Date: Tue, 19 May 2015 23:05:32 +0200
+Subject: [concurrency-interest] Copy-On-Write with wait-free writes
+Message-ID: <CAAApjO2WNQSCeid+5521d-XuBgD-vBpzfSi1212a9KYgQU0emw@mail.gmail.com>
+
+Hi Aaron,
+
+That is an interesting variation, but we should keep in mind that accepting
+lazy mutations means that such an approach will no longer be fault tolerant
+(i.e. a thread dying), nor sequentially consistent (which means it's not
+linearizable).
+For example, in such an approach, when wrapping an hashmap, it could happen
+that the same thread would do hm.put(key1, value1) followed by hm.get(key1)
+and the return value of the get() would be null, or whatever the previous
+value was associated with key1.
+
+Moreover, if the thread that has been "delegated" to do the lazy mutation,
+dies or blocks indefinitely, the work will never get done.Depending on your
+interpretation of lock-free / wait-free, this can imply that such an
+approach will not be lock-free nor wait-free.
+
+The main advantage of COWMutationQ is in providing wait-freedom with
+linearizability (and fault tolerance).
+
+
+Cheers,
+Pedro
+
+     On Monday, May 18, 2015 7:07 PM, Aaron Grunthal <
+aaron.grunthal at infinite-source.de> wrote:
+
+
+ Right, to avoid most of the work, especially the allocation a lazy
+mutation would have to be able to bail out right after enqueuing the
+work while knowing that some other thread pick up for it.
+
+It seems pretty difficult to offload without violating the wait-free
+properties of the loops after the enqueue.
+
+
+How about this approach:
+
+* Each node in the queue is colored either black or white.
+* Non-lazy ops always submit white nodes.
+* Lazy ops will try to submit a black node if the tail is a white node.
+? * If submitting a black node is successful they can bail out.
+? * If not they have to submit a white node
+* Threads that submitted a white node will do their work as normal and
+execute the non-white mutating operations immediately beyond their own node
+
+Some additional checks after the CAS loops to ensure that there really
+is someone to pick up the work after a non-white node has been submitted
+will be necessary, but those should be fairly simple.
+
+White nodes essentially are a promise to do a bounded amount of
+additional work.
+
+
+This way lazy ops can parasitize other threads, depending on the mixture
+of lazy and non-lazy ops anywhere between 50% and 100% of the time.
+
+Additional colors could narrow that range closer to 100%.
+
+In the contended case this should cut down on CAS operations,
+allocations and burned CPU cycles by reducing the # of threads doing
+redundant work.
+
+
+That's for the lock-free variant at least, I haven't checked whether the
+wait-free one can be extended this way.
+
+
+
+- Aaron
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150519/2b84f23d/attachment.html>
+
+From aaron.grunthal at infinite-source.de  Tue May 19 19:59:43 2015
+From: aaron.grunthal at infinite-source.de (Aaron Grunthal)
+Date: Wed, 20 May 2015 01:59:43 +0200
+Subject: [concurrency-interest] Copy-On-Write with wait-free writes
+In-Reply-To: <CAAApjO2WNQSCeid+5521d-XuBgD-vBpzfSi1212a9KYgQU0emw@mail.gmail.com>
+References: <CAAApjO2WNQSCeid+5521d-XuBgD-vBpzfSi1212a9KYgQU0emw@mail.gmail.com>
+Message-ID: <555BCE6F.1010407@infinite-source.de>
+
+On 19.05.2015 23:05, Pedro Ramalhete wrote:
+> Hi Aaron,
+>
+> That is an interesting variation, but we should keep in mind that
+> accepting lazy mutations means that such an approach will no longer be
+> fault tolerant (i.e. a thread dying), nor sequentially consistent (which
+> means it's not linearizable).
+> For example, in such an approach, when wrapping an hashmap, it could
+> happen that the same thread would do hm.put(key1, value1) followed by
+> hm.get(key1) and the return value of the get() would be null, or
+> whatever the previous value was associated with key1.
+
+of course, that's the point of lazy variants to optionally relax 
+constraints for specific operations if performance would benefit from it.
+
+But it shouldn't be the put() operation that's lazy. A separate 
+lazyPut() variant would be necessary. It's up to the programmer to 
+decide if he needs sequential consistency with respect to the current 
+thread. If you split your work into small tasks and at the end of the 
+task you perform a lazy put, then yield back to the task scheduler which 
+then picks up independent task to execute then that other task will not 
+care about the thread-local ordering because it couldn't know about any 
+ordering in the first place.
+
+>
+> Moreover, if the thread that has been "delegated" to do the lazy
+> mutation, dies or blocks indefinitely, the work will never get
+> done.Depending on your interpretation of lock-free / wait-free, this can
+> imply that such an approach will not be lock-free nor wait-free.
+>
+
+isn't the contract of all mutation operations that they have to perform 
+the same things independent of which thread executes them?
+
+So if any thread were to block indefinitely inside a mutation operation 
+that precedes the current task in the queue, wouldn't that mean that all 
+other threads attempting to execute the same work concurrently would 
+also block indefinitely, essentially blocking all writers arriving on 
+the work queue? If that were the case the operation might not have 
+finished in either case, whether it is lazy or not.
+
+Or put differently, shouldn't the whole thing be thread-agnostic?
+
+> The main advantage of COWMutationQ is in providing wait-freedom with
+> linearizability (and fault tolerance).
+>
+
+I was simply suggesting a way to opt-out of linearizability to some 
+extent while maintaining wait-freedom.
+
+
+Although my main motivation was simply that it struck me as wasteful 
+that the data structure does more redundant work the more contended it 
+becomes (even if the amount of work is bounded).
+
+
+
+- Aaron
+
+From martinrb at google.com  Wed May 20 16:22:17 2015
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 20 May 2015 13:22:17 -0700
+Subject: [concurrency-interest] Copy-On-Write with wait-free writes
+In-Reply-To: <555BCE6F.1010407@infinite-source.de>
+References: <CAAApjO2WNQSCeid+5521d-XuBgD-vBpzfSi1212a9KYgQU0emw@mail.gmail.com>
+	<555BCE6F.1010407@infinite-source.de>
+Message-ID: <CA+kOe0_tNVa9c8hFp6mvg5As2KN6Y7=gD_Vf=CKfD1Pdvyf0jg@mail.gmail.com>
+
+Because Java's memory model has a single global Synchronization order,
+users expect that arbitrary operations on a shared data structure also have
+that nice property.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150520/de3e7904/attachment.html>
+
+From gregw at webtide.com  Thu May 28 20:52:09 2015
+From: gregw at webtide.com (Greg Wilkins)
+Date: Fri, 29 May 2015 10:52:09 +1000
+Subject: [concurrency-interest] jdk9 Candidate classes Flow and
+	SubmissionPublisher
+Message-ID: <CAH_y2NEJFFdQgOc_XosOkxdRpKNVgBKOjrh0R383W5PtJfKbyg@mail.gmail.com>
+
+Hi,
+
+I'm looking at the Flow classes as a potential better API for asynchronous
+IO than the current Servlet async API for the Jetty webserver.
+
+However, it is not clear to me that the current proposed API is sufficient
+for types that have natural aggregations that would be natural to use.
+
+Specifically to replace Servlet async IO, semantically I need a
+Flow.Subscriber<byte>  so that calls to Flow.Subscription.request(long n)
+can be expressed in terms of the number of bytes the subscriber is prepared
+to receive. However, delivering those bytes as successive calls to
+Flow.Subscriber.onNext(byte item) will be highly inefficient.
+
+How should such aggregations be handled?   Note the same goes for
+characters in string Strings/CharSequences/Messages and probably for any
+Flow of objects where the size of the object can vary greatly and the
+ability to receive relies more on the size of the items rather than the
+number of them.
+
+
+To me it makes little sense to actually declare the subscriber in terms of
+byte or character, as they are not the preferred delivery types.   Rather
+the type should be declared as the aggregate type (ByteBuffer,
+CharSequence, WebSocketMessage etc.)
+
+What is then needed is for the subscriber to be able to request both the
+number and total size in a request. ie perhaps a method could be added to
+Flow.Subscription
+
+  request(long items,long totalSize)
+
+The semantic could be that a Subscriber could call either request method
+and a call to request(long n) would be equivalent to a call to
+request(n,Long.MAX_VALUE).
+
+cheers
+
+
+
+
+
+-- 
+Greg Wilkins <gregw at webtide.com <gregw at intalio.com>>  - *an Intalio.com
+subsidiary*
+http://eclipse.org/jetty HTTP, SPDY, Websocket server and client that scales
+http://www.webtide.com  advice and support for jetty and cometd.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150529/02df5246/attachment.html>
+
+From mikael at caplogic.se  Sat May 30 12:23:02 2015
+From: mikael at caplogic.se (mikael at caplogic.se)
+Date: Sat, 30 May 2015 18:23:02 +0200
+Subject: [concurrency-interest] Mappedbus review
+Message-ID: <fc38de09d8d0524e8f1d62ea00f79264@caplogic.se>
+
+ 
+
+Hi, 
+
+I'm working on a library for efficient IPC between multiple
+Java processes/JVMs and I'm wondering if anyone could help me review the
+design and implementation for any potential issues? 
+
+The implementation
+is quite simple and short, less than 200 lines of code excluding
+comments, and available
+here:
+http://github.com/caplogic/Mappedbus/tree/master/src/main/io/mappedbus
+
+
+Quick summary of what the library does:
+- Mappedbus is a Java based
+high throughput, low latency message bus, using either a memory mapped
+file or shared memory as transport
+- Mappedbus was inspired by Java
+Chronicle with the main difference that it's designed to efficiently
+support multiple writers - enabling use cases where the order of
+messages produced by multiple processes are important
+- Mappedbus can
+also be described as an efficient IPC mechanism which enable several
+Java processes/JVMs to communicate by message passing.
+- The throughput
+(on a laptop, i7-4558U @ 2.8 GHz) between a single producer writing at
+full speed and a single consumer is around 40 million messages per
+second (a small message consisting of three integer fields) 
+
+Here's how
+the library solves the synchronization problem between multiple writers
+(each running in it's own process/JVM):
+- The first eight bytes of the
+file make up a field called the limit. This field specifies how much
+data has actually been written to the file. The readers will poll the
+limit field (using volatile) to see whether there's a new record to be
+read.
+- When a writer wants to add a record to the file it will use the
+fetch-and-add instruction to atomically update the limit field.
+- When
+the limit field has increased a reader will know there's new data to be
+read, but the writer which updated the limit field might not yet have
+written any data in the record. To avoid this problem each record
+contains an initial byte which make up the commit field.
+- When a writer
+has finished writing a record it will set the commit field (using
+volatile) and the reader will only start reading a record once it has
+seen that the commit field has been set.
+- A writer might crash after it
+has updated the limit field but before it has updated the commit field.
+To avoid this problem there's a field next to the commit field called
+the rollback field. The reader has a timeout for how long it will wait
+for the commit field to be set. When that time is reached the reader
+will set the rollback field (using volatile) and continue with the next
+record. The rollback field has precedence over the commit field, when
+the rollback field is set the record is always ignored by the readers.
+
+
+The solution seems to work well on Linux x86 with Oracle's JVM (1.8)
+but I understand it won't work on all platforms (and it's not intended
+to). 
+
+I'd simply like to make sure the solution is sound so any ideas
+on potential issues would be very much appreciated. 
+
+Regards, 
+
+Mikael
+
+
+ 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150530/8e209618/attachment.html>
+
+From corporate.piyush at gmail.com  Sun May 31 11:53:51 2015
+From: corporate.piyush at gmail.com (Piyush Katariya)
+Date: Sun, 31 May 2015 21:23:51 +0530
+Subject: [concurrency-interest] Mappedbus review
+In-Reply-To: <fc38de09d8d0524e8f1d62ea00f79264@caplogic.se>
+References: <fc38de09d8d0524e8f1d62ea00f79264@caplogic.se>
+Message-ID: <CAA5REoWz7VQ-K052P-LcCjqhBTHJPGJZoagL1ttE2ZEXwVbxjA@mail.gmail.com>
+
+One way to evaluate it is to compare it with other existing libs e.g.
+combination of Hazelcast and MapDB 2.0.
+
+There are numerous amount of use cases and failures, failure report
+scenario you need to keep in mind. Needless to say some kind of
+administration console would be needed if we you are targeting enterprise
+world
+
+Thanks,
+Piyush Katariya
+On May 30, 2015 10:19 PM, <mikael at caplogic.se> wrote:
+
+>  Hi,
+>
+> I'm working on a library for efficient IPC between multiple Java
+> processes/JVMs and I'm wondering if anyone could help me review the design
+> and implementation for any potential issues?
+>
+> The implementation is quite simple and short, less than 200 lines of code
+> excluding comments, and available here:
+> http://github.com/caplogic/Mappedbus/tree/master/src/main/io/mappedbus
+>
+> Quick summary of what the library does:
+> - Mappedbus is a Java based high throughput, low latency message bus,
+> using either a memory mapped file or shared memory as transport
+> - Mappedbus was inspired by Java Chronicle with the main difference that
+> it's designed to efficiently support multiple writers ? enabling use cases
+> where the order of messages produced by multiple processes are important
+> - Mappedbus can also be described as an efficient IPC mechanism which
+> enable several Java processes/JVMs to communicate by message passing.
+> - The throughput (on a laptop, i7-4558U @ 2.8 GHz) between a single
+> producer writing at full speed and a single consumer is around 40 million
+> messages per second (a small message consisting of three integer fields)
+>
+> Here's how the library solves the synchronization problem between multiple
+> writers (each running in it's own process/JVM):
+> - The first eight bytes of the file make up a field called the limit. This
+> field specifies how much data has actually been written to the file. The
+> readers will poll the limit field (using volatile) to see whether there's a
+> new record to be read.
+> - When a writer wants to add a record to the file it will use the
+> fetch-and-add instruction to atomically update the limit field.
+> - When the limit field has increased a reader will know there's new data
+> to be read, but the writer which updated the limit field might not yet have
+> written any data in the record. To avoid this problem each record contains
+> an initial byte which make up the commit field.
+> - When a writer has finished writing a record it will set the commit field
+> (using volatile) and the reader will only start reading a record once it
+> has seen that the commit field has been set.
+> - A writer might crash after it has updated the limit field but before it
+> has updated the commit field. To avoid this problem there's a field next to
+> the commit field called the rollback field. The reader has a timeout for
+> how long it will wait for the commit field to be set. When that time is
+> reached the reader will set the rollback field (using volatile) and
+> continue with the next record. The rollback field has precedence over the
+> commit field, when the rollback field is set the record is always ignored
+> by the readers.
+>
+> The solution seems to work well on Linux x86 with Oracle's JVM (1.8) but I
+> understand it won't work on all platforms (and it's not intended to).
+>
+> I'd simply like to make sure the solution is sound so any ideas on
+> potential issues would be very much appreciated.
+>
+> Regards,
+>
+> Mikael
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150531/112df252/attachment.html>
+

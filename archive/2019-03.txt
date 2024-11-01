@@ -1,0 +1,3936 @@
+From alexei.kaigorodov at gmail.com  Mon Mar 11 13:47:10 2019
+From: alexei.kaigorodov at gmail.com (Alexei Kaigorodov)
+Date: Mon, 11 Mar 2019 10:47:10 -0700 (MST)
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+Message-ID: <1552326430728-0.post@n7.nabble.com>
+
+I believe there exists deep analogy between synchronous and asynchronous
+worlds. Just as any method can call other methods /on the same thread,/ any
+asynchronous procedure must be able to start other asynchronous procedures
+/on the same thread pool/. To enable this, I propose to add new method to
+the standard java API which would return the reference  to the thread pool
+to which current thread belongs. If the current thread does not belong to
+any thread pool, then the user should be able to set this property with some
+default thread pool.
+
+By asynchronous procedure I mean java.util.concurrent.CompletableFuture,
+java.nio.channels.CompletionHandler, or any  construct which requires a
+thread pool to execute: Akka actor, Kotlin coroutine, RxJava Observable etc.
+
+I believe it should be named java.lang.Thread.currentExecutor(), similar to
+Thread.currentThread(), but can also be named defaultExecutor or
+defaultThreadPool.
+
+I am looking for help and support to compose a  JEP (Java Extension
+Proposal).
+
+
+
+--
+Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+
+From peter.levart at gmail.com  Tue Mar 12 05:58:59 2019
+From: peter.levart at gmail.com (Peter Levart)
+Date: Tue, 12 Mar 2019 10:58:59 +0100
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <1552326430728-0.post@n7.nabble.com>
+References: <1552326430728-0.post@n7.nabble.com>
+Message-ID: <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+
+Hi Alexei,
+
+If for a moment, we limit the applicability of your proposal to 
+ComplatableFuture only, then the obvious question is: "What would we 
+want to achieve with such API addition?". You say that you want to be 
+able to execute an asynchronous task in the same Executor as the 
+executor of the thread executing previous asynchronous task. Is that the 
+behavior you want to achieve? Well, I would want to achieve the same or 
+similar thing in many occasions. So let's see some examples:
+
+     CompletableFuture.supplyAsync(Supplier, Executor)
+
+This case is obvious. The task is submitted by the thread that executes 
+the supplyAsync method. So if this thread is an asynchronous 
+computation, we would achieve the desired effect by passing 
+Thread.currentExecutor() result to this method. But what about this:
+
+     CompletableFuture cf = ....;
+     ...
+
+     cf.thenApplyAsync(Function, Executor)
+
+What is the executor of the thread executing an asynchronous computation 
+represented by 'cf' which is the "previous" asynchronous task? It can be 
+and usually is a different executor than the executor of the thread 
+executing the thenApplyAsync method. So passing the result of 
+Thread.currentExecutor() into this method would not achieve the desired 
+effect.
+
+That said, I too would need similar functionality in many occasions.  
+You can get the "nearly" desired functionality by using the 
+non-asynchronous methods of CompletableFuture. For example:
+
+     CompletableFuture cf = ....;
+     ...
+
+     cf.thenApply(Function)
+
+The documentation says that the submitted task will be executed 
+synchronously by the same thread that completes the 'cf' unless 'cf' has 
+already been completed before calling the thenApply method in which case 
+it will be executed by current thread (the one calling thenApply 
+method). So the behavior depends on timing. That's very unfortunate if 
+the thread calling thenApply method is a scarce resource (for example a 
+single thread in an event loop) and is meant to only dispatch events. It 
+can happen that it also executes tasks if timing is right.
+
+So what would be very useful for CompletableFuture (or another kind of 
+CompletionStage?) would be to have a special mode of building the 
+execution chains of tasks that would never employ the thread that calls 
+the CF API to actually execute the tasks.
+
+This can be achieved today with consistent calls to thenXXXAsync() 
+methods by passing the desired Executor, but then the tasks are really 
+executed each in it's own asynchronous computation. If one wanted to 
+"append" a task that would execute synchronously in the same thread as 
+the previous in the chain immediately after it if it is possible or else 
+in the same executor as the previous task, this can't be achieved today.
+
+I'm thinking of the following semantics and method names... We already 
+have thenXxxAsync methods without Executor parameter and thenXxxAsync 
+methods with Executor parameter with defined semantics. We already have 
+thenXxx methods without Executor parameter with defined semantics. 
+Obvious candidate for new semantics would be thenXxx methods with 
+Executor parameter. For example:
+
+     CompletableFuture cf = ....;
+     ...
+
+     cf.thenApply(Function, Executor)
+
+The behaviour of this method would be: If the 'cf' is not completed yet, 
+it submits a task that will be completed synchronously in the same 
+thread that completes the 'cf'. If 'cf' is already completed, it submits 
+an asynchronous task to be executed in the provided Executor.
+
+Would that make sense as an addition to the CompletableFuture API?
+
+Regards, Peter
+
+
+On 3/11/19 6:47 PM, Alexei Kaigorodov via Concurrency-interest wrote:
+> I believe there exists deep analogy between synchronous and asynchronous
+> worlds. Just as any method can call other methods /on the same thread,/ any
+> asynchronous procedure must be able to start other asynchronous procedures
+> /on the same thread pool/. To enable this, I propose to add new method to
+> the standard java API which would return the reference  to the thread pool
+> to which current thread belongs. If the current thread does not belong to
+> any thread pool, then the user should be able to set this property with some
+> default thread pool.
+>
+> By asynchronous procedure I mean java.util.concurrent.CompletableFuture,
+> java.nio.channels.CompletionHandler, or any  construct which requires a
+> thread pool to execute: Akka actor, Kotlin coroutine, RxJava Observable etc.
+>
+> I believe it should be named java.lang.Thread.currentExecutor(), similar to
+> Thread.currentThread(), but can also be named defaultExecutor or
+> defaultThreadPool.
+>
+> I am looking for help and support to compose a  JEP (Java Extension
+> Proposal).
+>
+>
+>
+> --
+> Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From pavel.rappo at gmail.com  Tue Mar 12 07:51:27 2019
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Tue, 12 Mar 2019 11:51:27 +0000
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <1552326430728-0.post@n7.nabble.com>
+References: <1552326430728-0.post@n7.nabble.com>
+Message-ID: <CAChcVumwN9bdNv1pHRu9cC84hBm7CKOqtShCpoebJZ_+jDbzfw@mail.gmail.com>
+
+On Mon, Mar 11, 2019 at 5:48 PM Alexei Kaigorodov via
+Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>
+> To enable this, I propose to add new method to
+> the standard java API which would return the reference  to the thread pool
+> to which current thread belongs.
+
+If I were you I would make a good case for that first. Explain
+exhaustively why this feature is needed, with examples. List the
+alternatives and listen carefully to the feedback. Rinse, repeat. JEP
+is more of a procedural step compared to those previous steps and can
+be done later.
+
+-Pavel
+
+From dl at cs.oswego.edu  Tue Mar 12 11:28:51 2019
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue, 12 Mar 2019 11:28:51 -0400
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+Message-ID: <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+
+On 3/12/19 5:58 AM, Peter Levart via Concurrency-interest wrote:
+
+>     CompletableFuture cf = ....;
+>     ...
+> 
+>     cf.thenApply(Function, Executor)
+> 
+> The behaviour of this method would be: If the 'cf' is not completed yet,
+> it submits a task that will be completed synchronously in the same
+> thread that completes the 'cf'. If 'cf' is already completed, it submits
+> an asynchronous task to be executed in the provided Executor.
+> 
+
+Thanks for the analysis. I agree that if we had this method (and its
+variants), people would be unlikely to want a currentExecutor() method.
+(Which is not quite to conclude yet that we should do it.)
+
+And those who still do want some form of currentExecutor() could just
+use a ThreadLocal.
+
+Further opinions welcome though.
+
+-Doug
+
+
+
+From viktor.klang at gmail.com  Tue Mar 12 11:57:25 2019
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Tue, 12 Mar 2019 16:57:25 +0100
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+ <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+Message-ID: <CANPzfU_wTDjdpZ59MEPUMkZmdHVFMf4PjM2YFvT3=0HfUzYKrw@mail.gmail.com>
+
+Check if the current Thread’s ThreadGroup is instanceOf Executor? ;-)
+
+On Tue, 12 Mar 2019 at 16:30, Doug Lea via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> On 3/12/19 5:58 AM, Peter Levart via Concurrency-interest wrote:
+>
+> >     CompletableFuture cf = ....;
+> >     ...
+> >
+> >     cf.thenApply(Function, Executor)
+> >
+> > The behaviour of this method would be: If the 'cf' is not completed yet,
+> > it submits a task that will be completed synchronously in the same
+> > thread that completes the 'cf'. If 'cf' is already completed, it submits
+> > an asynchronous task to be executed in the provided Executor.
+> >
+>
+> Thanks for the analysis. I agree that if we had this method (and its
+> variants), people would be unlikely to want a currentExecutor() method.
+> (Which is not quite to conclude yet that we should do it.)
+>
+> And those who still do want some form of currentExecutor() could just
+> use a ThreadLocal.
+>
+> Further opinions welcome though.
+>
+> -Doug
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-- 
+Cheers,
+√
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190312/56c0270e/attachment.html>
+
+From oleksandr.otenko at gmail.com  Tue Mar 12 12:00:26 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Tue, 12 Mar 2019 16:00:26 +0000
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+ <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+Message-ID: <81B97BD3-6BD8-4F81-8D22-E83E2C359CC0@gmail.com>
+
+I think what Peter wants is more like:
+
+  public static <T, U> CompletableFuture<U> then(CompletableFuture<T> cf,
+                                                 Function<T, U> f) {
+    final AtomicInteger ai = new AtomicInteger();
+    final CompletableFuture<U> that = cf.thenCompose(i -> ai.get() == 0 ?
+                                                           cf.thenApplyAsync(f):
+                                                           cf.thenApply(f));
+    ai.set(1);
+    return that;
+  }
+
+Not so much a ThreadLocal, but a witness of who got to thenCompose_ - this method, or someone concurrent.
+
+Alex
+
+
+> On 12 Mar 2019, at 15:28, Doug Lea via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+> On 3/12/19 5:58 AM, Peter Levart via Concurrency-interest wrote:
+> 
+>>     CompletableFuture cf = ....;
+>>     ...
+>> 
+>>     cf.thenApply(Function, Executor)
+>> 
+>> The behaviour of this method would be: If the 'cf' is not completed yet,
+>> it submits a task that will be completed synchronously in the same
+>> thread that completes the 'cf'. If 'cf' is already completed, it submits
+>> an asynchronous task to be executed in the provided Executor.
+>> 
+> 
+> Thanks for the analysis. I agree that if we had this method (and its
+> variants), people would be unlikely to want a currentExecutor() method.
+> (Which is not quite to conclude yet that we should do it.)
+> 
+> And those who still do want some form of currentExecutor() could just
+> use a ThreadLocal.
+> 
+> Further opinions welcome though.
+> 
+> -Doug
+> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190312/78b78552/attachment.html>
+
+From alexei.kaigorodov at gmail.com  Tue Mar 12 13:05:47 2019
+From: alexei.kaigorodov at gmail.com (Alexei Kaigorodov)
+Date: Wed, 13 Mar 2019 00:05:47 +0700
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+Message-ID: <CALCS1ZVUQEf_wiaztvQf3TW+f2MaPTGv3MqAWHNw7m6SFL5-_g@mail.gmail.com>
+
+Peter,
+
+I think the proposed semantics of method "thenApply(Function, Executor)" is
+misleading. The user provides
+Executor, but sometimes the Function is executed on that Executor, and
+sometimes not. This is very confusing.
+
+Anyway, this is not similar to what I am looking for.
+
+thanks,
+Alexei
+
+On Tue, 12 Mar 2019 at 16:59, Peter Levart <peter.levart at gmail.com> wrote:
+
+> Obvious candidate for new semantics would be thenXxx methods with
+> Executor parameter. For example:
+>
+>      CompletableFuture cf = ....;
+>      ...
+>
+>      cf.thenApply(Function, Executor)
+>
+> The behaviour of this method would be: If the 'cf' is not completed yet,
+> it submits a task that will be completed synchronously in the same
+> thread that completes the 'cf'. If 'cf' is already completed, it submits
+> an asynchronous task to be executed in the provided Executor.
+>
+> Would that make sense as an addition to the CompletableFuture API?
+>
+> Regards, Peter
+
+On 3/11/19 6:47 PM, Alexei Kaigorodov via Concurrency-interest wrote:
+> > I believe there exists deep analogy between synchronous and asynchronous
+> > worlds. Just as any method can call other methods /on the same thread,/
+> any
+> > asynchronous procedure must be able to start other asynchronous
+> procedures
+> > /on the same thread pool/. To enable this, I propose to add new method to
+> > the standard java API which would return the reference  to the thread
+> pool
+> > to which current thread belongs. If the current thread does not belong to
+> > any thread pool, then the user should be able to set this property with
+> some
+> > default thread pool.
+> >
+> > By asynchronous procedure I mean java.util.concurrent.CompletableFuture,
+> > java.nio.channels.CompletionHandler, or any  construct which requires a
+> > thread pool to execute: Akka actor, Kotlin coroutine, RxJava Observable
+> etc.
+> >
+> > I believe it should be named java.lang.Thread.currentExecutor(), similar
+> to
+> > Thread.currentThread(), but can also be named defaultExecutor or
+> > defaultThreadPool.
+> >
+> > I am looking for help and support to compose a  JEP (Java Extension
+> > Proposal).
+> >
+> >
+> >
+> > --
+> > Sent from: http://jsr166-concurrency.10961.n7.nabble.com/
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190313/d9070d03/attachment.html>
+
+From alexei.kaigorodov at gmail.com  Tue Mar 12 13:47:51 2019
+From: alexei.kaigorodov at gmail.com (Alexei Kaigorodov)
+Date: Wed, 13 Mar 2019 00:47:51 +0700
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <CAChcVumwN9bdNv1pHRu9cC84hBm7CKOqtShCpoebJZ_+jDbzfw@mail.gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <CAChcVumwN9bdNv1pHRu9cC84hBm7CKOqtShCpoebJZ_+jDbzfw@mail.gmail.com>
+Message-ID: <CALCS1ZUBxef6eSu3-c4FzDmh36FJVhEeYvFLQsDvUEQJr-TNmQ@mail.gmail.com>
+
+Pavel,
+I prepared a ghist:
+https://gist.github.com/akaigoro/734553139c87bee98e1ef190eb5c0536
+
+Let we have a simple method asyncJob0 and call it asynchronously:
+
+    Executor exec = ForkJoinPool.commonPool();
+    CompletableFuture<String> cf0 =
+CompletableFuture.supplyAsync(CurrentExec::asyncJob0, exec);
+    System.out.println(cf0.get());
+
+
+Sooner or later, we want to refactor (parallelize) the method asyncJob0,
+but we do not want to change the place where it is called. This is a common
+use case when a library is evolving. So we change the method as follows
+(its name changed to asyncJob1 only for convenience, in real life it would
+not):
+
+static String asyncJob1() {
+    Executor exec = currentExecutor();
+    CompletableFuture<String> cf0 = CompletableFuture.supplyAsync
+(CurrentExec::asyncJob0, exec);
+    String part1 = "+asyncJob1"; // suppose this is a heavy computation
+    try {
+        return cf0.get()+part1;
+    } catch (Exception e) {
+        throw new RuntimeException(e);
+    }
+}
+
+So we made 2 parallel branches: one computes cf0 and the other computes
+part1. And we want to compute cf0 on the same thread pool as that is
+currently used - just because we have no other computational resources at
+hand, all resources are controlled by the user and we do not want to bother
+him and ask him to resolve our problems. For this we call exec =
+currentExecutor(); the implementation in the ghist works for ForkJoinPool
+but does not work for others (@Viktor Klang: checking if the thread group
+implements Executor, does not work for result of Executors.
+newFixedThreadPool()).
+
+This solution is not ideal because it may block when calling to
+cf0.get() -  but
+it is the result of limitations of CompletableFuture design: we have no
+other way to provide the result. The right solution would be to replace the
+single asynchronous procedure call of asyncJob0 with 3: two parallel
+branches plus computing the final result. This is possible when some other
+asynchronous frameworks used.
+
+
+thanks
+Alexei
+
+
+On Tue, 12 Mar 2019 at 18:51, Pavel Rappo <pavel.rappo at gmail.com> wrote:
+
+> On Mon, Mar 11, 2019 at 5:48 PM Alexei Kaigorodov via
+> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> >
+> > To enable this, I propose to add new method to
+> > the standard java API which would return the reference  to the thread
+> pool
+> > to which current thread belongs.
+>
+> If I were you I would make a good case for that first. Explain
+> exhaustively why this feature is needed, with examples. List the
+> alternatives and listen carefully to the feedback. Rinse, repeat. JEP
+> is more of a procedural step compared to those previous steps and can
+> be done later.
+>
+> -Pavel
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190313/7661e694/attachment-0001.html>
+
+From viktor.klang at gmail.com  Tue Mar 12 14:05:15 2019
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Tue, 12 Mar 2019 19:05:15 +0100
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <CALCS1ZUBxef6eSu3-c4FzDmh36FJVhEeYvFLQsDvUEQJr-TNmQ@mail.gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <CAChcVumwN9bdNv1pHRu9cC84hBm7CKOqtShCpoebJZ_+jDbzfw@mail.gmail.com>
+ <CALCS1ZUBxef6eSu3-c4FzDmh36FJVhEeYvFLQsDvUEQJr-TNmQ@mail.gmail.com>
+Message-ID: <CANPzfU8d1EudKkPqnYOGf0GVZ+nez4bErOd7wxd18b=vwi9TGQ@mail.gmail.com>
+
+An Executors.currentExecutor() seems more feasible given that Thread is in
+java.lang
+
+However, there are tons of subleties here, for instance: sometimes an
+Executor is simply overlaying logic ontop of another Executor, in those
+cases you’d want the overlaying Executor to be returned.
+
+I assume it would be rather simple to retrofit current jsr166 pools to do
+the right thing, but there are many customizations/alternative
+implementations out there and I see no easy solution to that.
+
+Cheers,
+V
+
+
+
+On Tue, 12 Mar 2019 at 18:48, Alexei Kaigorodov via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> Pavel,
+> I prepared a ghist:
+> https://gist.github.com/akaigoro/734553139c87bee98e1ef190eb5c0536
+>
+> Let we have a simple method asyncJob0 and call it asynchronously:
+>
+>     Executor exec = ForkJoinPool.commonPool();
+>     CompletableFuture<String> cf0 = CompletableFuture.supplyAsync(CurrentExec::asyncJob0, exec);
+>     System.out.println(cf0.get());
+>
+>
+> Sooner or later, we want to refactor (parallelize) the method asyncJob0,
+> but we do not want to change the place where it is called. This is a common
+> use case when a library is evolving. So we change the method as follows
+> (its name changed to asyncJob1 only for convenience, in real life it
+> would not):
+>
+> static String asyncJob1() {
+>     Executor exec = currentExecutor();
+>     CompletableFuture<String> cf0 = CompletableFuture.supplyAsync
+> (CurrentExec::asyncJob0, exec);
+>     String part1 = "+asyncJob1"; // suppose this is a heavy computation
+>     try {
+>         return cf0.get()+part1;
+>     } catch (Exception e) {
+>         throw new RuntimeException(e);
+>     }
+> }
+>
+> So we made 2 parallel branches: one computes cf0 and the other computes
+> part1. And we want to compute cf0 on the same thread pool as that is
+> currently used - just because we have no other computational resources at
+> hand, all resources are controlled by the user and we do not want to bother
+> him and ask him to resolve our problems. For this we call exec =
+> currentExecutor(); the implementation in the ghist works for ForkJoinPool
+> but does not work for others (@Viktor Klang: checking if the thread group
+> implements Executor, does not work for result of Executors.
+> newFixedThreadPool()).
+>
+> This solution is not ideal because it may block when calling to cf0.get()
+> -  but it is the result of limitations of CompletableFuture design: we
+> have no other way to provide the result. The right solution would be to
+> replace the single asynchronous procedure call of asyncJob0 with 3: two
+> parallel branches plus computing the final result. This is possible when
+> some other asynchronous frameworks used.
+>
+>
+> thanks
+>
+> Alexei
+>
+>
+> On Tue, 12 Mar 2019 at 18:51, Pavel Rappo <pavel.rappo at gmail.com> wrote:
+>
+>> On Mon, Mar 11, 2019 at 5:48 PM Alexei Kaigorodov via
+>> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>> >
+>> > To enable this, I propose to add new method to
+>> > the standard java API which would return the reference  to the thread
+>> pool
+>> > to which current thread belongs.
+>>
+>> If I were you I would make a good case for that first. Explain
+>> exhaustively why this feature is needed, with examples. List the
+>> alternatives and listen carefully to the feedback. Rinse, repeat. JEP
+>> is more of a procedural step compared to those previous steps and can
+>> be done later.
+>>
+>> -Pavel
+>>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-- 
+Cheers,
+√
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190312/076d7bd5/attachment.html>
+
+From peter.levart at gmail.com  Tue Mar 12 15:55:25 2019
+From: peter.levart at gmail.com (Peter Levart)
+Date: Tue, 12 Mar 2019 20:55:25 +0100
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <81B97BD3-6BD8-4F81-8D22-E83E2C359CC0@gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+ <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+ <81B97BD3-6BD8-4F81-8D22-E83E2C359CC0@gmail.com>
+Message-ID: <d2bc84d0-779e-9aa5-8e37-9f6a2c9bff40@gmail.com>
+
+
+
+On 3/12/19 5:00 PM, Alex Otenko via Concurrency-interest wrote:
+> I think what Peter wants is more like:
+>
+> publicstatic<T, U> CompletableFuture<U> then(CompletableFuture<T> cf,
+>                                               Function<T, U> f) {
+> finalAtomicInteger ai = newAtomicInteger();
+> finalCompletableFuture<U> that = cf.thenCompose(i -> ai.get() == 0?
+> cf.thenApplyAsync(f):
+> cf.thenApply(f));
+>   ai.set(1);
+> returnthat;
+> }
+>
+> Not so much a ThreadLocal, but a witness of who got to thenCompose_ - 
+> this method, or someone concurrent.
+>
+> Alex
+
+Yes, the semantics of above method is what I was thinking about. Now 
+that Alex has (again) found the solution with thenCompose, I can modify 
+it into a similar (without harmless race) solution that is hopefully 
+also more easy to understand:
+
+     public static <T, U> CompletableFuture<U> 
+thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn) {
+         Thread thisThread = Thread.currentThread();
+         return cf.thenCompose(t -> Thread.currentThread() == thisThread
+                                    ? cf.thenApplyAsync(fn)
+                                    : cf.thenApply(fn));
+     }
+
+Which suggests that the solution is very easy to implement as static 
+methods. It is not as pretty as CF instance methods would be, but will 
+do for now.
+
+Thanks,
+
+Peter
+
+>
+>
+>> On 12 Mar 2019, at 15:28, Doug Lea via Concurrency-interest 
+>> <concurrency-interest at cs.oswego.edu 
+>> <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>>
+>> On 3/12/19 5:58 AM, Peter Levart via Concurrency-interest wrote:
+>>
+>>>     CompletableFuture cf = ....;
+>>>     ...
+>>>
+>>>     cf.thenApply(Function, Executor)
+>>>
+>>> The behaviour of this method would be: If the 'cf' is not completed yet,
+>>> it submits a task that will be completed synchronously in the same
+>>> thread that completes the 'cf'. If 'cf' is already completed, it submits
+>>> an asynchronous task to be executed in the provided Executor.
+>>>
+>>
+>> Thanks for the analysis. I agree that if we had this method (and its
+>> variants), people would be unlikely to want a currentExecutor() method.
+>> (Which is not quite to conclude yet that we should do it.)
+>>
+>> And those who still do want some form of currentExecutor() could just
+>> use a ThreadLocal.
+>>
+>> Further opinions welcome though.
+>>
+>> -Doug
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu 
+>> <mailto:Concurrency-interest at cs.oswego.edu>
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190312/62df62db/attachment-0001.html>
+
+From alexei.kaigorodov at gmail.com  Tue Mar 12 16:09:36 2019
+From: alexei.kaigorodov at gmail.com (Alexei Kaigorodov)
+Date: Wed, 13 Mar 2019 03:09:36 +0700
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <CANPzfU8d1EudKkPqnYOGf0GVZ+nez4bErOd7wxd18b=vwi9TGQ@mail.gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <CAChcVumwN9bdNv1pHRu9cC84hBm7CKOqtShCpoebJZ_+jDbzfw@mail.gmail.com>
+ <CALCS1ZUBxef6eSu3-c4FzDmh36FJVhEeYvFLQsDvUEQJr-TNmQ@mail.gmail.com>
+ <CANPzfU8d1EudKkPqnYOGf0GVZ+nez4bErOd7wxd18b=vwi9TGQ@mail.gmail.com>
+Message-ID: <CALCS1ZVEQXLJVjhnDYKAxvmHrHzCPdpaTaqUwMR_8YRGPnQYig@mail.gmail.com>
+
+thanks,
+Alexei
+
+
+On Wed, 13 Mar 2019 at 01:05, Viktor Klang <viktor.klang at gmail.com> wrote:
+
+> An Executors.currentExecutor() seems more feasible given that Thread is in
+> java.lang
+>
+Since this is a static method, the enclosing class does not matter. I
+proposed class Thread only because the other way to get access to the
+current pool is to propagate method ForkJoinWorkerThread.getPool() to the
+class java.lang.Thread.
+
+However, there are tons of subleties here, for instance: sometimes an
+> Executor is simply overlaying logic ontop of another Executor, in those
+> cases you’d want the overlaying Executor to be returned.
+>
+I don't think so. To get exposed Executor is ok.
+
+
+> I assume it would be rather simple to retrofit current jsr166 pools to do
+> the right thing, but there are many customizations/alternative
+> implementations out there and I see no easy solution to that.
+>
+ Yes indeed, we cannot expect to get executor in all cases, also because
+the current thread may not be a member of any thread pool.
+
+Cheers,
+> V
+>
+
+thanks,
+Alexei
+
+
+>
+> On Tue, 12 Mar 2019 at 18:48, Alexei Kaigorodov via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>> Pavel,
+>> I prepared a ghist:
+>> https://gist.github.com/akaigoro/734553139c87bee98e1ef190eb5c0536
+>>
+>> Let we have a simple method asyncJob0 and call it asynchronously:
+>>
+>>     Executor exec = ForkJoinPool.commonPool();
+>>     CompletableFuture<String> cf0 = CompletableFuture.supplyAsync(CurrentExec::asyncJob0, exec);
+>>     System.out.println(cf0.get());
+>>
+>>
+>> Sooner or later, we want to refactor (parallelize) the method asyncJob0,
+>> but we do not want to change the place where it is called. This is a common
+>> use case when a library is evolving. So we change the method as follows
+>> (its name changed to asyncJob1 only for convenience, in real life it
+>> would not):
+>>
+>> static String asyncJob1() {
+>>     Executor exec = currentExecutor();
+>>     CompletableFuture<String> cf0 = CompletableFuture.supplyAsync
+>> (CurrentExec::asyncJob0, exec);
+>>     String part1 = "+asyncJob1"; // suppose this is a heavy computation
+>>     try {
+>>         return cf0.get()+part1;
+>>     } catch (Exception e) {
+>>         throw new RuntimeException(e);
+>>     }
+>> }
+>>
+>> So we made 2 parallel branches: one computes cf0 and the other computes
+>> part1. And we want to compute cf0 on the same thread pool as that is
+>> currently used - just because we have no other computational resources at
+>> hand, all resources are controlled by the user and we do not want to bother
+>> him and ask him to resolve our problems. For this we call exec =
+>> currentExecutor(); the implementation in the ghist works for
+>> ForkJoinPool but does not work for others (@Viktor Klang: checking if the
+>> thread group implements Executor, does not work for result of Executors.
+>> newFixedThreadPool()).
+>>
+>> This solution is not ideal because it may block when calling to cf0.get()
+>> -  but it is the result of limitations of CompletableFuture design: we
+>> have no other way to provide the result. The right solution would be to
+>> replace the single asynchronous procedure call of asyncJob0 with 3: two
+>> parallel branches plus computing the final result. This is possible when
+>> some other asynchronous frameworks used.
+>>
+>>
+>> thanks
+>>
+>> Alexei
+>>
+>>
+>> On Tue, 12 Mar 2019 at 18:51, Pavel Rappo <pavel.rappo at gmail.com> wrote:
+>>
+>>> On Mon, Mar 11, 2019 at 5:48 PM Alexei Kaigorodov via
+>>> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>>> >
+>>> > To enable this, I propose to add new method to
+>>> > the standard java API which would return the reference  to the thread
+>>> pool
+>>> > to which current thread belongs.
+>>>
+>>> If I were you I would make a good case for that first. Explain
+>>> exhaustively why this feature is needed, with examples. List the
+>>> alternatives and listen carefully to the feedback. Rinse, repeat. JEP
+>>> is more of a procedural step compared to those previous steps and can
+>>> be done later.
+>>>
+>>> -Pavel
+>>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+> --
+> Cheers,
+> √
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190313/47f9c1d2/attachment.html>
+
+From peter.levart at gmail.com  Tue Mar 12 21:15:18 2019
+From: peter.levart at gmail.com (Peter Levart)
+Date: Wed, 13 Mar 2019 02:15:18 +0100
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <CALCS1ZVEQXLJVjhnDYKAxvmHrHzCPdpaTaqUwMR_8YRGPnQYig@mail.gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <CAChcVumwN9bdNv1pHRu9cC84hBm7CKOqtShCpoebJZ_+jDbzfw@mail.gmail.com>
+ <CALCS1ZUBxef6eSu3-c4FzDmh36FJVhEeYvFLQsDvUEQJr-TNmQ@mail.gmail.com>
+ <CANPzfU8d1EudKkPqnYOGf0GVZ+nez4bErOd7wxd18b=vwi9TGQ@mail.gmail.com>
+ <CALCS1ZVEQXLJVjhnDYKAxvmHrHzCPdpaTaqUwMR_8YRGPnQYig@mail.gmail.com>
+Message-ID: <de0b0b75-46fb-8352-3676-77d299a97af4@gmail.com>
+
+Hi Alexei,
+
+On 3/12/19 9:09 PM, Alexei Kaigorodov via Concurrency-interest wrote:
+>
+> thanks,
+> Alexei
+>
+>
+> On Wed, 13 Mar 2019 at 01:05, Viktor Klang <viktor.klang at gmail.com 
+> <mailto:viktor.klang at gmail.com>> wrote:
+>
+>     An Executors.currentExecutor() seems more feasible given that
+>     Thread is in java.lang
+>
+> Since this is a static method, the enclosing class does not matter. I 
+> proposed class Thread only because the other way to get access to the 
+> current pool is to propagate method ForkJoinWorkerThread.getPool() to 
+> the class java.lang.Thread.
+>
+>     However, there are tons of subleties here, for instance: sometimes
+>     an Executor is simply overlaying logic ontop of another Executor,
+>     in those cases you’d want the overlaying Executor to be returned.
+>
+> I don't think so. To get exposed Executor is ok.
+
+That might not be safe. Executors get wrapped for reasons. For example, 
+Executors.unconfigurableExecutorService(ExecutorService) shields the 
+underlying ExecutorService from being modified. Getting to it would 
+defeat the purpose of wrapping it.
+
+OTOH, if you can make the "client" that chooses the Executor of async 
+computation to wrap it with a special delegating AccessibleExecutor, you 
+could then access it in the in the body of asyncJob() method via a 
+ThreadLocal:
+
+public class AccessibleExecutor implements Executor {
+     private static final ThreadLocal<AccessibleExecutor> EXECUTOR_TL = 
+new ThreadLocal<>();
+
+     public static Executor getCurrent() {
+         return EXECUTOR_TL.get();
+     }
+
+     private final Executor executor;
+
+     public AccessibleExecutor(Executor executor) {
+         this.executor = executor;
+     }
+
+     @Override
+     public void execute(Runnable command) {
+         executor.execute(() -> {
+             EXECUTOR_TL.set(this);
+             try {
+                 command.run();
+             } finally {
+                 EXECUTOR_TL.remove();
+             }
+         });
+     }
+}
+
+// and then ...
+
+Executor exec0 = ...
+Executor exec = new AccessibleExecutor(exec0);
+CompletableFuture.supplyAsync(CurrentExec::asyncJob, exec);
+
+static String asyncJob() {
+     Executor exec = AccessibleExecutor.getCurrent();
+     ...
+
+
+Regards, Peter
+
+>     I assume it would be rather simple to retrofit current jsr166
+>     pools to do the right thing, but there are many
+>     customizations/alternative implementations out there and I see no
+>     easy solution to that.
+>
+>  Yes indeed, we cannot expect to get executor in all cases, also 
+> because the current thread may not be a member of any thread pool.
+>
+>     Cheers,
+>     V
+>
+>
+> thanks,
+> Alexei
+>
+>
+>     On Tue, 12 Mar 2019 at 18:48, Alexei Kaigorodov via
+>     Concurrency-interest <concurrency-interest at cs.oswego.edu
+>     <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>
+>         Pavel,
+>         I prepared a ghist:
+>         https://gist.github.com/akaigoro/734553139c87bee98e1ef190eb5c0536
+>
+>         Let we have a simple method asyncJob0 and call it asynchronously:
+>
+>              Executor exec = ForkJoinPool.commonPool();
+>              CompletableFuture<String> cf0 = CompletableFuture.supplyAsync(CurrentExec::asyncJob0, exec);
+>              System.out.println(cf0.get());
+>
+>
+>         Sooner or later, we want to refactor (parallelize) the method
+>         asyncJob0, but we do not want to change the place where it is
+>         called. This is a common use case when a library is evolving.
+>         So we change the method as follows (its name changed to
+>         asyncJob1 only for convenience, in real life it would not):
+>
+>         static String asyncJob1() {
+>           Executor exec = currentExecutor();
+>         CompletableFuture<String> cf0 =
+>         CompletableFuture.supplyAsync(CurrentExec::asyncJob0, exec);
+>           String part1 = "+asyncJob1"; // suppose this is a heavy
+>         computation
+>         try {
+>         return cf0.get()+part1;
+>           } catch (Exception e) {
+>         throw new RuntimeException(e);
+>           }
+>         }
+>
+>         So we made 2 parallel branches: one computes cf0 and the other
+>         computes part1. And we want to compute cf0 on the same thread
+>         pool as that is currently used - just because we have no other
+>         computational resources at hand, all resources are controlled
+>         by the user and we do not want to bother him and ask him to
+>         resolve our problems. For this we call exec =
+>         currentExecutor(); the implementation in the ghist works for
+>         ForkJoinPool but does not work for others (@Viktor Klang:
+>         checking if the thread group implements Executor, does not
+>         work for result of Executors.newFixedThreadPool()).
+>
+>         This solution is not ideal because it may block when calling
+>         to cf0.get() -  but it is the result of limitations of
+>         CompletableFuture design: we have no other way to provide the
+>         result. The right solution would be to replace the single
+>         asynchronous procedure call of asyncJob0 with 3: two parallel
+>         branches plus computing the final result. This is possible
+>         when some other asynchronous frameworks used.
+>
+>
+>         thanks
+>
+>         Alexei
+>
+>
+>         On Tue, 12 Mar 2019 at 18:51, Pavel Rappo
+>         <pavel.rappo at gmail.com <mailto:pavel.rappo at gmail.com>> wrote:
+>
+>             On Mon, Mar 11, 2019 at 5:48 PM Alexei Kaigorodov via
+>             Concurrency-interest <concurrency-interest at cs.oswego.edu
+>             <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>             >
+>             > To enable this, I propose to add new method to
+>             > the standard java API which would return the reference 
+>             to the thread pool
+>             > to which current thread belongs.
+>
+>             If I were you I would make a good case for that first. Explain
+>             exhaustively why this feature is needed, with examples.
+>             List the
+>             alternatives and listen carefully to the feedback. Rinse,
+>             repeat. JEP
+>             is more of a procedural step compared to those previous
+>             steps and can
+>             be done later.
+>
+>             -Pavel
+>
+>         _______________________________________________
+>         Concurrency-interest mailing list
+>         Concurrency-interest at cs.oswego.edu
+>         <mailto:Concurrency-interest at cs.oswego.edu>
+>         http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>     -- 
+>     Cheers,
+>     √
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190313/49203d17/attachment-0001.html>
+
+From pavel.rappo at gmail.com  Thu Mar 14 09:50:17 2019
+From: pavel.rappo at gmail.com (Pavel Rappo)
+Date: Thu, 14 Mar 2019 13:50:17 +0000
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <CALCS1ZUBxef6eSu3-c4FzDmh36FJVhEeYvFLQsDvUEQJr-TNmQ@mail.gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <CAChcVumwN9bdNv1pHRu9cC84hBm7CKOqtShCpoebJZ_+jDbzfw@mail.gmail.com>
+ <CALCS1ZUBxef6eSu3-c4FzDmh36FJVhEeYvFLQsDvUEQJr-TNmQ@mail.gmail.com>
+Message-ID: <52EEBF3E-FD0C-4052-8E64-1F2ACF1D8359@gmail.com>
+
+Thanks for providing that example.
+
+I agree there is some "analogy between synchronous and asynchronous worlds".
+However, it's not clear how to extend what we have in the world of Threads into
+the world of Executors.
+
+There is something in the world of Executors that doesn't seem to exist in the
+world of Threads. I don't know how important that is though.
+
+For instance, could it be the case that a thread might belong to more than a
+single executor? Consider a "same thread" executor or wrapped executors. Or
+consider the case where executors are hidden because of encapsulation. After all
+there's a limited damage you could do having a reference to the current thread
+or tying it up with your tasks unwisely. It might be a completely different
+thing, if you had a reference to the executor.
+
+Is it possible that this is not such a widespread or general problem that it
+requires addressing on such a high level (java.lang.Thread)? Is it possible that
+this is mostly a problem for the code that uses CompletableFutures? Could it be
+that the most of that problem would be gone if the user had a simple way to say
+"execute that task in the same executor that this current task is executing"[*]?
+In which case there wouldn't be any need for a reference to the executor.
+
+If so, then the scope of the problem seems a lot smaller.
+
+[*] Modulo the root task which will either have to use some default setting or
+    specify the executor explicitly.
+
+> On 12 Mar 2019, at 17:47, Alexei Kaigorodov <alexei.kaigorodov at gmail.com> wrote:
+> 
+> Pavel,
+> I prepared a ghist: https://gist.github.com/akaigoro/734553139c87bee98e1ef190eb5c0536
+> 
+> Let we have a simple method asyncJob0 and call it asynchronously:
+>     Executor exec = ForkJoinPool.commonPool();
+>     CompletableFuture<String> cf0 = CompletableFuture.supplyAsync(CurrentExec::asyncJob0, exec);
+>     System.out.println(cf0.get());
+> 
+> Sooner or later, we want to refactor (parallelize) the method asyncJob0, but we do not want to change the place where it is called. This is a common use case when a library is evolving. So we change the method as follows (its name changed to asyncJob1 only for convenience, in real life it would not):
+> 
+> static String asyncJob1() {
+>     Executor exec = currentExecutor();
+>     CompletableFuture<String> cf0 = CompletableFuture.supplyAsync(CurrentExec::asyncJob0, exec);
+>     String part1 = "+asyncJob1"; // suppose this is a heavy computation
+>     try {
+>         return cf0.get()+part1;
+>     } catch (Exception e) {
+>         throw new RuntimeException(e);
+>     }
+> }
+> 
+> So we made 2 parallel branches: one computes cf0 and the other computes part1. And we want to compute cf0 on the same thread pool as that is currently used - just because we have no other computational resources at hand, all resources are controlled by the user and we do not want to bother him and ask him to resolve our problems. For this we call exec = currentExecutor(); the implementation in the ghist works for ForkJoinPool but does not work for others (@Viktor Klang: checking if the thread group implements Executor, does not work for result of Executors.newFixedThreadPool()).
+> 
+> This solution is not ideal because it may block when calling to cf0.get() -  but it is the result of limitations of CompletableFuture design: we have no other way to provide the result. The right solution would be to replace the single asynchronous procedure call of asyncJob0 with 3: two parallel branches plus computing the final result. This is possible when some other asynchronous frameworks used.
+> 
+> 
+> thanks
+> Alexei
+> 
+> 
+> On Tue, 12 Mar 2019 at 18:51, Pavel Rappo <pavel.rappo at gmail.com> wrote:
+> On Mon, Mar 11, 2019 at 5:48 PM Alexei Kaigorodov via
+> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> >
+> > To enable this, I propose to add new method to
+> > the standard java API which would return the reference  to the thread pool
+> > to which current thread belongs.
+> 
+> If I were you I would make a good case for that first. Explain
+> exhaustively why this feature is needed, with examples. List the
+> alternatives and listen carefully to the feedback. Rinse, repeat. JEP
+> is more of a procedural step compared to those previous steps and can
+> be done later.
+> 
+> -Pavel
+
+
+From alexei.kaigorodov at gmail.com  Sun Mar 17 05:09:34 2019
+From: alexei.kaigorodov at gmail.com (Alexei Kaigorodov)
+Date: Sun, 17 Mar 2019 16:09:34 +0700
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <52EEBF3E-FD0C-4052-8E64-1F2ACF1D8359@gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <CAChcVumwN9bdNv1pHRu9cC84hBm7CKOqtShCpoebJZ_+jDbzfw@mail.gmail.com>
+ <CALCS1ZUBxef6eSu3-c4FzDmh36FJVhEeYvFLQsDvUEQJr-TNmQ@mail.gmail.com>
+ <52EEBF3E-FD0C-4052-8E64-1F2ACF1D8359@gmail.com>
+Message-ID: <CALCS1ZU9QTOF1_13hp-D0Gkxf8e+77aLhLyaC0fJwaRSVBDKbQ@mail.gmail.com>
+
+Pavel,
+good points.
+- yes there can exist delegating executors and taking reference to current
+executor from current thread would point to different executor.
+
+- is not  a problem for the code that uses CompletableFutures, because when
+using CompletableFutures, user code has no access to the underlying Future
+anyway. The only way it can set the value to the underlying future is to
+return a computed value, and I an thinking of the use case when user code
+decides to delegate computation of the value to some other set of
+asynchronous procedures.
+
+-<<problem would be gone if the user had a simple way to say "execute that
+task in the same executor that this current task is executing"[*]?>>
+ yes, a sort of. I am looking how to set default executor so that
+subsequent creations of asynchronous procedures would use that executor,
+not requiring to pass it explicitly. One way is to set it as a property of
+current thread, and I thought the reference to the thread's enclosing
+executor would be a good fit. No I see it is not - not only because of
+delegating executors, but also because there can exist some library which
+wants to create asynchronous procedures working on some predefined
+executor, which does not depends on the executor from where that library is
+called.
+
+Anyway, this is not a problem, but desire to write less amount of
+boilerplate code.
+
+thanks,
+Alexei
+
+
+On Thu, 14 Mar 2019 at 20:50, Pavel Rappo <pavel.rappo at gmail.com> wrote:
+
+> Thanks for providing that example.
+>
+> I agree there is some "analogy between synchronous and asynchronous
+> worlds".
+> However, it's not clear how to extend what we have in the world of Threads
+> into
+> the world of Executors.
+>
+> There is something in the world of Executors that doesn't seem to exist in
+> the
+> world of Threads. I don't know how important that is though.
+>
+> For instance, could it be the case that a thread might belong to more than
+> a
+> single executor? Consider a "same thread" executor or wrapped executors. Or
+> consider the case where executors are hidden because of encapsulation.
+> After all
+> there's a limited damage you could do having a reference to the current
+> thread
+> or tying it up with your tasks unwisely. It might be a completely different
+> thing, if you had a reference to the executor.
+>
+> Is it possible that this is not such a widespread or general problem that
+> it
+> requires addressing on such a high level (java.lang.Thread)? Is it
+> possible that
+> this is mostly a problem for the code that uses CompletableFutures? Could
+> it be
+> that the most of that problem would be gone if the user had a simple way
+> to say
+> "execute that task in the same executor that this current task is
+> executing"[*]?
+> In which case there wouldn't be any need for a reference to the executor.
+>
+> If so, then the scope of the problem seems a lot smaller.
+>
+> [*] Modulo the root task which will either have to use some default
+> setting or
+>     specify the executor explicitly.
+>
+> > On 12 Mar 2019, at 17:47, Alexei Kaigorodov <alexei.kaigorodov at gmail.com>
+> wrote:
+> >
+> > Pavel,
+> > I prepared a ghist:
+> https://gist.github.com/akaigoro/734553139c87bee98e1ef190eb5c0536
+> >
+> > Let we have a simple method asyncJob0 and call it asynchronously:
+> >     Executor exec = ForkJoinPool.commonPool();
+> >     CompletableFuture<String> cf0 =
+> CompletableFuture.supplyAsync(CurrentExec::asyncJob0, exec);
+> >     System.out.println(cf0.get());
+> >
+> > Sooner or later, we want to refactor (parallelize) the method asyncJob0,
+> but we do not want to change the place where it is called. This is a common
+> use case when a library is evolving. So we change the method as follows
+> (its name changed to asyncJob1 only for convenience, in real life it would
+> not):
+> >
+> > static String asyncJob1() {
+> >     Executor exec = currentExecutor();
+> >     CompletableFuture<String> cf0 =
+> CompletableFuture.supplyAsync(CurrentExec::asyncJob0, exec);
+> >     String part1 = "+asyncJob1"; // suppose this is a heavy computation
+> >     try {
+> >         return cf0.get()+part1;
+> >     } catch (Exception e) {
+> >         throw new RuntimeException(e);
+> >     }
+> > }
+> >
+> > So we made 2 parallel branches: one computes cf0 and the other computes
+> part1. And we want to compute cf0 on the same thread pool as that is
+> currently used - just because we have no other computational resources at
+> hand, all resources are controlled by the user and we do not want to bother
+> him and ask him to resolve our problems. For this we call exec =
+> currentExecutor(); the implementation in the ghist works for ForkJoinPool
+> but does not work for others (@Viktor Klang: checking if the thread group
+> implements Executor, does not work for result of
+> Executors.newFixedThreadPool()).
+> >
+> > This solution is not ideal because it may block when calling to
+> cf0.get() -  but it is the result of limitations of CompletableFuture
+> design: we have no other way to provide the result. The right solution
+> would be to replace the single asynchronous procedure call of asyncJob0
+> with 3: two parallel branches plus computing the final result. This is
+> possible when some other asynchronous frameworks used.
+> >
+> >
+> > thanks
+> > Alexei
+> >
+> >
+> > On Tue, 12 Mar 2019 at 18:51, Pavel Rappo <pavel.rappo at gmail.com> wrote:
+> > On Mon, Mar 11, 2019 at 5:48 PM Alexei Kaigorodov via
+> > Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> > >
+> > > To enable this, I propose to add new method to
+> > > the standard java API which would return the reference  to the thread
+> pool
+> > > to which current thread belongs.
+> >
+> > If I were you I would make a good case for that first. Explain
+> > exhaustively why this feature is needed, with examples. List the
+> > alternatives and listen carefully to the feedback. Rinse, repeat. JEP
+> > is more of a procedural step compared to those previous steps and can
+> > be done later.
+> >
+> > -Pavel
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190317/00faa243/attachment.html>
+
+From oleksandr.otenko at gmail.com  Mon Mar 18 09:37:22 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 18 Mar 2019 13:37:22 +0000
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <d2bc84d0-779e-9aa5-8e37-9f6a2c9bff40@gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+ <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+ <81B97BD3-6BD8-4F81-8D22-E83E2C359CC0@gmail.com>
+ <d2bc84d0-779e-9aa5-8e37-9f6a2c9bff40@gmail.com>
+Message-ID: <49D19330-6D5C-4C30-B33D-B7A0EC08A76E@gmail.com>
+
+The reason I used AtomicInteger is because I wanted a subtly different guarantee: I wanted to express that the execution should be asynchronous in the current thread only if the code is reached before return.
+
+It does not mean that it is better than watching thisThread, but I would like to mention that it reduces the requirement of visibility of the value to this thread only - the writes to the flag do not need to be visible by the other threads; in fact, not seeing those writes alone would indicate we are not in the invocation of then.
+
+The code I actually want would look the same as Peter’s suggestion with Threads, but I observe that in that case thisThread is “effectively final”, as javac puts it. So the compiler probably inserts barriers to ensure cross-thread visibility.
+
+Is there a way to control the existence of such barriers?
+
+
+Alex
+
+
+> On 12 Mar 2019, at 19:55, Peter Levart <peter.levart at gmail.com> wrote:
+> 
+> 
+> 
+> On 3/12/19 5:00 PM, Alex Otenko via Concurrency-interest wrote:
+>> I think what Peter wants is more like:
+>> 
+>>   public static <T, U> CompletableFuture<U> then(CompletableFuture<T> cf,
+>>                                                  Function<T, U> f) {
+>>     final AtomicInteger ai = new AtomicInteger();
+>>     final CompletableFuture<U> that = cf.thenCompose(i -> ai.get() == 0 ?
+>>                                                            cf.thenApplyAsync(f):
+>>                                                            cf.thenApply(f));
+>>     ai.set(1);
+>>     return that;
+>>   }
+>> 
+>> Not so much a ThreadLocal, but a witness of who got to thenCompose_ - this method, or someone concurrent.
+>> 
+>> Alex
+> 
+> Yes, the semantics of above method is what I was thinking about. Now that Alex has (again) found the solution with thenCompose, I can modify it into a similar (without harmless race) solution that is hopefully also more easy to understand:
+> 
+>     public static <T, U> CompletableFuture<U> thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn) {
+>         Thread thisThread = Thread.currentThread();
+>         return cf.thenCompose(t -> Thread.currentThread() == thisThread
+>                                    ? cf.thenApplyAsync(fn)
+>                                    : cf.thenApply(fn));
+>     }
+> 
+> Which suggests that the solution is very easy to implement as static methods. It is not as pretty as CF instance methods would be, but will do for now.
+> 
+> Thanks,
+> 
+> Peter
+> 
+>> 
+>> 
+>>> On 12 Mar 2019, at 15:28, Doug Lea via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>>> 
+>>> On 3/12/19 5:58 AM, Peter Levart via Concurrency-interest wrote:
+>>> 
+>>>>     CompletableFuture cf = ....;
+>>>>     ...
+>>>> 
+>>>>     cf.thenApply(Function, Executor)
+>>>> 
+>>>> The behaviour of this method would be: If the 'cf' is not completed yet,
+>>>> it submits a task that will be completed synchronously in the same
+>>>> thread that completes the 'cf'. If 'cf' is already completed, it submits
+>>>> an asynchronous task to be executed in the provided Executor.
+>>>> 
+>>> 
+>>> Thanks for the analysis. I agree that if we had this method (and its
+>>> variants), people would be unlikely to want a currentExecutor() method.
+>>> (Which is not quite to conclude yet that we should do it.)
+>>> 
+>>> And those who still do want some form of currentExecutor() could just
+>>> use a ThreadLocal.
+>>> 
+>>> Further opinions welcome though.
+>>> 
+>>> -Doug
+>>> 
+>>> 
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>> 
+>> 
+>> 
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190318/3d6e479e/attachment.html>
+
+From peter.levart at gmail.com  Mon Mar 18 11:00:19 2019
+From: peter.levart at gmail.com (Peter Levart)
+Date: Mon, 18 Mar 2019 16:00:19 +0100
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <49D19330-6D5C-4C30-B33D-B7A0EC08A76E@gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+ <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+ <81B97BD3-6BD8-4F81-8D22-E83E2C359CC0@gmail.com>
+ <d2bc84d0-779e-9aa5-8e37-9f6a2c9bff40@gmail.com>
+ <49D19330-6D5C-4C30-B33D-B7A0EC08A76E@gmail.com>
+Message-ID: <a34567d8-e853-3b70-7427-5282c5f02e01@gmail.com>
+
+Hi Alex,
+
+On 3/18/19 2:37 PM, Alex Otenko wrote:
+> The reason I used AtomicInteger is because I wanted a subtly different guarantee: I wanted to express that the execution should be asynchronous in the current thread only if the code is reached before return.
+>
+> It does not mean that it is better than watching thisThread, but I would like to mention that it reduces the requirement of visibility of the value to this thread only - the writes to the flag do not need to be visible by the other threads; in fact, not seeing those writes alone would indicate we are not in the invocation of then.
+>
+> The code I actually want would look the same as Peter’s suggestion with Threads, but I observe that in that case thisThread is “effectively final”, as javac puts it. So the compiler probably inserts barriers to ensure cross-thread visibility.
+>
+> Is there a way to control the existence of such barriers?
+
+You may not require the visibility of the AtomicInteger value write from 
+this to the other thread, but you require visibility of the 'ai' 
+reference pointing to the AtomicInteger object in the same way as my 
+variant requires the visibility of 'thisThread' reference pointing to 
+the Thread object. Your variant dereferences the 'ai' reference when 
+reading its inner value while my variant just compares the reference 
+pointer to another Thread reference pointer.
+
+And yes, the compiler treats this reference locals as effectively final 
+and "captures" them in the lambda object as final fields. So there are 
+barriers inserted when they are needed for final fields. But I think 
+that CompletableFuture already guarantees a happens-before relationship 
+between invoking the CF.thenCompose and execution of code in provided 
+lambda, so barriers are inserted regardless aren't they?
+
+Regards, Peter
+
+>
+>
+> Alex
+>
+>
+>> On 12 Mar 2019, at 19:55, Peter Levart <peter.levart at gmail.com> wrote:
+>>
+>>
+>>
+>> On 3/12/19 5:00 PM, Alex Otenko via Concurrency-interest wrote:
+>>> I think what Peter wants is more like:
+>>>
+>>>    public static <T, U> CompletableFuture<U> then(CompletableFuture<T> cf,
+>>>                                                   Function<T, U> f) {
+>>>      final AtomicInteger ai = new AtomicInteger();
+>>>      final CompletableFuture<U> that = cf.thenCompose(i -> ai.get() == 0 ?
+>>>                                                             cf.thenApplyAsync(f):
+>>>                                                             cf.thenApply(f));
+>>>      ai.set(1);
+>>>      return that;
+>>>    }
+>>>
+>>> Not so much a ThreadLocal, but a witness of who got to thenCompose_ - this method, or someone concurrent.
+>>>
+>>> Alex
+>> Yes, the semantics of above method is what I was thinking about. Now that Alex has (again) found the solution with thenCompose, I can modify it into a similar (without harmless race) solution that is hopefully also more easy to understand:
+>>
+>>      public static <T, U> CompletableFuture<U> thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn) {
+>>          Thread thisThread = Thread.currentThread();
+>>          return cf.thenCompose(t -> Thread.currentThread() == thisThread
+>>                                     ? cf.thenApplyAsync(fn)
+>>                                     : cf.thenApply(fn));
+>>      }
+>>
+>> Which suggests that the solution is very easy to implement as static methods. It is not as pretty as CF instance methods would be, but will do for now.
+>>
+>> Thanks,
+>>
+>> Peter
+>>
+>>>
+>>>> On 12 Mar 2019, at 15:28, Doug Lea via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>>>>
+>>>> On 3/12/19 5:58 AM, Peter Levart via Concurrency-interest wrote:
+>>>>
+>>>>>      CompletableFuture cf = ....;
+>>>>>      ...
+>>>>>
+>>>>>      cf.thenApply(Function, Executor)
+>>>>>
+>>>>> The behaviour of this method would be: If the 'cf' is not completed yet,
+>>>>> it submits a task that will be completed synchronously in the same
+>>>>> thread that completes the 'cf'. If 'cf' is already completed, it submits
+>>>>> an asynchronous task to be executed in the provided Executor.
+>>>>>
+>>>> Thanks for the analysis. I agree that if we had this method (and its
+>>>> variants), people would be unlikely to want a currentExecutor() method.
+>>>> (Which is not quite to conclude yet that we should do it.)
+>>>>
+>>>> And those who still do want some form of currentExecutor() could just
+>>>> use a ThreadLocal.
+>>>>
+>>>> Further opinions welcome though.
+>>>>
+>>>> -Doug
+>>>>
+>>>>
+>>>> _______________________________________________
+>>>> Concurrency-interest mailing list
+>>>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>>>
+>>>
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>
+
+
+From peter.levart at gmail.com  Mon Mar 18 11:25:47 2019
+From: peter.levart at gmail.com (Peter Levart)
+Date: Mon, 18 Mar 2019 16:25:47 +0100
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <49D19330-6D5C-4C30-B33D-B7A0EC08A76E@gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+ <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+ <81B97BD3-6BD8-4F81-8D22-E83E2C359CC0@gmail.com>
+ <d2bc84d0-779e-9aa5-8e37-9f6a2c9bff40@gmail.com>
+ <49D19330-6D5C-4C30-B33D-B7A0EC08A76E@gmail.com>
+Message-ID: <57e890ad-59f7-1534-d226-a8428f8f942a@gmail.com>
+
+
+
+On 3/18/19 2:37 PM, Alex Otenko wrote:
+> The reason I used AtomicInteger is because I wanted a subtly different guarantee: I wanted to express that the execution should be asynchronous in the current thread only if the code is reached before return.
+>
+> It does not mean that it is better than watching thisThread, but I would like to mention that it reduces the requirement of visibility of the value to this thread only - the writes to the flag do not need to be visible by the other threads; in fact, not seeing those writes alone would indicate we are not in the invocation of then.
+>
+> The code I actually want would look the same as Peter’s suggestion with Threads, but I observe that in that case thisThread is “effectively final”, as javac puts it. So the compiler probably inserts barriers to ensure cross-thread visibility.
+>
+> Is there a way to control the existence of such barriers?
+
+Perhaps this is the variant that requires no visibility across threads 
+(except for static final state):
+
+   static final ThreadLocal<Boolean> THEN_APPLY_IN_PROGRESS = new 
+ThreadLocal<>();
+
+   public static <T, U> CompletableFuture<U> 
+thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn)
+   {
+     THEN_APPLY_IN_PROGRESS.set(Boolean.TRUE);
+     try {
+       return cf.thenCompose(t -> Boolean.TRUE == 
+THEN_APPLY_IN_PROGRESS.get()
+                                  ? cf.thenApplyAsync(fn)
+                                  : cf.thenApply(fn));
+     }
+     finally {
+       THEN_APPLY_IN_PROGRESS.remove();
+     }
+   }
+
+Peter
+
+>
+>
+> Alex
+>
+>
+>> On 12 Mar 2019, at 19:55, Peter Levart <peter.levart at gmail.com> wrote:
+>>
+>>
+>>
+>> On 3/12/19 5:00 PM, Alex Otenko via Concurrency-interest wrote:
+>>> I think what Peter wants is more like:
+>>>
+>>>    public static <T, U> CompletableFuture<U> then(CompletableFuture<T> cf,
+>>>                                                   Function<T, U> f) {
+>>>      final AtomicInteger ai = new AtomicInteger();
+>>>      final CompletableFuture<U> that = cf.thenCompose(i -> ai.get() == 0 ?
+>>>                                                             cf.thenApplyAsync(f):
+>>>                                                             cf.thenApply(f));
+>>>      ai.set(1);
+>>>      return that;
+>>>    }
+>>>
+>>> Not so much a ThreadLocal, but a witness of who got to thenCompose_ - this method, or someone concurrent.
+>>>
+>>> Alex
+>> Yes, the semantics of above method is what I was thinking about. Now that Alex has (again) found the solution with thenCompose, I can modify it into a similar (without harmless race) solution that is hopefully also more easy to understand:
+>>
+>>      public static <T, U> CompletableFuture<U> thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn) {
+>>          Thread thisThread = Thread.currentThread();
+>>          return cf.thenCompose(t -> Thread.currentThread() == thisThread
+>>                                     ? cf.thenApplyAsync(fn)
+>>                                     : cf.thenApply(fn));
+>>      }
+>>
+>> Which suggests that the solution is very easy to implement as static methods. It is not as pretty as CF instance methods would be, but will do for now.
+>>
+>> Thanks,
+>>
+>> Peter
+>>
+>>>
+>>>> On 12 Mar 2019, at 15:28, Doug Lea via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>>>>
+>>>> On 3/12/19 5:58 AM, Peter Levart via Concurrency-interest wrote:
+>>>>
+>>>>>      CompletableFuture cf = ....;
+>>>>>      ...
+>>>>>
+>>>>>      cf.thenApply(Function, Executor)
+>>>>>
+>>>>> The behaviour of this method would be: If the 'cf' is not completed yet,
+>>>>> it submits a task that will be completed synchronously in the same
+>>>>> thread that completes the 'cf'. If 'cf' is already completed, it submits
+>>>>> an asynchronous task to be executed in the provided Executor.
+>>>>>
+>>>> Thanks for the analysis. I agree that if we had this method (and its
+>>>> variants), people would be unlikely to want a currentExecutor() method.
+>>>> (Which is not quite to conclude yet that we should do it.)
+>>>>
+>>>> And those who still do want some form of currentExecutor() could just
+>>>> use a ThreadLocal.
+>>>>
+>>>> Further opinions welcome though.
+>>>>
+>>>> -Doug
+>>>>
+>>>>
+>>>> _______________________________________________
+>>>> Concurrency-interest mailing list
+>>>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>>>
+>>>
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+>
+
+
+From peter.levart at gmail.com  Mon Mar 18 11:36:47 2019
+From: peter.levart at gmail.com (Peter Levart)
+Date: Mon, 18 Mar 2019 16:36:47 +0100
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <57e890ad-59f7-1534-d226-a8428f8f942a@gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+ <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+ <81B97BD3-6BD8-4F81-8D22-E83E2C359CC0@gmail.com>
+ <d2bc84d0-779e-9aa5-8e37-9f6a2c9bff40@gmail.com>
+ <49D19330-6D5C-4C30-B33D-B7A0EC08A76E@gmail.com>
+ <57e890ad-59f7-1534-d226-a8428f8f942a@gmail.com>
+Message-ID: <f0be12f2-0565-4a13-227a-08ecb38fd711@gmail.com>
+
+
+
+On 3/18/19 4:25 PM, Peter Levart wrote:
+>
+>
+> On 3/18/19 2:37 PM, Alex Otenko wrote:
+>> The reason I used AtomicInteger is because I wanted a subtly 
+>> different guarantee: I wanted to express that the execution should be 
+>> asynchronous in the current thread only if the code is reached before 
+>> return.
+>>
+>> It does not mean that it is better than watching thisThread, but I 
+>> would like to mention that it reduces the requirement of visibility 
+>> of the value to this thread only - the writes to the flag do not need 
+>> to be visible by the other threads; in fact, not seeing those writes 
+>> alone would indicate we are not in the invocation of then.
+>>
+>> The code I actually want would look the same as Peter’s suggestion 
+>> with Threads, but I observe that in that case thisThread is 
+>> “effectively final”, as javac puts it. So the compiler probably 
+>> inserts barriers to ensure cross-thread visibility.
+>>
+>> Is there a way to control the existence of such barriers?
+>
+> Perhaps this is the variant that requires no visibility across threads 
+> (except for static final state):
+>
+>   static final ThreadLocal<Boolean> THEN_APPLY_IN_PROGRESS = new 
+> ThreadLocal<>();
+>
+>   public static <T, U> CompletableFuture<U> 
+> thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn)
+>   {
+>     THEN_APPLY_IN_PROGRESS.set(Boolean.TRUE);
+>     try {
+>       return cf.thenCompose(t -> Boolean.TRUE == 
+> THEN_APPLY_IN_PROGRESS.get()
+>                                  ? cf.thenApplyAsync(fn)
+>                                  : cf.thenApply(fn));
+>     }
+>     finally {
+>       THEN_APPLY_IN_PROGRESS.remove();
+>     }
+>   }
+>
+
+Not entirely true :~(. Of course, the lambda object reference has to be 
+visible to the other thread (as it is not a constant non-capturing 
+lambda which would be initialized just once) and with it all the 
+captured state:
+- the reference to 'fn' Function
+- the reference to 'cf' CompletableFuture
+
+So capturing another reference doesn't make much difference.
+
+Peter
+
+
+From oleksandr.otenko at gmail.com  Mon Mar 18 11:48:46 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 18 Mar 2019 15:48:46 +0000
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <f0be12f2-0565-4a13-227a-08ecb38fd711@gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+ <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+ <81B97BD3-6BD8-4F81-8D22-E83E2C359CC0@gmail.com>
+ <d2bc84d0-779e-9aa5-8e37-9f6a2c9bff40@gmail.com>
+ <49D19330-6D5C-4C30-B33D-B7A0EC08A76E@gmail.com>
+ <57e890ad-59f7-1534-d226-a8428f8f942a@gmail.com>
+ <f0be12f2-0565-4a13-227a-08ecb38fd711@gmail.com>
+Message-ID: <83379B3D-A245-42EA-8129-F7731145404A@gmail.com>
+
+Well, yes, since the lambda is made visible to all threads, an extra reference is not a problem.
+
+But this pattern actually has another dangerous property, which I wanted to avoid by using AtomicInteger. Although benign in most cases, it captures thisThread for the duration of the closure’s lifetime. This is a common problem with continuation passing: the scope of lifetime of references is no longer limited to lexical scope.
+
+Alex
+
+> On 18 Mar 2019, at 15:36, Peter Levart <peter.levart at gmail.com> wrote:
+> 
+> 
+> 
+> On 3/18/19 4:25 PM, Peter Levart wrote:
+>> 
+>> 
+>> On 3/18/19 2:37 PM, Alex Otenko wrote:
+>>> The reason I used AtomicInteger is because I wanted a subtly different guarantee: I wanted to express that the execution should be asynchronous in the current thread only if the code is reached before return.
+>>> 
+>>> It does not mean that it is better than watching thisThread, but I would like to mention that it reduces the requirement of visibility of the value to this thread only - the writes to the flag do not need to be visible by the other threads; in fact, not seeing those writes alone would indicate we are not in the invocation of then.
+>>> 
+>>> The code I actually want would look the same as Peter’s suggestion with Threads, but I observe that in that case thisThread is “effectively final”, as javac puts it. So the compiler probably inserts barriers to ensure cross-thread visibility.
+>>> 
+>>> Is there a way to control the existence of such barriers?
+>> 
+>> Perhaps this is the variant that requires no visibility across threads (except for static final state):
+>> 
+>>   static final ThreadLocal<Boolean> THEN_APPLY_IN_PROGRESS = new ThreadLocal<>();
+>> 
+>>   public static <T, U> CompletableFuture<U> thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn)
+>>   {
+>>     THEN_APPLY_IN_PROGRESS.set(Boolean.TRUE);
+>>     try {
+>>       return cf.thenCompose(t -> Boolean.TRUE == THEN_APPLY_IN_PROGRESS.get()
+>>                                  ? cf.thenApplyAsync(fn)
+>>                                  : cf.thenApply(fn));
+>>     }
+>>     finally {
+>>       THEN_APPLY_IN_PROGRESS.remove();
+>>     }
+>>   }
+>> 
+> 
+> Not entirely true :~(. Of course, the lambda object reference has to be visible to the other thread (as it is not a constant non-capturing lambda which would be initialized just once) and with it all the captured state:
+> - the reference to 'fn' Function
+> - the reference to 'cf' CompletableFuture
+> 
+> So capturing another reference doesn't make much difference.
+> 
+> Peter
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190318/49f88392/attachment-0001.html>
+
+From peter.levart at gmail.com  Mon Mar 18 12:30:58 2019
+From: peter.levart at gmail.com (Peter Levart)
+Date: Mon, 18 Mar 2019 17:30:58 +0100
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <83379B3D-A245-42EA-8129-F7731145404A@gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+ <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+ <81B97BD3-6BD8-4F81-8D22-E83E2C359CC0@gmail.com>
+ <d2bc84d0-779e-9aa5-8e37-9f6a2c9bff40@gmail.com>
+ <49D19330-6D5C-4C30-B33D-B7A0EC08A76E@gmail.com>
+ <57e890ad-59f7-1534-d226-a8428f8f942a@gmail.com>
+ <f0be12f2-0565-4a13-227a-08ecb38fd711@gmail.com>
+ <83379B3D-A245-42EA-8129-F7731145404A@gmail.com>
+Message-ID: <a822b3a4-311e-f19e-32d4-18aa51b479a5@gmail.com>
+
+
+
+On 3/18/19 4:48 PM, Alex Otenko wrote:
+> Well, yes, since the lambda is made visible to all threads, an extra reference is not a problem.
+>
+> But this pattern actually has another dangerous property, which I wanted to avoid by using AtomicInteger. Although benign in most cases, it captures thisThread for the duration of the closure’s lifetime. This is a common problem with continuation passing: the scope of lifetime of references is no longer limited to lexical scope.
+
+Right, we can not avoid capturing the 'cf' reference, because we need it 
+to .thenApply[Async] on it. User already expects that the 'fn' Function 
+will be captured and stay alive until it is used. But we can at least 
+avoid capturing 'thisThread' and instead capture just its id:
+
+   public static <T, U> CompletableFuture<U> 
+thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn)
+   {
+     long thisThreadId = Thread.currentThread().getId();
+     return cf.thenCompose(t -> Thread.currentThread().getId() == 
+thisThreadId
+                                ? cf.thenApplyAsync(fn)
+                                : cf.thenApply(fn));
+   }
+
+The javadoc says that thread ID may be reused after thread terminates:
+
+      * Returns the identifier of this Thread.  The thread ID is a positive
+      * {@code long} number generated when this thread was created.
+      * The thread ID is unique and remains unchanged during its lifetime.
+      * When a thread is terminated, this thread ID may be reused.
+
+...but the implementation of the generator for thread IDs does not care 
+about Thread's lifetime:
+
+     /* For generating thread ID */
+     private static long threadSeqNumber;
+
+     private static synchronized long nextThreadID() {
+         return ++threadSeqNumber;
+     }
+
+...making it an equal probability for ID to be reused regardless of 
+whether the thread terminated or not. Practically this would happen in 
+584942 years if the JVM created one Thread each micro second.
+
+Peter
+
+>
+> Alex
+>
+>> On 18 Mar 2019, at 15:36, Peter Levart <peter.levart at gmail.com> wrote:
+>>
+>>
+>>
+>> On 3/18/19 4:25 PM, Peter Levart wrote:
+>>>
+>>> On 3/18/19 2:37 PM, Alex Otenko wrote:
+>>>> The reason I used AtomicInteger is because I wanted a subtly different guarantee: I wanted to express that the execution should be asynchronous in the current thread only if the code is reached before return.
+>>>>
+>>>> It does not mean that it is better than watching thisThread, but I would like to mention that it reduces the requirement of visibility of the value to this thread only - the writes to the flag do not need to be visible by the other threads; in fact, not seeing those writes alone would indicate we are not in the invocation of then.
+>>>>
+>>>> The code I actually want would look the same as Peter’s suggestion with Threads, but I observe that in that case thisThread is “effectively final”, as javac puts it. So the compiler probably inserts barriers to ensure cross-thread visibility.
+>>>>
+>>>> Is there a way to control the existence of such barriers?
+>>> Perhaps this is the variant that requires no visibility across threads (except for static final state):
+>>>
+>>>    static final ThreadLocal<Boolean> THEN_APPLY_IN_PROGRESS = new ThreadLocal<>();
+>>>
+>>>    public static <T, U> CompletableFuture<U> thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn)
+>>>    {
+>>>      THEN_APPLY_IN_PROGRESS.set(Boolean.TRUE);
+>>>      try {
+>>>        return cf.thenCompose(t -> Boolean.TRUE == THEN_APPLY_IN_PROGRESS.get()
+>>>                                   ? cf.thenApplyAsync(fn)
+>>>                                   : cf.thenApply(fn));
+>>>      }
+>>>      finally {
+>>>        THEN_APPLY_IN_PROGRESS.remove();
+>>>      }
+>>>    }
+>>>
+>> Not entirely true :~(. Of course, the lambda object reference has to be visible to the other thread (as it is not a constant non-capturing lambda which would be initialized just once) and with it all the captured state:
+>> - the reference to 'fn' Function
+>> - the reference to 'cf' CompletableFuture
+>>
+>> So capturing another reference doesn't make much difference.
+>>
+>> Peter
+>
+
+
+From valentin.male.kovalenko at gmail.com  Mon Mar 18 13:33:29 2019
+From: valentin.male.kovalenko at gmail.com (Valentin Kovalenko)
+Date: Mon, 18 Mar 2019 11:33:29 -0600
+Subject: [concurrency-interest] CopyOnWriteArrayList lost volatile write in
+	OpenJDK 11
+Message-ID: <CAO-wXwL+mDrJ9332NJnasm5dUWTKfnBqOXF4a1uXqd1d8XnJUQ@mail.gmail.com>
+
+Hi everyone,
+
+In OpenJDK10 CopyOnWriteArrayList.set(index, element) always did a volatile
+write via the setArray method. In OpenJDK11 it was changed so that if the
+provided element is the same as the array[index], then no volatile write is
+issued (see the links and code excerpts below).
+
+The javadoc of the CopyOnWriteArrayList class sais "actions in a thread
+prior to placing an object into a CopyOnWriteArrayList happen-before
+actions subsequent to the access or removal of that element from the
+CopyOnWriteArrayList in another thread" without adding any conditions on
+whether the added object is already in the array or not. Therefore it seems
+to me that the semantics of the set method was changed in OpenJDK11, and
+with the current implementation there are allowed executions where the
+below CowExample never ends (such implementations are not allowed with the
+CopyOnWriteArrayList from OpenJDK10):
+
+class CowExample {
+  static CopyOnWriteArrayList<Boolean> cowList = new
+CopyOnWriteArrayList<>(new Boolean[] {Boolean.TRUE});//add Boolean.TRUE to
+cowList
+  static int flag = 0;//a plain field
+
+  public static void main(String... args) {
+    ForkJoinPool.commonPool().submit(() -> {
+      flag = 1;
+      cowList.set(0, Boolean.TRUE);//is supposed to always do a volatile
+write; publish the write to the plain flag field
+    });
+    while(flag == 0) {//is allowed to loop forever
+      cowList.get(0);//a volatile read
+    }
+  }
+}
+
+
+The implementations from OpenJDK10 and OpenJDK11
+
+OpenJDK10:
+https://hg.openjdk.java.net/jdk/jdk10/file/b09e56145e11/src/java.base/share/classes/java/util/concurrent/CopyOnWriteArrayList.java#l407
+public E set(int index, E element) {
+    synchronized (lock) {
+        Object[] elements = getArray();
+        E oldValue = elementAt(elements, index);
+
+        if (oldValue != element) {
+            int len = elements.length;
+            Object[] newElements = Arrays.copyOf(elements, len);
+            newElements[index] = element;
+            setArray(newElements);
+        } else {
+            // Not quite a no-op; ensures volatile write semantics
+            setArray(elements);
+        }
+        return oldValue;
+    }
+}
+
+OpenJDK11:
+https://hg.openjdk.java.net/jdk/jdk11/file/1ddf9a99e4ad/src/java.base/share/classes/java/util/concurrent/CopyOnWriteArrayList.java#l408
+public E set(int index, E element) {
+    synchronized (lock) {
+        Object[] es = getArray();
+        E oldValue = elementAt(es, index);
+
+        if (oldValue != element) {
+            es = es.clone();
+            es[index] = element;
+            setArray(es);
+        }
+        return oldValue;
+    }
+}
+
+Regards,
+Valentin
+[image: LinkedIn] <https://www.linkedin.com/in/stIncMale>   [image: GitHub]
+<https://github.com/stIncMale>   [image: YouTube]
+<https://www.youtube.com/user/stIncMale>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190318/36156316/attachment.html>
+
+From oleksandr.otenko at gmail.com  Mon Mar 18 13:44:19 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Mon, 18 Mar 2019 17:44:19 +0000
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <a822b3a4-311e-f19e-32d4-18aa51b479a5@gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+ <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+ <81B97BD3-6BD8-4F81-8D22-E83E2C359CC0@gmail.com>
+ <d2bc84d0-779e-9aa5-8e37-9f6a2c9bff40@gmail.com>
+ <49D19330-6D5C-4C30-B33D-B7A0EC08A76E@gmail.com>
+ <57e890ad-59f7-1534-d226-a8428f8f942a@gmail.com>
+ <f0be12f2-0565-4a13-227a-08ecb38fd711@gmail.com>
+ <83379B3D-A245-42EA-8129-F7731145404A@gmail.com>
+ <a822b3a4-311e-f19e-32d4-18aa51b479a5@gmail.com>
+Message-ID: <CA36C62E-61D9-426A-BD7A-8F6B57F40E4E@gmail.com>
+
+This is splitting hairs, of course, but could use:
+
+    final AtomicReference<Thread> ar = new AtomicReference<>(Thread.currentThread());
+    final CompletableFuture<U> that = cf.thenCompose(i -> {
+      return ar.get() == Thread.currentThread() ?
+                           cf.thenApplyAsync(f):
+                           cf.thenApply(f); });
+    ar.lazySet(null);
+    return that;
+
+Alex
+
+> On 18 Mar 2019, at 16:30, Peter Levart <peter.levart at gmail.com> wrote:
+> 
+> 
+> 
+> On 3/18/19 4:48 PM, Alex Otenko wrote:
+>> Well, yes, since the lambda is made visible to all threads, an extra reference is not a problem.
+>> 
+>> But this pattern actually has another dangerous property, which I wanted to avoid by using AtomicInteger. Although benign in most cases, it captures thisThread for the duration of the closure’s lifetime. This is a common problem with continuation passing: the scope of lifetime of references is no longer limited to lexical scope.
+> 
+> Right, we can not avoid capturing the 'cf' reference, because we need it to .thenApply[Async] on it. User already expects that the 'fn' Function will be captured and stay alive until it is used. But we can at least avoid capturing 'thisThread' and instead capture just its id:
+> 
+>   public static <T, U> CompletableFuture<U> thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn)
+>   {
+>     long thisThreadId = Thread.currentThread().getId();
+>     return cf.thenCompose(t -> Thread.currentThread().getId() == thisThreadId
+>                                ? cf.thenApplyAsync(fn)
+>                                : cf.thenApply(fn));
+>   }
+> 
+> The javadoc says that thread ID may be reused after thread terminates:
+> 
+>      * Returns the identifier of this Thread.  The thread ID is a positive
+>      * {@code long} number generated when this thread was created.
+>      * The thread ID is unique and remains unchanged during its lifetime.
+>      * When a thread is terminated, this thread ID may be reused.
+> 
+> ...but the implementation of the generator for thread IDs does not care about Thread's lifetime:
+> 
+>     /* For generating thread ID */
+>     private static long threadSeqNumber;
+> 
+>     private static synchronized long nextThreadID() {
+>         return ++threadSeqNumber;
+>     }
+> 
+> ...making it an equal probability for ID to be reused regardless of whether the thread terminated or not. Practically this would happen in 584942 years if the JVM created one Thread each micro second.
+> 
+> Peter
+> 
+>> 
+>> Alex
+>> 
+>>> On 18 Mar 2019, at 15:36, Peter Levart <peter.levart at gmail.com> wrote:
+>>> 
+>>> 
+>>> 
+>>> On 3/18/19 4:25 PM, Peter Levart wrote:
+>>>> 
+>>>> On 3/18/19 2:37 PM, Alex Otenko wrote:
+>>>>> The reason I used AtomicInteger is because I wanted a subtly different guarantee: I wanted to express that the execution should be asynchronous in the current thread only if the code is reached before return.
+>>>>> 
+>>>>> It does not mean that it is better than watching thisThread, but I would like to mention that it reduces the requirement of visibility of the value to this thread only - the writes to the flag do not need to be visible by the other threads; in fact, not seeing those writes alone would indicate we are not in the invocation of then.
+>>>>> 
+>>>>> The code I actually want would look the same as Peter’s suggestion with Threads, but I observe that in that case thisThread is “effectively final”, as javac puts it. So the compiler probably inserts barriers to ensure cross-thread visibility.
+>>>>> 
+>>>>> Is there a way to control the existence of such barriers?
+>>>> Perhaps this is the variant that requires no visibility across threads (except for static final state):
+>>>> 
+>>>>   static final ThreadLocal<Boolean> THEN_APPLY_IN_PROGRESS = new ThreadLocal<>();
+>>>> 
+>>>>   public static <T, U> CompletableFuture<U> thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn)
+>>>>   {
+>>>>     THEN_APPLY_IN_PROGRESS.set(Boolean.TRUE);
+>>>>     try {
+>>>>       return cf.thenCompose(t -> Boolean.TRUE == THEN_APPLY_IN_PROGRESS.get()
+>>>>                                  ? cf.thenApplyAsync(fn)
+>>>>                                  : cf.thenApply(fn));
+>>>>     }
+>>>>     finally {
+>>>>       THEN_APPLY_IN_PROGRESS.remove();
+>>>>     }
+>>>>   }
+>>>> 
+>>> Not entirely true :~(. Of course, the lambda object reference has to be visible to the other thread (as it is not a constant non-capturing lambda which would be initialized just once) and with it all the captured state:
+>>> - the reference to 'fn' Function
+>>> - the reference to 'cf' CompletableFuture
+>>> 
+>>> So capturing another reference doesn't make much difference.
+>>> 
+>>> Peter
+>> 
+> 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190318/ce5f53db/attachment-0001.html>
+
+From martinrb at google.com  Mon Mar 18 14:43:44 2019
+From: martinrb at google.com (Martin Buchholz)
+Date: Mon, 18 Mar 2019 11:43:44 -0700
+Subject: [concurrency-interest] CopyOnWriteArrayList lost volatile write
+ in OpenJDK 11
+In-Reply-To: <CAO-wXwL+mDrJ9332NJnasm5dUWTKfnBqOXF4a1uXqd1d8XnJUQ@mail.gmail.com>
+References: <CAO-wXwL+mDrJ9332NJnasm5dUWTKfnBqOXF4a1uXqd1d8XnJUQ@mail.gmail.com>
+Message-ID: <CA+kOe0_xbZXLzFK_O3cioZ+zoX5PQs6-FGaUKpXKuS_W=gVE3g@mail.gmail.com>
+
+Thanks for finding this (presumably by code inspection?)
+
+I can't remember how this changed, and you're unlikely to observe any
+change in behavior in practice, but we were arguably slightly overzealous,
+and we could fix it to:
+
+--- src/main/java/util/concurrent/CopyOnWriteArrayList.java 11 Nov 2018
+16:27:28 -0000 1.155
++++ src/main/java/util/concurrent/CopyOnWriteArrayList.java 18 Mar 2019
+18:38:52 -0000
+@@ -395,8 +395,9 @@
+             if (oldValue != element) {
+                 es = es.clone();
+                 es[index] = element;
+-                setArray(es);
+             }
++            // Ensure volatile write semantics even when oldvalue ==
+element
++            setArray(es);
+             return oldValue;
+         }
+     }
+
+
+On Mon, Mar 18, 2019 at 10:35 AM Valentin Kovalenko via
+Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+
+> Hi everyone,
+>
+> In OpenJDK10 CopyOnWriteArrayList.set(index, element) always did a
+> volatile write via the setArray method. In OpenJDK11 it was changed so that
+> if the provided element is the same as the array[index], then no volatile
+> write is issued (see the links and code excerpts below).
+>
+> The javadoc of the CopyOnWriteArrayList class sais "actions in a thread
+> prior to placing an object into a CopyOnWriteArrayList happen-before
+> actions subsequent to the access or removal of that element from the
+> CopyOnWriteArrayList in another thread" without adding any conditions on
+> whether the added object is already in the array or not. Therefore it seems
+> to me that the semantics of the set method was changed in OpenJDK11, and
+> with the current implementation there are allowed executions where the
+> below CowExample never ends (such implementations are not allowed with the
+> CopyOnWriteArrayList from OpenJDK10):
+>
+> class CowExample {
+>   static CopyOnWriteArrayList<Boolean> cowList = new
+> CopyOnWriteArrayList<>(new Boolean[] {Boolean.TRUE});//add Boolean.TRUE to
+> cowList
+>   static int flag = 0;//a plain field
+>
+>   public static void main(String... args) {
+>     ForkJoinPool.commonPool().submit(() -> {
+>       flag = 1;
+>       cowList.set(0, Boolean.TRUE);//is supposed to always do a volatile
+> write; publish the write to the plain flag field
+>     });
+>     while(flag == 0) {//is allowed to loop forever
+>       cowList.get(0);//a volatile read
+>     }
+>   }
+> }
+>
+>
+> The implementations from OpenJDK10 and OpenJDK11
+>
+> OpenJDK10:
+> https://hg.openjdk.java.net/jdk/jdk10/file/b09e56145e11/src/java.base/share/classes/java/util/concurrent/CopyOnWriteArrayList.java#l407
+> public E set(int index, E element) {
+>     synchronized (lock) {
+>         Object[] elements = getArray();
+>         E oldValue = elementAt(elements, index);
+>
+>         if (oldValue != element) {
+>             int len = elements.length;
+>             Object[] newElements = Arrays.copyOf(elements, len);
+>             newElements[index] = element;
+>             setArray(newElements);
+>         } else {
+>             // Not quite a no-op; ensures volatile write semantics
+>             setArray(elements);
+>         }
+>         return oldValue;
+>     }
+> }
+>
+> OpenJDK11:
+> https://hg.openjdk.java.net/jdk/jdk11/file/1ddf9a99e4ad/src/java.base/share/classes/java/util/concurrent/CopyOnWriteArrayList.java#l408
+> public E set(int index, E element) {
+>     synchronized (lock) {
+>         Object[] es = getArray();
+>         E oldValue = elementAt(es, index);
+>
+>         if (oldValue != element) {
+>             es = es.clone();
+>             es[index] = element;
+>             setArray(es);
+>         }
+>         return oldValue;
+>     }
+> }
+>
+> Regards,
+> Valentin
+> [image: LinkedIn] <https://www.linkedin.com/in/stIncMale>   [image:
+> GitHub] <https://github.com/stIncMale>   [image: YouTube]
+> <https://www.youtube.com/user/stIncMale>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190318/2aff1597/attachment.html>
+
+From valentin.male.kovalenko at gmail.com  Mon Mar 18 15:50:25 2019
+From: valentin.male.kovalenko at gmail.com (Valentin Kovalenko)
+Date: Mon, 18 Mar 2019 13:50:25 -0600
+Subject: [concurrency-interest] CopyOnWriteArrayList lost volatile write
+ in OpenJDK 11
+In-Reply-To: <CA+kOe0_xbZXLzFK_O3cioZ+zoX5PQs6-FGaUKpXKuS_W=gVE3g@mail.gmail.com>
+References: <CAO-wXwL+mDrJ9332NJnasm5dUWTKfnBqOXF4a1uXqd1d8XnJUQ@mail.gmail.com>
+ <CA+kOe0_xbZXLzFK_O3cioZ+zoX5PQs6-FGaUKpXKuS_W=gVE3g@mail.gmail.com>
+Message-ID: <CAO-wXwKcqEib3JtC6NDvWXHbNs20SpR6=ziVncVMEx+1u8R0zg@mail.gmail.com>
+
+Yes, Martin, I found this while discussing the COWList implementation with
+someone (so not by observing an infinite loop). Thanks for the blazingly
+quick fix :)
+
+Regards,
+Valentin
+
+On Mon, Mar 18, 2019, 12:43 Martin Buchholz <martinrb at google.com> wrote:
+
+> Thanks for finding this (presumably by code inspection?)
+>
+> I can't remember how this changed, and you're unlikely to observe any
+> change in behavior in practice, but we were arguably slightly overzealous,
+> and we could fix it to:
+>
+> --- src/main/java/util/concurrent/CopyOnWriteArrayList.java 11 Nov 2018
+> 16:27:28 -0000 1.155
+> +++ src/main/java/util/concurrent/CopyOnWriteArrayList.java 18 Mar 2019
+> 18:38:52 -0000
+> @@ -395,8 +395,9 @@
+>              if (oldValue != element) {
+>                  es = es.clone();
+>                  es[index] = element;
+> -                setArray(es);
+>              }
+> +            // Ensure volatile write semantics even when oldvalue ==
+> element
+> +            setArray(es);
+>              return oldValue;
+>          }
+>      }
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190318/7c3fde91/attachment.html>
+
+From viktor.klang at gmail.com  Tue Mar 19 00:30:11 2019
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Tue, 19 Mar 2019 08:30:11 +0400
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <CA36C62E-61D9-426A-BD7A-8F6B57F40E4E@gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+ <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+ <81B97BD3-6BD8-4F81-8D22-E83E2C359CC0@gmail.com>
+ <d2bc84d0-779e-9aa5-8e37-9f6a2c9bff40@gmail.com>
+ <49D19330-6D5C-4C30-B33D-B7A0EC08A76E@gmail.com>
+ <57e890ad-59f7-1534-d226-a8428f8f942a@gmail.com>
+ <f0be12f2-0565-4a13-227a-08ecb38fd711@gmail.com>
+ <83379B3D-A245-42EA-8129-F7731145404A@gmail.com>
+ <a822b3a4-311e-f19e-32d4-18aa51b479a5@gmail.com>
+ <CA36C62E-61D9-426A-BD7A-8F6B57F40E4E@gmail.com>
+Message-ID: <CANPzfU_ZoBc7JARan9iVbh+ZRHbFqTj3eAiEEi0X+Yni+9pznA@mail.gmail.com>
+
+Doesn’t all these solutions have issues with uncontrolled stack growth?
+
+On Mon, 18 Mar 2019 at 21:45, Alex Otenko via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> This is splitting hairs, of course, but could use:
+>
+>     final AtomicReference<Thread> ar = new
+> AtomicReference<>(Thread.currentThread());
+>     final CompletableFuture<U> that = cf.thenCompose(i -> {
+>       return ar.get() == Thread.currentThread() ?
+>                            cf.thenApplyAsync(f):
+>                            cf.thenApply(f); });
+>     ar.lazySet(null);
+>     return that;
+>
+> Alex
+>
+> On 18 Mar 2019, at 16:30, Peter Levart <peter.levart at gmail.com> wrote:
+>
+>
+>
+> On 3/18/19 4:48 PM, Alex Otenko wrote:
+>
+> Well, yes, since the lambda is made visible to all threads, an extra
+> reference is not a problem.
+>
+> But this pattern actually has another dangerous property, which I wanted
+> to avoid by using AtomicInteger. Although benign in most cases, it captures
+> thisThread for the duration of the closure’s lifetime. This is a common
+> problem with continuation passing: the scope of lifetime of references is
+> no longer limited to lexical scope.
+>
+>
+> Right, we can not avoid capturing the 'cf' reference, because we need it
+> to .thenApply[Async] on it. User already expects that the 'fn' Function
+> will be captured and stay alive until it is used. But we can at least avoid
+> capturing 'thisThread' and instead capture just its id:
+>
+>   public static <T, U> CompletableFuture<U> thenApply(CompletableFuture<T>
+> cf, Function<? super T, ? extends U> fn)
+>   {
+>     long thisThreadId = Thread.currentThread().getId();
+>     return cf.thenCompose(t -> Thread.currentThread().getId() ==
+> thisThreadId
+>                                ? cf.thenApplyAsync(fn)
+>                                : cf.thenApply(fn));
+>   }
+>
+> The javadoc says that thread ID may be reused after thread terminates:
+>
+>      * Returns the identifier of this Thread.  The thread ID is a positive
+>      * {@code long} number generated when this thread was created.
+>      * The thread ID is unique and remains unchanged during its lifetime.
+>      * When a thread is terminated, this thread ID may be reused.
+>
+> ...but the implementation of the generator for thread IDs does not care
+> about Thread's lifetime:
+>
+>     /* For generating thread ID */
+>     private static long threadSeqNumber;
+>
+>     private static synchronized long nextThreadID() {
+>         return ++threadSeqNumber;
+>     }
+>
+> ...making it an equal probability for ID to be reused regardless of
+> whether the thread terminated or not. Practically this would happen in
+> 584942 years if the JVM created one Thread each micro second.
+>
+> Peter
+>
+>
+> Alex
+>
+> On 18 Mar 2019, at 15:36, Peter Levart <peter.levart at gmail.com> wrote:
+>
+>
+>
+> On 3/18/19 4:25 PM, Peter Levart wrote:
+>
+>
+> On 3/18/19 2:37 PM, Alex Otenko wrote:
+>
+> The reason I used AtomicInteger is because I wanted a subtly different
+> guarantee: I wanted to express that the execution should be asynchronous in
+> the current thread only if the code is reached before return.
+>
+> It does not mean that it is better than watching thisThread, but I would
+> like to mention that it reduces the requirement of visibility of the value
+> to this thread only - the writes to the flag do not need to be visible by
+> the other threads; in fact, not seeing those writes alone would indicate we
+> are not in the invocation of then.
+>
+> The code I actually want would look the same as Peter’s suggestion with
+> Threads, but I observe that in that case thisThread is “effectively final”,
+> as javac puts it. So the compiler probably inserts barriers to ensure
+> cross-thread visibility.
+>
+> Is there a way to control the existence of such barriers?
+>
+> Perhaps this is the variant that requires no visibility across threads
+> (except for static final state):
+>
+>   static final ThreadLocal<Boolean> THEN_APPLY_IN_PROGRESS = new
+> ThreadLocal<>();
+>
+>   public static <T, U> CompletableFuture<U> thenApply(CompletableFuture<T>
+> cf, Function<? super T, ? extends U> fn)
+>   {
+>     THEN_APPLY_IN_PROGRESS.set(Boolean.TRUE);
+>     try {
+>       return cf.thenCompose(t -> Boolean.TRUE ==
+> THEN_APPLY_IN_PROGRESS.get()
+>                                  ? cf.thenApplyAsync(fn)
+>                                  : cf.thenApply(fn));
+>     }
+>     finally {
+>       THEN_APPLY_IN_PROGRESS.remove();
+>     }
+>   }
+>
+> Not entirely true :~(. Of course, the lambda object reference has to be
+> visible to the other thread (as it is not a constant non-capturing lambda
+> which would be initialized just once) and with it all the captured state:
+> - the reference to 'fn' Function
+> - the reference to 'cf' CompletableFuture
+>
+> So capturing another reference doesn't make much difference.
+>
+> Peter
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-- 
+Cheers,
+√
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190319/e7b6cb51/attachment-0001.html>
+
+From oleksandr.otenko at gmail.com  Tue Mar 19 03:35:27 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Tue, 19 Mar 2019 07:35:27 +0000
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <CANPzfU_ZoBc7JARan9iVbh+ZRHbFqTj3eAiEEi0X+Yni+9pznA@mail.gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+ <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+ <81B97BD3-6BD8-4F81-8D22-E83E2C359CC0@gmail.com>
+ <d2bc84d0-779e-9aa5-8e37-9f6a2c9bff40@gmail.com>
+ <49D19330-6D5C-4C30-B33D-B7A0EC08A76E@gmail.com>
+ <57e890ad-59f7-1534-d226-a8428f8f942a@gmail.com>
+ <f0be12f2-0565-4a13-227a-08ecb38fd711@gmail.com>
+ <83379B3D-A245-42EA-8129-F7731145404A@gmail.com>
+ <a822b3a4-311e-f19e-32d4-18aa51b479a5@gmail.com>
+ <CA36C62E-61D9-426A-BD7A-8F6B57F40E4E@gmail.com>
+ <CANPzfU_ZoBc7JARan9iVbh+ZRHbFqTj3eAiEEi0X+Yni+9pznA@mail.gmail.com>
+Message-ID: <C9F08BC4-0103-4F42-8E8F-550D71ADA455@gmail.com>
+
+That’s thenApply’s problem. Or do you see something else?
+
+Alex
+
+> On 19 Mar 2019, at 04:30, Viktor Klang <viktor.klang at gmail.com> wrote:
+> 
+> Doesn’t all these solutions have issues with uncontrolled stack growth?
+> 
+> On Mon, 18 Mar 2019 at 21:45, Alex Otenko via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+> This is splitting hairs, of course, but could use:
+> 
+>     final AtomicReference<Thread> ar = new AtomicReference<>(Thread.currentThread());
+>     final CompletableFuture<U> that = cf.thenCompose(i -> {
+>       return ar.get() == Thread.currentThread() ?
+>                            cf.thenApplyAsync(f):
+>                            cf.thenApply(f); });
+>     ar.lazySet(null);
+>     return that;
+> 
+> Alex
+> 
+>> On 18 Mar 2019, at 16:30, Peter Levart <peter.levart at gmail.com <mailto:peter.levart at gmail.com>> wrote:
+>> 
+>> 
+>> 
+>> On 3/18/19 4:48 PM, Alex Otenko wrote:
+>>> Well, yes, since the lambda is made visible to all threads, an extra reference is not a problem.
+>>> 
+>>> But this pattern actually has another dangerous property, which I wanted to avoid by using AtomicInteger. Although benign in most cases, it captures thisThread for the duration of the closure’s lifetime. This is a common problem with continuation passing: the scope of lifetime of references is no longer limited to lexical scope.
+>> 
+>> Right, we can not avoid capturing the 'cf' reference, because we need it to .thenApply[Async] on it. User already expects that the 'fn' Function will be captured and stay alive until it is used. But we can at least avoid capturing 'thisThread' and instead capture just its id:
+>> 
+>>   public static <T, U> CompletableFuture<U> thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn)
+>>   {
+>>     long thisThreadId = Thread.currentThread().getId();
+>>     return cf.thenCompose(t -> Thread.currentThread().getId() == thisThreadId
+>>                                ? cf.thenApplyAsync(fn)
+>>                                : cf.thenApply(fn));
+>>   }
+>> 
+>> The javadoc says that thread ID may be reused after thread terminates:
+>> 
+>>      * Returns the identifier of this Thread.  The thread ID is a positive
+>>      * {@code long} number generated when this thread was created.
+>>      * The thread ID is unique and remains unchanged during its lifetime.
+>>      * When a thread is terminated, this thread ID may be reused.
+>> 
+>> ...but the implementation of the generator for thread IDs does not care about Thread's lifetime:
+>> 
+>>     /* For generating thread ID */
+>>     private static long threadSeqNumber;
+>> 
+>>     private static synchronized long nextThreadID() {
+>>         return ++threadSeqNumber;
+>>     }
+>> 
+>> ...making it an equal probability for ID to be reused regardless of whether the thread terminated or not. Practically this would happen in 584942 years if the JVM created one Thread each micro second.
+>> 
+>> Peter
+>> 
+>>> 
+>>> Alex
+>>> 
+>>>> On 18 Mar 2019, at 15:36, Peter Levart <peter.levart at gmail.com <mailto:peter.levart at gmail.com>> wrote:
+>>>> 
+>>>> 
+>>>> 
+>>>> On 3/18/19 4:25 PM, Peter Levart wrote:
+>>>>> 
+>>>>> On 3/18/19 2:37 PM, Alex Otenko wrote:
+>>>>>> The reason I used AtomicInteger is because I wanted a subtly different guarantee: I wanted to express that the execution should be asynchronous in the current thread only if the code is reached before return.
+>>>>>> 
+>>>>>> It does not mean that it is better than watching thisThread, but I would like to mention that it reduces the requirement of visibility of the value to this thread only - the writes to the flag do not need to be visible by the other threads; in fact, not seeing those writes alone would indicate we are not in the invocation of then.
+>>>>>> 
+>>>>>> The code I actually want would look the same as Peter’s suggestion with Threads, but I observe that in that case thisThread is “effectively final”, as javac puts it. So the compiler probably inserts barriers to ensure cross-thread visibility.
+>>>>>> 
+>>>>>> Is there a way to control the existence of such barriers?
+>>>>> Perhaps this is the variant that requires no visibility across threads (except for static final state):
+>>>>> 
+>>>>>   static final ThreadLocal<Boolean> THEN_APPLY_IN_PROGRESS = new ThreadLocal<>();
+>>>>> 
+>>>>>   public static <T, U> CompletableFuture<U> thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn)
+>>>>>   {
+>>>>>     THEN_APPLY_IN_PROGRESS.set(Boolean.TRUE);
+>>>>>     try {
+>>>>>       return cf.thenCompose(t -> Boolean.TRUE == THEN_APPLY_IN_PROGRESS.get()
+>>>>>                                  ? cf.thenApplyAsync(fn)
+>>>>>                                  : cf.thenApply(fn));
+>>>>>     }
+>>>>>     finally {
+>>>>>       THEN_APPLY_IN_PROGRESS.remove();
+>>>>>     }
+>>>>>   }
+>>>>> 
+>>>> Not entirely true :~(. Of course, the lambda object reference has to be visible to the other thread (as it is not a constant non-capturing lambda which would be initialized just once) and with it all the captured state:
+>>>> - the reference to 'fn' Function
+>>>> - the reference to 'cf' CompletableFuture
+>>>> 
+>>>> So capturing another reference doesn't make much difference.
+>>>> 
+>>>> Peter
+>>> 
+>> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> -- 
+> Cheers,
+> √
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190319/e9f59f85/attachment.html>
+
+From viktor.klang at gmail.com  Tue Mar 19 03:44:20 2019
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Tue, 19 Mar 2019 11:44:20 +0400
+Subject: [concurrency-interest] proposal: Thread.currentExecutor()
+In-Reply-To: <C9F08BC4-0103-4F42-8E8F-550D71ADA455@gmail.com>
+References: <1552326430728-0.post@n7.nabble.com>
+ <23f37269-22c8-285f-e158-a8e78166856d@gmail.com>
+ <700cdee4-fd5f-53f6-334c-403bcc789dcd@cs.oswego.edu>
+ <81B97BD3-6BD8-4F81-8D22-E83E2C359CC0@gmail.com>
+ <d2bc84d0-779e-9aa5-8e37-9f6a2c9bff40@gmail.com>
+ <49D19330-6D5C-4C30-B33D-B7A0EC08A76E@gmail.com>
+ <57e890ad-59f7-1534-d226-a8428f8f942a@gmail.com>
+ <f0be12f2-0565-4a13-227a-08ecb38fd711@gmail.com>
+ <83379B3D-A245-42EA-8129-F7731145404A@gmail.com>
+ <a822b3a4-311e-f19e-32d4-18aa51b479a5@gmail.com>
+ <CA36C62E-61D9-426A-BD7A-8F6B57F40E4E@gmail.com>
+ <CANPzfU_ZoBc7JARan9iVbh+ZRHbFqTj3eAiEEi0X+Yni+9pznA@mail.gmail.com>
+ <C9F08BC4-0103-4F42-8E8F-550D71ADA455@gmail.com>
+Message-ID: <CANPzfU8xsF66A1BrYafo8S5xD83u1EZbAO_=+2qJ0z5TiyvBrg@mail.gmail.com>
+
+I guess it is thenApply’s problem then ;)
+
+On Tue, 19 Mar 2019 at 11:35, Alex Otenko <oleksandr.otenko at gmail.com>
+wrote:
+
+> That’s thenApply’s problem. Or do you see something else?
+>
+>
+> Alex
+>
+> On 19 Mar 2019, at 04:30, Viktor Klang <viktor.klang at gmail.com> wrote:
+>
+> Doesn’t all these solutions have issues with uncontrolled stack growth?
+>
+> On Mon, 18 Mar 2019 at 21:45, Alex Otenko via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> wrote:
+>
+>> This is splitting hairs, of course, but could use:
+>>
+>>     final AtomicReference<Thread> ar = new
+>> AtomicReference<>(Thread.currentThread());
+>>     final CompletableFuture<U> that = cf.thenCompose(i -> {
+>>       return ar.get() == Thread.currentThread() ?
+>>                            cf.thenApplyAsync(f):
+>>                            cf.thenApply(f); });
+>>     ar.lazySet(null);
+>>     return that;
+>>
+>> Alex
+>>
+>> On 18 Mar 2019, at 16:30, Peter Levart <peter.levart at gmail.com> wrote:
+>>
+>>
+>>
+>> On 3/18/19 4:48 PM, Alex Otenko wrote:
+>>
+>> Well, yes, since the lambda is made visible to all threads, an extra
+>> reference is not a problem.
+>>
+>> But this pattern actually has another dangerous property, which I wanted
+>> to avoid by using AtomicInteger. Although benign in most cases, it captures
+>> thisThread for the duration of the closure’s lifetime. This is a common
+>> problem with continuation passing: the scope of lifetime of references is
+>> no longer limited to lexical scope.
+>>
+>>
+>> Right, we can not avoid capturing the 'cf' reference, because we need it
+>> to .thenApply[Async] on it. User already expects that the 'fn' Function
+>> will be captured and stay alive until it is used. But we can at least avoid
+>> capturing 'thisThread' and instead capture just its id:
+>>
+>>   public static <T, U> CompletableFuture<U>
+>> thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn)
+>>   {
+>>     long thisThreadId = Thread.currentThread().getId();
+>>     return cf.thenCompose(t -> Thread.currentThread().getId() ==
+>> thisThreadId
+>>                                ? cf.thenApplyAsync(fn)
+>>                                : cf.thenApply(fn));
+>>   }
+>>
+>> The javadoc says that thread ID may be reused after thread terminates:
+>>
+>>      * Returns the identifier of this Thread.  The thread ID is a positive
+>>      * {@code long} number generated when this thread was created.
+>>      * The thread ID is unique and remains unchanged during its lifetime.
+>>      * When a thread is terminated, this thread ID may be reused.
+>>
+>> ...but the implementation of the generator for thread IDs does not care
+>> about Thread's lifetime:
+>>
+>>     /* For generating thread ID */
+>>     private static long threadSeqNumber;
+>>
+>>     private static synchronized long nextThreadID() {
+>>         return ++threadSeqNumber;
+>>     }
+>>
+>> ...making it an equal probability for ID to be reused regardless of
+>> whether the thread terminated or not. Practically this would happen in
+>> 584942 years if the JVM created one Thread each micro second.
+>>
+>> Peter
+>>
+>>
+>> Alex
+>>
+>> On 18 Mar 2019, at 15:36, Peter Levart <peter.levart at gmail.com> wrote:
+>>
+>>
+>>
+>> On 3/18/19 4:25 PM, Peter Levart wrote:
+>>
+>>
+>> On 3/18/19 2:37 PM, Alex Otenko wrote:
+>>
+>> The reason I used AtomicInteger is because I wanted a subtly different
+>> guarantee: I wanted to express that the execution should be asynchronous in
+>> the current thread only if the code is reached before return.
+>>
+>> It does not mean that it is better than watching thisThread, but I would
+>> like to mention that it reduces the requirement of visibility of the value
+>> to this thread only - the writes to the flag do not need to be visible by
+>> the other threads; in fact, not seeing those writes alone would indicate we
+>> are not in the invocation of then.
+>>
+>> The code I actually want would look the same as Peter’s suggestion with
+>> Threads, but I observe that in that case thisThread is “effectively final”,
+>> as javac puts it. So the compiler probably inserts barriers to ensure
+>> cross-thread visibility.
+>>
+>> Is there a way to control the existence of such barriers?
+>>
+>> Perhaps this is the variant that requires no visibility across threads
+>> (except for static final state):
+>>
+>>   static final ThreadLocal<Boolean> THEN_APPLY_IN_PROGRESS = new
+>> ThreadLocal<>();
+>>
+>>   public static <T, U> CompletableFuture<U>
+>> thenApply(CompletableFuture<T> cf, Function<? super T, ? extends U> fn)
+>>   {
+>>     THEN_APPLY_IN_PROGRESS.set(Boolean.TRUE);
+>>     try {
+>>       return cf.thenCompose(t -> Boolean.TRUE ==
+>> THEN_APPLY_IN_PROGRESS.get()
+>>                                  ? cf.thenApplyAsync(fn)
+>>                                  : cf.thenApply(fn));
+>>     }
+>>     finally {
+>>       THEN_APPLY_IN_PROGRESS.remove();
+>>     }
+>>   }
+>>
+>> Not entirely true :~(. Of course, the lambda object reference has to be
+>> visible to the other thread (as it is not a constant non-capturing lambda
+>> which would be initialized just once) and with it all the captured state:
+>> - the reference to 'fn' Function
+>> - the reference to 'cf' CompletableFuture
+>>
+>> So capturing another reference doesn't make much difference.
+>>
+>> Peter
+>>
+>>
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+> --
+> Cheers,
+> √
+>
+>
+> --
+Cheers,
+√
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190319/d77d63e0/attachment-0001.html>
+
+From akarnokd at gmail.com  Tue Mar 19 03:51:21 2019
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Tue, 19 Mar 2019 08:51:21 +0100
+Subject: [concurrency-interest] CopyOnWriteArrayList lost volatile write
+ in OpenJDK 11
+In-Reply-To: <CAO-wXwKcqEib3JtC6NDvWXHbNs20SpR6=ziVncVMEx+1u8R0zg@mail.gmail.com>
+References: <CAO-wXwL+mDrJ9332NJnasm5dUWTKfnBqOXF4a1uXqd1d8XnJUQ@mail.gmail.com>
+ <CA+kOe0_xbZXLzFK_O3cioZ+zoX5PQs6-FGaUKpXKuS_W=gVE3g@mail.gmail.com>
+ <CAO-wXwKcqEib3JtC6NDvWXHbNs20SpR6=ziVncVMEx+1u8R0zg@mail.gmail.com>
+Message-ID: <CAAWwtm-DmyujU4Ou-=XXi8ia-8i-_g8jVogJqQm3fed91BvLHw@mail.gmail.com>
+
+My understanding is that both implementations use synchronized which should
+ensure prior writes become visible once the block is left.
+
+Valentin Kovalenko via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> ezt írta (időpont: 2019. márc. 18., H,
+20:51):
+
+> Yes, Martin, I found this while discussing the COWList implementation with
+> someone (so not by observing an infinite loop). Thanks for the blazingly
+> quick fix :)
+>
+> Regards,
+> Valentin
+>
+> On Mon, Mar 18, 2019, 12:43 Martin Buchholz <martinrb at google.com> wrote:
+>
+>> Thanks for finding this (presumably by code inspection?)
+>>
+>> I can't remember how this changed, and you're unlikely to observe any
+>> change in behavior in practice, but we were arguably slightly overzealous,
+>> and we could fix it to:
+>>
+>> --- src/main/java/util/concurrent/CopyOnWriteArrayList.java 11 Nov 2018
+>> 16:27:28 -0000 1.155
+>> +++ src/main/java/util/concurrent/CopyOnWriteArrayList.java 18 Mar 2019
+>> 18:38:52 -0000
+>> @@ -395,8 +395,9 @@
+>>              if (oldValue != element) {
+>>                  es = es.clone();
+>>                  es[index] = element;
+>> -                setArray(es);
+>>              }
+>> +            // Ensure volatile write semantics even when oldvalue ==
+>> element
+>> +            setArray(es);
+>>              return oldValue;
+>>          }
+>>      }
+>>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190319/330c1160/attachment.html>
+
+From oleksandr.otenko at gmail.com  Tue Mar 19 04:03:37 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Tue, 19 Mar 2019 08:03:37 +0000
+Subject: [concurrency-interest] CopyOnWriteArrayList lost volatile write
+ in OpenJDK 11
+In-Reply-To: <CAAWwtm-DmyujU4Ou-=XXi8ia-8i-_g8jVogJqQm3fed91BvLHw@mail.gmail.com>
+References: <CAO-wXwL+mDrJ9332NJnasm5dUWTKfnBqOXF4a1uXqd1d8XnJUQ@mail.gmail.com>
+ <CA+kOe0_xbZXLzFK_O3cioZ+zoX5PQs6-FGaUKpXKuS_W=gVE3g@mail.gmail.com>
+ <CAO-wXwKcqEib3JtC6NDvWXHbNs20SpR6=ziVncVMEx+1u8R0zg@mail.gmail.com>
+ <CAAWwtm-DmyujU4Ou-=XXi8ia-8i-_g8jVogJqQm3fed91BvLHw@mail.gmail.com>
+Message-ID: <48B121A0-A54E-4F73-99CE-284F11E468F5@gmail.com>
+
+No, lock release synchronizes-with only subsequent lock acquires, not arbitrary synchronisation actions.
+
+Alex
+
+> On 19 Mar 2019, at 07:51, Dávid Karnok via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+> My understanding is that both implementations use synchronized which should ensure prior writes become visible once the block is left.
+> 
+> Valentin Kovalenko via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> ezt írta (időpont: 2019. márc. 18., H, 20:51):
+> Yes, Martin, I found this while discussing the COWList implementation with someone (so not by observing an infinite loop). Thanks for the blazingly quick fix :)
+> 
+> Regards,
+> Valentin
+> 
+> On Mon, Mar 18, 2019, 12:43 Martin Buchholz <martinrb at google.com <mailto:martinrb at google.com>> wrote:
+> Thanks for finding this (presumably by code inspection?)
+> 
+> I can't remember how this changed, and you're unlikely to observe any change in behavior in practice, but we were arguably slightly overzealous, and we could fix it to:
+> 
+> --- src/main/java/util/concurrent/CopyOnWriteArrayList.java	11 Nov 2018 16:27:28 -0000	1.155
+> +++ src/main/java/util/concurrent/CopyOnWriteArrayList.java	18 Mar 2019 18:38:52 -0000
+> @@ -395,8 +395,9 @@
+>              if (oldValue != element) {
+>                  es = es.clone();
+>                  es[index] = element;
+> -                setArray(es);
+>              }
+> +            // Ensure volatile write semantics even when oldvalue == element
+> +            setArray(es);
+>              return oldValue;
+>          }
+>      }
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> 
+> 
+> -- 
+> Best regards,
+> David Karnok
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190319/5b422667/attachment.html>
+
+From nigro.fra at gmail.com  Tue Mar 19 04:05:57 2019
+From: nigro.fra at gmail.com (Francesco Nigro)
+Date: Tue, 19 Mar 2019 09:05:57 +0100
+Subject: [concurrency-interest] CopyOnWriteArrayList lost volatile write
+ in OpenJDK 11
+In-Reply-To: <CAAWwtm-DmyujU4Ou-=XXi8ia-8i-_g8jVogJqQm3fed91BvLHw@mail.gmail.com>
+References: <CAO-wXwL+mDrJ9332NJnasm5dUWTKfnBqOXF4a1uXqd1d8XnJUQ@mail.gmail.com>
+ <CA+kOe0_xbZXLzFK_O3cioZ+zoX5PQs6-FGaUKpXKuS_W=gVE3g@mail.gmail.com>
+ <CAO-wXwKcqEib3JtC6NDvWXHbNs20SpR6=ziVncVMEx+1u8R0zg@mail.gmail.com>
+ <CAAWwtm-DmyujU4Ou-=XXi8ia-8i-_g8jVogJqQm3fed91BvLHw@mail.gmail.com>
+Message-ID: <CAKxGtTVvYmXbGypfJ=zePNDwCTQvj6z7K=+dPJz9vLuiVL4i7w@mail.gmail.com>
+
+Assuming to maintain the original behaviour probably placing a seq-cst
+fence/barrier instead of  setArray(es); in the else branch would make
+more evident the intention, without needing the comment
+
+Il giorno mar 19 mar 2019 alle ore 08:52 Dávid Karnok via
+Concurrency-interest <concurrency-interest at cs.oswego.edu> ha scritto:
+
+> My understanding is that both implementations use synchronized which
+> should ensure prior writes become visible once the block is left.
+>
+> Valentin Kovalenko via Concurrency-interest <
+> concurrency-interest at cs.oswego.edu> ezt írta (időpont: 2019. márc. 18.,
+> H, 20:51):
+>
+>> Yes, Martin, I found this while discussing the COWList implementation
+>> with someone (so not by observing an infinite loop). Thanks for the
+>> blazingly quick fix :)
+>>
+>> Regards,
+>> Valentin
+>>
+>> On Mon, Mar 18, 2019, 12:43 Martin Buchholz <martinrb at google.com> wrote:
+>>
+>>> Thanks for finding this (presumably by code inspection?)
+>>>
+>>> I can't remember how this changed, and you're unlikely to observe any
+>>> change in behavior in practice, but we were arguably slightly overzealous,
+>>> and we could fix it to:
+>>>
+>>> --- src/main/java/util/concurrent/CopyOnWriteArrayList.java 11 Nov 2018
+>>> 16:27:28 -0000 1.155
+>>> +++ src/main/java/util/concurrent/CopyOnWriteArrayList.java 18 Mar 2019
+>>> 18:38:52 -0000
+>>> @@ -395,8 +395,9 @@
+>>>              if (oldValue != element) {
+>>>                  es = es.clone();
+>>>                  es[index] = element;
+>>> -                setArray(es);
+>>>              }
+>>> +            // Ensure volatile write semantics even when oldvalue ==
+>>> element
+>>> +            setArray(es);
+>>>              return oldValue;
+>>>          }
+>>>      }
+>>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+>
+> --
+> Best regards,
+> David Karnok
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190319/4aef7d89/attachment-0001.html>
+
+From boehm at acm.org  Wed Mar 20 16:15:29 2019
+From: boehm at acm.org (Hans Boehm)
+Date: Wed, 20 Mar 2019 13:15:29 -0700
+Subject: [concurrency-interest] ThreadPoolExecutor API
+Message-ID: <CAPUmR1bEB7Vjpq4MMQwDQo6YP6deLsut6QQ19cyhnEjn-T232Q@mail.gmail.com>
+
+I've seen several ThreadPoolExecutor usages that create a
+ThreadPoolExecutor with
+
+new ThreadPoolExecutor(SMALL_NO, LARGER_NO, ..., ...,  new
+LinkedBlockingQueue<Runnable>(ABOUT_100.), ...);
+
+I'm not 100% sure, but I think the intent is to create a TPE with a small
+number of core threads; only if those are all busy, temporarily create a
+few more threads to accommodate bursts; and if that doesn't suffice,
+enqueue tasks. My conclusion so far:
+
+1) This is a reasonable intent. And if you didn't read the
+ThreadPoolExecutor documentation very carefully, this seems like a
+plausible way to express it.
+
+2) This is NOT what the code actually does. It instead aggressively creates
+a small number of threads; when those are busy, it enqueues further
+requests. When the queue fills up too, it potentially creates an additional
+LARGER_NO - SMALL_NO threads, as needed. In fact, having unequal core and
+max counts with something other than a SynchronousQueue seems odd. (And the
+current TPE interface makes a lot of sense, especially if you view it as a
+low-level building block.)
+
+3) It's possible to get something like the intended effect by chaining two
+TPEs together through the first one's RejectedExecutionHandler, which seems
+a bit obscure.
+
+Questions:  Does this assessment look right? Is there a better way to get
+the intended effect? If not, should there be?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190320/929d187c/attachment.html>
+
+From martinrb at google.com  Wed Mar 20 16:41:16 2019
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 20 Mar 2019 13:41:16 -0700
+Subject: [concurrency-interest] ThreadPoolExecutor API
+In-Reply-To: <CAPUmR1bEB7Vjpq4MMQwDQo6YP6deLsut6QQ19cyhnEjn-T232Q@mail.gmail.com>
+References: <CAPUmR1bEB7Vjpq4MMQwDQo6YP6deLsut6QQ19cyhnEjn-T232Q@mail.gmail.com>
+Message-ID: <CA+kOe095DrrjPYHeEHHDeQ85oXp3hNfFpVwEEH6mh30mpd0eSQ@mail.gmail.com>
+
+I've wanted for many years to fix
+
+ThreadPoolExecutor should prefer reusing idle threads
+https://bugs.openjdk.java.net/browse/JDK-6452337
+
+but never finished any of many starts.
+---
+The distinction between core pool size and max pool size is confusing -
+this API didn't work out well.
+More generally, we're not happy with all the configuration knobs, that fail
+to make it easy for users to get what they want.
+---
+(Nevertheless, the world runs on ThreadPoolExecutor!)
+
+On Wed, Mar 20, 2019 at 1:17 PM Hans Boehm via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+> I've seen several ThreadPoolExecutor usages that create a
+> ThreadPoolExecutor with
+>
+> new ThreadPoolExecutor(SMALL_NO, LARGER_NO, ..., ...,  new
+> LinkedBlockingQueue<Runnable>(ABOUT_100.), ...);
+>
+> I'm not 100% sure, but I think the intent is to create a TPE with a small
+> number of core threads; only if those are all busy, temporarily create a
+> few more threads to accommodate bursts; and if that doesn't suffice,
+> enqueue tasks. My conclusion so far:
+>
+> 1) This is a reasonable intent. And if you didn't read the
+> ThreadPoolExecutor documentation very carefully, this seems like a
+> plausible way to express it.
+>
+> 2) This is NOT what the code actually does. It instead aggressively
+> creates a small number of threads; when those are busy, it enqueues further
+> requests. When the queue fills up too, it potentially creates an additional
+> LARGER_NO - SMALL_NO threads, as needed. In fact, having unequal core and
+> max counts with something other than a SynchronousQueue seems odd. (And the
+> current TPE interface makes a lot of sense, especially if you view it as a
+> low-level building block.)
+>
+> 3) It's possible to get something like the intended effect by chaining two
+> TPEs together through the first one's RejectedExecutionHandler, which seems
+> a bit obscure.
+>
+> Questions:  Does this assessment look right? Is there a better way to get
+> the intended effect? If not, should there be?
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190320/8154ae3b/attachment.html>
+
+From davidcholmes at aapt.net.au  Wed Mar 20 16:47:54 2019
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Thu, 21 Mar 2019 06:47:54 +1000
+Subject: [concurrency-interest] ThreadPoolExecutor API
+In-Reply-To: <CAPUmR1bEB7Vjpq4MMQwDQo6YP6deLsut6QQ19cyhnEjn-T232Q@mail.gmail.com>
+References: <CAPUmR1bEB7Vjpq4MMQwDQo6YP6deLsut6QQ19cyhnEjn-T232Q@mail.gmail.com>
+Message-ID: <005801d4df5e$3178b0a0$946a11e0$@aapt.net.au>
+
+Hi Hans,
+
+> From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> On Behalf Of Hans Boehm via Concurrency-interest
+> Sent: Thursday, March 21, 2019 6:15 AM
+> To: concurrency-interest at cs.oswego.edu
+> Subject: [concurrency-interest] ThreadPoolExecutor API
+> 
+> I've seen several ThreadPoolExecutor usages that create a ThreadPoolExecutor with
+>
+> new ThreadPoolExecutor(SMALL_NO, LARGER_NO, ..., ...,  new LinkedBlockingQueue<Runnable>(ABOUT_100.), ...);
+> 
+> I'm not 100% sure, but I think the intent is to create a TPE with a small number of core threads; only if those are all busy, temporarily create a few 
+> more threads to accommodate bursts; and if that doesn't suffice, enqueue tasks.
+
+Why do you assume that is the intent? You are assuming that people don’t know what they are doing and don’t read the documentation. I have explained the basic operating mode of TPE a number of times over the years as follows:
+
+“The basic threading strategy is based around expected service times and throughput requirements. If you characterise your task workload, identify the arrival rate and determine what your throughput/response-time requirements are then you can determine the necessary number of threads to handle your steady-state workload. The queue is then used to buffer requests when you get transient overloads. By bounding the queue you set a second overload threshhold at which new threads are brought in (up to max) to try and service the overload and get the system back to the expected steady-state.”
+
+I disagree with Martin that this API didn't work out well, it's a powerful and flexible API but that also brings complexity which seems to overwhelm many users. But then that is why we have the factory methods to produce commonly useful TPE forms.
+
+> My conclusion so far:
+
+> 1) This is a reasonable intent. And if you didn't read the ThreadPoolExecutor documentation very carefully, this seems like a plausible way to express it.
+
+I agree it is not an unreasonable expectation if you don't actually know how it works. I don't think people are generally silly enough to guess what the semantics are instead of actually reading the documentation.
+
+> 2) This is NOT what the code actually does. It instead aggressively creates a small number of threads; when those are busy, it enqueues further requests. When the 
+> queue fills up too, it potentially creates an additional LARGER_NO - SMALL_NO threads, as needed. In fact, having unequal core and max counts with something 
+> other than a SynchronousQueue seems odd. (And the current TPE interface makes a lot of sense, especially if you view it as a low-level building block.)
+
+Having unequal core and max with other than a SynchronousQueue is not odd at all.
+
+> 3) It's possible to get something like the intended effect by chaining two TPEs together through the first one's RejectedExecutionHandler, which seems a bit obscure.
+
+Yes it's possible and yes somewhat obscure.
+
+> Questions:  Does this assessment look right? Is there a better way to get the intended effect? If not, should there be?
+
+If there were demand for this ...
+
+Cheers,
+David
+
+
+From boehm at acm.org  Wed Mar 20 17:27:25 2019
+From: boehm at acm.org (Hans Boehm)
+Date: Wed, 20 Mar 2019 14:27:25 -0700
+Subject: [concurrency-interest] ThreadPoolExecutor API
+In-Reply-To: <005801d4df5e$3178b0a0$946a11e0$@aapt.net.au>
+References: <CAPUmR1bEB7Vjpq4MMQwDQo6YP6deLsut6QQ19cyhnEjn-T232Q@mail.gmail.com>
+ <005801d4df5e$3178b0a0$946a11e0$@aapt.net.au>
+Message-ID: <CAPUmR1YvPSW5mq8SWJEOpDPzFdKUJWd4f4DZ1fXzUnoyPM0Uig@mail.gmail.com>
+
+On Wed, Mar 20, 2019 at 1:48 PM David Holmes <davidcholmes at aapt.net.au>
+wrote:
+>
+> Hi Hans,
+>
+> > From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu>
+On Behalf Of Hans Boehm via Concurrency-interest
+> > Sent: Thursday, March 21, 2019 6:15 AM
+> > To: concurrency-interest at cs.oswego.edu
+> > Subject: [concurrency-interest] ThreadPoolExecutor API
+> >
+> > I've seen several ThreadPoolExecutor usages that create a
+ThreadPoolExecutor with
+> >
+> > new ThreadPoolExecutor(SMALL_NO, LARGER_NO, ..., ...,  new
+LinkedBlockingQueue<Runnable>(ABOUT_100.), ...);
+> >
+> > I'm not 100% sure, but I think the intent is to create a TPE with a
+small number of core threads; only if those are all busy, temporarily
+create a few
+> > more threads to accommodate bursts; and if that doesn't suffice,
+enqueue tasks.
+>
+> Why do you assume that is the intent? You are assuming that people don’t
+know what they are doing and don’t read the documentation. I have explained
+the basic operating mode of TPE a number of times over the years as follows:
+>
+> “The basic threading strategy is based around expected service times and
+throughput requirements. If you characterise your task workload, identify
+the arrival rate and determine what your throughput/response-time
+requirements are then you can determine the necessary number of threads to
+handle your steady-state workload. The queue is then used to buffer
+requests when you get transient overloads. By bounding the queue you set a
+second overload threshhold at which new threads are brought in (up to max)
+to try and service the overload and get the system back to the expected
+steady-state.”
+
+David -
+
+That's a good way to view it, and I agree that this is not always a
+disastrous thing to do. But in most cases, especially in a
+latency-sensitive environment, this is suboptimal. Why wait before
+launching the extra threads, if there are tasks piling up in the queue? By
+starting the extra threads earlier, you end up with better latency.
+Admittedly, it may force you to start some extra temporary threads that you
+could have avoided starting. But, at least in our case, that very rarely
+seems to be the right trade-off.
+
+This seems particularly dubious for more general purpose shared thread
+pools, when the tasks may block on IO for extended periods. If I try to
+execute SMALL_NO long-blocking tasks, and then a 100 short compute-bound
+ones, everything needlessly blocks until the IO completes, potentially
+causing a serious system hiccup. The reasons for allowing thread pools to
+expand is usually to avoid such hiccups.
+
+So I agree the intent is not 100% obvious, it seems unlikely this was
+intended in our case. And some users and readers of the code in question
+expressed surprise when I explained how it worked.
+
+>
+> I disagree with Martin that this API didn't work out well, it's a
+powerful and flexible API but that also brings complexity which seems to
+overwhelm many users. But then that is why we have the factory methods to
+produce commonly useful TPE forms.
+>
+> > My conclusion so far:
+>
+> > 1) This is a reasonable intent. And if you didn't read the
+ThreadPoolExecutor documentation very carefully, this seems like a
+plausible way to express it.
+>
+> I agree it is not an unreasonable expectation if you don't actually know
+how it works. I don't think people are generally silly enough to guess what
+the semantics are instead of actually reading the documentation.
+
+I think people who read the code are often mislead. The authors should
+indeed read the documentation, though I'm not sure they always do.
+
+Hans
+
+>
+> > 2) This is NOT what the code actually does. It instead aggressively
+creates a small number of threads; when those are busy, it enqueues further
+requests. When the
+> > queue fills up too, it potentially creates an additional LARGER_NO -
+SMALL_NO threads, as needed. In fact, having unequal core and max counts
+with something
+> > other than a SynchronousQueue seems odd. (And the current TPE interface
+makes a lot of sense, especially if you view it as a low-level building
+block.)
+>
+> Having unequal core and max with other than a SynchronousQueue is not odd
+at all.
+>
+> > 3) It's possible to get something like the intended effect by chaining
+two TPEs together through the first one's RejectedExecutionHandler, which
+seems a bit obscure.
+>
+> Yes it's possible and yes somewhat obscure.
+>
+> > Questions:  Does this assessment look right? Is there a better way to
+get the intended effect? If not, should there be?
+>
+> If there were demand for this ...
+>
+> Cheers,
+> David
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190320/16a8d042/attachment-0001.html>
+
+From davidcholmes at aapt.net.au  Wed Mar 20 19:28:22 2019
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Thu, 21 Mar 2019 09:28:22 +1000
+Subject: [concurrency-interest] ThreadPoolExecutor API
+In-Reply-To: <CAPUmR1YvPSW5mq8SWJEOpDPzFdKUJWd4f4DZ1fXzUnoyPM0Uig@mail.gmail.com>
+References: <CAPUmR1bEB7Vjpq4MMQwDQo6YP6deLsut6QQ19cyhnEjn-T232Q@mail.gmail.com>
+ <005801d4df5e$3178b0a0$946a11e0$@aapt.net.au>
+ <CAPUmR1YvPSW5mq8SWJEOpDPzFdKUJWd4f4DZ1fXzUnoyPM0Uig@mail.gmail.com>
+Message-ID: <006c01d4df74$9c7b1760$d5714620$@aapt.net.au>
+
+Hi Hans,
+
+ 
+
+Obviously you can construct scenarios that are advantaged or disadvantaged by any given policy. If your system has sufficient capacity then adding more threads rather than buffering requests will reduce latency for those extra requests. But if you don’t have sufficient capacity adding more threads may cause resource contention that increases average latency. But if you have the capacity then why not just increase the number of core threads to start with?
+
+ 
+
+Cheers,
+
+David
+
+ 
+
+From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> On Behalf Of Hans Boehm via Concurrency-interest
+Sent: Thursday, March 21, 2019 7:27 AM
+To: David Holmes <dholmes at ieee.org>
+Cc: concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] ThreadPoolExecutor API
+
+ 
+
+On Wed, Mar 20, 2019 at 1:48 PM David Holmes <davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au> > wrote:
+>
+> Hi Hans,
+>
+> > From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu> > On Behalf Of Hans Boehm via Concurrency-interest
+> > Sent: Thursday, March 21, 2019 6:15 AM
+> > To: concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> 
+> > Subject: [concurrency-interest] ThreadPoolExecutor API
+> >
+> > I've seen several ThreadPoolExecutor usages that create a ThreadPoolExecutor with
+> >
+> > new ThreadPoolExecutor(SMALL_NO, LARGER_NO, ..., ...,  new LinkedBlockingQueue<Runnable>(ABOUT_100.), ...);
+> >
+> > I'm not 100% sure, but I think the intent is to create a TPE with a small number of core threads; only if those are all busy, temporarily create a few
+> > more threads to accommodate bursts; and if that doesn't suffice, enqueue tasks.
+>
+> Why do you assume that is the intent? You are assuming that people don’t know what they are doing and don’t read the documentation. I have explained the basic operating mode of TPE a number of times over the years as follows:
+>
+> “The basic threading strategy is based around expected service times and throughput requirements. If you characterise your task workload, identify the arrival rate and determine what your throughput/response-time requirements are then you can determine the necessary number of threads to handle your steady-state workload. The queue is then used to buffer requests when you get transient overloads. By bounding the queue you set a second overload threshhold at which new threads are brought in (up to max) to try and service the overload and get the system back to the expected steady-state.”
+
+ 
+
+David -
+
+ 
+
+That's a good way to view it, and I agree that this is not always a disastrous thing to do. But in most cases, especially in a latency-sensitive environment, this is suboptimal. Why wait before launching the extra threads, if there are tasks piling up in the queue? By starting the extra threads earlier, you end up with better latency. Admittedly, it may force you to start some extra temporary threads that you could have avoided starting. But, at least in our case, that very rarely seems to be the right trade-off.
+
+ 
+
+This seems particularly dubious for more general purpose shared thread pools, when the tasks may block on IO for extended periods. If I try to execute SMALL_NO long-blocking tasks, and then a 100 short compute-bound ones, everything needlessly blocks until the IO completes, potentially causing a serious system hiccup. The reasons for allowing thread pools to expand is usually to avoid such hiccups.
+
+ 
+
+So I agree the intent is not 100% obvious, it seems unlikely this was intended in our case. And some users and readers of the code in question expressed surprise when I explained how it worked.
+
+
+>
+> I disagree with Martin that this API didn't work out well, it's a powerful and flexible API but that also brings complexity which seems to overwhelm many users. But then that is why we have the factory methods to produce commonly useful TPE forms.
+>
+> > My conclusion so far:
+>
+> > 1) This is a reasonable intent. And if you didn't read the ThreadPoolExecutor documentation very carefully, this seems like a plausible way to express it.
+>
+> I agree it is not an unreasonable expectation if you don't actually know how it works. I don't think people are generally silly enough to guess what the semantics are instead of actually reading the documentation.
+
+ 
+
+I think people who read the code are often mislead. The authors should indeed read the documentation, though I'm not sure they always do.
+
+ 
+
+Hans
+
+
+>
+> > 2) This is NOT what the code actually does. It instead aggressively creates a small number of threads; when those are busy, it enqueues further requests. When the
+> > queue fills up too, it potentially creates an additional LARGER_NO - SMALL_NO threads, as needed. In fact, having unequal core and max counts with something
+> > other than a SynchronousQueue seems odd. (And the current TPE interface makes a lot of sense, especially if you view it as a low-level building block.)
+>
+> Having unequal core and max with other than a SynchronousQueue is not odd at all.
+>
+> > 3) It's possible to get something like the intended effect by chaining two TPEs together through the first one's RejectedExecutionHandler, which seems a bit obscure.
+>
+> Yes it's possible and yes somewhat obscure.
+>
+> > Questions:  Does this assessment look right? Is there a better way to get the intended effect? If not, should there be?
+>
+> If there were demand for this ...
+>
+> Cheers,
+> David
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190321/f45246f9/attachment.html>
+
+From martinrb at google.com  Wed Mar 20 19:51:34 2019
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 20 Mar 2019 16:51:34 -0700
+Subject: [concurrency-interest] ThreadPoolExecutor API
+In-Reply-To: <006c01d4df74$9c7b1760$d5714620$@aapt.net.au>
+References: <CAPUmR1bEB7Vjpq4MMQwDQo6YP6deLsut6QQ19cyhnEjn-T232Q@mail.gmail.com>
+ <005801d4df5e$3178b0a0$946a11e0$@aapt.net.au>
+ <CAPUmR1YvPSW5mq8SWJEOpDPzFdKUJWd4f4DZ1fXzUnoyPM0Uig@mail.gmail.com>
+ <006c01d4df74$9c7b1760$d5714620$@aapt.net.au>
+Message-ID: <CA+kOe0-ycfj=8WEHzBkffbSVQQ4QsWQ_RrP1+rxktLAB4wzwHQ@mail.gmail.com>
+
+On Wed, Mar 20, 2019 at 4:30 PM David Holmes via Concurrency-interest <
+concurrency-interest at cs.oswego.edu> wrote:
+
+>
+> Obviously you can construct scenarios that are advantaged or disadvantaged
+> by any given policy. If your system has sufficient capacity then adding
+> more threads rather than buffering requests will reduce latency for those
+> extra requests. But if you don’t have sufficient capacity adding more
+> threads may cause resource contention that increases average latency. But
+> if you have the capacity then why not just increase the number of core
+> threads to start with?
+>
+
+A problem is efficient use of threads.  Because new core threads are
+currently spun up at submit time even when other core threads are idle, you
+will likely end up with corepoolsize threads even when a much smaller
+number is good enough most of the time.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190320/61d4ff1e/attachment.html>
+
+From oleksandr.otenko at gmail.com  Sun Mar 24 06:09:37 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sun, 24 Mar 2019 10:09:37 +0000
+Subject: [concurrency-interest] ThreadPoolExecutor API
+In-Reply-To: <006c01d4df74$9c7b1760$d5714620$@aapt.net.au>
+References: <CAPUmR1bEB7Vjpq4MMQwDQo6YP6deLsut6QQ19cyhnEjn-T232Q@mail.gmail.com>
+ <005801d4df5e$3178b0a0$946a11e0$@aapt.net.au>
+ <CAPUmR1YvPSW5mq8SWJEOpDPzFdKUJWd4f4DZ1fXzUnoyPM0Uig@mail.gmail.com>
+ <006c01d4df74$9c7b1760$d5714620$@aapt.net.au>
+Message-ID: <2BD8BD70-E924-4526-9F75-F902FB8A5996@gmail.com>
+
+So, each task’s latency is: enqueue wait (contention for queue capacity) + dequeue wait (contention for executor threads) + execution time (pure CPU) + resource wait time (contention between running tasks).
+
+Choose SMALL_NO for optimal latency. Choose LARGE_NO to optimise for throughput. (Probably something like execution time == resource wait time * LARGE_NO)
+
+Choose queue size to switch between latency and throughput. It is not clear why it should switch based on the queue reaching its capacity.
+
+
+(But the reasoning doesn’t quite make sense. “arrival rate” is the parameter of the workload. “resource” must be provisioned to service such “arrival rate”)
+
+Alex
+
+> On 20 Mar 2019, at 23:28, David Holmes via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+> Hi Hans,
+>  
+> Obviously you can construct scenarios that are advantaged or disadvantaged by any given policy. If your system has sufficient capacity then adding more threads rather than buffering requests will reduce latency for those extra requests. But if you don’t have sufficient capacity adding more threads may cause resource contention that increases average latency. But if you have the capacity then why not just increase the number of core threads to start with?
+>  
+> Cheers,
+> David
+>  
+> From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu> On Behalf Of Hans Boehm via Concurrency-interest
+> Sent: Thursday, March 21, 2019 7:27 AM
+> To: David Holmes <dholmes at ieee.org>
+> Cc: concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] ThreadPoolExecutor API
+>  
+> On Wed, Mar 20, 2019 at 1:48 PM David Holmes <davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au>> wrote:
+> >
+> > Hi Hans,
+> >
+> > > From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu>> On Behalf Of Hans Boehm via Concurrency-interest
+> > > Sent: Thursday, March 21, 2019 6:15 AM
+> > > To: concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>
+> > > Subject: [concurrency-interest] ThreadPoolExecutor API
+> > >
+> > > I've seen several ThreadPoolExecutor usages that create a ThreadPoolExecutor with
+> > >
+> > > new ThreadPoolExecutor(SMALL_NO, LARGER_NO, ..., ...,  new LinkedBlockingQueue<Runnable>(ABOUT_100.), ...);
+> > >
+> > > I'm not 100% sure, but I think the intent is to create a TPE with a small number of core threads; only if those are all busy, temporarily create a few
+> > > more threads to accommodate bursts; and if that doesn't suffice, enqueue tasks.
+> >
+> > Why do you assume that is the intent? You are assuming that people don’t know what they are doing and don’t read the documentation. I have explained the basic operating mode of TPE a number of times over the years as follows:
+> >
+> > “The basic threading strategy is based around expected service times and throughput requirements. If you characterise your task workload, identify the arrival rate and determine what your throughput/response-time requirements are then you can determine the necessary number of threads to handle your steady-state workload. The queue is then used to buffer requests when you get transient overloads. By bounding the queue you set a second overload threshhold at which new threads are brought in (up to max) to try and service the overload and get the system back to the expected steady-state.”
+>  
+> David -
+>  
+> That's a good way to view it, and I agree that this is not always a disastrous thing to do. But in most cases, especially in a latency-sensitive environment, this is suboptimal. Why wait before launching the extra threads, if there are tasks piling up in the queue? By starting the extra threads earlier, you end up with better latency. Admittedly, it may force you to start some extra temporary threads that you could have avoided starting. But, at least in our case, that very rarely seems to be the right trade-off.
+>  
+> This seems particularly dubious for more general purpose shared thread pools, when the tasks may block on IO for extended periods. If I try to execute SMALL_NO long-blocking tasks, and then a 100 short compute-bound ones, everything needlessly blocks until the IO completes, potentially causing a serious system hiccup. The reasons for allowing thread pools to expand is usually to avoid such hiccups.
+>  
+> So I agree the intent is not 100% obvious, it seems unlikely this was intended in our case. And some users and readers of the code in question expressed surprise when I explained how it worked.
+> 
+> >
+> > I disagree with Martin that this API didn't work out well, it's a powerful and flexible API but that also brings complexity which seems to overwhelm many users. But then that is why we have the factory methods to produce commonly useful TPE forms.
+> >
+> > > My conclusion so far:
+> >
+> > > 1) This is a reasonable intent. And if you didn't read the ThreadPoolExecutor documentation very carefully, this seems like a plausible way to express it.
+> >
+> > I agree it is not an unreasonable expectation if you don't actually know how it works. I don't think people are generally silly enough to guess what the semantics are instead of actually reading the documentation.
+>  
+> I think people who read the code are often mislead. The authors should indeed read the documentation, though I'm not sure they always do.
+>  
+> Hans
+> 
+> >
+> > > 2) This is NOT what the code actually does. It instead aggressively creates a small number of threads; when those are busy, it enqueues further requests. When the
+> > > queue fills up too, it potentially creates an additional LARGER_NO - SMALL_NO threads, as needed. In fact, having unequal core and max counts with something
+> > > other than a SynchronousQueue seems odd. (And the current TPE interface makes a lot of sense, especially if you view it as a low-level building block.)
+> >
+> > Having unequal core and max with other than a SynchronousQueue is not odd at all.
+> >
+> > > 3) It's possible to get something like the intended effect by chaining two TPEs together through the first one's RejectedExecutionHandler, which seems a bit obscure.
+> >
+> > Yes it's possible and yes somewhat obscure.
+> >
+> > > Questions:  Does this assessment look right? Is there a better way to get the intended effect? If not, should there be?
+> >
+> > If there were demand for this ...
+> >
+> > Cheers,
+> > David
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190324/e18ac35c/attachment.html>
+
+From davidcholmes at aapt.net.au  Sun Mar 24 08:43:47 2019
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Sun, 24 Mar 2019 22:43:47 +1000
+Subject: [concurrency-interest] ThreadPoolExecutor API
+In-Reply-To: <2BD8BD70-E924-4526-9F75-F902FB8A5996@gmail.com>
+References: <CAPUmR1bEB7Vjpq4MMQwDQo6YP6deLsut6QQ19cyhnEjn-T232Q@mail.gmail.com>
+ <005801d4df5e$3178b0a0$946a11e0$@aapt.net.au>
+ <CAPUmR1YvPSW5mq8SWJEOpDPzFdKUJWd4f4DZ1fXzUnoyPM0Uig@mail.gmail.com>
+ <006c01d4df74$9c7b1760$d5714620$@aapt.net.au>
+ <2BD8BD70-E924-4526-9F75-F902FB8A5996@gmail.com>
+Message-ID: <016401d4e23f$3a0a7d50$ae1f77f0$@aapt.net.au>
+
+The queue size is not being used to switch between latency and throughput. The initial set of workers is deemed sufficient to process the expected arrival rate of tasks, given the workload they represent, to achieve the desired latency (service time). The queue exists to buffer temporary higher arrival rates of tasks, which results in longer latencies without having to reject the extra tasks. But if the queue gets too big then latencies can rise beyond acceptable levels and so that is where you throw more workers at the problem.
+
+ 
+
+It's the kind of thing you used to observe in banks all the time (probably before the mid 80’s 😊 ). If all the tellers are busy people start to queue; if the queue gets too big they open more tellers to service the extra requests and ensure the service times are acceptable.
+
+ 
+
+David
+
+------
+
+ 
+
+ 
+
+From: Alex Otenko <oleksandr.otenko at gmail.com> 
+Sent: Sunday, March 24, 2019 8:10 PM
+To: dholmes at ieee.org
+Cc: Hans Boehm <boehm at acm.org>; David Holmes <davidcholmes at aapt.net.au>; concurrency-interest at cs.oswego.edu
+Subject: Re: [concurrency-interest] ThreadPoolExecutor API
+
+ 
+
+So, each task’s latency is: enqueue wait (contention for queue capacity) + dequeue wait (contention for executor threads) + execution time (pure CPU) + resource wait time (contention between running tasks).
+
+ 
+
+Choose SMALL_NO for optimal latency. Choose LARGE_NO to optimise for throughput. (Probably something like execution time == resource wait time * LARGE_NO)
+
+ 
+
+Choose queue size to switch between latency and throughput. It is not clear why it should switch based on the queue reaching its capacity.
+
+ 
+
+ 
+
+(But the reasoning doesn’t quite make sense. “arrival rate” is the parameter of the workload. “resource” must be provisioned to service such “arrival rate”)
+
+ 
+
+Alex
+
+
+
+
+
+On 20 Mar 2019, at 23:28, David Holmes via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> > wrote:
+
+ 
+
+Hi Hans,
+
+ 
+
+Obviously you can construct scenarios that are advantaged or disadvantaged by any given policy. If your system has sufficient capacity then adding more threads rather than buffering requests will reduce latency for those extra requests. But if you don’t have sufficient capacity adding more threads may cause resource contention that increases average latency. But if you have the capacity then why not just increase the number of core threads to start with?
+
+ 
+
+Cheers,
+
+David
+
+ 
+
+From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu> > On Behalf Of Hans Boehm via Concurrency-interest
+Sent: Thursday, March 21, 2019 7:27 AM
+To: David Holmes <dholmes at ieee.org <mailto:dholmes at ieee.org> >
+Cc: concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu> 
+Subject: Re: [concurrency-interest] ThreadPoolExecutor API
+
+ 
+
+On Wed, Mar 20, 2019 at 1:48 PM David Holmes < <mailto:davidcholmes at aapt.net.au> davidcholmes at aapt.net.au> wrote:
+>
+> Hi Hans,
+>
+> > From: Concurrency-interest < <mailto:concurrency-interest-bounces at cs.oswego.edu> concurrency-interest-bounces at cs.oswego.edu> On Behalf Of Hans Boehm via Concurrency-interest
+> > Sent: Thursday, March 21, 2019 6:15 AM
+> > To:  <mailto:concurrency-interest at cs.oswego.edu> concurrency-interest at cs.oswego.edu
+> > Subject: [concurrency-interest] ThreadPoolExecutor API
+> >
+> > I've seen several ThreadPoolExecutor usages that create a ThreadPoolExecutor with
+> >
+> > new ThreadPoolExecutor(SMALL_NO, LARGER_NO, ..., ...,  new LinkedBlockingQueue<Runnable>(ABOUT_100.), ...);
+> >
+> > I'm not 100% sure, but I think the intent is to create a TPE with a small number of core threads; only if those are all busy, temporarily create a few
+> > more threads to accommodate bursts; and if that doesn't suffice, enqueue tasks.
+>
+> Why do you assume that is the intent? You are assuming that people don’t know what they are doing and don’t read the documentation. I have explained the basic operating mode of TPE a number of times over the years as follows:
+>
+> “The basic threading strategy is based around expected service times and throughput requirements. If you characterise your task workload, identify the arrival rate and determine what your throughput/response-time requirements are then you can determine the necessary number of threads to handle your steady-state workload. The queue is then used to buffer requests when you get transient overloads. By bounding the queue you set a second overload threshhold at which new threads are brought in (up to max) to try and service the overload and get the system back to the expected steady-state.”
+
+ 
+
+David -
+
+ 
+
+That's a good way to view it, and I agree that this is not always a disastrous thing to do. But in most cases, especially in a latency-sensitive environment, this is suboptimal. Why wait before launching the extra threads, if there are tasks piling up in the queue? By starting the extra threads earlier, you end up with better latency. Admittedly, it may force you to start some extra temporary threads that you could have avoided starting. But, at least in our case, that very rarely seems to be the right trade-off.
+
+ 
+
+This seems particularly dubious for more general purpose shared thread pools, when the tasks may block on IO for extended periods. If I try to execute SMALL_NO long-blocking tasks, and then a 100 short compute-bound ones, everything needlessly blocks until the IO completes, potentially causing a serious system hiccup. The reasons for allowing thread pools to expand is usually to avoid such hiccups.
+
+ 
+
+So I agree the intent is not 100% obvious, it seems unlikely this was intended in our case. And some users and readers of the code in question expressed surprise when I explained how it worked.
+
+
+>
+> I disagree with Martin that this API didn't work out well, it's a powerful and flexible API but that also brings complexity which seems to overwhelm many users. But then that is why we have the factory methods to produce commonly useful TPE forms.
+>
+> > My conclusion so far:
+>
+> > 1) This is a reasonable intent. And if you didn't read the ThreadPoolExecutor documentation very carefully, this seems like a plausible way to express it.
+>
+> I agree it is not an unreasonable expectation if you don't actually know how it works. I don't think people are generally silly enough to guess what the semantics are instead of actually reading the documentation.
+
+ 
+
+I think people who read the code are often mislead. The authors should indeed read the documentation, though I'm not sure they always do.
+
+ 
+
+Hans
+
+
+>
+> > 2) This is NOT what the code actually does. It instead aggressively creates a small number of threads; when those are busy, it enqueues further requests. When the
+> > queue fills up too, it potentially creates an additional LARGER_NO - SMALL_NO threads, as needed. In fact, having unequal core and max counts with something
+> > other than a SynchronousQueue seems odd. (And the current TPE interface makes a lot of sense, especially if you view it as a low-level building block.)
+>
+> Having unequal core and max with other than a SynchronousQueue is not odd at all.
+>
+> > 3) It's possible to get something like the intended effect by chaining two TPEs together through the first one's RejectedExecutionHandler, which seems a bit obscure.
+>
+> Yes it's possible and yes somewhat obscure.
+>
+> > Questions:  Does this assessment look right? Is there a better way to get the intended effect? If not, should there be?
+>
+> If there were demand for this ...
+>
+> Cheers,
+> David
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu> 
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190324/7f2bd484/attachment-0001.html>
+
+From oleksandr.otenko at gmail.com  Sun Mar 24 09:25:09 2019
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Sun, 24 Mar 2019 13:25:09 +0000
+Subject: [concurrency-interest] ThreadPoolExecutor API
+In-Reply-To: <016401d4e23f$3a0a7d50$ae1f77f0$@aapt.net.au>
+References: <CAPUmR1bEB7Vjpq4MMQwDQo6YP6deLsut6QQ19cyhnEjn-T232Q@mail.gmail.com>
+ <005801d4df5e$3178b0a0$946a11e0$@aapt.net.au>
+ <CAPUmR1YvPSW5mq8SWJEOpDPzFdKUJWd4f4DZ1fXzUnoyPM0Uig@mail.gmail.com>
+ <006c01d4df74$9c7b1760$d5714620$@aapt.net.au>
+ <2BD8BD70-E924-4526-9F75-F902FB8A5996@gmail.com>
+ <016401d4e23f$3a0a7d50$ae1f77f0$@aapt.net.au>
+Message-ID: <C8C12BB5-960A-4C6E-B0F3-ECD7701F1C63@gmail.com>
+
+It isn’t being used directly, but the size of the queue affects queueing behaviour, which is what triggers the resizing above SMALL_NO: when queue.offer fails, it spawns more workers. I thought if queue.offer fails, it’s a little too late.
+
+Alex
+
+> On 24 Mar 2019, at 12:43, David Holmes <davidcholmes at aapt.net.au> wrote:
+> 
+> The queue size is not being used to switch between latency and throughput. The initial set of workers is deemed sufficient to process the expected arrival rate of tasks, given the workload they represent, to achieve the desired latency (service time). The queue exists to buffer temporary higher arrival rates of tasks, which results in longer latencies without having to reject the extra tasks. But if the queue gets too big then latencies can rise beyond acceptable levels and so that is where you throw more workers at the problem.
+>  
+> It's the kind of thing you used to observe in banks all the time (probably before the mid 80’s 😊 ). If all the tellers are busy people start to queue; if the queue gets too big they open more tellers to service the extra requests and ensure the service times are acceptable.
+>  
+> David
+> ------
+>  
+>  
+> From: Alex Otenko <oleksandr.otenko at gmail.com> 
+> Sent: Sunday, March 24, 2019 8:10 PM
+> To: dholmes at ieee.org
+> Cc: Hans Boehm <boehm at acm.org>; David Holmes <davidcholmes at aapt.net.au>; concurrency-interest at cs.oswego.edu
+> Subject: Re: [concurrency-interest] ThreadPoolExecutor API
+>  
+> So, each task’s latency is: enqueue wait (contention for queue capacity) + dequeue wait (contention for executor threads) + execution time (pure CPU) + resource wait time (contention between running tasks).
+>  
+> Choose SMALL_NO for optimal latency. Choose LARGE_NO to optimise for throughput. (Probably something like execution time == resource wait time * LARGE_NO)
+>  
+> Choose queue size to switch between latency and throughput. It is not clear why it should switch based on the queue reaching its capacity.
+>  
+>  
+> (But the reasoning doesn’t quite make sense. “arrival rate” is the parameter of the workload. “resource” must be provisioned to service such “arrival rate”)
+>  
+> Alex
+> 
+> 
+>> On 20 Mar 2019, at 23:28, David Holmes via Concurrency-interest <concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>> wrote:
+>>  
+>> Hi Hans,
+>>  
+>> Obviously you can construct scenarios that are advantaged or disadvantaged by any given policy. If your system has sufficient capacity then adding more threads rather than buffering requests will reduce latency for those extra requests. But if you don’t have sufficient capacity adding more threads may cause resource contention that increases average latency. But if you have the capacity then why not just increase the number of core threads to start with?
+>>  
+>> Cheers,
+>> David
+>>  
+>> From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu>> On Behalf Of Hans Boehm via Concurrency-interest
+>> Sent: Thursday, March 21, 2019 7:27 AM
+>> To: David Holmes <dholmes at ieee.org <mailto:dholmes at ieee.org>>
+>> Cc: concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>
+>> Subject: Re: [concurrency-interest] ThreadPoolExecutor API
+>>  
+>> On Wed, Mar 20, 2019 at 1:48 PM David Holmes <davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au>> wrote:
+>> >
+>> > Hi Hans,
+>> >
+>> > > From: Concurrency-interest <concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu>> On Behalf Of Hans Boehm via Concurrency-interest
+>> > > Sent: Thursday, March 21, 2019 6:15 AM
+>> > > To: concurrency-interest at cs.oswego.edu <mailto:concurrency-interest at cs.oswego.edu>
+>> > > Subject: [concurrency-interest] ThreadPoolExecutor API
+>> > >
+>> > > I've seen several ThreadPoolExecutor usages that create a ThreadPoolExecutor with
+>> > >
+>> > > new ThreadPoolExecutor(SMALL_NO, LARGER_NO, ..., ...,  new LinkedBlockingQueue<Runnable>(ABOUT_100.), ...);
+>> > >
+>> > > I'm not 100% sure, but I think the intent is to create a TPE with a small number of core threads; only if those are all busy, temporarily create a few
+>> > > more threads to accommodate bursts; and if that doesn't suffice, enqueue tasks.
+>> >
+>> > Why do you assume that is the intent? You are assuming that people don’t know what they are doing and don’t read the documentation. I have explained the basic operating mode of TPE a number of times over the years as follows:
+>> >
+>> > “The basic threading strategy is based around expected service times and throughput requirements. If you characterise your task workload, identify the arrival rate and determine what your throughput/response-time requirements are then you can determine the necessary number of threads to handle your steady-state workload. The queue is then used to buffer requests when you get transient overloads. By bounding the queue you set a second overload threshhold at which new threads are brought in (up to max) to try and service the overload and get the system back to the expected steady-state.”
+>>  
+>> David -
+>>  
+>> That's a good way to view it, and I agree that this is not always a disastrous thing to do. But in most cases, especially in a latency-sensitive environment, this is suboptimal. Why wait before launching the extra threads, if there are tasks piling up in the queue? By starting the extra threads earlier, you end up with better latency. Admittedly, it may force you to start some extra temporary threads that you could have avoided starting. But, at least in our case, that very rarely seems to be the right trade-off.
+>>  
+>> This seems particularly dubious for more general purpose shared thread pools, when the tasks may block on IO for extended periods. If I try to execute SMALL_NO long-blocking tasks, and then a 100 short compute-bound ones, everything needlessly blocks until the IO completes, potentially causing a serious system hiccup. The reasons for allowing thread pools to expand is usually to avoid such hiccups.
+>>  
+>> So I agree the intent is not 100% obvious, it seems unlikely this was intended in our case. And some users and readers of the code in question expressed surprise when I explained how it worked.
+>> 
+>> >
+>> > I disagree with Martin that this API didn't work out well, it's a powerful and flexible API but that also brings complexity which seems to overwhelm many users. But then that is why we have the factory methods to produce commonly useful TPE forms.
+>> >
+>> > > My conclusion so far:
+>> >
+>> > > 1) This is a reasonable intent. And if you didn't read the ThreadPoolExecutor documentation very carefully, this seems like a plausible way to express it.
+>> >
+>> > I agree it is not an unreasonable expectation if you don't actually know how it works. I don't think people are generally silly enough to guess what the semantics are instead of actually reading the documentation.
+>>  
+>> I think people who read the code are often mislead. The authors should indeed read the documentation, though I'm not sure they always do.
+>>  
+>> Hans
+>> 
+>> >
+>> > > 2) This is NOT what the code actually does. It instead aggressively creates a small number of threads; when those are busy, it enqueues further requests. When the
+>> > > queue fills up too, it potentially creates an additional LARGER_NO - SMALL_NO threads, as needed. In fact, having unequal core and max counts with something
+>> > > other than a SynchronousQueue seems odd. (And the current TPE interface makes a lot of sense, especially if you view it as a low-level building block.)
+>> >
+>> > Having unequal core and max with other than a SynchronousQueue is not odd at all.
+>> >
+>> > > 3) It's possible to get something like the intended effect by chaining two TPEs together through the first one's RejectedExecutionHandler, which seems a bit obscure.
+>> >
+>> > Yes it's possible and yes somewhat obscure.
+>> >
+>> > > Questions:  Does this assessment look right? Is there a better way to get the intended effect? If not, should there be?
+>> >
+>> > If there were demand for this ...
+>> >
+>> > Cheers,
+>> > David
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190324/71e6ab32/attachment-0001.html>
+
+From shevek at anarres.org  Sat Mar 30 16:32:26 2019
+From: shevek at anarres.org (Shevek)
+Date: Sat, 30 Mar 2019 13:32:26 -0700
+Subject: [concurrency-interest] Mixing Atomic*FieldUpdater with 'regular'
+	volatile access
+Message-ID: <aa295273-03c7-fdd4-6198-5c0d2dd5dcf5@anarres.org>
+
+I'm hunting for a document which describes the consequence of mixing 
+accesses through Atomic*FieldUpdater with regular accesses to the 
+volatile field. Particularly:
+
+* If I manage a field using an AFU, do I have to use AFU.get() to read 
+the field?
+* What about set() vs regular write?
+* Does using AFU matter for any non-CAS operation? Why?
+
+Thank you.
+
+S.
+
+From gil at azul.com  Sat Mar 30 17:00:55 2019
+From: gil at azul.com (Gil Tene)
+Date: Sat, 30 Mar 2019 21:00:55 +0000
+Subject: [concurrency-interest] Mixing Atomic*FieldUpdater with
+	'regular'	volatile access
+In-Reply-To: <aa295273-03c7-fdd4-6198-5c0d2dd5dcf5@anarres.org>
+References: <aa295273-03c7-fdd4-6198-5c0d2dd5dcf5@anarres.org>
+Message-ID: <D2E07D7F-0ED7-4756-9B0D-4BAAF0125755@azul.com>
+
+The JavaDoc for java.util./concurrent.atomic (e.g. https://docs.oracle.com/javase/8/docs/api/index.html?java/util/concurrent/atomic/package-summary.html) is pretty clear on this, I think.
+
+> On Mar 30, 2019, at 1:32 PM, Shevek via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+> I'm hunting for a document which describes the consequence of mixing accesses through Atomic*FieldUpdater with regular accesses to the volatile field. Particularly:
+> 
+> * If I manage a field using an AFU, do I have to use AFU.get() to read the field?
+
+According to the JavaDoc:
+"get has the memory effects of reading a volatile variable."
+
+> * What about set() vs regular write?
+
+According to the JavaDoc:
+"set has the memory effects of writing (assigning) a volatile variable."
+
+> * Does using AFU matter for any non-CAS operation? Why?
+
+Nope. You can do either. The reason AFU has get/set operations
+is probably that code using it might only have the AFU instance
+visible, and not the volatile field.
+
+> 
+> Thank you.
+> 
+> S.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 833 bytes
+Desc: Message signed with OpenPGP
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190330/8851b15e/attachment.sig>
+
+From shevek at anarres.org  Sat Mar 30 17:06:40 2019
+From: shevek at anarres.org (Shevek)
+Date: Sat, 30 Mar 2019 14:06:40 -0700
+Subject: [concurrency-interest] Mixing Atomic*FieldUpdater with
+ 'regular' volatile access
+In-Reply-To: <D2E07D7F-0ED7-4756-9B0D-4BAAF0125755@azul.com>
+References: <aa295273-03c7-fdd4-6198-5c0d2dd5dcf5@anarres.org>
+ <D2E07D7F-0ED7-4756-9B0D-4BAAF0125755@azul.com>
+Message-ID: <82695d62-2bd3-7d31-9528-0185a717ceaf@anarres.org>
+
+On 3/30/19 2:00 PM, Gil Tene wrote:
+> The JavaDoc for java.util./concurrent.atomic (e.g. https://docs.oracle.com/javase/8/docs/api/index.html?java/util/concurrent/atomic/package-summary.html) is pretty clear on this, I think.
+
+Thank you. I bashed through the class javadoc and the source, but didn't 
+think to look at the package javadoc.
+
+This makes perfect sense now.
+
+S.
+
+>> On Mar 30, 2019, at 1:32 PM, Shevek via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>>
+>> I'm hunting for a document which describes the consequence of mixing accesses through Atomic*FieldUpdater with regular accesses to the volatile field. Particularly:
+>>
+>> * If I manage a field using an AFU, do I have to use AFU.get() to read the field?
+> 
+> According to the JavaDoc:
+> "get has the memory effects of reading a volatile variable."
+> 
+>> * What about set() vs regular write?
+> 
+> According to the JavaDoc:
+> "set has the memory effects of writing (assigning) a volatile variable."
+> 
+>> * Does using AFU matter for any non-CAS operation? Why?
+> 
+> Nope. You can do either. The reason AFU has get/set operations
+> is probably that code using it might only have the AFU instance
+> visible, and not the volatile field.
+> 
+>>
+>> Thank you.
+>>
+>> S.
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+From mark.falco at gmail.com  Sat Mar 30 20:02:10 2019
+From: mark.falco at gmail.com (Mark Falco)
+Date: Sat, 30 Mar 2019 20:02:10 -0400
+Subject: [concurrency-interest] Mixing Atomic*FieldUpdater with
+	'regular' volatile access
+In-Reply-To: <82695d62-2bd3-7d31-9528-0185a717ceaf@anarres.org>
+References: <aa295273-03c7-fdd4-6198-5c0d2dd5dcf5@anarres.org>
+ <D2E07D7F-0ED7-4756-9B0D-4BAAF0125755@azul.com>
+ <82695d62-2bd3-7d31-9528-0185a717ceaf@anarres.org>
+Message-ID: <F133F72A-7489-4824-AC55-14FFC5C05E63@gmail.com>
+
+While the doc does indeed say you need to go through the API, Doug Lea has previously indicated on this list that this really doesn’t apply any longer.  See http://cs.oswego.edu/pipermail/concurrency-interest/2017-September/016176.html
+
+Of course if you’re on Java 9, you can just use VarHandles which I believe explicitly doc this style as being safe.
+
+Mark
+
+> On Mar 30, 2019, at 5:06 PM, Shevek via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+> 
+>> On 3/30/19 2:00 PM, Gil Tene wrote:
+>> The JavaDoc for java.util./concurrent.atomic (e.g. https://docs.oracle.com/javase/8/docs/api/index.html?java/util/concurrent/atomic/package-summary.html) is pretty clear on this, I think.
+> 
+> Thank you. I bashed through the class javadoc and the source, but didn't think to look at the package javadoc.
+> 
+> This makes perfect sense now.
+> 
+> S.
+> 
+>>> On Mar 30, 2019, at 1:32 PM, Shevek via Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>>> 
+>>> I'm hunting for a document which describes the consequence of mixing accesses through Atomic*FieldUpdater with regular accesses to the volatile field. Particularly:
+>>> 
+>>> * If I manage a field using an AFU, do I have to use AFU.get() to read the field?
+>> According to the JavaDoc:
+>> "get has the memory effects of reading a volatile variable."
+>>> * What about set() vs regular write?
+>> According to the JavaDoc:
+>> "set has the memory effects of writing (assigning) a volatile variable."
+>>> * Does using AFU matter for any non-CAS operation? Why?
+>> Nope. You can do either. The reason AFU has get/set operations
+>> is probably that code using it might only have the AFU instance
+>> visible, and not the volatile field.
+>>> 
+>>> Thank you.
+>>> 
+>>> S.
+>>> _______________________________________________
+>>> Concurrency-interest mailing list
+>>> Concurrency-interest at cs.oswego.edu
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20190330/dca90b96/attachment.html>
+

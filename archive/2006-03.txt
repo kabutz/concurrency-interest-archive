@@ -1,0 +1,4105 @@
+From Grace.Kwok at mscibarra.com  Wed Mar  1 15:20:31 2006
+From: Grace.Kwok at mscibarra.com (Kwok, Grace (MSCIBARRA))
+Date: Wed Mar  1 15:25:29 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+Message-ID: <937C75B544E7E8428436C67056A3A1730C5D90@NYWEXMB83.msad.ms.com>
+
+Hi,
+ 
+    There are two things I need to achieve for my thread pool.
+ 
+    1)  I need to have the pool customized such when I invokeAll on a
+Collection of Callables, I also get to specify how many threads I want
+to allocate to run this Collection of Callables.
+ 
+    2) The run() method of the runnable (say A) that I submit to the
+pool might create other runnables (say a and b) which will in terms be
+submitted to the same pool.  It seems to me that my only choice would be
+to use the SynchronousQueue because if I were to use an
+ArrayBlockingQueue, it might cause a deadlock.  (Since the runnable a
+and b might not be run until A is finished and A can't finish until a
+and b are done.  Correct me if I am wrong.)   However, it looks like
+using SynchronusQueue requires the pool to be unbounded which I don't
+want.  I want a bounded pool.
+ 
+Any suggestion on how I can achieve these two criteria using the 1.5
+concurrency Executor.  
+ 
+Thank you very much in advance for your valuable suggestions.
+ 
+Grace
+--------------------------------------------------------
+
+NOTICE: If received in error, please destroy and notify sender.  Sender does not waive confidentiality or privilege, and use is prohibited.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060301/8a9aab67/attachment.html
+From brian at quiotix.com  Wed Mar  1 17:26:49 2006
+From: brian at quiotix.com (Brian Goetz)
+Date: Wed Mar  1 17:26:58 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+In-Reply-To: <937C75B544E7E8428436C67056A3A1730C5D90@NYWEXMB83.msad.ms.com>
+References: <937C75B544E7E8428436C67056A3A1730C5D90@NYWEXMB83.msad.ms.com>
+Message-ID: <44061FA9.80200@quiotix.com>
+
+>     1)  I need to have the pool customized such when I invokeAll on a 
+> Collection of Callables, I also get to specify how many threads I want 
+> to allocate to run this Collection of Callables.
+
+You can create a custom Executor for each batch of Callables.  You will 
+probably want to use some other bounding mechanism to ensure that 
+aggregate number of threads created by such executors doesn't exceed 
+some threshold.
+
+>     2) The run() method of the runnable (say A) that I submit to the 
+> pool might create other runnables (say a and b) which will in terms be 
+> submitted to the same pool.  
+
+This is deadlock-prone unless the _pool_ is unbounded (or you can prove 
+that the number of tasks submitted will be less than the pool size.)
+
+> However, it looks like 
+> using SynchronusQueue requires the pool to be unbounded which I don't 
+> want.  I want a bounded pool.
+
+SynchronousQueue works best with unbounded pools; with bounded pools, it 
+will invoke the rejected execution handler to dispose of tasks submitted 
+in excess of the pool size.
+
+Unless you can bound the task count somehow, you cannot have both of 
+what you want -- either bound the pool, or don't use tasks that depend 
+on other tasks.  Otherwise, you're playing Deadlock Roulette.
+
+> Any suggestion on how I can achieve these two criteria using the 1.5 
+> concurrency Executor. 
+
+Tell us more about the _problem_ you are trying to solve, rather than 
+the solution you have in mind, and we could probably help further.
+
+
+From Grace.Kwok at mscibarra.com  Wed Mar  1 18:49:44 2006
+From: Grace.Kwok at mscibarra.com (Kwok, Grace (MSCIBARRA))
+Date: Wed Mar  1 18:55:26 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+Message-ID: <937C75B544E7E8428436C67056A3A1730C5D91@NYWEXMB83.msad.ms.com>
+
+"You can create a custom Executor for each batch of Callables.  You will
+probably want to use some other bounding mechanism to ensure that
+aggregate number of threads created by such executors doesn't exceed
+some threshold."
+
+If I am to create an Executor for each batch of Callables, the threads
+from Executor 1 could not be reused by threads from Executor 2, is that
+correct?  Is this optimal?  Is this like a pool of Executors?
+
+
+Basically, I am facing a customized thread pool class that is written
+pre 1.5 and I want to replace that with the Executor.  The customized
+thread pool class allows specifying the number of threads to run for
+each batch because each batch is big and we don't want one thread
+created per task of each batch.  If we create one thread per
+task/Callable of each batch, one batch would take away all the thread
+resources and won't allow other batches to start running.  Currently, if
+thread count is exceeding a threshold, it would use the current thread
+to run the tasks in the batch single-threadedly and use other threads in
+pool when they become available. (But the "single-threadedly" would only
+work for synchronous call and not asynchronous call).
+
+
+I hope it makes sense.
+Thank you very much.
+Grace
+
+
+
+
+
+
+-----Original Message-----
+From: Brian Goetz [mailto:brian@quiotix.com] 
+Sent: Wednesday, March 01, 2006 2:27 PM
+To: Kwok, Grace (MSCIBARRA)
+Cc: concurrency-interest@cs.oswego.edu
+Subject: Re: [concurrency-interest] Questions about ThreadPoolExecutor
+
+>     1)  I need to have the pool customized such when I invokeAll on a 
+> Collection of Callables, I also get to specify how many threads I want
+
+> to allocate to run this Collection of Callables.
+
+You can create a custom Executor for each batch of Callables.  You will
+probably want to use some other bounding mechanism to ensure that
+aggregate number of threads created by such executors doesn't exceed
+some threshold.
+
+
+>     2) The run() method of the runnable (say A) that I submit to the 
+> pool might create other runnables (say a and b) which will in terms be
+
+> submitted to the same pool.
+
+This is deadlock-prone unless the _pool_ is unbounded (or you can prove
+that the number of tasks submitted will be less than the pool size.)
+
+> However, it looks like
+> using SynchronusQueue requires the pool to be unbounded which I don't 
+> want.  I want a bounded pool.
+
+SynchronousQueue works best with unbounded pools; with bounded pools, it
+will invoke the rejected execution handler to dispose of tasks submitted
+in excess of the pool size.
+
+Unless you can bound the task count somehow, you cannot have both of
+what you want -- either bound the pool, or don't use tasks that depend
+on other tasks.  Otherwise, you're playing Deadlock Roulette.
+
+> Any suggestion on how I can achieve these two criteria using the 1.5 
+> concurrency Executor.
+
+Tell us more about the _problem_ you are trying to solve, rather than
+the solution you have in mind, and we could probably help further.
+--------------------------------------------------------
+
+NOTICE: If received in error, please destroy and notify sender.  Sender does not waive confidentiality or privilege, and use is prohibited.
+
+From brian at quiotix.com  Wed Mar  1 19:07:13 2006
+From: brian at quiotix.com (Brian Goetz)
+Date: Wed Mar  1 19:07:25 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+In-Reply-To: <937C75B544E7E8428436C67056A3A1730C5D91@NYWEXMB83.msad.ms.com>
+References: <937C75B544E7E8428436C67056A3A1730C5D91@NYWEXMB83.msad.ms.com>
+Message-ID: <44063731.4020206@quiotix.com>
+
+> "You can create a custom Executor for each batch of Callables.  You will
+> probably want to use some other bounding mechanism to ensure that
+> aggregate number of threads created by such executors doesn't exceed
+> some threshold."
+> 
+> If I am to create an Executor for each batch of Callables, the threads
+> from Executor 1 could not be reused by threads from Executor 2, is that
+> correct?  Is this optimal?  Is this like a pool of Executors?
+
+You are correct.  Optimal?  That depends on your requirements.
+
+> Basically, I am facing a customized thread pool class that is written
+> pre 1.5 and I want to replace that with the Executor.  The customized
+> thread pool class allows specifying the number of threads to run for
+> each batch because each batch is big and we don't want one thread
+> created per task of each batch.  If we create one thread per
+> task/Callable of each batch, one batch would take away all the thread
+> resources and won't allow other batches to start running.  Currently, if
+> thread count is exceeding a threshold, it would use the current thread
+> to run the tasks in the batch single-threadedly and use other threads in
+> pool when they become available. (But the "single-threadedly" would only
+> work for synchronous call and not asynchronous call).
+
+If each batch is big, then specifying a separate executor for each batch 
+is not going to be a big source of inefficiency.  You will still want to 
+allocate threads to executors in some sensible way, like using a 
+Semaphore.
+
+Basic idea:
+   N = total number of threads available for execution of all batches
+
+   Semaphore sem = new Semaphore(s);
+
+   Collection<Future> executeBatchCollection<Task> tasks, int nThreads) {
+     sem.aquire(nThreads);
+     try {
+         ExecutorService exec = Executors.newFixedThreadpool(nThreads);
+         Collection<Future> result = exec.invokeAll(tasks);
+     }
+     finally {
+       exec.shutdownNow();
+       sem.release(nThreads);
+     }
+   }
+
+
+
+From brian at quiotix.com  Wed Mar  1 20:08:03 2006
+From: brian at quiotix.com (Brian Goetz)
+Date: Wed Mar  1 20:08:10 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+In-Reply-To: <44063731.4020206@quiotix.com>
+References: <937C75B544E7E8428436C67056A3A1730C5D91@NYWEXMB83.msad.ms.com>
+	<44063731.4020206@quiotix.com>
+Message-ID: <44064573.70703@quiotix.com>
+
+>   N = total number of threads available for execution of all batches
+> 
+>   Semaphore sem = new Semaphore(s);
+
+This should be Semaphore(N);
+
+>   Collection<Future> executeBatchCollection<Task> tasks, int nThreads) {
+>     sem.aquire(nThreads);
+>     try {
+>         ExecutorService exec = Executors.newFixedThreadpool(nThreads);
+>         Collection<Future> result = exec.invokeAll(tasks);
+
+probably meant to return the result here
+
+>     }
+>     finally {
+>       exec.shutdownNow();
+>       sem.release(nThreads);
+>     }
+>   }
+
+might want these in separate finally blocks, might want different 
+shutdown actions, but the approach is basically right -- to start a 
+batch, you have to get credit for the right number of threads from the 
+limited pool, and you return those credits when the batch is done.
+
+From joe.bowbeer at gmail.com  Wed Mar  1 20:17:14 2006
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Wed Mar  1 20:17:22 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+In-Reply-To: <937C75B544E7E8428436C67056A3A1730C5D91@NYWEXMB83.msad.ms.com>
+References: <937C75B544E7E8428436C67056A3A1730C5D91@NYWEXMB83.msad.ms.com>
+Message-ID: <31f2a7bd0603011717v185ce2a6v95cc4a99e78c0cf8@mail.gmail.com>
+
+On 3/1/06, Kwok, Grace (MSCIBARRA) <Grace.Kwok@mscibarra.com> wrote:
+> "You can create a custom Executor for each batch of Callables.  You will
+> probably want to use some other bounding mechanism to ensure that
+> aggregate number of threads created by such executors doesn't exceed
+> some threshold."
+>
+
+This could be done by having all of the dedicated executors submit
+their work to one master executor.
+
+
+> If I am to create an Executor for each batch of Callables, the threads
+> from Executor 1 could not be reused by threads from Executor 2, is that
+> correct?  Is this optimal?  Is this like a pool of Executors?
+>
+
+ThreadPoolExecutor per batch seems right to me.  If you want to
+cleanup when a batch is done, you can call executorService.shutdown().
+
+You can also call executorService.setKeepAliveTime() so that the idle
+threads will self-terminate more or less automatically.
+
+From joe.bowbeer at gmail.com  Wed Mar  1 22:14:23 2006
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Wed Mar  1 22:14:26 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+In-Reply-To: <937C75B544E7E8428436C67056A3A1730C5D94@NYWEXMB83.msad.ms.com>
+References: <937C75B544E7E8428436C67056A3A1730C5D94@NYWEXMB83.msad.ms.com>
+Message-ID: <31f2a7bd0603011914qc767196i775dab75b7a1a376@mail.gmail.com>
+
+On 3/1/06, Kwok, Grace (MSCIBARRA) <Grace.Kwok@mscibarra.com> wrote:
+>
+> Do you mind explain this further?
+> "This could be done by having all of the dedicated executors submit
+> their work to one master executor."
+>
+>
+
+We call this beast a composite executor.  There's an example in the
+Executor javadoc:
+
+http://java.sun.com/j2se/1.5.0/docs/api/java/util/concurrent/Executor.html
+
+The SerialExecutor example serializes the execution of a set of tasks
+on another executor.
+
+In your case, you'd write a BatchExecutor that submitted its tasks to
+a master executor.  The master executor could be a cached ThreadPool
+(Executors.newCachedThreadPool) with a maximumPoolSize to prevent
+thread explosion.
+
+Btw, another way to get a handle on thread creation across a set of
+executors is to assign the same ThreadFactory to them all.  I wouldn't
+make your factory too smart because then you'd be rewriting
+ThreadPoolExecutor, but at least you'd be able to name the threads
+logically and keep track of the total count, etc.
+
+
+> -----Original Message-----
+> From: Joe Bowbeer [mailto:joe.bowbeer@gmail.com]
+> Sent: Wednesday, March 01, 2006 5:17 PM
+> To: Kwok, Grace (MSCIBARRA)
+> Cc: Brian Goetz; concurrency-interest@cs.oswego.edu
+> Subject: Re: [concurrency-interest] Questions about ThreadPoolExecutor
+>
+> On 3/1/06, Kwok, Grace (MSCIBARRA) <Grace.Kwok@mscibarra.com> wrote:
+> > "You can create a custom Executor for each batch of Callables.  You
+> > will probably want to use some other bounding mechanism to ensure that
+>
+> > aggregate number of threads created by such executors doesn't exceed
+> > some threshold."
+> >
+>
+> This could be done by having all of the dedicated executors submit their
+> work to one master executor.
+>
+>
+> > If I am to create an Executor for each batch of Callables, the threads
+>
+> > from Executor 1 could not be reused by threads from Executor 2, is
+> > that correct?  Is this optimal?  Is this like a pool of Executors?
+> >
+>
+> ThreadPoolExecutor per batch seems right to me.  If you want to cleanup
+> when a batch is done, you can call executorService.shutdown().
+>
+> You can also call executorService.setKeepAliveTime() so that the idle
+> threads will self-terminate more or less automatically.
+> --------------------------------------------------------
+>
+
+From dcholmes at optusnet.com.au  Wed Mar  1 22:42:19 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Wed Mar  1 22:42:44 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+In-Reply-To: <31f2a7bd0603011914qc767196i775dab75b7a1a376@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAECPGMAA.dcholmes@optusnet.com.au>
+
+Joe writes:
+> We call this beast a composite executor.  There's an example in the
+> Executor javadoc:
+>
+> http://java.sun.com/j2se/1.5.0/docs/api/java/util/concurrent/Executor.html
+>
+> The SerialExecutor example serializes the execution of a set of tasks
+> on another executor.
+>
+> In your case, you'd write a BatchExecutor that submitted its tasks to
+> a master executor.  The master executor could be a cached ThreadPool
+> (Executors.newCachedThreadPool) with a maximumPoolSize to prevent
+> thread explosion.
+
+I'm losing the plot here a bit. It seems there were two original
+requirements:
+ - bound the size of the pool
+ - avoid task deadlocks
+
+The suggestion for avoiding deadlock was to use a synchronous queue which
+seemed to preclude using a bounded pool, hence an apparent conflict.
+
+But to avoid deadlocks (more a gridlock: each executing task needs to submit
+a new subtask but the pool is full so no one executes and we come to
+stand-still) you always need sufficient threads for the maximum number of
+concurrent tasks, or else revert to an "execute in the current thread"
+rejection policy.
+
+By batching things we seem to be reducing the pool size issue somewhat by
+requiring that the pool contain as many threads as the maximum number of
+concurrent tasks needed by any one batch. This is essence would serialize
+batches. If the pool is greater than that number then we can allow some
+overlap of batches and in the extreme we have enough threads for every
+batch. Is that a reasonable summery?
+
+BTW another option would be to change the task structure. Suppose that
+originally we have:
+
+    TaskA {
+        // do some work
+        spawn TaskB
+        spawn TaskC
+        join TaskA
+        join TaskB
+        // do more work
+    }
+
+Then instead you factor "do more work" into TaskD and have it submitted by
+the last of TaskB and TaskC to complete. Of course this requires some
+coordination between B and C, or some coordination infrastructure around
+them.
+
+Cheers,
+David Holmes
+
+From joe.bowbeer at gmail.com  Wed Mar  1 23:09:12 2006
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Wed Mar  1 23:09:15 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+In-Reply-To: <31f2a7bd0603011914qc767196i775dab75b7a1a376@mail.gmail.com>
+References: <937C75B544E7E8428436C67056A3A1730C5D94@NYWEXMB83.msad.ms.com>
+	<31f2a7bd0603011914qc767196i775dab75b7a1a376@mail.gmail.com>
+Message-ID: <31f2a7bd0603012009v499b73fapd5d29b3ce9eaaa5e@mail.gmail.com>
+
+One more hint:
+
+Grace.Kwok@mscibarra.com wrote:
+> Currently, if thread count is exceeding a threshold, it would use the
+> current thread to run the tasks in the batch single-threadedly and use
+> other threads in pool when they become available.
+
+Note that this is similar to ThreadPoolExecutor.CallerRunsPolicy.
+
+If you set the maximum pool size on your ThreadPoolExecutor and assign
+CallerRunsPolicy() as the rejectedExecutionHandler, then tasks
+submitted while the active thread limit has been reached will be
+executed in the submitting thread.
+
+From gregg at cytetech.com  Wed Mar  1 23:44:37 2006
+From: gregg at cytetech.com (Gregg Wonderly)
+Date: Wed Mar  1 23:44:43 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCAECPGMAA.dcholmes@optusnet.com.au>
+References: <NFBBKALFDCPFIDBNKAPCAECPGMAA.dcholmes@optusnet.com.au>
+Message-ID: <44067835.3010701@cytetech.com>
+
+It seems to me that two queues solve the problem.  Put A's in one queue, and a's 
+and b's into another which can be fixed sized.  Why isn't this the simplest and 
+most straight forward implementation?
+
+Gregg Wonderly
+From Grace.Kwok at mscibarra.com  Wed Mar  1 21:24:57 2006
+From: Grace.Kwok at mscibarra.com (Kwok, Grace (MSCIBARRA))
+Date: Thu Mar  2 06:55:02 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+Message-ID: <937C75B544E7E8428436C67056A3A1730C5D94@NYWEXMB83.msad.ms.com>
+
+Thank you all for the valuable suggestions.
+
+Do you mind explain this further?
+"This could be done by having all of the dedicated executors submit
+their work to one master executor."
+
+ 
+
+Thanks, Grace
+
+
+-----Original Message-----
+From: Joe Bowbeer [mailto:joe.bowbeer@gmail.com] 
+Sent: Wednesday, March 01, 2006 5:17 PM
+To: Kwok, Grace (MSCIBARRA)
+Cc: Brian Goetz; concurrency-interest@cs.oswego.edu
+Subject: Re: [concurrency-interest] Questions about ThreadPoolExecutor
+
+On 3/1/06, Kwok, Grace (MSCIBARRA) <Grace.Kwok@mscibarra.com> wrote:
+> "You can create a custom Executor for each batch of Callables.  You 
+> will probably want to use some other bounding mechanism to ensure that
+
+> aggregate number of threads created by such executors doesn't exceed 
+> some threshold."
+>
+
+This could be done by having all of the dedicated executors submit their
+work to one master executor.
+
+
+> If I am to create an Executor for each batch of Callables, the threads
+
+> from Executor 1 could not be reused by threads from Executor 2, is 
+> that correct?  Is this optimal?  Is this like a pool of Executors?
+>
+
+ThreadPoolExecutor per batch seems right to me.  If you want to cleanup
+when a batch is done, you can call executorService.shutdown().
+
+You can also call executorService.setKeepAliveTime() so that the idle
+threads will self-terminate more or less automatically.
+--------------------------------------------------------
+
+NOTICE: If received in error, please destroy and notify sender.  Sender does not waive confidentiality or privilege, and use is prohibited.
+
+From Grace.Kwok at mscibarra.com  Thu Mar  2 13:55:43 2006
+From: Grace.Kwok at mscibarra.com (Kwok, Grace (MSCIBARRA))
+Date: Thu Mar  2 14:12:26 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+Message-ID: <937C75B544E7E8428436C67056A3A1730C5D99@NYWEXMB83.msad.ms.com>
+
+>"If you set the maximum pool size on your ThreadPoolExecutor and assign
+CallerRunsPolicy() as the rejectedExecutionHandler, then tasks
+submitted while the active thread limit has been reached will be
+executed in the submitting thread."
+
+Thanks for the above hint.  This should fit part of my needs.  By using
+this policy, it should avoid task deadlocks even if my pool is bounded,
+correct?
+
+>"In your case, you'd write a BatchExecutor that submitted its tasks to
+a master executor. "
+
+Since my original problem is to be
+
+1) - able to specify the number of threads to run each batch of tasks.
+(i.e. I have a batch of 100 tasks; I only want to allocate 6 threads to
+be running them even if the pool has more than 6 threads available.  The
+reasons are one, I don't want one batch to take away all the thread
+resources and two, if the tasks are big stress to the db, I simply want
+the control to be able to specify less threads to run them.)
+2) - bound the size of the pool
+3) - avoid task deadlocks
+4) - would need something like invokeAll(..) in ExecutorService to wait
+and get my result back. 
+5) - nice to be able to reuse threads in pool instead of creating an
+Executor for each batch since some batch might be small, some are large.
+
+In your suggestion of this BatchExecutor, in esssense, there is really
+one Executor, I am not so clear on how I would achieve 1 and 4?  Would
+my BatchExecutor has to be wise in figuring out the pace of dispatching
+to the master executor so to satisfy X number of threads running the
+batch of tasks?
+
+Thank you very much for everyone's valuable time.
+Grace
+
+
+-----Original Message-----
+From: Joe Bowbeer [mailto:joe.bowbeer@gmail.com] 
+Sent: Wednesday, March 01, 2006 7:14 PM
+To: Kwok, Grace (MSCIBARRA)
+Cc: concurrency-interest@cs.oswego.edu
+Subject: Re: [concurrency-interest] Questions about ThreadPoolExecutor
+
+On 3/1/06, Kwok, Grace (MSCIBARRA) <Grace.Kwok@mscibarra.com> wrote:
+>
+> Do you mind explain this further?
+> "This could be done by having all of the dedicated executors submit 
+> their work to one master executor."
+>
+>
+
+We call this beast a composite executor.  There's an example in the
+Executor javadoc:
+
+http://java.sun.com/j2se/1.5.0/docs/api/java/util/concurrent/Executor.ht
+ml
+
+The SerialExecutor example serializes the execution of a set of tasks on
+another executor.
+
+In your case, you'd write a BatchExecutor that submitted its tasks to a
+master executor.  The master executor could be a cached ThreadPool
+(Executors.newCachedThreadPool) with a maximumPoolSize to prevent thread
+explosion.
+
+Btw, another way to get a handle on thread creation across a set of
+executors is to assign the same ThreadFactory to them all.  I wouldn't
+make your factory too smart because then you'd be rewriting
+ThreadPoolExecutor, but at least you'd be able to name the threads
+logically and keep track of the total count, etc.
+
+
+> -----Original Message-----
+> From: Joe Bowbeer [mailto:joe.bowbeer@gmail.com]
+> Sent: Wednesday, March 01, 2006 5:17 PM
+> To: Kwok, Grace (MSCIBARRA)
+> Cc: Brian Goetz; concurrency-interest@cs.oswego.edu
+> Subject: Re: [concurrency-interest] Questions about ThreadPoolExecutor
+>
+> On 3/1/06, Kwok, Grace (MSCIBARRA) <Grace.Kwok@mscibarra.com> wrote:
+> > "You can create a custom Executor for each batch of Callables.  You 
+> > will probably want to use some other bounding mechanism to ensure 
+> > that
+>
+> > aggregate number of threads created by such executors doesn't exceed
+
+> > some threshold."
+> >
+>
+> This could be done by having all of the dedicated executors submit 
+> their work to one master executor.
+>
+>
+> > If I am to create an Executor for each batch of Callables, the 
+> > threads
+>
+> > from Executor 1 could not be reused by threads from Executor 2, is 
+> > that correct?  Is this optimal?  Is this like a pool of Executors?
+> >
+>
+> ThreadPoolExecutor per batch seems right to me.  If you want to 
+> cleanup when a batch is done, you can call executorService.shutdown().
+>
+> You can also call executorService.setKeepAliveTime() so that the idle 
+> threads will self-terminate more or less automatically.
+> --------------------------------------------------------
+>
+--------------------------------------------------------
+
+NOTICE: If received in error, please destroy and notify sender.  Sender does not waive confidentiality or privilege, and use is prohibited.
+
+From joe.bowbeer at gmail.com  Thu Mar  2 14:43:47 2006
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Thu Mar  2 14:43:51 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+In-Reply-To: <937C75B544E7E8428436C67056A3A1730C5D99@NYWEXMB83.msad.ms.com>
+References: <937C75B544E7E8428436C67056A3A1730C5D99@NYWEXMB83.msad.ms.com>
+Message-ID: <31f2a7bd0603021143x24c73985v804091421e9731f5@mail.gmail.com>
+
+On 3/2/06, Kwok, Grace (MSCIBARRA) <Grace.Kwok@mscibarra.com> wrote:
+> >"In your case, you'd write a BatchExecutor that submitted its tasks to
+> a master executor. "
+>
+> Since my original problem is to be
+>
+> 1) - able to specify the number of threads to run each batch of tasks.
+> (i.e. I have a batch of 100 tasks; I only want to allocate 6 threads to
+> be running them even if the pool has more than 6 threads available.  The
+> reasons are one, I don't want one batch to take away all the thread
+> resources and two, if the tasks are big stress to the db, I simply want
+> the control to be able to specify less threads to run them.)
+> 2) - bound the size of the pool
+> 3) - avoid task deadlocks
+> 4) - would need something like invokeAll(..) in ExecutorService to wait
+> and get my result back.
+> 5) - nice to be able to reuse threads in pool instead of creating an
+> Executor for each batch since some batch might be small, some are large.
+>
+> In your suggestion of this BatchExecutor, in esssense, there is really
+> one Executor, I am not so clear on how I would achieve 1 and 4?  Would
+> my BatchExecutor has to be wise in figuring out the pace of dispatching
+> to the master executor so to satisfy X number of threads running the
+> batch of tasks?
+>
+
+I wasn't trying to promote BatchExecutor, but to provide an example of
+how one executor could proxy for a second.  The example I provided was
+a SerialExecutor, that is, a batch of one.  Whereas in your case you'd
+need an executor that dealt with larger batches.
+
+If I understand your scenario correctly, the cleanest approach I can
+think of would be to run each batch in a dedicated executor configured
+as a cachedThreadPool with a maximumPoolSize appropriate for each
+batch, a CallerRuns rejectedExecutionHandler, and a short
+keepAliveTime.
+
+The part of your scenario that I'm sure I don't understand is the
+interdependency between tasks within and between batches.
+
+Joe.
+
+From brian at quiotix.com  Thu Mar  2 16:04:30 2006
+From: brian at quiotix.com (Brian Goetz)
+Date: Thu Mar  2 16:04:50 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+In-Reply-To: <937C75B544E7E8428436C67056A3A1730C5D99@NYWEXMB83.msad.ms.com>
+References: <937C75B544E7E8428436C67056A3A1730C5D99@NYWEXMB83.msad.ms.com>
+Message-ID: <44075DDE.8050708@quiotix.com>
+
+>> "If you set the maximum pool size on your ThreadPoolExecutor and assign
+> CallerRunsPolicy() as the rejectedExecutionHandler, then tasks
+> submitted while the active thread limit has been reached will be
+> executed in the submitting thread."
+> 
+> Thanks for the above hint.  This should fit part of my needs.  By using
+> this policy, it should avoid task deadlocks even if my pool is bounded,
+> correct?
+
+Only with a zero-length task queue (i.e., SynchronousQueue.)  Otherwise, 
+the same deadlock risks apply.
+
+>> "In your case, you'd write a BatchExecutor that submitted its tasks to
+> a master executor. "
+> 
+> Since my original problem is to be
+> 
+> 1) - able to specify the number of threads to run each batch of tasks.
+> (i.e. I have a batch of 100 tasks; I only want to allocate 6 threads to
+> be running them even if the pool has more than 6 threads available.  The
+> reasons are one, I don't want one batch to take away all the thread
+> resources and two, if the tasks are big stress to the db, I simply want
+> the control to be able to specify less threads to run them.)
+> 2) - bound the size of the pool
+> 3) - avoid task deadlocks
+> 4) - would need something like invokeAll(..) in ExecutorService to wait
+> and get my result back. 
+> 5) - nice to be able to reuse threads in pool instead of creating an
+> Executor for each batch since some batch might be small, some are large.
+> 
+> In your suggestion of this BatchExecutor, in esssense, there is really
+> one Executor, I am not so clear on how I would achieve 1 and 4?  Would
+> my BatchExecutor has to be wise in figuring out the pace of dispatching
+> to the master executor so to satisfy X number of threads running the
+> batch of tasks?
+
+Here's another trick that might help.  It doesn't even required the 
+cascading executors -- if you're willing for your invokeAll to be 
+synchronous (which I think is OK by your requirements.)
+
+You create a shared pool with 100 threads.  For each batch, you create a 
+semaphore with the number of threads that batch is allowed to use.  Each 
+permit represents the right to submit a task concurrently to the main 
+pool.  The permit is acquired before submitting the task, and released 
+by the task when its done.  I think this, along with the trick above of 
+combining caller-runs with SynchronousQueue meets all your requirements.
+
+     public static ExecutorService exec
+         = Executors.newFixedThreadPool(100);
+
+     class Batch<T> {
+         private final Collection<Callable<T>> tasks;
+         private final Semaphore sem;
+
+         public Batch(Collection<Callable<T>> tasks, int nThreads) {
+             this.tasks = tasks;
+             sem = new Semaphore(nThreads);
+         }
+
+         public Collection<Future<T>> invokeAll() throws 
+InterruptedException {
+             List<Future<T>> results = new ArrayList<Future<T>>();
+             for (final Callable<T> task : tasks) {
+                 sem.acquire();
+                 results.add(exec.submit(
+                         new Callable<T>() {
+                             public T call() throws Exception {
+                                 try {
+                                     return task.call();
+                                 }
+                                 finally {
+                                     sem.release();
+                                 }
+                             }
+                         }));
+             }
+             return results;
+         }
+     }
+
+From joe.bowbeer at gmail.com  Thu Mar  2 16:27:27 2006
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Thu Mar  2 16:27:42 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+In-Reply-To: <44075DDE.8050708@quiotix.com>
+References: <937C75B544E7E8428436C67056A3A1730C5D99@NYWEXMB83.msad.ms.com>
+	<44075DDE.8050708@quiotix.com>
+Message-ID: <31f2a7bd0603021327o25ae5232n43d8ececacc8c853@mail.gmail.com>
+
+On 3/2/06, Brian Goetz <brian@quiotix.com> wrote:
+
+> I think this, along with the trick above of combining caller-runs
+> with SynchronousQueue meets all your requirements.
+>
+>      public static ExecutorService exec
+>          = Executors.newFixedThreadPool(100);
+>
+
+Note that newFixedThreadPool uses an unbounded queue.
+
+newCachedThreadPool would get you the synchronous queue, but I think
+you'll need to invoke one of the ThreadPoolExecutor constructors
+yourself regardless, because none of the Executors factory methods
+provides everything you need, and you'll need a real
+ThreadPoolExecutor in order to configure the queue, maximum pool size,
+rejected execution handler, and keep-alive time.
+
+From brian at quiotix.com  Thu Mar  2 16:32:42 2006
+From: brian at quiotix.com (Brian Goetz)
+Date: Thu Mar  2 16:32:53 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+In-Reply-To: <31f2a7bd0603021327o25ae5232n43d8ececacc8c853@mail.gmail.com>
+References: <937C75B544E7E8428436C67056A3A1730C5D99@NYWEXMB83.msad.ms.com>	
+	<44075DDE.8050708@quiotix.com>
+	<31f2a7bd0603021327o25ae5232n43d8ececacc8c853@mail.gmail.com>
+Message-ID: <4407647A.8050905@quiotix.com>
+
+> newCachedThreadPool would get you the synchronous queue, but I think
+> you'll need to invoke one of the ThreadPoolExecutor constructors
+> yourself regardless, because none of the Executors factory methods
+> provides everything you need, and you'll need a real
+> ThreadPoolExecutor in order to configure the queue, maximum pool size,
+> rejected execution handler, and keep-alive time.
+
+This would work too, but doesn't give you a chance to bound the 
+aggregate thread count.
+
+You could bound the aggregate thread count using a cached thread pool 
+and a second semaphore; one that requests nThread permits from the 
+master semaphore before starting an invokeAll, and returns them when 
+done.  That way, you could still say "Allow no more than N task 
+threads", and if too many batches are submitted, they block.
+
+From brian at quiotix.com  Thu Mar  2 17:13:58 2006
+From: brian at quiotix.com (Brian Goetz)
+Date: Thu Mar  2 17:14:10 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+In-Reply-To: <937C75B544E7E8428436C67056A3A1730C5D99@NYWEXMB83.msad.ms.com>
+References: <937C75B544E7E8428436C67056A3A1730C5D99@NYWEXMB83.msad.ms.com>
+Message-ID: <44076E26.3040200@quiotix.com>
+
+[ I think this message got eaten somehow ]
+
+>> "If you set the maximum pool size on your ThreadPoolExecutor and assign
+> CallerRunsPolicy() as the rejectedExecutionHandler, then tasks
+> submitted while the active thread limit has been reached will be
+> executed in the submitting thread."
+> 
+> Thanks for the above hint.  This should fit part of my needs.  By using
+> this policy, it should avoid task deadlocks even if my pool is bounded,
+> correct?
+
+Only with a zero-length task queue (i.e., SynchronousQueue.)  Otherwise,
+the same deadlock risks apply.
+
+>> "In your case, you'd write a BatchExecutor that submitted its tasks to
+> a master executor. "
+> 
+> Since my original problem is to be
+> 
+> 1) - able to specify the number of threads to run each batch of tasks.
+> (i.e. I have a batch of 100 tasks; I only want to allocate 6 threads to
+> be running them even if the pool has more than 6 threads available.  The
+> reasons are one, I don't want one batch to take away all the thread
+> resources and two, if the tasks are big stress to the db, I simply want
+> the control to be able to specify less threads to run them.)
+> 2) - bound the size of the pool
+> 3) - avoid task deadlocks
+> 4) - would need something like invokeAll(..) in ExecutorService to wait
+> and get my result back. 
+> 5) - nice to be able to reuse threads in pool instead of creating an
+> Executor for each batch since some batch might be small, some are large.
+> 
+> In your suggestion of this BatchExecutor, in esssense, there is really
+> one Executor, I am not so clear on how I would achieve 1 and 4?  Would
+> my BatchExecutor has to be wise in figuring out the pace of dispatching
+> to the master executor so to satisfy X number of threads running the
+> batch of tasks?
+
+Here's another trick that might help.  It doesn't even required the
+cascading executors -- if you're willing for your invokeAll to be
+synchronous (which I think is OK by your requirements.)
+
+You create a shared pool with 100 threads.  For each batch, you create a
+semaphore with the number of threads that batch is allowed to use.  Each
+permit represents the right to submit a task concurrently to the main
+pool.  The permit is acquired before submitting the task, and released
+by the task when its done.  I think this, along with the trick above of
+combining caller-runs with SynchronousQueue meets all your requirements.
+
+     public static ExecutorService exec
+         = Executors.newFixedThreadPool(100);
+
+     class Batch<T> {
+         private final Collection<Callable<T>> tasks;
+         private final Semaphore sem;
+
+         public Batch(Collection<Callable<T>> tasks, int nThreads) {
+             this.tasks = tasks;
+             sem = new Semaphore(nThreads);
+         }
+
+         public Collection<Future<T>> invokeAll() throws
+InterruptedException {
+             List<Future<T>> results = new ArrayList<Future<T>>();
+             for (final Callable<T> task : tasks) {
+                 sem.acquire();
+                 results.add(exec.submit(
+                         new Callable<T>() {
+                             public T call() throws Exception {
+                                 try {
+                                     return task.call();
+                                 }
+                                 finally {
+                                     sem.release();
+                                 }
+                             }
+                         }));
+             }
+             return results;
+         }
+     }
+
+
+From Grace.Kwok at mscibarra.com  Thu Mar  2 17:50:45 2006
+From: Grace.Kwok at mscibarra.com (Kwok, Grace (MSCIBARRA))
+Date: Thu Mar  2 18:58:24 2006
+Subject: [concurrency-interest] Questions about ThreadPoolExecutor
+Message-ID: <937C75B544E7E8428436C67056A3A1730C5D9A@NYWEXMB83.msad.ms.com>
+
+>"This would work too, but doesn't give you a chance to bound the
+aggregate thread count.
+>You could bound the aggregate thread count using a cached thread pool
+and a second semaphore; one that requests nThread permits from the
+master semaphore before starting an invokeAll, and returns them when
+done.  That way, you could still say "Allow no more than N task
+threads", and if too many batches are submitted, they block."
+
+
+Wouldn't the above subject to our deadlock problem?  (Correct me if I am
+wrong.)
+
+
+So, perhaps I should call the ThreadPoolExecutor constructor,
+ExecutorService exec = new ThreadPoolExecutor(10, 100, 10000000,
+TimeUnit.NANOSECONDS
+								, new
+SynchronousQueue(),
+	
+ThreadPoolExecutor.CallerRunsPolicy());
+
+, put it with your Batch<T> class, and it should serve my needs.
+
+Thank you all very much for your helpful suggestions!
+
+Grace
+
+
+ 
+
+-----Original Message-----
+From: Brian Goetz [mailto:brian@quiotix.com] 
+Sent: Thursday, March 02, 2006 1:33 PM
+To: Joe Bowbeer
+Cc: Kwok, Grace (MSCIBARRA); concurrency-interest@cs.oswego.edu
+Subject: Re: [concurrency-interest] Questions about ThreadPoolExecutor
+
+> newCachedThreadPool would get you the synchronous queue, but I think 
+> you'll need to invoke one of the ThreadPoolExecutor constructors 
+> yourself regardless, because none of the Executors factory methods 
+> provides everything you need, and you'll need a real 
+> ThreadPoolExecutor in order to configure the queue, maximum pool size,
+
+> rejected execution handler, and keep-alive time.
+
+This would work too, but doesn't give you a chance to bound the
+aggregate thread count.
+
+You could bound the aggregate thread count using a cached thread pool
+and a second semaphore; one that requests nThread permits from the
+master semaphore before starting an invokeAll, and returns them when
+done.  That way, you could still say "Allow no more than N task
+threads", and if too many batches are submitted, they block.
+--------------------------------------------------------
+
+NOTICE: If received in error, please destroy and notify sender.  Sender does not waive confidentiality or privilege, and use is prohibited.
+
+From cau at aspecthuntley.com.au  Thu Mar  2 18:42:51 2006
+From: cau at aspecthuntley.com.au (Christopher Kin Chung Au)
+Date: Thu Mar  2 18:58:25 2006
+Subject: [concurrency-interest] overridden done method not working 
+Message-ID: <62E9031181B7CF41A5C90F9CAB1225D1027162BA@ahmail.aspecthuntley.local>
+
+ I made a post earlier where I said the future task cancel method was
+   not working and was suggested to override the done method. I have
+   since used a test program to understand the mechanics behind cancel
+   and done and it all seems to work and indeed it does seem to be the
+   case where when I run the cancel method the done method does get
+   called.
+   I have tried to apply the test concepts to the real development and
+   find this to be an issue. The  idea of what I am trying to do is to
+   have a parent futuretask which creates multiple child futures. When I
+   overrode the the done method on the parent futuretask and called
+   cancel the done method does not get called immediate even though the
+   iscancelled method and isdone method both return true. The overridden
+   done method only gets called when all the child futures have finished
+   executing. Is there somthing I am doing wrong???
+   Any help will be appreciated thanks,
+   Chris
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060302/6f0a5c86/attachment.html
+From tom at epcc.ed.ac.uk  Tue Mar  7 06:25:29 2006
+From: tom at epcc.ed.ac.uk (Tom Sugden)
+Date: Tue Mar  7 06:25:48 2006
+Subject: [concurrency-interest] backport: execution service shutdownNow
+	question
+Message-ID: <200603071125.k27BPP4l012080@e450.epcc.ed.ac.uk>
+
+Hello,
+
+I'm new to the concurrency utils, so I'm not sure whether I've found a bug
+in the backport or just misunderstood the APIs. Here is my scenario:
+
+I have used an execution service to invoke a collection of Callable objects
+which block indefinitely. I then call shutdownNow() on the service from
+another thread. Here is some simplified code:
+
+    // from one thread:
+    ExecutorService service = Executors.newCachedThreadPool();
+    Collection activityProcessors = new ArrayList();
+    activityProcessors.add(new ActivityProcessor("activity1"));
+    activityProcessors.add(new ActivityProcessor("activity2"));
+    List futureResults = service.invokeAll(activityProcessors);
+
+    // later, from another thread:
+    service.shutdownNow();
+
+Afterwards I check the cancelled status on the Future objects associated
+with each of the Callable objects. I would have expected isCancelled() to
+return true but instead it returns false. Is this to be expected even though
+the Callable objects have been stopped at an intermediate stage due to the
+shutdownNow() call? Would I have been better to use the submit() method
+instead of invokeAll(), then cancelled the tasks via a number of calls to
+Future#cancel(true)? Is there a better way to cancel multiple tasks?
+
+Many thanks for any help,
+
+Tom Sugden
+
+From dl at cs.oswego.edu  Tue Mar  7 07:40:31 2006
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue Mar  7 07:40:35 2006
+Subject: [concurrency-interest] backport: execution service shutdownNow
+	question
+In-Reply-To: <200603071125.k27BPP4l012080@e450.epcc.ed.ac.uk>
+References: <200603071125.k27BPP4l012080@e450.epcc.ed.ac.uk>
+Message-ID: <440D7F3F.30509@cs.oswego.edu>
+
+Tom Sugden wrote:
+> 
+> I have used an execution service to invoke a collection of Callable objects
+> which block indefinitely. I then call shutdownNow() on the service from
+> another thread. Here is some simplified code:
+> 
+>     // from one thread:
+>     ExecutorService service = Executors.newCachedThreadPool();
+>     Collection activityProcessors = new ArrayList();
+>     activityProcessors.add(new ActivityProcessor("activity1"));
+>     activityProcessors.add(new ActivityProcessor("activity2"));
+>     List futureResults = service.invokeAll(activityProcessors);
+> 
+>     // later, from another thread:
+>     service.shutdownNow();
+> 
+> Afterwards I check the cancelled status on the Future objects associated
+> with each of the Callable objects. I would have expected isCancelled() to
+> return true but instead it returns false. Is this to be expected even though
+> the Callable objects have been stopped at an intermediate stage due to the
+> shutdownNow() call? 
+> 
+
+The shutdownNow method doesn't cancel non-run tasks because it doesn't
+know what you'd like to do with them. Instead, it hands them all back to you,
+so you can cancel them, run them in another executor, or whatever.
+
+So in your case, you might write something like
+
+    for (Runnable t : service.shutdownNow())
+        if (t instanceof Future) ((Future)t).cancel(true);
+
+
+-Doug
+From dl at cs.oswego.edu  Tue Mar  7 07:48:25 2006
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Tue Mar  7 07:48:33 2006
+Subject: [concurrency-interest] overridden done method not working
+In-Reply-To: <62E9031181B7CF41A5C90F9CAB1225D1027162BA@ahmail.aspecthuntley.local>
+References: <62E9031181B7CF41A5C90F9CAB1225D1027162BA@ahmail.aspecthuntley.local>
+Message-ID: <440D8119.4020806@cs.oswego.edu>
+
+Christopher Kin Chung Au wrote:
+>  The  idea of what I am trying to do is to
+>    have a parent futuretask which creates multiple child futures. When I
+>    overrode the the done method on the parent futuretask and called
+>    cancel the done method does not get called immediate even though the
+>    iscancelled method and isdone method both return true. The overridden
+>    done method only gets called when all the child futures have finished
+>    executing. Is there somthing I am doing wrong???
+> 
+
+The done method fires only when the task's run/call method returns,
+not upon calling cancel. Apparently your parent tasks are written not
+to return until child tasks complete.
+
+If you require that cancelling a parent task should also cancel child
+tasks, then you can override FutureTask.cancel (or make your own
+custom Future implementation) to do this.
+
+Also, your tasks should all make sure to be responsive to interrupts, perhaps by
+interspersing "if (Thread.interrupted()) return..."  as needed.
+
+-Doug
+
+From studdugie at gmail.com  Thu Mar  9 09:12:44 2006
+From: studdugie at gmail.com (studdugie)
+Date: Thu Mar  9 09:12:50 2006
+Subject: [concurrency-interest] cancelling future
+In-Reply-To: <62E9031181B7CF41A5C90F9CAB1225D102715EFE@ahmail.aspecthuntley.local>
+References: <62E9031181B7CF41A5C90F9CAB1225D102715EFE@ahmail.aspecthuntley.local>
+Message-ID: <5a59ce530603090612v69c85a2bp8776210485f370a@mail.gmail.com>
+
+On 2/28/06, Christopher Kin Chung Au <cau@aspecthuntley.com.au> wrote:
+>
+>
+>
+> Hi,
+>
+>
+>
+> Currently I have an application which sends out bulk email we use the
+> ExecutorService submit to get a future object back which we store. This
+> future object holds many other future objects which are the actual workers
+> that send out the email. The intention is that we will potentially have many
+> bulk email future objects which in turn hold many email future objects
+> sending out the emails. We want to be able to choose and cancel a designated
+> bulk email future object which in turn stops all the email future objects
+> associated with that bulk email future object while the other bulk email
+> future objects remain intact. I have used the cancel command but whilst the
+> bulk email future object reports that it has been cancelled the email future
+> objects seem to continue to run. I hope this makes sense and any help would
+> be appreciated.
+>
+>
+>
+> Thanks
+>
+>
+>
+> Chris
+>
+>
+>
+> PS the email future objects are created using executorservice.submit.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+I hesitate to respond to your post in large part because I can't
+answer your question about the cascading canceling of Future objects
+but I plow ahead anyway because I'm solving the exact same problem
+(bulk email) except I've approached it from a completely different
+angle than Executors and Futures. So before I waste any of your or my
+time rattling on about what I'm doing I'll leave it here and you can
+reply to this post if you are interested in my approach. Otherwise
+good luck to you.
+
+From studdugie at gmail.com  Thu Mar  9 09:13:21 2006
+From: studdugie at gmail.com (studdugie)
+Date: Thu Mar  9 09:13:30 2006
+Subject: [concurrency-interest] cancelling future
+In-Reply-To: <62E9031181B7CF41A5C90F9CAB1225D102715EFE@ahmail.aspecthuntley.local>
+References: <62E9031181B7CF41A5C90F9CAB1225D102715EFE@ahmail.aspecthuntley.local>
+Message-ID: <5a59ce530603090613q6769856bsc8ae2f708630c1a9@mail.gmail.com>
+
+I hesitate to respond to your post in large part because I can't
+answer your question about the cascading canceling of Future objects
+but I plow ahead anyway because I'm solving the exact same problem
+(bulk email) except I've approached it from a completely different
+angle than Executors and Futures. So before I waste any of your or my
+time rattling on about what I'm doing I'll leave it here and you can
+reply to this post if you are interested in my approach. Otherwise
+good luck to you.
+
+Dane
+
+On 2/28/06, Christopher Kin Chung Au <cau@aspecthuntley.com.au> wrote:
+>
+>
+>
+> Hi,
+>
+>
+>
+> Currently I have an application which sends out bulk email we use the
+> ExecutorService submit to get a future object back which we store. This
+> future object holds many other future objects which are the actual workers
+> that send out the email. The intention is that we will potentially have many
+> bulk email future objects which in turn hold many email future objects
+> sending out the emails. We want to be able to choose and cancel a designated
+> bulk email future object which in turn stops all the email future objects
+> associated with that bulk email future object while the other bulk email
+> future objects remain intact. I have used the cancel command but whilst the
+> bulk email future object reports that it has been cancelled the email future
+> objects seem to continue to run. I hope this makes sense and any help would
+> be appreciated.
+>
+>
+>
+> Thanks
+>
+>
+>
+> Chris
+>
+>
+>
+> PS the email future objects are created using executorservice.submit.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+
+From jean.morissette at gmail.com  Thu Mar  9 18:54:42 2006
+From: jean.morissette at gmail.com (Jean Morissette)
+Date: Thu Mar  9 18:54:47 2006
+Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+Message-ID: <97ad10900603091554i39e08d22h@mail.gmail.com>
+
+Hi,
+
+In ConcurrentHashMap, iterators are designed to be used by only one
+thread at a time.  However, I would like to have a ConcurrentMap
+implementation where iterators could be used by many threads at time,
+in a consistent way.  These iterators should reflect the state of the
+map at the creation of the iterator, independently of the map update
+operations.
+
+Is-there a class somewhere that achieve this behaviour?  IMO, it would
+be a nice addition to j.u.concurrent package.  Or, is there any plan
+to create it in the future?
+
+Otherwise, I will try to develop it myself, maybe by assigning a
+timestamps to each entry and iterator. Or, do you have others
+suggestions/advices?
+
+Regards,
+Jean
+
+From crazybob at crazybob.org  Thu Mar  9 19:19:28 2006
+From: crazybob at crazybob.org (Bob Lee)
+Date: Thu Mar  9 19:19:30 2006
+Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+In-Reply-To: <97ad10900603091554i39e08d22h@mail.gmail.com>
+References: <97ad10900603091554i39e08d22h@mail.gmail.com>
+Message-ID: <a74683f90603091619p7d25dee4v26df56ad77aba888@mail.gmail.com>
+
+new HashMap(concurrentHashMap).iterator()?
+
+Bob
+
+On 3/9/06, Jean Morissette <jean.morissette@gmail.com> wrote:
+> Hi,
+>
+> In ConcurrentHashMap, iterators are designed to be used by only one
+> thread at a time.  However, I would like to have a ConcurrentMap
+> implementation where iterators could be used by many threads at time,
+> in a consistent way.  These iterators should reflect the state of the
+> map at the creation of the iterator, independently of the map update
+> operations.
+>
+> Is-there a class somewhere that achieve this behaviour?  IMO, it would
+> be a nice addition to j.u.concurrent package.  Or, is there any plan
+> to create it in the future?
+>
+> Otherwise, I will try to develop it myself, maybe by assigning a
+> timestamps to each entry and iterator. Or, do you have others
+> suggestions/advices?
+>
+> Regards,
+> Jean
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From dcholmes at optusnet.com.au  Thu Mar  9 19:22:35 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Thu Mar  9 19:22:54 2006
+Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+In-Reply-To: <97ad10900603091554i39e08d22h@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCGEIDGMAA.dcholmes@optusnet.com.au>
+
+It sounds like you want to make an atomic snapshot of the map and iterate
+over that. But atomic access to ConcurrentHashMap can't be done - there is
+no global lock to grab, nor do you want one.
+
+The timestamp idea seems only a partial solution depending on what your
+constraints actually are: you can't stop entries being removed, you can only
+skip entries that have been added since, if they appear.
+
+Why not just use an iterator to make your own immutable snapshot that can
+then be accessed by other threads. Any thread using the snapshot would have
+to realize that entries may have since been removed from the map (assuming
+application logic permits that). The snapshot would reflect the state of the
+map between the iterator being constructed and the iteration being
+completed.
+
+Cheers,
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces@cs.oswego.edu
+> [mailto:concurrency-interest-bounces@cs.oswego.edu]On Behalf Of Jean
+> Morissette
+> Sent: Friday, 10 March 2006 9:55 AM
+> To: concurrency-interest@cs.oswego.edu
+> Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+>
+>
+> Hi,
+>
+> In ConcurrentHashMap, iterators are designed to be used by only one
+> thread at a time.  However, I would like to have a ConcurrentMap
+> implementation where iterators could be used by many threads at time,
+> in a consistent way.  These iterators should reflect the state of the
+> map at the creation of the iterator, independently of the map update
+> operations.
+>
+> Is-there a class somewhere that achieve this behaviour?  IMO, it would
+> be a nice addition to j.u.concurrent package.  Or, is there any plan
+> to create it in the future?
+>
+> Otherwise, I will try to develop it myself, maybe by assigning a
+> timestamps to each entry and iterator. Or, do you have others
+> suggestions/advices?
+>
+> Regards,
+> Jean
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From cau at aspecthuntley.com.au  Thu Mar  9 16:31:43 2006
+From: cau at aspecthuntley.com.au (Christopher Kin Chung Au)
+Date: Thu Mar  9 20:46:53 2006
+Subject: [concurrency-interest] cancelling future
+Message-ID: <62E9031181B7CF41A5C90F9CAB1225D102852711@ahmail.aspecthuntley.local>
+
+Hi,
+
+Managed to get the canceling working. I do not think it is the most
+elegant way of doing things but it bloody works.
+
+The way I attempted this was that I already kept references of all the
+future email processes and just used the drainTo Method to remove them.
+
+Anyway thanks to all who helped.
+
+Chris 
+
+-----Original Message-----
+From: studdugie [mailto:studdugie@gmail.com] 
+Sent: Friday, 10 March 2006 12:33 AM
+To: Christopher Kin Chung Au
+Subject: Re: [concurrency-interest] cancelling future
+
+I hesitate to respond to your post in large part because I can't
+answer your question about the cascading canceling of Future objects
+but I plow ahead anyway because I'm solving the exact same problem
+(bulk email) except I've approached it from a completely different
+angle than Executors and Futures. So before I waste any of your or my
+time rattling on about what I'm doing I'll leave it here and you can
+reply to this post if you are interested in my approach. Otherwise
+good luck to you.
+
+Dane
+
+On 2/28/06, Christopher Kin Chung Au <cau@aspecthuntley.com.au> wrote:
+>
+>
+>
+> Hi,
+>
+>
+>
+> Currently I have an application which sends out bulk email we use the
+> ExecutorService submit to get a future object back which we store.
+This
+> future object holds many other future objects which are the actual
+workers
+> that send out the email. The intention is that we will potentially
+have many
+> bulk email future objects which in turn hold many email future objects
+> sending out the emails. We want to be able to choose and cancel a
+designated
+> bulk email future object which in turn stops all the email future
+objects
+> associated with that bulk email future object while the other bulk
+email
+> future objects remain intact. I have used the cancel command but
+whilst the
+> bulk email future object reports that it has been cancelled the email
+future
+> objects seem to continue to run. I hope this makes sense and any help
+would
+> be appreciated.
+>
+>
+>
+> Thanks
+>
+>
+>
+> Chris
+>
+>
+>
+> PS the email future objects are created using executorservice.submit.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+
+From chris.purcell.39 at gmail.com  Fri Mar 10 03:10:03 2006
+From: chris.purcell.39 at gmail.com (Chris Purcell)
+Date: Fri Mar 10 03:10:16 2006
+Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCGEIDGMAA.dcholmes@optusnet.com.au>
+References: <NFBBKALFDCPFIDBNKAPCGEIDGMAA.dcholmes@optusnet.com.au>
+Message-ID: <6a1681eecd7112a8a552821c3588e447@gmail.com>
+
+> But atomic access to ConcurrentHashMap can't be done - there is no 
+> global lock to grab, nor do you want one.
+
+As I understood it, though, updates *are* done under mutual exclusion. 
+Why can't a "global lock" operation just grab all the fine-grained 
+locks and hold them simultaneously?
+
+Chris
+
+From alarmnummer at gmail.com  Fri Mar 10 03:28:48 2006
+From: alarmnummer at gmail.com (Peter Veentjer)
+Date: Fri Mar 10 03:28:51 2006
+Subject: [concurrency-interest] Condition.awaitNanos
+Message-ID: <1466c1d60603100028v6e4c6fb2l1937e839bb48a46@mail.gmail.com>
+
+I have a question about the Condition.awaitNanos function. The
+documentation says that if a 0 or less is returned if a timeout has
+occured.
+"A value less than or equal to zero if the wait has timed out; "
+
+It also says that a value less than the nanosTimeout is returned, when
+it is signalled or interrupted:
+"otherwise an estimate, that is strictly less than the nanosTimeout
+argument, of the time still remaining when this method returned."
+
+I have 3 questions:
+-what happens if the Condition.awaitNanos is called with a value less
+than or equal to zero? I guess that the function returns immediately
+without any waiting.
+-what happens if the Condition.awaitNanos is called with a value x,
+and the the wait for signalling/interrupt also took time x. So the
+remaining time is 0. 0 indicates that it received a timeout, but zero
+also could be a signal to indicate that the call was succesfull.
+-what happens if the Condition.awaitNanos is called with a value 1,
+the wait took 0, so the remaining time is 1 (so it should be decreased
+to zero so the value is less than the original timeout).
+
+So I don`t have a clear understanding what happens with the
+Condition.awaitNanos if the remaining timeout is around zero.
+
+The reason I`m asking this is that I`m making a function that does the
+same for locks:
+
+long tryLockNanos(Lock lock, nanosTimeout){....}
+
+And I don`t have a good understanding how I can deal with (almost)
+zero timeouts.
+
+From jean.morissette at gmail.com  Fri Mar 10 14:45:16 2006
+From: jean.morissette at gmail.com (Jean Morissette)
+Date: Fri Mar 10 14:45:18 2006
+Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCGEIDGMAA.dcholmes@optusnet.com.au>
+References: <97ad10900603091554i39e08d22h@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCGEIDGMAA.dcholmes@optusnet.com.au>
+Message-ID: <97ad10900603101145mf3fc7f1n@mail.gmail.com>
+
+2006/3/9, David Holmes <dcholmes@optusnet.com.au>:
+> It sounds like you want to make an atomic snapshot of the map and iterate
+> over that.
+
+Right.
+
+> The timestamp idea seems only a partial solution depending on what your
+> constraints actually are: you can't stop entries being removed, you can only
+> skip entries that have been added since, if they appear.
+
+Each entry could have two timestamps, one for its creation and one set
+at its removal. Removed entries would remain in the map until there is
+no iterator that can see them, after which they would be (lazily?)
+removed.
+
+> Why not just use an iterator to make your own immutable snapshot that can
+> then be accessed by other threads.
+
+In my scenario, there is as mush map update (put/remove) than querying
+(iterator) operations. Also, the size of these map can be really big. 
+So, using a copy strategy to create a snapshot seems costly: it would
+involve a lot of copying. What do you think?
+
+Thanks,
+Jean
+
+From crazybob at crazybob.org  Fri Mar 10 15:05:53 2006
+From: crazybob at crazybob.org (Bob Lee)
+Date: Fri Mar 10 15:05:57 2006
+Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+In-Reply-To: <97ad10900603101145mf3fc7f1n@mail.gmail.com>
+References: <97ad10900603091554i39e08d22h@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCGEIDGMAA.dcholmes@optusnet.com.au>
+	<97ad10900603101145mf3fc7f1n@mail.gmail.com>
+Message-ID: <a74683f90603101205o7bf67f9dld8e578f59c1f6967@mail.gmail.com>
+
+On 3/10/06, Jean Morissette <jean.morissette@gmail.com> wrote:
+> What do you think?
+
+If you absolutely can't bare any modifications during the creation of
+the iterator, I think I'd just use a synchronized HashMap and optimize
+the hashCode()/equals() methods on my key classes.
+
+Bob
+
+From dcholmes at optusnet.com.au  Fri Mar 10 20:21:43 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Fri Mar 10 20:22:00 2006
+Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+In-Reply-To: <6a1681eecd7112a8a552821c3588e447@gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMEJHGMAA.dcholmes@optusnet.com.au>
+
+Chris Purcell writes:
+> > But atomic access to ConcurrentHashMap can't be done - there is no
+> > global lock to grab, nor do you want one.
+>
+> As I understood it, though, updates *are* done under mutual exclusion.
+> Why can't a "global lock" operation just grab all the fine-grained
+> locks and hold them simultaneously?
+
+You can if you modify the internals of CHM, otherwise those locks are not
+accessible.
+
+Cheers,
+David Holmes
+
+From dcholmes at optusnet.com.au  Fri Mar 10 20:21:51 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Fri Mar 10 20:22:03 2006
+Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+In-Reply-To: <97ad10900603101145mf3fc7f1n@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEJIGMAA.dcholmes@optusnet.com.au>
+
+Jean Morissette writes:
+> Each entry could have two timestamps, one for its creation and one set
+> at its removal. Removed entries would remain in the map until there is
+> no iterator that can see them, after which they would be (lazily?)
+> removed.
+
+They could, but now you are adding additional housekeeping and coordination
+between the iterators and the map.
+
+> In my scenario, there is as mush map update (put/remove) than querying
+> (iterator) operations. Also, the size of these map can be really big.
+> So, using a copy strategy to create a snapshot seems costly: it would
+> involve a lot of copying. What do you think?
+
+At this stage I'd ask exactly why you need an iterator that can be shared
+amongst threads. :)
+
+The desired semantics seem to be leading you into a no-win situation.
+Ultimately you will have to pay for it somewhere.
+
+Cheers,
+David Holmes
+
+From dcholmes at optusnet.com.au  Fri Mar 10 20:21:51 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Fri Mar 10 20:22:05 2006
+Subject: [concurrency-interest] Condition.awaitNanos
+In-Reply-To: <1466c1d60603100028v6e4c6fb2l1937e839bb48a46@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEJIGMAA.dcholmes@optusnet.com.au>
+
+Peter,
+
+The behaviour is logically as follows, given a call to awaitNanos(x):
+
+  if (x <= 0) return x; // or any value <=0
+  if (interrupted) throw InterruptedException
+  long startTime = now();
+  do_block(x);
+  if (interrupted) throw InterruptedException
+  else if (signalled) return (x-1);
+  else return (x - (now() - startTime));
+
+So to answer your questions:
+
+> -what happens if the Condition.awaitNanos is called with a value less
+> than or equal to zero? I guess that the function returns immediately
+> without any waiting.
+
+Yes it "immediately" returns a value <= 0 (though it might check
+interruption first).
+
+> -what happens if the Condition.awaitNanos is called with a value x,
+> and the the wait for signalling/interrupt also took time x. So the
+> remaining time is 0. 0 indicates that it received a timeout, but zero
+> also could be a signal to indicate that the call was succesfull.
+
+The time left need only be checked if there was no signal (the
+implementation should know this). So it need only return x-1 to meet the
+spec. (That said I think we have a bug in this area with our use of
+AbstractQueuedSynchronizer as it might return a negative value after a
+signal when a small timeout is used!)
+
+> -what happens if the Condition.awaitNanos is called with a value 1,
+> the wait took 0, so the remaining time is 1 (so it should be decreased
+> to zero so the value is less than the original timeout).
+
+Ultimately do_block uses some mechanism that will either ignore really small
+timeouts, or else cause an immediate return. In either case the thread has
+not been signalled so the timeleft is calculated. Doing all this takes far
+longer than one nanosecond so you return a negative value that indicates a
+timeout.
+
+Hope that clarifies things.
+
+David Holmes
+
+
+
+From dl at cs.oswego.edu  Fri Mar 10 20:37:00 2006
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri Mar 10 20:37:04 2006
+Subject: [concurrency-interest] Condition.awaitNanos
+In-Reply-To: <1466c1d60603100028v6e4c6fb2l1937e839bb48a46@mail.gmail.com>
+References: <1466c1d60603100028v6e4c6fb2l1937e839bb48a46@mail.gmail.com>
+Message-ID: <441229BC.1050605@cs.oswego.edu>
+
+Peter Veentjer wrote:
+> I have a question about the Condition.awaitNanos function. The
+> documentation says that if a 0 or less is returned if a timeout has
+> occured.
+> "A value less than or equal to zero if the wait has timed out; "
+> 
+> It also says that a value less than the nanosTimeout is returned, when
+> it is signalled or interrupted:
+> "otherwise an estimate, that is strictly less than the nanosTimeout
+> argument, of the time still remaining when this method returned."
+> 
+
+Notice that on interrupt, InterruptException is always thrown,
+so no value is returned.
+
+Also note that the "otherwise" case return value can also be <= 0.
+(which is the basis of two of your other questions.)
+While possibly ambiguous, for condition waits, callers will not care since
+they will be checking the predicates they are looking for anyway.
+The conventions here wouldn't work for something like your tryLockNanos
+where you need a return value that tells you both about success
+and about remaining time. I think you will need to come up with
+some other way to do that.
+
+> -what happens if the Condition.awaitNanos is called with a value less
+> than or equal to zero? I guess that the function returns immediately
+> without any waiting.
+
+Yes.
+
+> -what happens if the Condition.awaitNanos is called with a value x,
+> and the the wait for signalling/interrupt also took time x. So the
+> remaining time is 0. 0 indicates that it received a timeout, but zero
+> also could be a signal to indicate that the call was succesfull.
+
+Right. (Except not so for interrupts). The intent here is that
+zero means "whether or not the predicate you are checking holds,
+you need not call awaitNanos again if you are waiting in a loop because
+the timeout has now elapsed". This information is what
+most timed wait-loops want to know, which is why we return this value.
+
+-Doug
+
+From dcholmes at optusnet.com.au  Fri Mar 10 20:44:02 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Fri Mar 10 20:44:13 2006
+Subject: [concurrency-interest] Condition.awaitNanos
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCCEJIGMAA.dcholmes@optusnet.com.au>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEJKGMAA.dcholmes@optusnet.com.au>
+
+Nope that was  totally wrong sorry.
+
+>   else if (signalled) return (x-1);
+>
+> The time left need only be checked if there was no signal (the
+> implementation should know this). So it need only return x-1 to meet the
+> spec. (That said I think we have a bug in this area with our use of
+> AbstractQueuedSynchronizer as it might return a negative value after a
+> signal when a small timeout is used!)
+
+Totally wrong. You always return the time left even if signalled - this is
+precisely why this method exists: in case after being signalled you still
+have to wait.
+
+In which case, I have to agree that there is a potential problem if the
+elapsed time as calculated is greater than the requested timeout. You would
+get a negative value, indicating a timeout even though you didn't time out.
+
+David Holmes
+
+From dcholmes at optusnet.com.au  Fri Mar 10 20:56:15 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Fri Mar 10 20:56:28 2006
+Subject: [concurrency-interest] Condition.awaitNanos
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCEEJKGMAA.dcholmes@optusnet.com.au>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEJLGMAA.dcholmes@optusnet.com.au>
+
+I wrote:
+> In which case, I have to agree that there is a potential problem if the
+> elapsed time as calculated is greater than the requested timeout.
+> You would get a negative value, indicating a timeout even though you
+didn't
+> time out.
+
+As Doug indicated for Conditions this isn't a problem because you (nearly
+always) recheck the condition. But as specified there is an ambiguity when
+you get a negative return value.
+
+David Holmes
+
+From jean.morissette at gmail.com  Fri Mar 10 23:04:42 2006
+From: jean.morissette at gmail.com (Jean Morissette)
+Date: Fri Mar 10 23:04:44 2006
+Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCAEJIGMAA.dcholmes@optusnet.com.au>
+References: <97ad10900603101145mf3fc7f1n@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCAEJIGMAA.dcholmes@optusnet.com.au>
+Message-ID: <97ad10900603102004g52b9ce5bv@mail.gmail.com>
+
+2006/3/10, David Holmes <dcholmes@optusnet.com.au>:
+> At this stage I'd ask exactly why you need an iterator that can be shared
+> amongst threads. :)
+>
+> The desired semantics seem to be leading you into a no-win situation.
+> Ultimately you will have to pay for it somewhere.
+
+Sorry, I made a mistake in my first post. In fact, iterators *don't*
+need to be shared amongst threads. However, they need to reflect the
+state of the map at the creation of the iterator, independently of the
+map update operations.
+
+> The desired semantics seem to be leading you into a no-win situation.
+> Ultimately you will have to pay for it somewhere.
+
+Knowing that all is a question of compromises, I'm yet searching the
+cheapest one :)
+
+Thanks,
+Jean
+
+From dcholmes at optusnet.com.au  Sat Mar 11 04:54:58 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Sat Mar 11 04:55:10 2006
+Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+In-Reply-To: <97ad10900603102004g52b9ce5bv@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEJNGMAA.dcholmes@optusnet.com.au>
+
+Jean Morissette writes:
+> Sorry, I made a mistake in my first post. In fact, iterators *don't*
+> need to be shared amongst threads. However, they need to reflect the
+> state of the map at the creation of the iterator, independently of the
+> map update operations.
+
+That is still an interesting requirement if the map is in use when the
+iterator is created, as there are potential races adding or removing
+elements.
+
+As there is no way to make an atomic snapshot then you will have to have
+some way of telling when each entry was added and removed from the map. Your
+timestamps seem the only option - albeit a complicated one. It would be a
+fair bit simpler if you didn't need to worry about elements that are removed
+after the iterator is created. :)
+
+Good luck.
+
+David Holmes
+
+From crazybob at crazybob.org  Sat Mar 11 10:58:55 2006
+From: crazybob at crazybob.org (Bob Lee)
+Date: Sat Mar 11 10:59:00 2006
+Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCKEJNGMAA.dcholmes@optusnet.com.au>
+References: <97ad10900603102004g52b9ce5bv@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCKEJNGMAA.dcholmes@optusnet.com.au>
+Message-ID: <a74683f90603110758g56aa9a6dq3b7cf2ea6f5b63f8@mail.gmail.com>
+
+On 3/11/06, David Holmes <dcholmes@optusnet.com.au> wrote:
+> That is still an interesting requirement if the map is in use when the
+> iterator is created, as there are potential races adding or removing
+> elements.
+>
+> As there is no way to make an atomic snapshot then you will have to have
+> some way of telling when each entry was added and removed from the map. Your
+> timestamps seem the only option - albeit a complicated one.
+
+Actually, first, is it OK for additions/removals during the actual
+creation (but not after)? If so, my original solution will work.
+
+If not, in lieu of timestamps, you can decorate your map and record
+undo objects. At the point where you want your "snapshot," you ask the
+map for an undo version (this will be an index into the list of undo
+objects, the map will start recording them if it isn't already). Next,
+create your copy by iterating over the map and take another undo
+version (this also tells the map you're done which means it may be
+able to stop recording). Now execute the undo objects against your map
+copy and you should have a snapshot of the map at the point your took
+the first undo version.
+
+As this is a concurrent map, entries can be added/removed at the time
+you take the actual snapshot (which means the snapshot would include
+the change). Is this acceptable?
+
+The neat thing about this is you can implement it as a decorator and
+it will work with any concurrent map (i.e. no hacking the internals of
+CHM).
+
+Bob
+
+From crazybob at crazybob.org  Sat Mar 11 14:05:37 2006
+From: crazybob at crazybob.org (Bob Lee)
+Date: Sat Mar 11 14:05:40 2006
+Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+In-Reply-To: <97ad10900603102004g52b9ce5bv@mail.gmail.com>
+References: <97ad10900603101145mf3fc7f1n@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCAEJIGMAA.dcholmes@optusnet.com.au>
+	<97ad10900603102004g52b9ce5bv@mail.gmail.com>
+Message-ID: <a74683f90603111105r38d1ac4bvc83c20f21579c431@mail.gmail.com>
+
+On 3/10/06, Jean Morissette <jean.morissette@gmail.com> wrote:
+> However, they need to reflect the
+> state of the map at the creation of the iterator, independently of the
+> map update operations.
+
+Can you give a little more detail on your requirements? I've
+implemented most of what you've said so far, but I'm not sure why
+something like this would be useful. Not tested:
+
+/**
+ * Does not support null values.
+ */
+public class SnapshotMap<K, V> implements ConcurrentMap<K, V> {
+
+  ConcurrentMap<K, V> delegate;
+  volatile Undos undos;
+
+  public SnapshotMap(ConcurrentMap<K, V> delegate) {
+    this.delegate = delegate;
+  }
+
+  public V putIfAbsent(final K key, final V value) {
+    V v = delegate.putIfAbsent(key, value);
+    // assume absence if old value is null.
+    if (v == null && undos != null)
+      undos.add(new Undo<K, V>() {
+        public void undo(Map<K, V> map) {
+          map.remove(key);
+        }
+      });
+    return v;
+  }
+
+  public boolean remove(final Object key, final Object value) {
+    boolean removed = delegate.remove(key, value);
+    if (removed && undos != null)
+      undos.add(new Undo<K, V>() {
+        public void undo(Map<K, V> map) {
+          map.put((K) key, (V) value);
+        }
+      });
+    return removed;
+  }
+
+  public boolean replace(final K key, final V oldValue, V newValue) {
+    boolean replaced = delegate.replace(key, oldValue, newValue);
+    if (replaced && undos != null)
+      undos.add(new Undo<K, V>() {
+        public void undo(Map<K, V> map) {
+          map.put(key, oldValue);
+        }
+      });
+    return replaced;
+  }
+
+  public V replace(final K key, V value) {
+    final V oldValue = delegate.replace(key, value);
+    if (oldValue != null && undos != null)
+      undos.add(new Undo<K, V>() {
+        public void undo(Map<K, V> map) {
+          map.put(key, oldValue);
+        }
+      });
+    return oldValue;
+  }
+
+  public int size() {
+    return delegate.size();
+  }
+
+  public boolean isEmpty() {
+    return delegate.isEmpty();
+  }
+
+  public boolean containsKey(Object key) {
+    return delegate.containsKey(key);
+  }
+
+  public boolean containsValue(Object value) {
+    return delegate.containsValue(value);
+  }
+
+  public V get(Object key) {
+    return delegate.get(key);
+  }
+
+  public V put(final K key, V value) {
+    final V oldValue = delegate.put(key, value);
+    if (oldValue != null && undos != null)
+      undos.add(new Undo<K, V>() {
+        public void undo(Map<K, V> map) {
+          map.put(key, oldValue);
+        }
+      });
+    return oldValue;
+  }
+
+  public V remove(final Object key) {
+    final V oldValue = delegate.remove(key);
+    if (oldValue != null && undos != null)
+      undos.add(new Undo<K, V>() {
+        public void undo(Map<K, V> map) {
+          map.put((K) key, oldValue);
+        }
+      });
+    return oldValue;
+  }
+
+  public void putAll(Map<? extends K, ? extends V> t) {
+    // not sure what to do here. synchronize?
+    delegate.putAll(t);
+  }
+
+  public void clear() {
+    // ditto.
+    delegate.clear();
+  }
+
+  public Set<K> keySet() {
+    return snapshot().keySet();
+  }
+
+  public Collection<V> values() {
+    return snapshot().values();
+  }
+
+  public Set<Entry<K, V>> entrySet() {
+    return snapshot().entrySet();
+  }
+
+  Map<K, V> snapshot() {
+    Undos undos;
+    Map<K, V> snapshot;
+    synchronized (this) {
+      this.undos = new Undos();
+      snapshot = new HashMap<K, V>(delegate);
+      this.undos.disable();
+      undos = this.undos;
+      this.undos = null;
+    }
+    for (Undo<K, V> undo : undos)
+      undo.undo(snapshot);
+    return snapshot;
+  }
+
+  public boolean equals(Object o) {
+    return delegate.equals(o);
+  }
+
+  public int hashCode() {
+    return delegate.hashCode();
+  }
+
+  class Undos extends LinkedList<Undo<K, V>> {
+
+    boolean enabled = true;
+
+    public synchronized boolean add(Undo<K, V> undo) {
+      return enabled && super.add(undo);
+    }
+
+    synchronized void disable() {
+      enabled = false;
+    }
+  }
+
+  interface Undo<K, V> {
+    void undo(Map<K, V> map);
+  }
+}
+
+From tim at peierls.net  Sun Mar 12 09:30:22 2006
+From: tim at peierls.net (Tim Peierls)
+Date: Sun Mar 12 09:30:27 2006
+Subject: [concurrency-interest] Timestamps-based ConcurrentMap
+In-Reply-To: <a74683f90603111105r38d1ac4bvc83c20f21579c431@mail.gmail.com>
+References: <97ad10900603101145mf3fc7f1n@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCAEJIGMAA.dcholmes@optusnet.com.au>
+	<97ad10900603102004g52b9ce5bv@mail.gmail.com>
+	<a74683f90603111105r38d1ac4bvc83c20f21579c431@mail.gmail.com>
+Message-ID: <63b4e4050603120630t4a6e7dc7yd2b33709c11039f@mail.gmail.com>
+
+On 3/10/06, Jean Morissette <jean.morissette@gmail.com> wrote:
+
+> > However, they need to reflect the
+> > state of the map at the creation of the iterator, independently of the
+> > map update operations.
+>
+
+
+Maybe what you're looking for is an implementation of ConcurrentMap based on
+purely functional data
+structures<http://www.cs.cmu.edu/%7Erwh/theses/okasaki.pdf>.
+The current state of the map could be maintained as an AtomicReference to
+such a data structure. Mutative operations could optimistically create a new
+state and CAS the AtomicReference with it. Non-mutative operations,
+including iterator creation, would hold a reference to a consistent but
+possibly out-of-date immutable data structure. This approach is only a win
+if you expect low contention by mutative operations, i.e., if the CAS
+operations will usually succeed.
+
+But this doesn't use CHM at all.
+
+--tim
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060312/01fa55f4/attachment.html
+From alarmnummer at gmail.com  Mon Mar 13 03:10:29 2006
+From: alarmnummer at gmail.com (Peter Veentjer)
+Date: Mon Mar 13 03:10:33 2006
+Subject: [concurrency-interest] Condition.awaitNanos
+Message-ID: <1466c1d60603130010i55a51260p566db7c2923b7eec@mail.gmail.com>
+
+I want to thank you for your excellent replies.
+
+I have my answer: with a lock the value 0 is ambiguous so I can`t
+carry the information in a int. I could use a Integer (null indicates
+a failed lock) or a TimeOutException.
+
+From dl at cs.oswego.edu  Mon Mar 13 07:56:00 2006
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Mon Mar 13 07:56:03 2006
+Subject: [concurrency-interest] Condition.awaitNanos
+In-Reply-To: <1466c1d60603130010i55a51260p566db7c2923b7eec@mail.gmail.com>
+References: <1466c1d60603130010i55a51260p566db7c2923b7eec@mail.gmail.com>
+Message-ID: <44156BE0.8010601@cs.oswego.edu>
+
+Peter Veentjer wrote:
+> I want to thank you for your excellent replies.
+> 
+>
+
+Thanks for the question! It led us to try to clarify the specs for Condition
+methods. (Hopefully for Mustang.)
+
+-Doug
+
+From matthias.ernst at coremedia.com  Tue Mar 14 06:24:11 2006
+From: matthias.ernst at coremedia.com (Ernst, Matthias)
+Date: Tue Mar 14 06:24:23 2006
+Subject: [concurrency-interest] Code Hygiene; Unused Imports
+Message-ID: <F34C8A704C489B46B9E9FBDBD1B91D5F01EDB671@MARS.coremedia.com>
+
+Hi,
+
+as a user of IntelliJ I've become used to check the code analyzer
+"traffic light" and want to let you know that a number of files in j.u.c
+(1.5.0_06) had warnings on them ("unchecked" warnings aside):
+
+Delayed, Semaphore, ScheduledExecutorService, ExecutorService,
+CountdownLatch, ConcurrentHashMap, LockSupport, ReentrantLock,
+ReentrantReadWriteLock have unnecessary imports. DelayQueue#take
+declares an unused local "tl".
+
+As a relatively new part of J2SE the code should set an example in
+cleanliness :-)
+I haven't looked into Mustang.
+
+Cheers
+Matthias
+
+-- 
+Matthias Ernst
+Software Engineer
+ 
+tel +49.40.32 55 87.503
+fax +49.40.32 55 87.999
+matthias.ernst@coremedia.com
+
+From dcholmes at optusnet.com.au  Tue Mar 14 17:44:46 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Tue Mar 14 17:45:13 2006
+Subject: [concurrency-interest] Code Hygiene; Unused Imports
+In-Reply-To: <F34C8A704C489B46B9E9FBDBD1B91D5F01EDB671@MARS.coremedia.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAELKGMAA.dcholmes@optusnet.com.au>
+
+Matthias,
+
+I haven't checked in detail but many of the "unused" imports are/were
+actually needed to workaround a javadoc bug - ie we needed the import for
+javadoc, not javac.
+
+Not sure of the current state of the world there.
+
+Cheers,
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces@cs.oswego.edu
+> [mailto:concurrency-interest-bounces@cs.oswego.edu]On Behalf Of Ernst,
+> Matthias
+> Sent: Tuesday, 14 March 2006 9:24 PM
+> To: concurrency-interest@cs.oswego.edu
+> Subject: [concurrency-interest] Code Hygiene; Unused Imports
+>
+>
+> Hi,
+>
+> as a user of IntelliJ I've become used to check the code analyzer
+> "traffic light" and want to let you know that a number of files in j.u.c
+> (1.5.0_06) had warnings on them ("unchecked" warnings aside):
+>
+> Delayed, Semaphore, ScheduledExecutorService, ExecutorService,
+> CountdownLatch, ConcurrentHashMap, LockSupport, ReentrantLock,
+> ReentrantReadWriteLock have unnecessary imports. DelayQueue#take
+> declares an unused local "tl".
+>
+> As a relatively new part of J2SE the code should set an example in
+> cleanliness :-)
+> I haven't looked into Mustang.
+>
+> Cheers
+> Matthias
+>
+> --
+> Matthias Ernst
+> Software Engineer
+>
+> tel +49.40.32 55 87.503
+> fax +49.40.32 55 87.999
+> matthias.ernst@coremedia.com
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From wojcicki at itee.uq.edu.au  Wed Mar 15 02:20:06 2006
+From: wojcicki at itee.uq.edu.au (Margaret Wojcicki)
+Date: Wed Mar 15 02:20:24 2006
+Subject: [concurrency-interest] State of Practice Survey on Verification and
+	Validation on Concurrency
+Message-ID: <200603150720.k2F7K6bK024835@luma.itee.uq.edu.au>
+
+ Dear members of the concurrency-interest group:
+
+ 
+
+I am a PhD student at the University of Queensland and I am conducting a
+survey to determine the state-of-practice of verification and validation
+(V&V) of concurrent components.   The questionnaire can be found at:
+http://www.itee.uq.edu.au/~wojcicki/practitioner_survey/VVquest.html and it
+will take no more than 5-15 minutes to complete.
+
+ 
+
+This questionnaire is being done as part of the TestCon research group (for
+more information, please visit: www.itee.uq.edu.au/~testcon).   My PhD
+focuses on the evaluation of V&V technologies for concurrent components,
+therefore it is of great interest to me to learn what V&V is currently being
+performed and the context of performing V&V on concurrent components, as
+well as the sources of information that are used to make V&V technology
+choices.  I would greatly appreciate it if you could share your input by
+filling in the questionnaire. I will be collecting data from the online form
+until the 31st of March.  If you are interested in the results of the
+survey, please leave your details in the survey or e-mail me.
+
+ 
+
+Please inform anyone that has an interest in V&V of concurrent components
+and is not a subscriber of the concurrency-interest list that they can also
+participate in the survey.
+
+ 
+
+Many thanks,
+
+Maggie Wojcicki
+
+Email: wojcicki@itee.uq.edu.au
+
+Web page: www.itee.uq.edu.au/~wojcicki
+
+ 
+
+ 
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060315/e57f5038/attachment.html
+From Martin.Buchholz at Sun.COM  Wed Mar 15 12:38:22 2006
+From: Martin.Buchholz at Sun.COM (Martin Buchholz)
+Date: Wed Mar 15 12:38:37 2006
+Subject: [concurrency-interest] JDK code hygiene
+In-Reply-To: <200603151700.k2FH04UN022816@cs.oswego.edu>
+References: <200603151700.k2FH04UN022816@cs.oswego.edu>
+Message-ID: <4418510E.1000402@Sun.COM>
+
+The unnecessary imports for the current package were removed by
+
+6378729: Remove workaround for 6280605
+
+If unnecessary imports are the worst problem you can find in
+j.u.c. then I am officially "proud" of the results of the
+whole concurrency library project started by Doug.
+
+I think it would be good if we had a "JDK janitors" project,
+like the Linux kernel has, with a nice set of global changes
+that could be done, but I am not going to start one myself.
+
+Martin
+
+> Message: 1
+> Date: Wed, 15 Mar 2006 08:44:46 +1000
+> From: "David Holmes" <dcholmes@optusnet.com.au>
+> Subject: RE: [concurrency-interest] Code Hygiene; Unused Imports
+> To: "Ernst, Matthias" <matthias.ernst@coremedia.com>,
+> 	<concurrency-interest@cs.oswego.edu>
+> Message-ID: <NFBBKALFDCPFIDBNKAPCAELKGMAA.dcholmes@optusnet.com.au>
+> Content-Type: text/plain;	charset="us-ascii"
+> 
+> Matthias,
+> 
+> I haven't checked in detail but many of the "unused" imports are/were
+> actually needed to workaround a javadoc bug - ie we needed the import for
+> javadoc, not javac.
+> 
+> Not sure of the current state of the world there.
+> 
+> Cheers,
+> David Holmes
+From matthias.ernst at coremedia.com  Wed Mar 15 12:57:39 2006
+From: matthias.ernst at coremedia.com (Ernst, Matthias)
+Date: Wed Mar 15 12:57:52 2006
+Subject: AW: [concurrency-interest] JDK code hygiene
+Message-ID: <F34C8A704C489B46B9E9FBDBD1B91D5F01EDB846@MARS.coremedia.com>
+
+> If unnecessary imports are the worst problem you can find in
+> j.u.c. then I am officially "proud" of the results of the
+> whole concurrency library project started by Doug.
+
+You can be. Besides generics and syntax improvements, j.u.c is my #1
+reason why
+Java 5 rocks. Way to go, folks.
+
+Matthias
+
+From djg at cs.washington.edu  Thu Mar 16 00:33:50 2006
+From: djg at cs.washington.edu (Dan Grossman)
+Date: Thu Mar 16 07:01:41 2006
+Subject: [concurrency-interest] Concurrency Summer School (Registration
+	Deadline Extended)
+Message-ID: <4418F8BE.1080700@cs.washington.edu>
+
+
+[ We have extended the registration deadline by two weeks. Please
+register today. ]
+
+			Call for Participation
+
+		  Summer School on Language-Based Techniques
+                     for Concurrent and Distributed Software
+
+			   July 12-21, 2006
+			 University of Oregon
+			  Eugene, Oregon USA
+
+        Registration Deadline: March 15 (NOW EXTENDED: March 31), 2006.
+
+
+       http://www.cs.uoregon.edu/activities/summerschool/summer06/
+	    e-mail: summerschool@cs.uoregon.edu
+
+Program
+-------
+				
+This Summer School will cover current research in language-based
+techniques for concurrent and distributed software, ranging from
+foundational materials on principles, logic and type systems to
+advanced techniques for analysis of concurrent software to the
+application of these ideas to practical systems.
+
+Material will be presented at a tutorial level that will help graduate
+students and researchers from academia or industry understand the
+critical issues and open problems confronting the field. The course is
+open to anyone interested. Prerequisites are an elementary knowledge
+of logic and mathematics that is usually covered in undergraduate
+classes on discrete mathematics. Some knowledge of programming
+languages at the level provided by an undergraduate survey course will
+also be expected. Our primary target group is PhD students. We also
+expect attendance by faculty members who would like to conduct
+research on this topic or introduce new courses at their universities.
+
+The program consists of more than thirty 80-minute lectures presented
+by internationally recognized leaders in programming languages and
+security research.  Topics include:
+
+Static Analysis for Concurrency
+- Cormac Flanagan, University of California, Santa Cruz
+
+Design and Implementation of Concurrent Systems
+- Matthew Flatt, University of Utah
+
+Concurrency in Practice for C
+- Jeff Foster, University of Maryland, College Park
+
+Atomicity:  Synchronization via Explicit Software Transactions
+- Dan Grossman, University of Washington
+
+Language-Based Techniques for Distributed Systems
+- Robert Harper, Carnegie Mellon University
+
+Making Concurrent Software Safer
+- Michael Hicks, University of Maryland, College Park
+
+Programming Dynamic Multithreaded Algorithms
+- Charles Leiserson and Bradley Kuszmaul, Massachusetts Institute of 
+Technology
+
+Software Model Checking
+- Shaz Qadeer, Microsoft Research
+
+Type-Safe and Version-Safe Distributed Programming
+- Peter Sewell, University of Cambridge
+
+Architectural Support for Concurrency
+- Sandhya Dwarkadas, University of Rochester
+
+Venue
+-----
+
+The summer school will be held at the University of Oregon, located in
+the southern Willamette Valley city of Eugene, close to some of the
+world's most spectacular beaches, mountains, lakes and forests.  On
+Sunday, July 16, students will have the option of participating in a
+group activity in Oregon's countryside.
+
+
+Housing
+-------
+
+The school will provide on-campus housing and meals. To share a room
+with another student attending the school, the cost is $460.00 (USD)
+per person. Housing rates are based on check-in Wednesday, July 12 and
+check-out before noon on Saturday, July 22. Some single rooms may be
+available for an additional fee of $130.00 (USD). If you'd like a
+single room, please indicate your choice and we will try to
+accommodate you on a first-come/first-served basis.
+
+
+Registration
+------------
+
+The cost for registration is $200.00 (USD) for graduate students, and
+$300.00 (USD) for other participants. Reigstration must be paid upon
+acceptance to the summer school, and is non-refundable. There are a
+limited number of grants available to fund part of the cost of student
+participation.  If you are a graduate student and want to apply for
+grant money to cover your expenses, please also include a statement of
+your needs with your registration.
+
+Additional information about the program, registration, venue, and
+housing options is available on the web site.  Or, you may request
+more information by email.
+
+To register for the Summer School, send a CV that includes a short
+description of your educational background and one letter of
+reference, unless you have already been granted a Ph.D. Please include
+your name, address and current academic status.
+
+Send all registration materials to summerschool@cs.uoregon.edu
+
+All registration materials should be delivered to the program by March
+15 (NOW EXTENDED: March 31), 2006. Materials received after the
+closing date will be evaluated on a space available basis. Non
+U.S. citizens should begin immediately to obtain travel documents.
+
+
+Organizers
+----------
+
+Organizing committee: Jeff Foster, Dan Grossman, and Zena Ariola
+
+Sponsors
+--------
+
+ACM SIGPLAN
+Google
+Microsoft
+From jasonhusong at yahoo.com  Thu Mar 16 13:24:05 2006
+From: jasonhusong at yahoo.com (jason rutherglen)
+Date: Thu Mar 16 13:24:14 2006
+Subject: [concurrency-interest] Timeout threadpool
+Message-ID: <20060316182405.62400.qmail@web50011.mail.yahoo.com>
+
+Is there an implementation of a threadpool that times out?  Is there an implementation that keeps track of the time a Callable has been running?  I have already started writing my own however I was wondering if anyone else has some ideas.
+
+Thanks,
+
+Jason
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060316/b3ea445d/attachment.html
+From crazybob at crazybob.org  Thu Mar 16 13:41:17 2006
+From: crazybob at crazybob.org (Bob Lee)
+Date: Thu Mar 16 13:41:20 2006
+Subject: [concurrency-interest] Timeout threadpool
+In-Reply-To: <20060316182405.62400.qmail@web50011.mail.yahoo.com>
+References: <20060316182405.62400.qmail@web50011.mail.yahoo.com>
+Message-ID: <a74683f90603161041x1a600d72t6be50ee9b1782b44@mail.gmail.com>
+
+Depends, how do you plan to stop your threads when they time out?
+
+Bob
+
+On 3/16/06, jason rutherglen <jasonhusong@yahoo.com> wrote:
+>
+> Is there an implementation of a threadpool that times out?  Is there an
+> implementation that keeps track of the time a Callable has been running?  I
+> have already started writing my own however I was wondering if anyone else
+> has some ideas.
+>
+> Thanks,
+>
+> Jason
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+
+From jasonhusong at yahoo.com  Thu Mar 16 13:52:19 2006
+From: jasonhusong at yahoo.com (jason rutherglen)
+Date: Thu Mar 16 13:52:28 2006
+Subject: [concurrency-interest] Timeout threadpool
+In-Reply-To: <a74683f90603161041x1a600d72t6be50ee9b1782b44@mail.gmail.com>
+Message-ID: <20060316185219.71770.qmail@web50012.mail.yahoo.com>
+
+By Thread interrupt and perhaps a check inside the Callable to see if it has been cancelled.  I have (perhaps wrongly) included the Future inside the task in order to monitor whether the task is supposed to stop running at times.  Any advice?
+
+----- Original Message ----
+From: Bob Lee <crazybob@crazybob.org>
+To: jason rutherglen <jasonhusong@yahoo.com>
+Cc: concurrency-interest@cs.oswego.edu
+Sent: Thursday, March 16, 2006 10:41:17 AM
+Subject: Re: [concurrency-interest] Timeout threadpool
+
+Depends, how do you plan to stop your threads when they time out?
+
+Bob
+
+On 3/16/06, jason rutherglen <jasonhusong@yahoo.com> wrote:
+>
+> Is there an implementation of a threadpool that times out?  Is there an
+> implementation that keeps track of the time a Callable has been running?  I
+> have already started writing my own however I was wondering if anyone else
+> has some ideas.
+>
+> Thanks,
+>
+> Jason
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060316/762c2ecd/attachment.html
+From joe.bowbeer at gmail.com  Thu Mar 16 14:29:08 2006
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Thu Mar 16 14:29:11 2006
+Subject: [concurrency-interest] Timeout threadpool
+In-Reply-To: <20060316182405.62400.qmail@web50011.mail.yahoo.com>
+References: <20060316182405.62400.qmail@web50011.mail.yahoo.com>
+Message-ID: <31f2a7bd0603161129t35d05659yd13eb5b8d7a1e991@mail.gmail.com>
+
+On 3/16/06, jason rutherglen <jasonhusong@yahoo.com> wrote:
+>
+> Is there an implementation of a threadpool that times out?  Is there an
+> implementation that keeps track of the time a Callable has been running?  I
+> have already started writing my own however I was wondering if anyone else
+> has some ideas.
+>
+
+I think the c-i archives contain some discussion about this.
+
+Two approaches are:
+
+1. Use an auxilary ScheduledExecutor or Timer to cancel tasks
+submitted to the primary executor.  The primary task could submit its
+own cancellation task when it starts executing, and then cancel its
+own cancellation task if it (the primary task) finishes before time
+runs out.  Or, depending on how the timeout is supposed to work, the
+cancellation task could be submitted at the same time the primary task
+is submitted.
+
+2. The task times its own execution using a 2nd thread.  See
+TimedCallable in Doug Lea's old concurrency utils:
+
+http://gee.cs.oswego.edu/dl/classes/EDU/oswego/cs/dl/util/concurrent/intro.html
+
+Joe.
+
+From akshitija at yahoo.com  Sat Mar 18 13:01:28 2006
+From: akshitija at yahoo.com (kshitija Apte)
+Date: Sun Mar 19 07:45:17 2006
+Subject: [concurrency-interest] concurrency package
+Message-ID: <20060318180128.69334.qmail@web31105.mail.mud.yahoo.com>
+
+Hey there,
+         I just came across this technology.
+  We(My company) are currently using jdk1.4.2.
+  Concurrency requires 1.5 or next versions right?
+  Is there any way that we can get only concurrency package w/o upgrading jdk?
+  I heard/read Sun is giving the only concurrency package.
+   Could you please add anything to this?Or can anyone suggest the correct option?
+  Thanks in advance
+  Really appreciated
+  Regards..
+  Kshitija
+
+		
+---------------------------------
+Yahoo! Mail
+Bring photos to life! New PhotoMail  makes sharing a breeze. 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060318/d8a8503d/attachment.html
+From dawidk at mathcs.emory.edu  Sun Mar 19 11:23:19 2006
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Sun Mar 19 11:23:30 2006
+Subject: [concurrency-interest] concurrency package
+In-Reply-To: <20060318180128.69334.qmail@web31105.mail.mud.yahoo.com>
+References: <20060318180128.69334.qmail@web31105.mail.mud.yahoo.com>
+Message-ID: <441D8577.8080106@mathcs.emory.edu>
+
+kshitija Apte wrote:
+> Hey there,
+>        I just came across this technology.
+> We(My company) are currently using jdk1.4.2.
+> Concurrency requires 1.5 or next versions right?
+> Is there any way that we can get only concurrency package w/o 
+> upgrading jdk?
+> I heard/read Sun is giving the only concurrency package.
+>  Could you please add anything to this?Or can anyone suggest the 
+> correct option?
+> Thanks in advance
+> Really appreciated
+
+This is what you need:
+
+http://dcl.mathcs.emory.edu/util/backport-util-concurrent/
+
+You may also want to take look at:
+
+http://retroweaver.sourceforge.net/
+
+Regards,
+Dawid
+
+From wojcicki at itee.uq.edu.au  Thu Mar 23 01:24:20 2006
+From: wojcicki at itee.uq.edu.au (Margaret Wojcicki)
+Date: Thu Mar 23 01:24:35 2006
+Subject: [concurrency-interest] survey response
+Message-ID: <200603230624.k2N6OK35022388@filter2.itee.uq.edu.au>
+
+As you may know I am conducting a survey on the state-of-practice of V&V in
+concurrency (it can be accessed online at:
+http://www.itee.uq.edu.au/~wojcicki/practitioner_survey/VVquest.html).  
+Thus far, the response rate has been low and I was wondering if anyone on
+this mailing list has advice as to how a better response rate can be
+achieved.
+
+If you have already participated, thank you once again.  If you know anyone
+else that would be willing to fill in the survey, please let them know about
+it.  I would greatly appreciate it.
+
+Cheers,
+Maggie
+
+
+
+From jason_mehrens at hotmail.com  Thu Mar 23 11:29:13 2006
+From: jason_mehrens at hotmail.com (Jason Mehrens)
+Date: Thu Mar 23 11:29:28 2006
+Subject: [concurrency-interest] Finalization changes to
+	DelegatedExecutorService
+Message-ID: <BAY105-F27EB67D8E0A5BA62CCCBD883DE0@phx.gbl>
+
+The changes for BugID 6399443 makes the DelegatedExecutorService invoke 
+shutdown when the finalizer is run.  I think there is a potential problem 
+where a live reference to a configurable executor service is maintained but 
+the unconfigurable "view" is subject to garbage collection.  In the test 
+case bellow, as soon as any one of the unconfigurable views is garbage 
+collected the live ExecutorService is shutdown.
+
+I'm not sure if this is a real world problem because it the test case bellow 
+it could just as easily return the same unconfigurable view and avoid the 
+issue.
+
+Regards,
+
+Jason Mehrens
+
+
+//====Test case==============
+import java.util.concurrent.*;
+
+public class TPExTest {
+  private ExecutorService privatePool = Executors.newFixedThreadPool(1);
+
+  public ExecutorService getExecutorService() {
+    return Executors.unconfigurableExecutorService(privatePool);
+  }
+
+  public static void main(String[] args) {
+    TPExTest test = new TPExTest();
+    for(int i=Integer.MIN_VALUE; i<Integer.MAX_VALUE; i++) {
+      if(test.getExecutorService().isShutdown()) {
+        throw new AssertionError();
+      }
+      System.gc();
+    }
+    test.getExecutorService().shutdown();
+  }
+}
+
+
+From dl at cs.oswego.edu  Thu Mar 23 11:46:02 2006
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Thu Mar 23 11:46:06 2006
+Subject: [concurrency-interest] Finalization changes
+	to	DelegatedExecutorService
+In-Reply-To: <BAY105-F27EB67D8E0A5BA62CCCBD883DE0@phx.gbl>
+References: <BAY105-F27EB67D8E0A5BA62CCCBD883DE0@phx.gbl>
+Message-ID: <4422D0CA.90801@cs.oswego.edu>
+
+Jason Mehrens wrote:
+> The changes for BugID 6399443 makes the DelegatedExecutorService invoke 
+> shutdown when the finalizer is run.  I think there is a potential 
+> problem where a live reference to a configurable executor service is 
+> maintained but the unconfigurable "view" is subject to garbage 
+> collection.  In the test case bellow, as soon as any one of the 
+> unconfigurable views is garbage collected the live ExecutorService is 
+> shutdown.
+> 
+> I'm not sure if this is a real world problem because it the test case 
+> bellow it could just as easily return the same unconfigurable view and 
+> avoid the issue.
+> 
+
+Wow, thanks for the very quick scrutiny! (This change was just barely entered.)
+We (JSR166 folks) have been discussing this change for a while.
+If anyone else is interested, the issue is that some users
+of Executors seem to believe that they should be garbage collectable when no
+longer referenced even when not shutdown. This is not always a sensible
+belief, but we want to help out by making more common cases automatically
+finalizable, to avoid inadvertent leaks. The change here did so harmlessly for
+Executors.newSingleThreadedExecutor, but as a potential compatibility
+bug byproduct, also did so for any other executor wrapped within a
+unconfigurableExecutorService. We'll have to change this, because it is
+just barely conceivable that someone out there could be relying on this
+undocumented detail. And we've sworn not to introduce any such
+incompatibilities.
+
+(The broader moral is that even when you purposely do not specify some
+behaviors, people come to rely on them, so it becomes harder and harder to
+change anything at all as a set of APIs become established.)
+
+-Doug
+
+
+
+
+
+From brian at quiotix.com  Thu Mar 23 13:17:50 2006
+From: brian at quiotix.com (Brian Goetz)
+Date: Thu Mar 23 13:18:07 2006
+Subject: [concurrency-interest] Finalization
+	changes	to	DelegatedExecutorService
+In-Reply-To: <4422D0CA.90801@cs.oswego.edu>
+References: <BAY105-F27EB67D8E0A5BA62CCCBD883DE0@phx.gbl>
+	<4422D0CA.90801@cs.oswego.edu>
+Message-ID: <4422E64E.6070307@quiotix.com>
+
+> (The broader moral is that even when you purposely do not specify some
+> behaviors, people come to rely on them, so it becomes harder and harder to
+> change anything at all as a set of APIs become established.)
+
+And also that no matter how hard we try, platform and performance issues 
+influence the design of APIs.  We restricted ourselves to the choice of 
+having newFixedThreadPool return ThreadPoolExecutor, or ExecutorService; 
+we chose the interface because of the two, it was the sensible thing to 
+do for a number of reasons.  But what we really wanted was some sort of 
+ConfigurableThreadPool interface, which we were reluctant to define 
+solely for this purpose because of concerns over class count, which we 
+were concerned about because of the need to make this stuff useful on 
+constrained platforms like J2ME.
+
+
+From bsder at allcaps.org  Sat Mar 25 16:45:15 2006
+From: bsder at allcaps.org (Andrew Lentvorski)
+Date: Sat Mar 25 16:45:26 2006
+Subject: [concurrency-interest] Equivalent of scheduleAtFixedRate() for
+	Callable
+Message-ID: <4425B9EB.3060807@allcaps.org>
+
+I hope I'm not missing anything obvious, but I can't seem to find the 
+equivalents to scheduleAtFixedRate() and scheduleAtFixedDelay() for 
+Callable classes.
+
+Did I miss something?  If not, what is the equivalent idiom?
+
+Thanks,
+-a
+
+From joe.bowbeer at gmail.com  Sat Mar 25 17:41:25 2006
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Sat Mar 25 17:41:32 2006
+Subject: [concurrency-interest] Equivalent of scheduleAtFixedRate() for
+	Callable
+In-Reply-To: <4425B9EB.3060807@allcaps.org>
+References: <4425B9EB.3060807@allcaps.org>
+Message-ID: <31f2a7bd0603251441k2151dcd5tb20639f4b5f87601@mail.gmail.com>
+
+See ScheduledExecutorService
+
+http://java.sun.com/j2se/1.5.0/docs/api/java/util/concurrent/ScheduledExecutorService.html
+
+On 3/25/06, Andrew Lentvorski <bsder@allcaps.org> wrote:
+> I hope I'm not missing anything obvious, but I can't seem to find the
+> equivalents to scheduleAtFixedRate() and scheduleAtFixedDelay() for
+> Callable classes.
+>
+> Did I miss something?  If not, what is the equivalent idiom?
+>
+
+From joe.bowbeer at gmail.com  Sat Mar 25 17:52:12 2006
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Sat Mar 25 17:52:21 2006
+Subject: [concurrency-interest] Equivalent of scheduleAtFixedRate() for
+	Callable
+In-Reply-To: <31f2a7bd0603251441k2151dcd5tb20639f4b5f87601@mail.gmail.com>
+References: <4425B9EB.3060807@allcaps.org>
+	<31f2a7bd0603251441k2151dcd5tb20639f4b5f87601@mail.gmail.com>
+Message-ID: <31f2a7bd0603251452l2c077223l8032819436c3e822@mail.gmail.com>
+
+I was assuming you were arriving from java.util.Timer land, but maybe
+you already have seen ScheduledExecutorService, where periodic
+execution of Runnable *is* all you get.
+
+If you need to report a periodic result from a Callable you'll need to
+incorporate your own mechanism for doing that, such as a Listener.  SO
+you'd wrap your Callable in a Runnable like the following before
+scheduling it for periodic execution.
+
+  new Runnable() {
+      public void run() {
+          listener.hear(callable.call());
+      }
+  }
+
+
+On 3/25/06, Joe Bowbeer <joe.bowbeer@gmail.com> wrote:
+> See ScheduledExecutorService
+>
+> http://java.sun.com/j2se/1.5.0/docs/api/java/util/concurrent/ScheduledExecutorService.html
+>
+> On 3/25/06, Andrew Lentvorski <bsder@allcaps.org> wrote:
+> > I hope I'm not missing anything obvious, but I can't seem to find the
+> > equivalents to scheduleAtFixedRate() and scheduleAtFixedDelay() for
+> > Callable classes.
+> >
+> > Did I miss something?  If not, what is the equivalent idiom?
+> >
+>
+
+From bsder at allcaps.org  Sat Mar 25 18:05:08 2006
+From: bsder at allcaps.org (Andrew Lentvorski)
+Date: Sat Mar 25 18:05:20 2006
+Subject: [concurrency-interest] Equivalent of scheduleAtFixedRate() for
+	Callable
+In-Reply-To: <31f2a7bd0603251452l2c077223l8032819436c3e822@mail.gmail.com>
+References: <4425B9EB.3060807@allcaps.org>	
+	<31f2a7bd0603251441k2151dcd5tb20639f4b5f87601@mail.gmail.com>
+	<31f2a7bd0603251452l2c077223l8032819436c3e822@mail.gmail.com>
+Message-ID: <4425CCA4.1090700@allcaps.org>
+
+Joe Bowbeer wrote:
+> I was assuming you were arriving from java.util.Timer land
+
+Wrong assumption.  I use Runnable and scheduleAtFixedRate() just fine.  ;)
+
+>, but maybe
+> you already have seen ScheduledExecutorService, where periodic
+> execution of Runnable *is* all you get.
+
+Yep, and that is my problem.
+
+> If you need to report a periodic result from a Callable you'll need to
+> incorporate your own mechanism for doing that, such as a Listener.  SO
+> you'd wrap your Callable in a Runnable like the following before
+> scheduling it for periodic execution.
+> 
+>   new Runnable() {
+>       public void run() {
+>           listener.hear(callable.call());
+>       }
+>   }
+
+Yuck.  But I'll keep it in mind.
+
+Is the lack of scheduleAtFixedRate() et al. for Callable a conscious 
+design decision or is it just an oversight?  Or, in slightly different 
+form, is there some minefield with Callable and scheduleAtFixedRate() 
+that the experts know about that I'm about to go plowing into?
+
+Thanks,
+-a
+
+From joe.bowbeer at gmail.com  Sat Mar 25 18:27:22 2006
+From: joe.bowbeer at gmail.com (Joe Bowbeer)
+Date: Sat Mar 25 18:27:28 2006
+Subject: [concurrency-interest] Equivalent of scheduleAtFixedRate() for
+	Callable
+In-Reply-To: <4425CCA4.1090700@allcaps.org>
+References: <4425B9EB.3060807@allcaps.org>
+	<31f2a7bd0603251441k2151dcd5tb20639f4b5f87601@mail.gmail.com>
+	<31f2a7bd0603251452l2c077223l8032819436c3e822@mail.gmail.com>
+	<4425CCA4.1090700@allcaps.org>
+Message-ID: <31f2a7bd0603251527r48ae7d57y8c47f90523805069@mail.gmail.com>
+
+On 3/25/06, Andrew Lentvorski <bsder@allcaps.org> wrote:
+>
+> Is the lack of scheduleAtFixedRate() et al. for Callable a conscious
+> design decision or is it just an oversight?  Or, in slightly different
+> form, is there some minefield with Callable and scheduleAtFixedRate()
+> that the experts know about that I'm about to go plowing into?
+>
+
+Yes it was conscious.  Runnable seemed like a better match to periodic
+execution, conceptually.
+
+I don't think I understand how you would like the periodic execution
+for Callable to be implemented.  (In my mind's eye, scheduling a
+Callable for periodic execution would be like one hand clapping..)
+
+Joe.
+
+From brian at quiotix.com  Sat Mar 25 18:34:13 2006
+From: brian at quiotix.com (Brian Goetz)
+Date: Sat Mar 25 18:34:30 2006
+Subject: [concurrency-interest] Equivalent of scheduleAtFixedRate() for
+	Callable
+In-Reply-To: <4425B9EB.3060807@allcaps.org>
+References: <4425B9EB.3060807@allcaps.org>
+Message-ID: <4425D375.5050606@quiotix.com>
+
+What would such a thing do with the result?  Where would it report an 
+exception?
+
+A Runnable is a task -- "do something".  A Callable is a function -- 
+"compute something".  Callable is typically used for things you only 
+need to compute the result of once.
+
+If Callable is a Runnable with a return value, it stands to reason that 
+you would use a Callable when some activity wants to retrieve that 
+value.  In the case of scheduling a recurring task, who is retrieving 
+the value, and what are they doing with it?
+
+Andrew Lentvorski wrote:
+> I hope I'm not missing anything obvious, but I can't seem to find the 
+> equivalents to scheduleAtFixedRate() and scheduleAtFixedDelay() for 
+> Callable classes.
+> 
+> Did I miss something?  If not, what is the equivalent idiom?
+
+From broconne at vt.edu  Sun Mar 26 17:00:11 2006
+From: broconne at vt.edu (Brian O'Connell)
+Date: Sun Mar 26 17:00:22 2006
+Subject: [concurrency-interest] 
+	Backport: ConcurrentLinkedQueue/BlockingLinkedQueue Memory Leak?
+Message-ID: <44270EEB.6060302@vt.edu>
+
+
+   I am seeing some odd behavior in a project I am working on.  I have a 
+system that contains 5 work queues all of which have objects put on the 
+queue with add() and removed with a poll() until null loop.
+I found that after sometime, perhaps in the area of 10 minutes I run out 
+of memory.  I had this occur with both the ConcurrentLinkedQueue and the 
+BlockingLinkedQueue implementations.  If I change to an
+ArrayBlockingQueue I never see this behavior (and I also never throw an 
+IllegalStateException so I am not putting too many objects on the queue).
+   In debugging this I had a thread print out the return from size() on 
+all 5 queues every second.  None of them ever grew larger than 9000 
+(another thread was inserting 9000 entries per second on one of the 
+queues.)  However, when I ran out of memory I analyzed the heapdump and 
+had over 2 million ConcurrentLinkedQueue$Node or 
+BlockingLinkedQueue$Node objects in memory.
+   I am using version 2.0 from August.  I was wondering if this is a 
+reported bug?  I imagine if not, then there must be a bug somewhere else 
+in my program but I have yet to locate it.  I found this entry by Doug 
+Lea 
+http://altair.cs.oswego.edu/pipermail/concurrency-interest/2005-January/001319.html 
+describing some leak condition, but I can't tell if it is the same 
+because I never poll() with a timeout. 
+   I see version 2.1 is available but in the release history I saw no 
+mention of the issue I am seeing so I am leery of blindly upgrading and 
+possibly masking this issue until it occurs at a much worse time than 
+stress testing.
+
+Thanks,
+Brian
+
+From dawidk at mathcs.emory.edu  Sun Mar 26 20:40:34 2006
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Sun Mar 26 20:40:46 2006
+Subject: [concurrency-interest] Backport: 
+	ConcurrentLinkedQueue/BlockingLinkedQueueMemory Leak?
+In-Reply-To: <44270EEB.6060302@vt.edu>
+References: <44270EEB.6060302@vt.edu>
+Message-ID: <44274292.9060205@mathcs.emory.edu>
+
+Brian O'Connell wrote:
+>
+>   I am seeing some odd behavior in a project I am working on.  I have 
+> a system that contains 5 work queues all of which have objects put on 
+> the queue with add() and removed with a poll() until null loop.
+> I found that after sometime, perhaps in the area of 10 minutes I run 
+> out of memory.  I had this occur with both the ConcurrentLinkedQueue 
+> and the BlockingLinkedQueue implementations.  If I change to an
+> ArrayBlockingQueue I never see this behavior (and I also never throw 
+> an IllegalStateException so I am not putting too many objects on the 
+> queue).
+>   In debugging this I had a thread print out the return from size() on 
+> all 5 queues every second.  None of them ever grew larger than 9000 
+> (another thread was inserting 9000 entries per second on one of the 
+> queues.)  However, when I ran out of memory I analyzed the heapdump 
+> and had over 2 million ConcurrentLinkedQueue$Node or 
+> BlockingLinkedQueue$Node objects in memory.
+>   I am using version 2.0 from August.  I was wondering if this is a 
+> reported bug?  I imagine if not, then there must be a bug somewhere 
+> else in my program but I have yet to locate it.  (...)
+
+Brian,
+
+First: are you using j.u.c. on 5.0, or backport-util-concurrent on 1.4? 
+What platform / JVM?
+
+
+ConcurrentLinkedQueue and BlockingLinkedQueue implementations are 
+actually quite different; I would be surprised if they both contained 
+bugs manifesting themselves in identical ways. So I would be inclined to 
+suspect that, after all, your code occassionally "go crazy" on filling 
+up the queue; e.g. maybe one of the consumers crashes?... Perhaps you 
+just wasn't lucky enough to reproduce this behavior while debugging?...
+
+Why don't you use bounded queues anyway - it is just safer, unless 
+producers and consumers are synced in some way so you can be 
+_absolutely_ sure that producers' rate won't exceed consumers'. So try 
+using a bounded LinkedBlockingQueue and see if the problem persists. I 
+would also try to run the program under a memory profiler, which can 
+show you black on white where the leak comes from.
+
+Regards,
+Dawid Kurzyniec
+
+From mateiasi at gmail.com  Mon Mar 27 03:35:31 2006
+From: mateiasi at gmail.com (Iulian Mateias)
+Date: Mon Mar 27 03:35:35 2006
+Subject: [concurrency-interest] (no subject)
+Message-ID: <2f924c240603270035o119fbc22y439176273fa7776b@mail.gmail.com>
+
+I'm new at this, but I believe that triggering (submitting) a repetitive
+task is intrinsically a "one way message" (caller->task) : you can't expect
+the task to 'return' something to the caller - it would yield a different
+result with every new execution. When you submit the task, the executor
+service can't produce a Future for each future (sic) execution of the task.
+It can only give you a fake Future, used solely for cancelling the
+repetitive task (if not cancelled, the task will be scheduled ad infinitum).
+
+The Future, on the other hand, implements a two-way message passing protocol
+(caller->task and task->caller). Since every new execution produces a new
+result, which of these results would the caller need? A Future can hold a
+single result, while the caller probably needs all of them, so it makes
+sense to move the result processing code into the run() itself:
+
+class RepetitiveTask implements Runnable {
+ Callable<Result> realTask;
+ ResultUser resultUser;
+ .....
+ .....
+ public void run() {
+  Result result = null;
+  try {
+   result = realTask.call();
+  }
+  catch (Exception e) {
+   resultUser.executionFailed (e); // (1)
+  }
+  if ( result != null )
+   resultUser.use (result); // (2)
+ }
+}
+If result processing is a lengthy operation which could mess up the
+scheduling of the task, you could have (1) and (2) dispatched as one-way,
+self-propelled messages (e.g., by submitting them to yet another executor).
+
+I repeat, I'm new at this. If I'm wrong, please show me where.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060327/3feafa44/attachment.html
+From wojcicki at itee.uq.edu.au  Thu Mar 30 02:04:37 2006
+From: wojcicki at itee.uq.edu.au (Margaret Wojcicki)
+Date: Thu Mar 30 02:04:52 2006
+Subject: [concurrency-interest] Final call for survey participation
+Message-ID: <200603300704.k2U74bvL021350@filter2.itee.uq.edu.au>
+
+As mentioned in previous posts, I am conducting a survey on V&V of
+concurrent programs (available at:
+http://www.itee.uq.edu.au/~wojcicki/practitioner_survey/VVquest.html).  I
+have had 15 participants so far and I am very grateful for everyone's
+submissions and the input I have received on the survey.  I have found your
+comments invaluable to my research. 
+
+ 
+
+The goal of the survey is to get responses from at least 30 participants,
+because the data will be used in the write up of a related paper.  To
+achieve this goal I have delayed the final day of data collection to the 3rd
+of April, 2006.   I need an additional 15 participants to reach my desired
+response amount for the survey, so if you have not had a chance to fill in
+the survey I would greatly appreciate it if you would spare 5-15 minutes of
+your time to do so.  If you know someone who would be willing to
+participate, please pass the survey information on to them.
+
+ 
+
+Thank you all once again.
+
+ 
+
+Best wishes,
+
+Maggie
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060330/00b6da29/attachment.html
+From dl at cs.oswego.edu  Thu Mar 30 06:51:46 2006
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Thu Mar 30 06:51:50 2006
+Subject: [concurrency-interest] Final call for survey participation
+In-Reply-To: <200603300704.k2U74bvL021350@filter2.itee.uq.edu.au>
+References: <200603300704.k2U74bvL021350@filter2.itee.uq.edu.au>
+Message-ID: <442BC652.9020509@cs.oswego.edu>
+
+Margaret Wojcicki wrote:
+> As mentioned in previous posts, I am conducting a survey on V&V of 
+> concurrent programs (available at: 
+> http://www.itee.uq.edu.au/~wojcicki/practitioner_survey/VVquest.html). 
+>  I have had 15 participants so far and I am very grateful for everyone?s 
+> submissions and the input I have received on the survey.  I have found 
+> your comments invaluable to my research.
+> 
+
+There are over 500 subscribers on this list. All but 15 of you
+should be feeling very guilty for not helping out a student
+trying to find out how to improve QA support that might eventually
+benefit you :-)
+
+Maybe this prod will make at least another 15 of you feel
+just enough more guilty to take a few minutes to
+fill out this questionaire.
+
+-Doug
+
+> 
+> The goal of the survey is to get responses from at least 30 
+> participants, because the data will be used in the write up of a related 
+> paper.  To achieve this goal I have delayed the final day of data 
+> collection to the 3^rd of April, 2006.   I need an additional 15 
+> participants to reach my desired response amount for the survey, so if 
+> you have not had a chance to fill in the survey I would greatly 
+> appreciate it if you would spare 5-15 minutes of your time to do so.  If 
+> you know someone who would be willing to participate, please pass the 
+> survey information on to them.
+> 
+>  
+
+
+From dgonneau at gmail.com  Thu Mar 30 08:19:26 2006
+From: dgonneau at gmail.com (david gonneau)
+Date: Thu Mar 30 08:19:32 2006
+Subject: [concurrency-interest] MaximumPoolSize not used with unbounded
+	queues
+Message-ID: <7ee5be7e0603300519p1dbb2dc8ve25977590d89431d@mail.gmail.com>
+
+Hi,
+
+I am using a threadPoolExecutor with a PriorityBlockingQueue (not bounded).
+
+I made the choice of an unbouded queue to be able to resize the queue
+dynamically using the setMaxCapacity() without having to kill my executor or
+my queue.
+
+I don't see why the MaximumPoolSize wouldn't be used in that case.
+
+If I set 2 thread in the corePool and 5 as maximumPool, only my 2 threads of
+the core will be spawned. Then for further tasks coming, as long as the two
+first threads are busy, the queue will be used to store the incoming tasks.
+Without even trying to spawn new threads as specified on the
+maximumPoolSize..
+
+Why such a limit ?
+
+Is there any way to bypass this ? Is there a valid reason of not using
+temporary threads with an unlimited queue ???
+
+Thanks for ur inputs :)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060330/ed84e474/attachment.html
+From studdugie at gmail.com  Thu Mar 30 18:51:33 2006
+From: studdugie at gmail.com (studdugie)
+Date: Thu Mar 30 18:51:36 2006
+Subject: [concurrency-interest] a little lock free algorithm
+Message-ID: <5a59ce530603301551o116eedc8nfdf01c3c1ed9c30e@mail.gmail.com>
+
+I've got  ~30 line class that performs a series of updates atomically
+w/o mutual exclusion locking. I've tested it on a quad processor box
+using 4, 8, and 16 threads and so far it hasn't produced any incorrect
+results.  I was wondering if I could post it here to get a second (or
+third, forth, etc) opinion on whether it works or I'm just getting
+lucky?
+
+Regards,
+
+Dane
+
+From dcholmes at optusnet.com.au  Thu Mar 30 19:08:03 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Thu Mar 30 19:08:21 2006
+Subject: [concurrency-interest] a little lock free algorithm
+In-Reply-To: <5a59ce530603301551o116eedc8nfdf01c3c1ed9c30e@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMEEOGNAA.dcholmes@optusnet.com.au>
+
+Post away!
+
+David
+
+> -----Original Message-----
+> From: concurrency-interest-bounces@cs.oswego.edu
+> [mailto:concurrency-interest-bounces@cs.oswego.edu]On Behalf Of
+> studdugie
+> Sent: Friday, 31 March 2006 9:52 AM
+> To: concurrency-interest@cs.oswego.edu
+> Subject: [concurrency-interest] a little lock free algorithm
+> 
+> 
+> I've got  ~30 line class that performs a series of updates atomically
+> w/o mutual exclusion locking. I've tested it on a quad processor box
+> using 4, 8, and 16 threads and so far it hasn't produced any incorrect
+> results.  I was wondering if I could post it here to get a second (or
+> third, forth, etc) opinion on whether it works or I'm just getting
+> lucky?
+> 
+> Regards,
+> 
+> Dane
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+From studdugie at gmail.com  Thu Mar 30 21:03:46 2006
+From: studdugie at gmail.com (studdugie)
+Date: Thu Mar 30 21:03:56 2006
+Subject: [concurrency-interest] a little lock free algorithm
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCMEEOGNAA.dcholmes@optusnet.com.au>
+References: <5a59ce530603301551o116eedc8nfdf01c3c1ed9c30e@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCMEEOGNAA.dcholmes@optusnet.com.au>
+Message-ID: <5a59ce530603301803o72d4c14dx972925d6e465318f@mail.gmail.com>
+
+Wow! Thank you!
+
+First I want to explain why the class exists so you'll understand the
+problem that I set out to solve. Then I'll post the code.
+
+The class is part of a larger network app where one of its features is
+that it tracks the availability of the hosts that it communicates
+with. The idea is if communicating with a host fails enough times the
+host is blacklisted and no attempts will ever be made to communicate
+w/ that host in the future (unless someone restarts the system/box).
+The system is designed such that it is highly likely that multiple
+threads are concurrently communicating with the same host. So lets
+assume that there are 8 such threads.
+
+To get from the point where a host fails to when it's blacklisted is
+implemented via a simple back off algorithm. The problem that the
+class sets out to solve is managing what happens when those 8 threads
+realize (simultaneously) that the host failed. Logically speaking,
+even though the object will receive 8 requests to update the counters
+responsible for calculating the back off, at most only one should
+actually do an update.
+
+Now solving this problem using mutual exclusion locking is easy but I
+decided, what the hey, we've got a shinny new memory model with new
+rules for volatile fields and spiffy atomic classes, so let my try my
+hand at a lock free solution.
+
+On 3/30/06, David Holmes <dcholmes@optusnet.com.au> wrote:
+> Post away!
+>
+> David
+>
+> > -----Original Message-----
+> > From: concurrency-interest-bounces@cs.oswego.edu
+> > [mailto:concurrency-interest-bounces@cs.oswego.edu]On Behalf Of
+> > studdugie
+> > Sent: Friday, 31 March 2006 9:52 AM
+> > To: concurrency-interest@cs.oswego.edu
+> > Subject: [concurrency-interest] a little lock free algorithm
+> >
+> >
+> > I've got  ~30 line class that performs a series of updates atomically
+> > w/o mutual exclusion locking. I've tested it on a quad processor box
+> > using 4, 8, and 16 threads and so far it hasn't produced any incorrect
+> > results.  I was wondering if I could post it here to get a second (or
+> > third, forth, etc) opinion on whether it works or I'm just getting
+> > lucky?
+> >
+> > Regards,
+> >
+> > Dane
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest@altair.cs.oswego.edu
+> > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From studdugie at gmail.com  Thu Mar 30 21:12:31 2006
+From: studdugie at gmail.com (studdugie)
+Date: Thu Mar 30 21:12:34 2006
+Subject: [concurrency-interest] A little lock free algorithm [the code]
+Message-ID: <5a59ce530603301812u34d93d3fwcba9cbce0000f22@mail.gmail.com>
+
+public class TFailure
+{
+    volatile boolean dead;
+    volatile long expiration =
+        System.currentTimeMillis() + BACKOFF_INCREMENT;
+    private static final long BACKOFF_MAX = ...;
+    private static final long BACKOFF_INCREMENT = ...;
+    private volatile long backoff = BACKOFF_INCREMENT;
+    private final AtomicBoolean locked = new AtomicBoolean();
+
+    /**
+     * Increases the expiration timeout for the host if and only if
+     * it's not already dead and the current expiration time has
+      * elapsed.
+     */
+    void increment()
+    {
+        long millis;
+        if( dead || (millis = System.currentTimeMillis()) < expiration )
+            return;
+
+        if( locked.compareAndSet( false, true ) )
+        {
+            backoff += BACKOFF_INCREMENT;
+            if( backoff > BACKOFF_MAX )
+                dead = true;
+            else
+                expiration = millis + backoff;
+            locked.set( false );
+        }
+    }
+}
+
+From dcholmes at optusnet.com.au  Thu Mar 30 21:28:58 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Thu Mar 30 21:29:22 2006
+Subject: [concurrency-interest] A little lock free algorithm [the code]
+In-Reply-To: <5a59ce530603301812u34d93d3fwcba9cbce0000f22@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAEFAGNAA.dcholmes@optusnet.com.au>
+
+Okay this is basically a tryLock style of approach: if you can't get the
+lock you know someone else is doing the increment. You've built your own
+tryLock out of an AtomicBoolean.
+
+If backoff is only read and written when you've set the atomic boolean then
+you can drop the volatile for it as it "piggybacks" on the AtomicBoolean
+memory semantics.
+
+Cheers,
+David Holmes
+
+> -----Original Message-----
+> From: concurrency-interest-bounces@cs.oswego.edu
+> [mailto:concurrency-interest-bounces@cs.oswego.edu]On Behalf Of
+> studdugie
+> Sent: Friday, 31 March 2006 12:13 PM
+> To: concurrency-interest@cs.oswego.edu
+> Subject: [concurrency-interest] A little lock free algorithm [the code]
+>
+>
+> public class TFailure
+> {
+>     volatile boolean dead;
+>     volatile long expiration =
+>         System.currentTimeMillis() + BACKOFF_INCREMENT;
+>     private static final long BACKOFF_MAX = ...;
+>     private static final long BACKOFF_INCREMENT = ...;
+>     private volatile long backoff = BACKOFF_INCREMENT;
+>     private final AtomicBoolean locked = new AtomicBoolean();
+>
+>     /**
+>      * Increases the expiration timeout for the host if and only if
+>      * it's not already dead and the current expiration time has
+>       * elapsed.
+>      */
+>     void increment()
+>     {
+>         long millis;
+>         if( dead || (millis = System.currentTimeMillis()) < expiration )
+>             return;
+>
+>         if( locked.compareAndSet( false, true ) )
+>         {
+>             backoff += BACKOFF_INCREMENT;
+>             if( backoff > BACKOFF_MAX )
+>                 dead = true;
+>             else
+>                 expiration = millis + backoff;
+>             locked.set( false );
+>         }
+>     }
+> }
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@altair.cs.oswego.edu
+> http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+From studdugie at gmail.com  Thu Mar 30 21:31:17 2006
+From: studdugie at gmail.com (studdugie)
+Date: Thu Mar 30 21:31:24 2006
+Subject: [concurrency-interest] A little lock free algorithm [the code]
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCAEFAGNAA.dcholmes@optusnet.com.au>
+References: <5a59ce530603301812u34d93d3fwcba9cbce0000f22@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCAEFAGNAA.dcholmes@optusnet.com.au>
+Message-ID: <5a59ce530603301831p7501c22cj873b4747c5281749@mail.gmail.com>
+
+But what about it (backoff) getting cached?
+
+On 3/30/06, David Holmes <dcholmes@optusnet.com.au> wrote:
+> Okay this is basically a tryLock style of approach: if you can't get the
+> lock you know someone else is doing the increment. You've built your own
+> tryLock out of an AtomicBoolean.
+>
+> If backoff is only read and written when you've set the atomic boolean then
+> you can drop the volatile for it as it "piggybacks" on the AtomicBoolean
+> memory semantics.
+>
+> Cheers,
+> David Holmes
+>
+> > -----Original Message-----
+> > From: concurrency-interest-bounces@cs.oswego.edu
+> > [mailto:concurrency-interest-bounces@cs.oswego.edu]On Behalf Of
+> > studdugie
+> > Sent: Friday, 31 March 2006 12:13 PM
+> > To: concurrency-interest@cs.oswego.edu
+> > Subject: [concurrency-interest] A little lock free algorithm [the code]
+> >
+> >
+> > public class TFailure
+> > {
+> >     volatile boolean dead;
+> >     volatile long expiration =
+> >         System.currentTimeMillis() + BACKOFF_INCREMENT;
+> >     private static final long BACKOFF_MAX = ...;
+> >     private static final long BACKOFF_INCREMENT = ...;
+> >     private volatile long backoff = BACKOFF_INCREMENT;
+> >     private final AtomicBoolean locked = new AtomicBoolean();
+> >
+> >     /**
+> >      * Increases the expiration timeout for the host if and only if
+> >      * it's not already dead and the current expiration time has
+> >       * elapsed.
+> >      */
+> >     void increment()
+> >     {
+> >         long millis;
+> >         if( dead || (millis = System.currentTimeMillis()) < expiration )
+> >             return;
+> >
+> >         if( locked.compareAndSet( false, true ) )
+> >         {
+> >             backoff += BACKOFF_INCREMENT;
+> >             if( backoff > BACKOFF_MAX )
+> >                 dead = true;
+> >             else
+> >                 expiration = millis + backoff;
+> >             locked.set( false );
+> >         }
+> >     }
+> > }
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest@altair.cs.oswego.edu
+> > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+From dcholmes at optusnet.com.au  Thu Mar 30 21:45:48 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Thu Mar 30 21:46:03 2006
+Subject: [concurrency-interest] A little lock free algorithm [the code]
+In-Reply-To: <5a59ce530603301831p7501c22cj873b4747c5281749@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOEFBGNAA.dcholmes@optusnet.com.au>
+
+The use of backoff only occurs after a successful setting of the
+AtomicBoolean. The memory semantics for Atomics are like volatiles. This is
+what I meant by "piggybacking".
+
+If thread A sets locked to true, updates backoff and sets locked to false
+then:
+
+  locked=true happens-before backoff=x
+  backoff=x happens-before locked=false
+
+If thread B successfully sets locked to true then:
+
+  ThreadA:locked=false happens-before ThreadB:locked=true
+
+and by transitivity the setting of backoff in Thread A happens-before its
+use in Thread B.
+
+Hence no need for backoff to be volatile *iff* only read/written while
+locked==true.
+
+Consider if you had use a synchronized block instead (or an explicit lock),
+you would not make backoff volatile if it is only accessed while the lock is
+held.
+
+Cheers,
+David Holmes
+> -----Original Message-----
+> From: studdugie [mailto:studdugie@gmail.com]
+> Sent: Friday, 31 March 2006 12:31 PM
+> To: dholmes@ieee.org
+> Cc: concurrency-interest@cs.oswego.edu
+> Subject: Re: [concurrency-interest] A little lock free algorithm [the
+> code]
+>
+>
+> But what about it (backoff) getting cached?
+>
+> On 3/30/06, David Holmes <dcholmes@optusnet.com.au> wrote:
+> > Okay this is basically a tryLock style of approach: if you can't get the
+> > lock you know someone else is doing the increment. You've built your own
+> > tryLock out of an AtomicBoolean.
+> >
+> > If backoff is only read and written when you've set the atomic
+> boolean then
+> > you can drop the volatile for it as it "piggybacks" on the AtomicBoolean
+> > memory semantics.
+> >
+> > Cheers,
+> > David Holmes
+> >
+> > > -----Original Message-----
+> > > From: concurrency-interest-bounces@cs.oswego.edu
+> > > [mailto:concurrency-interest-bounces@cs.oswego.edu]On Behalf Of
+> > > studdugie
+> > > Sent: Friday, 31 March 2006 12:13 PM
+> > > To: concurrency-interest@cs.oswego.edu
+> > > Subject: [concurrency-interest] A little lock free algorithm
+> [the code]
+> > >
+> > >
+> > > public class TFailure
+> > > {
+> > >     volatile boolean dead;
+> > >     volatile long expiration =
+> > >         System.currentTimeMillis() + BACKOFF_INCREMENT;
+> > >     private static final long BACKOFF_MAX = ...;
+> > >     private static final long BACKOFF_INCREMENT = ...;
+> > >     private volatile long backoff = BACKOFF_INCREMENT;
+> > >     private final AtomicBoolean locked = new AtomicBoolean();
+> > >
+> > >     /**
+> > >      * Increases the expiration timeout for the host if and only if
+> > >      * it's not already dead and the current expiration time has
+> > >       * elapsed.
+> > >      */
+> > >     void increment()
+> > >     {
+> > >         long millis;
+> > >         if( dead || (millis = System.currentTimeMillis()) <
+> expiration )
+> > >             return;
+> > >
+> > >         if( locked.compareAndSet( false, true ) )
+> > >         {
+> > >             backoff += BACKOFF_INCREMENT;
+> > >             if( backoff > BACKOFF_MAX )
+> > >                 dead = true;
+> > >             else
+> > >                 expiration = millis + backoff;
+> > >             locked.set( false );
+> > >         }
+> > >     }
+> > > }
+> > >
+> > > _______________________________________________
+> > > Concurrency-interest mailing list
+> > > Concurrency-interest@altair.cs.oswego.edu
+> > > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> >
+> >
+>
+
+From studdugie at gmail.com  Thu Mar 30 22:21:16 2006
+From: studdugie at gmail.com (studdugie)
+Date: Thu Mar 30 22:21:19 2006
+Subject: [concurrency-interest] A little lock free algorithm [the code]
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCOEFBGNAA.dcholmes@optusnet.com.au>
+References: <5a59ce530603301831p7501c22cj873b4747c5281749@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCOEFBGNAA.dcholmes@optusnet.com.au>
+Message-ID: <5a59ce530603301921odd1f554ja5a3d20da906df7e@mail.gmail.com>
+
+Now it could be that I'm just slow in the head so bear with me because
+I'm still stuck on the caching issue. Here is what I'm stuck on.
+
+Lets continue with your example and restrict ourselves to the
+assumption that there are only 2 threads that will ever set locked to
+true, A and B.  So what happens on the third go round after A and B
+have updated backoff and A is back at it again? My understanding of
+the visibility rules say that if backoff is not volatile then A can
+cache the value it computed in the first go round and reuse it as the
+basis for computation in the third. In other words, A never has to
+re-read backoff, thus it may never see B's update.
+
+Now if I'm wrong about this it means that my understanding of the
+visibility rules is flawed and the rules have changed. So let me ask
+you this. Are you saying the mixing of volatile and non-volatile
+fields causes the non-volatile fields to behave like volatiles (no
+caching)?
+
+Sincerely,
+
+Dane
+
+On 3/30/06, David Holmes <dcholmes@optusnet.com.au> wrote:
+> The use of backoff only occurs after a successful setting of the
+> AtomicBoolean. The memory semantics for Atomics are like volatiles. This is
+> what I meant by "piggybacking".
+>
+> If thread A sets locked to true, updates backoff and sets locked to false
+> then:
+>
+>   locked=true happens-before backoff=x
+>   backoff=x happens-before locked=false
+>
+> If thread B successfully sets locked to true then:
+>
+>   ThreadA:locked=false happens-before ThreadB:locked=true
+>
+> and by transitivity the setting of backoff in Thread A happens-before its
+> use in Thread B.
+>
+> Hence no need for backoff to be volatile *iff* only read/written while
+> locked==true.
+>
+> Consider if you had use a synchronized block instead (or an explicit lock),
+> you would not make backoff volatile if it is only accessed while the lock is
+> held.
+>
+> Cheers,
+> David Holmes
+> > -----Original Message-----
+> > From: studdugie [mailto:studdugie@gmail.com]
+> > Sent: Friday, 31 March 2006 12:31 PM
+> > To: dholmes@ieee.org
+> > Cc: concurrency-interest@cs.oswego.edu
+> > Subject: Re: [concurrency-interest] A little lock free algorithm [the
+> > code]
+> >
+> >
+> > But what about it (backoff) getting cached?
+> >
+> > On 3/30/06, David Holmes <dcholmes@optusnet.com.au> wrote:
+> > > Okay this is basically a tryLock style of approach: if you can't get the
+> > > lock you know someone else is doing the increment. You've built your own
+> > > tryLock out of an AtomicBoolean.
+> > >
+> > > If backoff is only read and written when you've set the atomic
+> > boolean then
+> > > you can drop the volatile for it as it "piggybacks" on the AtomicBoolean
+> > > memory semantics.
+> > >
+> > > Cheers,
+> > > David Holmes
+> > >
+> > > > -----Original Message-----
+> > > > From: concurrency-interest-bounces@cs.oswego.edu
+> > > > [mailto:concurrency-interest-bounces@cs.oswego.edu]On Behalf Of
+> > > > studdugie
+> > > > Sent: Friday, 31 March 2006 12:13 PM
+> > > > To: concurrency-interest@cs.oswego.edu
+> > > > Subject: [concurrency-interest] A little lock free algorithm
+> > [the code]
+> > > >
+> > > >
+> > > > public class TFailure
+> > > > {
+> > > >     volatile boolean dead;
+> > > >     volatile long expiration =
+> > > >         System.currentTimeMillis() + BACKOFF_INCREMENT;
+> > > >     private static final long BACKOFF_MAX = ...;
+> > > >     private static final long BACKOFF_INCREMENT = ...;
+> > > >     private volatile long backoff = BACKOFF_INCREMENT;
+> > > >     private final AtomicBoolean locked = new AtomicBoolean();
+> > > >
+> > > >     /**
+> > > >      * Increases the expiration timeout for the host if and only if
+> > > >      * it's not already dead and the current expiration time has
+> > > >       * elapsed.
+> > > >      */
+> > > >     void increment()
+> > > >     {
+> > > >         long millis;
+> > > >         if( dead || (millis = System.currentTimeMillis()) <
+> > expiration )
+> > > >             return;
+> > > >
+> > > >         if( locked.compareAndSet( false, true ) )
+> > > >         {
+> > > >             backoff += BACKOFF_INCREMENT;
+> > > >             if( backoff > BACKOFF_MAX )
+> > > >                 dead = true;
+> > > >             else
+> > > >                 expiration = millis + backoff;
+> > > >             locked.set( false );
+> > > >         }
+> > > >     }
+> > > > }
+> > > >
+> > > > _______________________________________________
+> > > > Concurrency-interest mailing list
+> > > > Concurrency-interest@altair.cs.oswego.edu
+> > > > http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+> > >
+> > >
+> >
+>
+>
+
+From Martin.Buchholz at Sun.COM  Fri Mar 31 03:12:25 2006
+From: Martin.Buchholz at Sun.COM (Martin Buchholz)
+Date: Fri Mar 31 03:12:38 2006
+Subject: [concurrency-interest] Re: Fwd: Forum: Any benchmarks for
+	concurrency bugs ??
+In-Reply-To: <210CB13D-ACFC-47F8-97A5-F9E866AFACDE@sun.com>
+References: <7798807.1143450663477.JavaMail.httpd@localhost>
+	<210CB13D-ACFC-47F8-97A5-F9E866AFACDE@sun.com>
+Message-ID: <442CE469.1080809@Sun.COM>
+
+The best people to talk to are hanging out on
+concurrency-interest@cs.oswego.edu
+
+Bill Pugh (who can be reached via the above list) is doing
+some work finding concurrency bugs.
+
+Martin
+
+Ray Gans wrote:
+> Hi Martin,
+> 
+> I don't know if you've seen this. Any idea where to point this person/
+> 
+> Thanks,
+> 
+> Ray
+> 
+> Begin forwarded message:
+> 
+>> *From: *webmaster@dev.java.net <mailto:webmaster@dev.java.net>
+>> *Date: *March 27, 2006 1:10:52 AM PST
+>> *To: *bugfix-forum@sun.com <mailto:bugfix-forum@sun.com>
+>> *Subject: **Forum: Any benchmarks for concurrency bugs ??*
+>>
+>> There is a new message at:
+>> https://jdk-collaboration.dev.java.net/servlets/ProjectForumMessageView?messageID=12264&forumID=1463
+>> <https://jdk-collaboration.dev.java.net/servlets/ProjectForumMessageView?messageID=12264&forumID=1463>
+>>
+>> Project:     jdk-collaboration
+>> Forum:       dev
+>>
+>> Poster:       tayfunelmas
+>> Date:         Mon Mar 27 01:10:52 PST 2006
+>> Attachments:  0
+>>
+>>
+>> Message body:
+>>
+>> Hi,
+>>
+>> I am doing research on runtime checking concurrency bugs, 
+>> mostly race conditions. Are there any benchmark suites 
+>> targeted to concurrency bugs in JDK-Mustang, for example 
+>> targeted to stressing concurrency in utils collection? I 
+>> would appreciate if anybody directs me to some of them...
+>>
+>> Regards.
+>>
+>> Tayfun
+>>
+>>
+>> To change your forum subscription options, please visit:
+>> https://jdk-collaboration.dev.java.net/servlets/ProjectForumView?forumID=1463
+>>
+> 
+From dcholmes at optusnet.com.au  Fri Mar 31 04:23:00 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Fri Mar 31 04:23:17 2006
+Subject: [concurrency-interest] A little lock free algorithm [the code]
+In-Reply-To: <5a59ce530603301921odd1f554ja5a3d20da906df7e@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCEEFEGNAA.dcholmes@optusnet.com.au>
+
+> Now if I'm wrong about this it means that my understanding of the
+> visibility rules is flawed and the rules have changed. So let me ask
+> you this. Are you saying the mixing of volatile and non-volatile
+> fields causes the non-volatile fields to behave like volatiles (no
+> caching)?
+
+To a certain extent yes. volatile reads and writes, together with use of
+Atomics, plus locks, all establish "happens-before" relationships. Within a
+single thread each action that comes before another action in program-order,
+happens-before that second action. If a write of a variable happens-before a
+subsequent read of that variable then the read is guaranteed to see the
+value that was written. When considering actions across threads then there
+are basically no guarantees about what values will be read by thread A after
+a write by thread B unless the read and write are ordered by a
+happens-before relationship.
+
+The happens-before relationship is transitive: if a happens-before b, and b
+happens-before c, then a happens-before c.
+
+So in your example every CAS that manages to set locked to true has to
+happen-before a preceding set of locked=false in another thread.
+Consequently any write to  backoff that happens-before locked=false, also
+happens-before the other thread sets locked=true. As the write of backoff
+and the read of backoff are ordered by a happens-before relationship, then
+the read is guaranteed to see the value that was previously written by the
+other thread.
+
+In the old memory model volatiles only had memory synchronization effects
+with respect to other volatiles - which meant for most intents and purposes
+if a volatile flag protected some data then the data also had to be
+volatile. The new memory model defines the happens-before relationship which
+is more general, and so non-volatile variables can acquire visibility
+guarantees by "piggybacking" on the memory synchronization effects of
+volatiles and Atomics. This is the same "piggybacking" that has always been
+true for use of synchronized - you didn't have to make the data protected by
+a monitor, volatile, as use of the monitor ensures the visibility of the
+data.
+
+Hope that clarifies things.
+
+Cheers,
+David Holmes
+
+From studdugie at gmail.com  Fri Mar 31 07:19:04 2006
+From: studdugie at gmail.com (studdugie)
+Date: Fri Mar 31 07:19:09 2006
+Subject: [concurrency-interest] A little lock free algorithm [the code]
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCEEFEGNAA.dcholmes@optusnet.com.au>
+References: <5a59ce530603301921odd1f554ja5a3d20da906df7e@mail.gmail.com>
+	<NFBBKALFDCPFIDBNKAPCEEFEGNAA.dcholmes@optusnet.com.au>
+Message-ID: <5a59ce530603310419u769b8ee0je40540a8f1c1c27f@mail.gmail.com>
+
+Crystal clear, thanx to you.  I love that psychological "click" that
+happens when something you've been stuck on finally make sense.
+
+Thanx a million.
+
+Sincerely,
+
+Dane
+On 3/31/06, David Holmes <dcholmes@optusnet.com.au> wrote:
+> > Now if I'm wrong about this it means that my understanding of the
+> > visibility rules is flawed and the rules have changed. So let me ask
+> > you this. Are you saying the mixing of volatile and non-volatile
+> > fields causes the non-volatile fields to behave like volatiles (no
+> > caching)?
+>
+> To a certain extent yes. volatile reads and writes, together with use of
+> Atomics, plus locks, all establish "happens-before" relationships. Within a
+> single thread each action that comes before another action in program-order,
+> happens-before that second action. If a write of a variable happens-before a
+> subsequent read of that variable then the read is guaranteed to see the
+> value that was written. When considering actions across threads then there
+> are basically no guarantees about what values will be read by thread A after
+> a write by thread B unless the read and write are ordered by a
+> happens-before relationship.
+>
+> The happens-before relationship is transitive: if a happens-before b, and b
+> happens-before c, then a happens-before c.
+>
+> So in your example every CAS that manages to set locked to true has to
+> happen-before a preceding set of locked=false in another thread.
+> Consequently any write to  backoff that happens-before locked=false, also
+> happens-before the other thread sets locked=true. As the write of backoff
+> and the read of backoff are ordered by a happens-before relationship, then
+> the read is guaranteed to see the value that was previously written by the
+> other thread.
+>
+> In the old memory model volatiles only had memory synchronization effects
+> with respect to other volatiles - which meant for most intents and purposes
+> if a volatile flag protected some data then the data also had to be
+> volatile. The new memory model defines the happens-before relationship which
+> is more general, and so non-volatile variables can acquire visibility
+> guarantees by "piggybacking" on the memory synchronization effects of
+> volatiles and Atomics. This is the same "piggybacking" that has always been
+> true for use of synchronized - you didn't have to make the data protected by
+> a monitor, volatile, as use of the monitor ensures the visibility of the
+> data.
+>
+> Hope that clarifies things.
+>
+> Cheers,
+> David Holmes
+>
+>
+
+From dawidk at mathcs.emory.edu  Fri Mar 31 12:06:06 2006
+From: dawidk at mathcs.emory.edu (Dawid Kurzyniec)
+Date: Fri Mar 31 12:07:00 2006
+Subject: [concurrency-interest] A little lock free algorithm [the code]
+In-Reply-To: <5a59ce530603301812u34d93d3fwcba9cbce0000f22@mail.gmail.com>
+References: <5a59ce530603301812u34d93d3fwcba9cbce0000f22@mail.gmail.com>
+Message-ID: <442D617E.1010303@mathcs.emory.edu>
+
+I think that unless you put the test "now < expiration" inside the 
+"lock", there is a potential race condition:
+
+1. Thread A determines that expiration passed, succeeds at compareAndSet.
+2. Thread B determines that expiration passed
+3. Thread A updates backoff and expiration, unlocks, and returns
+4. Thread B succeeds at compareAndSet, and thus also updates backoff and 
+expiration
+
+Regards,
+Dawid
+
+From studdugie at gmail.com  Fri Mar 31 13:24:42 2006
+From: studdugie at gmail.com (studdugie)
+Date: Fri Mar 31 13:24:53 2006
+Subject: [concurrency-interest] A little lock free algorithm [the code]
+In-Reply-To: <442D617E.1010303@mathcs.emory.edu>
+References: <5a59ce530603301812u34d93d3fwcba9cbce0000f22@mail.gmail.com>
+	<442D617E.1010303@mathcs.emory.edu>
+Message-ID: <5a59ce530603311024o299ca39ak6d5f7e4a3c591f9e@mail.gmail.com>
+
+You are quite right about the race. It's been nagging at me since I
+first wrote it. It's the reason why I wanted to post the code here in
+the first place because after testing the code and not seeing the race
+happen I wasn't so sure anymore.So I wanted to see if anyone else
+thought it was a problem besides me and whatever else they might find.
+
+As I write this, it just dawned on my why the race didn't show up in
+testing. I'm running Gentoo Linux w/ a custom kernel w/ preemption
+turned of.  In the scenario you've described the race requires some
+mechansim to stall Thread B long enough for A to acquire and release
+"locked" and in my test environment there simply isn't enough going on
+in other parts of the system to stall Thread B's execution and w/o
+preemption that makes it more so.
+
+Thanks for confirming my suspicions.
+
+Cheers,
+
+Dane
+
+On 3/31/06, Dawid Kurzyniec <dawidk@mathcs.emory.edu> wrote:
+> I think that unless you put the test "now < expiration" inside the
+> "lock", there is a potential race condition:
+>
+> 1. Thread A determines that expiration passed, succeeds at compareAndSet.
+> 2. Thread B determines that expiration passed
+> 3. Thread A updates backoff and expiration, unlocks, and returns
+> 4. Thread B succeeds at compareAndSet, and thus also updates backoff and
+> expiration
+>
+> Regards,
+> Dawid
+>
+>
+
+From dcholmes at optusnet.com.au  Fri Mar 31 20:38:45 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Fri Mar 31 20:39:14 2006
+Subject: [concurrency-interest] A little lock free algorithm [the code]
+In-Reply-To: <5a59ce530603311024o299ca39ak6d5f7e4a3c591f9e@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCEFLGNAA.dcholmes@optusnet.com.au>
+
+> studdugie writes:
+>
+> You are quite right about the race. It's been nagging at me since I
+> first wrote it. It's the reason why I wanted to post the code here in
+> the first place because after testing the code and not seeing the race
+> happen I wasn't so sure anymore.So I wanted to see if anyone else
+> thought it was a problem besides me and whatever else they might find.
+
+Sorry about that. I was focussing on the visibility issues and overlooked
+the details of the semantic requirements.
+
+If you want the execution of the if block to only be performed by one thread
+per "time window" then the test of the time has to be atomic with respect to
+updating expiration. Simplest way is to re-do the test when you have the
+"lock":
+
+    void increment()
+    {
+        long millis;
+        // quick check if nothing to do
+        if( dead || (millis = System.currentTimeMillis()) < expiration )
+            return;
+
+        if( locked.compareAndSet( false, true ) )
+        {
+            // check again as things might have changed since the first
+check
+            if( dead || millis < expiration )
+              return;
+
+            backoff += BACKOFF_INCREMENT;
+            if( backoff > BACKOFF_MAX )
+                dead = true;
+            else
+                expiration = millis + backoff;
+            locked.set( false );
+        }
+    }
+
+This is still approximate as you really need to snapshot the current time as
+close as possible to the detection of the failure - otherwise you might get
+preempted and get a distorted view of when the failure actually happened. Of
+course there is never a guarantee as you can be preempted at any time.
+
+Looking closer I'm not clear on exactly how you want this to work. When and
+how are TFailure objects created? I'm wondering how long might elapse
+between the initialization of "expiration" and the first call to increment.
+I suspect your logic is something like:
+
+if connect_to_host_failed then
+   if host.tfailure == null
+       host.tfailure = new Tfailure()
+   else
+      host.tfailure.increment()
+
+in which case how do you make the construction/publication thread-safe?
+
+Also your expiration logic would seem to lead to a host being declared dead
+after a certain number of failures, regardless of successes in between the
+failures. Eventually backoff will be greater than BACKOFF_MAX because it is
+never reduced. I also don't understand why you want the failure window to
+get larger and larger.
+
+Cheers,
+David Holmes
+
+From dcholmes at optusnet.com.au  Fri Mar 31 20:39:02 2006
+From: dcholmes at optusnet.com.au (David Holmes)
+Date: Fri Mar 31 20:39:18 2006
+Subject: [concurrency-interest] MaximumPoolSize not used with
+	unboundedqueues
+In-Reply-To: <7ee5be7e0603300519p1dbb2dc8ve25977590d89431d@mail.gmail.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEFLGNAA.dcholmes@optusnet.com.au>
+
+David,
+
+A similar issue was discussed not that long ago, so please also see the
+archives.
+
+Basically the design for ThreadPoolExecutor is to handle an incoming task as
+follows:
+
+1. create (or use if prestarted) core thread if less than coreMax; else
+2. offer to queue; else (if queue is bounded and full)
+3. create pool thread if less than max; else
+4. invoke RejectedExecutionHandler
+
+The basic design philosophy is that the core exists to handle the normal
+workload. The queue exists to buffer tasks that come in quicker than the
+pool can handle. You bound the queue if you need to ensure the outstanding
+tasks don't grow without limit and allow the pool to grow beyond core to try
+and catch up with the (hopefully temporary) overload. You typically set a
+timeout so the extra threads die out when things are quiet again.
+
+If you have an unbounded queue then steps 3 and 4 never come into play. If
+you have an unbounded queue but wanted to expand the pool size too, then how
+would you have that decision be made? Would you add to the queue and add a
+new thread? That would be a possibility. However this is no way to customize
+this behaviour in ThreadPoolExecutor.
+
+David Holmes
+  -----Original Message-----
+  From: concurrency-interest-bounces@cs.oswego.edu
+[mailto:concurrency-interest-bounces@cs.oswego.edu]On Behalf Of david
+gonneau
+  Sent: Thursday, 30 March 2006 11:19 PM
+  To: concurrency-interest@cs.oswego.edu
+  Subject: [concurrency-interest] MaximumPoolSize not used with
+unboundedqueues
+
+
+  Hi,
+
+  I am using a threadPoolExecutor with a PriorityBlockingQueue (not
+bounded).
+
+  I made the choice of an unbouded queue to be able to resize the queue
+dynamically using the setMaxCapacity() without having to kill my executor or
+my queue.
+
+  I don't see why the MaximumPoolSize wouldn't be used in that case.
+
+  If I set 2 thread in the corePool and 5 as maximumPool, only my 2 threads
+of the core will be spawned. Then for further tasks coming, as long as the
+two first threads are busy, the queue will be used to store the incoming
+tasks. Without even trying to spawn new threads as specified on the
+maximumPoolSize..
+
+  Why such a limit ?
+
+  Is there any way to bypass this ? Is there a valid reason of not using
+temporary threads with an unlimited queue ???
+
+  Thanks for ur inputs :)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: /pipermail/attachments/20060331/bbc9a132/attachment.html

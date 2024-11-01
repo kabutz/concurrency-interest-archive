@@ -1,0 +1,595 @@
+From jon.rowland@anite.com  Thu Jul  1 10:01:19 2004
+From: jon.rowland@anite.com (Jon Rowland)
+Date: Thu, 1 Jul 2004 10:01:19 +0100
+Subject: [concurrency-interest] Problem with ReentrantReadWriteLock
+Message-ID: <7B91F5F17CAAD411984E00508BDD077CAB2FE4@BOSSI>
+
+Hi,
+
+I'm using an executor service with a fixed thread pool size of 2. Both tasks
+use a custom-cache to which access is protected with a
+ReentrantReadWriteLock. If I create the lock with fairness set to false
+(default), everything works ok. However, if I create the lock with fairness
+set to true, processing hangs (CPU idle) very quickly as if it is
+deadlocked. Breaking into the debugger shows the thread details below.
+
+It looks to me like:
+
+Thread 1 has just entered the cache, and has no locks. It is waiting for the
+Read lock:
+	rwl.readLock().lock();
+
+Thread 2 has just updated the cache. It has the write lock, and is trying to
+downgrade to a Read lock with:
+	rwl.readLock().lock();
+	rwl.writeLock().unlock();
+
+It looks to me like Thread 2 is not able to get the read lock - even though
+it currently has the write lock.
+
+Any ideas? Is there something that I am misunderstanding about the
+'fairness' functionality? Something I'm doing wrong, or possible 'feature'?
+
+Incidentally, with beta 1 - when it hung, it would spin on 100% CPU. With
+beta 2 - it hangs but with the CPU idle.
+
+Thanks and regards,
+Jon Rowland
+
+pool-1-thread-2@ad6 prio=5, in group "main", status: WAIT
+	  park():-1, Unsafe.java
+	  park():118, LockSupport.java
+	  parkAndCheckInterrupt():681, AbstractQueuedSynchronizer.java
+	  doAcquireShared():809, AbstractQueuedSynchronizer.java
+	  acquireShared():1124, AbstractQueuedSynchronizer.java
+	  lock():421, ReentrantReadWriteLock.java
+	  getItem():70, DateCacheKeyOnDemand.java
+	  getItem():30, DateCache.java
+	  getRoute():30, SwtIdRutMatchStrRouteDateCache.java
+	  matchCommon():160, PreMatch.java
+	  matchCdrEvent():156, ServiceHelper.java
+	  run():259, MatchAndRateTask.java
+	  runTask():650, ThreadPoolExecutor.java
+	  run():675, ThreadPoolExecutor.java
+	  run():595, Thread.java
+
+pool-1-thread-1@add prio=5, in group "main", status: WAIT
+	  park():-1, Unsafe.java
+	  park():118, LockSupport.java
+	  parkAndCheckInterrupt():681, AbstractQueuedSynchronizer.java
+	  doAcquireShared():809, AbstractQueuedSynchronizer.java
+	  acquireShared():1124, AbstractQueuedSynchronizer.java
+	  lock():421, ReentrantReadWriteLock.java
+	  getItem():153, DateCacheKeyOnDemand.java
+	  getItem():30, DateCache.java
+	  getRoute():30, SwtIdRutMatchStrRouteDateCache.java
+	  matchCommon():160, PreMatch.java
+	  matchCdrEvent():156, ServiceHelper.java
+	  run():259, MatchAndRateTask.java
+	  runTask():650, ThreadPoolExecutor.java
+	  run():675, ThreadPoolExecutor.java
+	  run():595, Thread.java
+
+Signal Dispatcher@ae1 daemon prio=10, in group "system", status: RUNNING
+
+Finalizer@ae2 daemon prio=8, in group "system", status: WAIT
+	  wait():-1, Object.java
+	  remove():116, ReferenceQueue.java
+	  remove():132, ReferenceQueue.java
+	  run():159, Finalizer.java
+
+Reference Handler@ae3 daemon prio=10, in group "system", status: WAIT
+	  wait():-1, Object.java
+	  wait():474, Object.java
+	  run():116, Reference.java
+
+main@1 prio=5, in group "main", status: WAIT
+	  park():-1, Unsafe.java
+	  parkNanos():146, LockSupport.java
+	  awaitNanos():1808, AbstractQueuedSynchronizer.java
+	  awaitTermination():1024, ThreadPoolExecutor.java
+	  processFile():174, MatchAndRateTask.java
+	  runTask():118, MatchAndRateTask.java
+	  run():59, TestMatchAndRate.java
+	  main():26, TestMatchAndRate.java
+
+
+Scanned for viruses by MessageLabs. The integrity and security of this message cannot be guaranteed. This email is intended for the named recipient only, and may contain confidential information and proprietary material. Any unauthorised use or disclosure is prohibited.
+
+From dl@cs.oswego.edu  Thu Jul  1 12:28:49 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Thu, 1 Jul 2004 07:28:49 -0400
+Subject: [concurrency-interest] Problem with ReentrantReadWriteLock
+In-Reply-To: <7B91F5F17CAAD411984E00508BDD077CAB2FE4@BOSSI>
+References: <7B91F5F17CAAD411984E00508BDD077CAB2FE4@BOSSI>
+Message-ID: <16611.62833.13862.769610@altair.cs.oswego.edu>
+
+Thanks VERY much for reporting this! 
+
+This was indeed an error. Contrary to the spec, fair readlock acquires
+gave precedence to FIFOness over re-entrancy, so could fail to allow
+reentrant readlock after acquiring writelock when there were other
+contending threads. Somehow we hadn't checked or tested this case.
+
+Sorry for the problems.  We'll get the fix in place as soon as
+possible.  For now the workaround is not to use fair mode.
+
+-Doug
+
+
+
+
+
+
+From mike.kvintus@acterna.com  Tue Jul 13 20:02:20 2004
+From: mike.kvintus@acterna.com (mike.kvintus@acterna.com)
+Date: Tue, 13 Jul 2004 14:02:20 -0500
+Subject: [concurrency-interest] Is cancel method used anywhere?
+Message-ID: <OF2A8EBB2B.91DB12F1-ON05256ED0.0067B08B-85256ED0.0068B645@acterna.com>
+
+This is a multipart message in MIME format.
+--=_alternative 0068B64285256ED0_=
+Content-Type: text/plain; charset="us-ascii"
+
+I noticed from the Javadocs that the ThreadPoolExecutor.shutdownNow() 
+method uses Thread.interrupt to try to stop executing tasks, which implies 
+that it will not try the cancel method if the task implements the Future 
+interface.  So I was wondering if the cancel method is ever used by any of 
+the java.util.concurrent classes.
+
+I need to create a Thread Pool with a limited number of threads which 
+queues up tasks to run and can be shutdown in a way that will allow 
+running tasks to be cancelled gracefully.  Everything in 
+java.util.concurrent seemed to exactly what I needed until I noticed that 
+the shutdownNow method does not use the cancel method to stop my tasks 
+that will implement the Future interface.  Is there an easy way to do 
+this?
+
+Thanks,
+--
+Mike Kvintus
+Acterna
++1 812 961 2057
+
+--=_alternative 0068B64285256ED0_=
+Content-Type: text/html; charset="us-ascii"
+
+
+<br><font size=2 face="sans-serif">I noticed from the Javadocs that the ThreadPoolExecutor.shutdownNow() method uses Thread.interrupt to try to stop executing tasks, which implies that it will not try the cancel method if the task implements the Future interface. &nbsp;So I was wondering if the cancel method is ever used by any of the java.util.concurrent classes.</font>
+<br>
+<br><font size=2 face="sans-serif">I need to create a Thread Pool with a limited number of threads which queues up tasks to run and can be shutdown in a way that will allow running tasks to be cancelled gracefully. &nbsp;Everything in java.util.concurrent seemed to exactly what I needed until I noticed that the shutdownNow method does not use the cancel method to stop my tasks that will implement the Future interface. &nbsp;Is there an easy way to do this?</font>
+<br>
+<br><font size=2 face="sans-serif">Thanks,<br>
+--<br>
+Mike Kvintus<br>
+Acterna<br>
++1 812 961 2057<br>
+</font>
+--=_alternative 0068B64285256ED0_=--
+
+From tim@peierls.net  Tue Jul 13 21:56:14 2004
+From: tim@peierls.net (Tim Peierls)
+Date: Tue, 13 Jul 2004 16:56:14 -0400
+Subject: [concurrency-interest] Is cancel method used anywhere?
+In-Reply-To: <OF2A8EBB2B.91DB12F1-ON05256ED0.0067B08B-85256ED0.0068B645@acterna.com>
+References: <OF2A8EBB2B.91DB12F1-ON05256ED0.0067B08B-85256ED0.0068B645@acterna.com>
+Message-ID: <40F44C6E.5090906@peierls.net>
+
+mike.kvintus@acterna.com wrote:
+> I need to create a Thread Pool with a limited number of threads which 
+> queues up tasks to run and can be shutdown in a way that will allow 
+> running tasks to be cancelled gracefully.  Everything in 
+> java.util.concurrent seemed to exactly what I needed until I noticed 
+> that the shutdownNow method does not use the cancel method to stop my 
+> tasks that will implement the Future interface.  Is there an easy way to 
+> do this?
+
+ThreadPoolExecutor uses Thread.interrupt() to attempt to stop running tasks,
+as does FutureTask.cancel(true). Unless you are using a specialized Executor
+with custom Future implementations, you should probably make sure that your
+tasks check for interruption at likely cancellation points (but not _too_ often).
+
+ From the javadocs for shutdownNow:
+
+   http://java.sun.com/j2se/1.5.0/docs/api/java/util/concurrent/ExecutorService.html#shutdownNow()
+
+"There are no guarantees beyond best-effort attempts to stop processing
+  actively executing tasks. For example, typical implementations will cancel
+  via Thread.interrupt(), so if any tasks mask or fail to respond to interrupts,
+  they may never terminate."
+
+--tim
+
+
+From mike.kvintus@acterna.com  Wed Jul 14 01:08:13 2004
+From: mike.kvintus@acterna.com (mike.kvintus@acterna.com)
+Date: Tue, 13 Jul 2004 19:08:13 -0500
+Subject: [concurrency-interest] Is cancel method used anywhere?
+Message-ID: <OFA33DA89B.5A0E4D38-ON05256ED1.000091CE-85256ED1.0000E17A@acterna.com>
+
+This is a multipart message in MIME format.
+--=_alternative 0000E17785256ED1_=
+Content-Type: text/plain; charset="us-ascii"
+
+I guess this is a little late, but I don't see why shutdownNow doesn't 
+call cancel first or instead of Thread.interrupt if the task implements 
+the Future interface.  It seems to me that the cancel method is worthless 
+unless you write your own Executor.
+
+--
+Mike Kvintus
+Acterna
++1 812 961 2057
+
+
+
+
+
+Tim Peierls <tim@peierls.net>
+07/13/2004 04:56 PM
+
+ 
+        To:     mike.kvintus@acterna.com
+        cc:     concurrency-interest@altair.cs.oswego.edu
+        Subject:        Re: [concurrency-interest] Is cancel method used anywhere?
+
+
+mike.kvintus@acterna.com wrote:
+> I need to create a Thread Pool with a limited number of threads which 
+> queues up tasks to run and can be shutdown in a way that will allow 
+> running tasks to be cancelled gracefully.  Everything in 
+> java.util.concurrent seemed to exactly what I needed until I noticed 
+> that the shutdownNow method does not use the cancel method to stop my 
+> tasks that will implement the Future interface.  Is there an easy way to 
+
+> do this?
+
+ThreadPoolExecutor uses Thread.interrupt() to attempt to stop running 
+tasks,
+as does FutureTask.cancel(true). Unless you are using a specialized 
+Executor
+with custom Future implementations, you should probably make sure that 
+your
+tasks check for interruption at likely cancellation points (but not _too_ 
+often).
+
+ From the javadocs for shutdownNow:
+
+   http://java.sun.com/j2se/1.5.0/docs/api/java/util/concurrent/ExecutorService.html#shutdownNow()
+
+"There are no guarantees beyond best-effort attempts to stop processing
+  actively executing tasks. For example, typical implementations will 
+cancel
+  via Thread.interrupt(), so if any tasks mask or fail to respond to 
+interrupts,
+  they may never terminate."
+
+--tim
+
+
+
+
+--=_alternative 0000E17785256ED1_=
+Content-Type: text/html; charset="us-ascii"
+
+
+<br><font size=2 face="sans-serif">I guess this is a little late, but I don't see why shutdownNow doesn't call cancel first or instead of Thread.interrupt if the task implements the Future interface. &nbsp;It seems to me that the cancel method is worthless unless you write your own Executor.</font>
+<br><font size=2 face="sans-serif"><br>
+--<br>
+Mike Kvintus<br>
+Acterna<br>
++1 812 961 2057<br>
+</font>
+<br>
+<br>
+<br>
+<table width=100%>
+<tr valign=top>
+<td>
+<td><font size=1 face="sans-serif"><b>Tim Peierls &lt;tim@peierls.net&gt;</b></font>
+<p><font size=1 face="sans-serif">07/13/2004 04:56 PM</font>
+<br>
+<td><font size=1 face="Arial">&nbsp; &nbsp; &nbsp; &nbsp; </font>
+<br><font size=1 face="sans-serif">&nbsp; &nbsp; &nbsp; &nbsp; To: &nbsp; &nbsp; &nbsp; &nbsp;mike.kvintus@acterna.com</font>
+<br><font size=1 face="sans-serif">&nbsp; &nbsp; &nbsp; &nbsp; cc: &nbsp; &nbsp; &nbsp; &nbsp;concurrency-interest@altair.cs.oswego.edu</font>
+<br><font size=1 face="sans-serif">&nbsp; &nbsp; &nbsp; &nbsp; Subject: &nbsp; &nbsp; &nbsp; &nbsp;Re: [concurrency-interest] Is cancel method used anywhere?</font></table>
+<br>
+<br>
+<br><font size=2 face="Courier New">mike.kvintus@acterna.com wrote:<br>
+&gt; I need to create a Thread Pool with a limited number of threads which <br>
+&gt; queues up tasks to run and can be shutdown in a way that will allow <br>
+&gt; running tasks to be cancelled gracefully. &nbsp;Everything in <br>
+&gt; java.util.concurrent seemed to exactly what I needed until I noticed <br>
+&gt; that the shutdownNow method does not use the cancel method to stop my <br>
+&gt; tasks that will implement the Future interface. &nbsp;Is there an easy way to <br>
+&gt; do this?<br>
+<br>
+ThreadPoolExecutor uses Thread.interrupt() to attempt to stop running tasks,<br>
+as does FutureTask.cancel(true). Unless you are using a specialized Executor<br>
+with custom Future implementations, you should probably make sure that your<br>
+tasks check for interruption at likely cancellation points (but not _too_ often).<br>
+<br>
+ From the javadocs for shutdownNow:<br>
+<br>
+ &nbsp; http://java.sun.com/j2se/1.5.0/docs/api/java/util/concurrent/ExecutorService.html#shutdownNow()<br>
+<br>
+&quot;There are no guarantees beyond best-effort attempts to stop processing<br>
+ &nbsp;actively executing tasks. For example, typical implementations will cancel<br>
+ &nbsp;via Thread.interrupt(), so if any tasks mask or fail to respond to interrupts,<br>
+ &nbsp;they may never terminate.&quot;<br>
+<br>
+--tim<br>
+<br>
+</font>
+<br>
+<br>
+--=_alternative 0000E17785256ED1_=--
+
+From dholmes@dltech.com.au  Wed Jul 14 01:43:25 2004
+From: dholmes@dltech.com.au (David Holmes)
+Date: Wed, 14 Jul 2004 10:43:25 +1000
+Subject: [concurrency-interest] Is cancel method used anywhere?
+In-Reply-To: <OFA33DA89B.5A0E4D38-ON05256ED1.000091CE-85256ED1.0000E17A@acterna.com>
+Message-ID: <NFBBKALFDCPFIDBNKAPCMEDMEGAA.dholmes@dltech.com.au>
+
+Mike,
+
+> I guess this is a little late, but I don't see why shutdownNow
+> doesn't call cancel first or instead of Thread.interrupt if the
+> task implements the Future interface.  It seems to me that the
+> cancel method is worthless unless you write your own Executor.
+
+Your Future is just a Runnable in a queue - in fact by the time it is being
+executed it is not even in the queue anymore. So when shutdownNow is invoked
+the pool doesn't know what kinds of tasks are being executed and doesn't
+have a handle to them even if it did know. The pool interrupts the thread
+but the thread can't do anything until your tasks code responds to the
+interrupt and returns - by which time there is no point doing a cancel.
+
+The cancel method is there for you to cancel your Future's, not for a pool
+to cancel them on your behalf.
+
+If you want to do the cancel then track which Future's have not yet
+completed and cancel them your self when deciding to shutdown the pool. Upon
+completion each custom FutureTask could remove itself from your queue of
+incomplete tasks. You could do this in a custom executor.
+
+Hope this helps.
+
+David Holmes
+
+
+From Peter.Booth@gs.com  Wed Jul 14 14:58:55 2004
+From: Peter.Booth@gs.com (Booth, Peter)
+Date: Wed, 14 Jul 2004 09:58:55 -0400
+Subject: [concurrency-interest] What does it mean to synchronize "return x;" ?
+Message-ID: <CD67BDD4FBFA1F4884172031F74F503405D192C5@gsnbp12es.ny.fw.gs.com>
+
+I was looking at some code last night that did the following.
+
+I was wondering - is there anything special about synchronizing a critical
+section of code that is a return statement?
+
+   private double []hArray;
+   private int curr;
+
+   public double getLast()
+    {
+        if (sMode ())
+            synchronized(hArray)
+            {
+                return hArray [curr];
+            }
+        return last;
+    }
+
+
+   synchronized(hArray)
+   {
+   	double p = getLTP();
+      for (int i = 0; i < hArray.length; i++)
+      {
+		hArray [i] = p;
+      }
+   	hArray [curr] = P2;
+   	curr += 1;
+   	if (curr >= hArray.length)
+	{
+      	curr = curr % hArray.length;
+	}
+   }
+
+
+
+
+From blanshlu@netscape.net  Wed Jul 14 15:38:53 2004
+From: blanshlu@netscape.net (Luke Blanshard)
+Date: Wed, 14 Jul 2004 10:38:53 -0400
+Subject: [concurrency-interest] What does it mean to synchronize "return x;" ?
+Message-ID: <52EA238A.7614FAE3.00948489@netscape.net>
+
+No, there is nothing special about synchronizing a return statement.  It looks to me as if "hArray" is being used as the monitor for the "curr" instance variable, and so the sync block is making sure that "curr" is a valid index whenever that return statement gets its value out of the array.
+
+Luke
+
+
+"Booth, Peter" <Peter.Booth@gs.com> wrote:
+
+>I was looking at some code last night that did the following.
+>
+>I was wondering - is there anything special about synchronizing a critical
+>section of code that is a return statement?
+>
+>   private double []hArray;
+>   private int curr;
+>
+>   public double getLast()
+>    {
+>        if (sMode ())
+>            synchronized(hArray)
+>            {
+>                return hArray [curr];
+>            }
+>        return last;
+>    }
+>
+>
+>   synchronized(hArray)
+>   {
+>    double p = getLTP();
+>      for (int i = 0; i < hArray.length; i++)
+>      {
+>        hArray [i] = p;
+>      }
+>    hArray [curr] = P2;
+>    curr += 1;
+>    if (curr >= hArray.length)
+>    {
+>        curr = curr % hArray.length;
+>    }
+>   }
+>
+>
+>
+>_______________________________________________
+>Concurrency-interest mailing list
+>Concurrency-interest@altair.cs.oswego.edu
+>http://altair.cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+__________________________________________________________________
+Switch to Netscape Internet Service.
+As low as $9.95 a month -- Sign up today at http://isp.netscape.com/register
+
+Netscape. Just the Net You Need.
+
+New! Netscape Toolbar for Internet Explorer
+Search from anywhere on the Web and block those annoying pop-ups.
+Download now at http://channels.netscape.com/ns/search/install.jsp
+
+From gregg.wonderly@pobox.com  Wed Jul 14 16:22:20 2004
+From: gregg.wonderly@pobox.com (Gregg G. Wonderly)
+Date: Wed, 14 Jul 2004 10:22:20 -0500
+Subject: [concurrency-interest] What does it mean to synchronize "return
+ x;" ?
+In-Reply-To: Your message of Wed, 14 Jul 2004 09:58:55 -0400.
+ <CD67BDD4FBFA1F4884172031F74F503405D192C5@gsnbp12es.ny.fw.gs.com>
+Message-ID: <29858.1089818540@skymaster.cytetech.com>
+
+>I was looking at some code last night that did the following.
+>
+>I was wondering - is there anything special about synchronizing a critical
+>section of code that is a return statement?
+
+The logic you show provides some consistency it seems between the use of the 
+index curr and the value at hArray[curr].  Without seen what calls these 
+methods and under what circumstances, it would be difficult to say that the 
+synchronization is not required.
+
+-----
+gregg@cytetech.com  (Cyte Technologies Inc)
+
+
+
+From leou@us.ibm.com  Wed Jul 14 19:28:33 2004
+From: leou@us.ibm.com (Leo Uzcategui)
+Date: Wed, 14 Jul 2004 12:28:33 -0600
+Subject: [concurrency-interest] Leo Uzcategui/Austin/IBM is out of the office.
+Message-ID: <OFE58BCB47.B1A21B1E-ON87256ED1.00657DBD-87256ED1.00657DBF@us.ibm.com>
+
+--0__=08BBE442DFF6FB2D8f9e8a93df938690918c08BBE442DFF6FB2D
+Content-type: text/plain; charset=US-ASCII
+
+
+
+
+
+I will be out of the office starting  07/12/2004 and will not return until
+07/19/2004.
+
+For assistance, please contact Robin Redden at (512) 838-1542.
+--0__=08BBE442DFF6FB2D8f9e8a93df938690918c08BBE442DFF6FB2D
+Content-type: text/html; charset=US-ASCII
+Content-Disposition: inline
+
+<html><body>
+<p>I will be out of the office starting  07/12/2004 and will not return until 07/19/2004.<br>
+<br>
+For assistance, please contact Robin Redden at (512) 838-1542.<br>
+</body></html>
+--0__=08BBE442DFF6FB2D8f9e8a93df938690918c08BBE442DFF6FB2D--
+
+
+From jws@cs.mu.OZ.AU  Thu Jul 15 00:06:50 2004
+From: jws@cs.mu.OZ.AU (jws@cs.mu.OZ.AU)
+Date: Thu, 15 Jul 2004 09:06:50 +1000
+Subject: [concurrency-interest] What does it mean to synchronize "return x;" ?
+Message-ID: <21256.1089846410@blunt>
+
+> I was looking at some code last night that did the following.
+> 
+> I was wondering - is there anything special about synchronizing a critical
+> section of code that is a return statement?
+> 
+>    private int curr;
+>    private double []hArray;
+> 
+>             synchronized(hArray)
+>             {
+>                 return hArray [curr];
+>             }
+
+Non-volatile double (and long) values are not atomic in Java on
+all processors.  (JLS 17.4)  So, if the array element may possibly be
+written concurrently with reading it then some form of mutual exclusion
+is required to ensure that either the old, or the new value is read and
+not part of each.
+
+(There is also additional coordination being imposed on accesses to curr,
+but that said, the rest of the code snippet has the markings of having
+chosen the wrong object to control access.)
+
+
+    Jeff Schultz
+
+From dl@cs.oswego.edu  Thu Jul 29 13:52:59 2004
+From: dl@cs.oswego.edu (Doug Lea)
+Date: Thu, 29 Jul 2004 08:52:59 -0400
+Subject: [concurrency-interest] Final specs
+Message-ID: <16648.62251.390238.148331@altair.cs.oswego.edu>
+
+The versions of specs etc linked from
+  http://gee.cs.oswego.edu/dl/concurrency-interest/index.html
+have been submitted as the JCP "final approval ballot materials".
+Almost surely, these will be exactly the ones appearing in the Sun FCS
+Tiger release. (Currently planned to be late August, I think.)
+
+JSR166 will not abrubtly terminate though:
+
+1. We'll keep this mailing list up, and continue to welcome questions,
+complaints, etc., including those about specs that we will try to get
+clarified and integrated into Sun update releases.  (We already have
+one that didn't make final code freeze: ConcurrentHashMap fails to
+list in javadoc that it uses the same (0.75f) default load factor as
+java.util Hash tables.)
+
+2. Within a few weeks, we will release classes in a new package
+"jsr166x". These are classes that we would have included had they been
+ready, and that will probably make it into java.util.concurrent
+sometime in the future through the RFE process. There won't be many of
+these -- we'll use the same criteria of generality, performance,
+reliablilty etc as in JSR166. They will include a scalable concurrent
+sorted map class with a superset of functionality of
+java.util.TreeMap. Later additions may include a general-purpose
+concurrent linked list, and possibly a few other concurrent
+Collections and custom Executors.
+
+3. Expert group members will be writing about using the Java
+concurrency utilities, possibly including a book.  (And someday, I
+will get out a third edition of CPJ book, but it doen't look like it
+will be very soon.)
+
+Thanks to everyone on this list for your help in developing JSR166!
+
+-Doug
+

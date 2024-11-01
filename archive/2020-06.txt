@@ -1,0 +1,1020 @@
+From alexandre.dechampeaux at imc.com  Wed Jun  3 20:57:37 2020
+From: alexandre.dechampeaux at imc.com (Alexandre De Champeaux)
+Date: Thu, 4 Jun 2020 00:57:37 +0000
+Subject: [concurrency-interest] ConcurrentSkipListMap visibility guarantees
+Message-ID: <60EA08BF-5FDF-488D-BF8B-7F403FC6C66E@imc.com>
+
+Hello concurrency interest,
+
+I just came across some old code that concurrently does the following:
+
+  1.  Remove Object o from ConcurrentSkipListMap
+  2.  Mutate Object o
+  3.  Add Object o back
+Sometimes, the remove will fail.
+
+I was wondering how badly this is abusing the guarantees of ConcurrentSkipListMap, and what makes the remove fail?
+
+Here is some code that reproduces (tried with Java 8u241 and 13.0.2):
+
+
+public class ConcurrentSkipListMapMissingRemove {
+    private final static AtomicLong SEQUENCE_CREATOR = new AtomicLong();
+    private final static Comparator<DummyTimer> myTimerComparator = Comparator.comparing(DummyTimer::getSequence);
+    private final static ConcurrentSkipListMap<DummyTimer, Long> theTimers = new ConcurrentSkipListMap<>(myTimerComparator);
+
+    public static void main(String[] args) throws InterruptedException {
+        for (int i = 0; i < 10; ++i) {
+            CompletableFuture.runAsync(() -> {
+                DummyTimer myDummyTimer = new DummyTimer();
+                myDummyTimer.start();
+
+                while (true) {
+                    myDummyTimer.restart();
+                }
+            });
+        }
+
+        Thread.sleep(100_000_000);
+    }
+
+    private static class DummyTimer {
+        private volatile long theSequence;
+
+        void start() {
+            add();
+        }
+
+        void restart() {
+            remove();
+            theSequence = SEQUENCE_CREATOR.getAndIncrement();
+            add();
+        }
+
+        private void add() {
+            theTimers.put(this, theSequence);
+        }
+
+        private void remove() {
+            if (theTimers.remove(this) == null) {
+                System.out.println("Ooops, failed to remove...");
+            }
+        }
+
+        public long getSequence() {
+            return theSequence;
+        }
+    }
+}
+
+Thanks,
+
+Alex
+[IMC Logo]<https://www.imc.com/us/>
+
+[F]<https://www.facebook.com/IMCTrading>
+
+
+[t]<http://twitter.com/IMCTrading>
+
+
+[I]<https://www.instagram.com/imctrading/>
+
+
+[in]<https://www.linkedin.com/company/imc-financial-markets>
+
+
+imc.com<https://www.imc.com/us/>
+
+
+________________________________
+The information in this e-mail is intended only for the person or entity to which it is addressed.
+
+It may contain confidential and /or privileged material. If you are not the intended recipient, please notify us immediately and delete it from your system. Any other use or disclosure by you, including through automated tools operating on your systems is prohibited.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200604/60afffdc/attachment.htm>
+
+From martinrb at google.com  Wed Jun  3 22:10:50 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 3 Jun 2020 19:10:50 -0700
+Subject: [concurrency-interest] ConcurrentSkipListMap visibility
+ guarantees
+In-Reply-To: <60EA08BF-5FDF-488D-BF8B-7F403FC6C66E@imc.com>
+References: <60EA08BF-5FDF-488D-BF8B-7F403FC6C66E@imc.com>
+Message-ID: <CA+kOe08-Co+oZB7TL8BJ-xfz6JYfnUoBK0JdPUsL=xyi6SuOTw@mail.gmail.com>
+
+DummyTimer has no constructor, so they are all created with a sequence of
+zero, so initially they compare equal, so the map considers them
+equivalent, and so the initial add may fail.
+
+On Wed, Jun 3, 2020 at 6:00 PM Alexandre De Champeaux via
+Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+
+> Hello concurrency interest,
+>
+>
+>
+> I just came across some old code that concurrently does the following:
+>
+>    1. Remove Object o from ConcurrentSkipListMap
+>    2. Mutate Object o
+>    3. Add Object o back
+>
+> Sometimes, the remove will fail.
+>
+>
+>
+> I was wondering how badly this is abusing the guarantees of
+> ConcurrentSkipListMap, and what makes the remove fail?
+>
+>
+>
+> Here is some code that reproduces (tried with Java 8u241 and 13.0.2):
+>
+>
+>
+>
+>
+> public class ConcurrentSkipListMapMissingRemove {
+>
+>     private final static AtomicLong SEQUENCE_CREATOR = new AtomicLong();
+>
+>     private final static Comparator<DummyTimer> myTimerComparator =
+> Comparator.comparing(DummyTimer::getSequence);
+>
+>     private final static ConcurrentSkipListMap<DummyTimer, Long> theTimers
+> = new ConcurrentSkipListMap<>(myTimerComparator);
+>
+>
+>
+>     public static void main(String[] args) throws InterruptedException {
+>
+>         for (int i = 0; i < 10; ++i) {
+>
+>             CompletableFuture.runAsync(() -> {
+>
+>                 DummyTimer myDummyTimer = new DummyTimer();
+>
+>                 myDummyTimer.start();
+>
+>
+>
+>                 while (true) {
+>
+>                     myDummyTimer.restart();
+>
+>                 }
+>
+>             });
+>
+>         }
+>
+>
+>
+>         Thread.sleep(100_000_000);
+>
+>     }
+>
+>
+>
+>     private static class DummyTimer {
+>
+>         private volatile long theSequence;
+>
+>
+>
+>         void start() {
+>
+>             add();
+>
+>         }
+>
+>
+>
+>         void restart() {
+>
+>             remove();
+>
+>             theSequence = SEQUENCE_CREATOR.getAndIncrement();
+>
+>             add();
+>
+>         }
+>
+>
+>
+>         private void add() {
+>
+>             theTimers.put(this, theSequence);
+>
+>         }
+>
+>
+>
+>         private void remove() {
+>
+>             if (theTimers.remove(this) == null) {
+>
+>                 System.out.println("Ooops, failed to remove...");
+>
+>             }
+>
+>         }
+>
+>
+>
+>         public long getSequence() {
+>
+>             return theSequence;
+>
+>         }
+>
+>     }
+>
+> }
+>
+>
+>
+> Thanks,
+>
+>
+>
+> Alex
+> [image: IMC Logo] <https://www.imc.com/us/>
+>
+> [image: F] <https://www.facebook.com/IMCTrading>
+>
+> [image: t] <http://twitter.com/IMCTrading>
+>
+> [image: I] <https://www.instagram.com/imctrading/>
+>
+> [image: in] <https://www.linkedin.com/company/imc-financial-markets>
+>
+> *imc.com* <https://www.imc.com/us/>
+> ------------------------------
+> The information in this e-mail is intended only for the person or entity
+> to which it is addressed.
+>
+> It may contain confidential and /or privileged material. If you are not
+> the intended recipient, please notify us immediately and delete it from
+> your system. Any other use or disclosure by you, including through
+> automated tools operating on your systems is prohibited.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200603/4a936742/attachment-0001.htm>
+
+From alexandre.dechampeaux at imc.com  Wed Jun  3 23:23:32 2020
+From: alexandre.dechampeaux at imc.com (Alexandre De Champeaux)
+Date: Thu, 4 Jun 2020 03:23:32 +0000
+Subject: [concurrency-interest] ConcurrentSkipListMap visibility
+ guarantees
+In-Reply-To: <CA+kOe08-Co+oZB7TL8BJ-xfz6JYfnUoBK0JdPUsL=xyi6SuOTw@mail.gmail.com>
+References: <60EA08BF-5FDF-488D-BF8B-7F403FC6C66E@imc.com>
+ <CA+kOe08-Co+oZB7TL8BJ-xfz6JYfnUoBK0JdPUsL=xyi6SuOTw@mail.gmail.com>
+Message-ID: <83D3EF3A-F61F-4619-A41F-F2CBC706CA32@imc.com>
+
+Ah yes, I dumbed down the example too much…
+
+Here it is again (But now with theSequence being updated inside add):
+
+public class ConcurrentSkipListMapMissingRemove {
+    private final static AtomicLong SEQUENCE_CREATOR = new AtomicLong();
+    private final static Comparator<DummyTimer> COMPARATOR = Comparator.comparing(DummyTimer::getSequence);
+    private final static ConcurrentSkipListMap<DummyTimer, Long> TIMERS = new ConcurrentSkipListMap<>(COMPARATOR);
+
+    public static void main(String[] args) throws InterruptedException {
+        for (int i = 0; i < 10; ++i) {
+            CompletableFuture.runAsync(() -> {
+                DummyTimer myDummyTimer = new DummyTimer();
+                myDummyTimer.start();
+
+                while (true) {
+                    myDummyTimer.restart();
+                }
+            });
+        }
+
+        Thread.sleep(100_000_000);
+    }
+
+    private static class DummyTimer {
+        private volatile long theSequence;
+
+        void start() {
+            add();
+        }
+
+        void restart() {
+            remove();
+            add();
+        }
+
+        private void add() {
+            theSequence = SEQUENCE_CREATOR.getAndIncrement();
+            TIMERS.put(this, theSequence);
+        }
+
+        private void remove() {
+            if (TIMERS.remove(this) == null) {
+                System.out.println("Ooops, failed to remove...");
+            }
+        }
+
+        public long getSequence() {
+            return theSequence;
+        }
+    }
+}
+
+From: Martin Buchholz <martinrb at google.com>
+Date: Thursday, 4 June 2020 at 12:11 pm
+To: Alexandre De Champeaux <alexandre.dechampeaux at imc.com>
+Cc: "concurrency-interest at cs.oswego.edu" <concurrency-interest at cs.oswego.edu>
+Subject: Re: [concurrency-interest] ConcurrentSkipListMap visibility guarantees
+
+DummyTimer has no constructor, so they are all created with a sequence of zero, so initially they compare equal, so the map considers them equivalent, and so the initial add may fail.
+
+On Wed, Jun 3, 2020 at 6:00 PM Alexandre De Champeaux via Concurrency-interest <concurrency-interest at cs.oswego.edu<mailto:concurrency-interest at cs.oswego.edu>> wrote:
+Hello concurrency interest,
+
+I just came across some old code that concurrently does the following:
+
+  1.  Remove Object o from ConcurrentSkipListMap
+  2.  Mutate Object o
+  3.  Add Object o back
+Sometimes, the remove will fail.
+
+I was wondering how badly this is abusing the guarantees of ConcurrentSkipListMap, and what makes the remove fail?
+
+Here is some code that reproduces (tried with Java 8u241 and 13.0.2):
+
+
+public class ConcurrentSkipListMapMissingRemove {
+    private final static AtomicLong SEQUENCE_CREATOR = new AtomicLong();
+    private final static Comparator<DummyTimer> myTimerComparator = Comparator.comparing(DummyTimer::getSequence);
+    private final static ConcurrentSkipListMap<DummyTimer, Long> theTimers = new ConcurrentSkipListMap<>(myTimerComparator);
+
+    public static void main(String[] args) throws InterruptedException {
+        for (int i = 0; i < 10; ++i) {
+            CompletableFuture.runAsync(() -> {
+                DummyTimer myDummyTimer = new DummyTimer();
+                myDummyTimer.start();
+
+                while (true) {
+                    myDummyTimer.restart();
+                }
+            });
+        }
+
+        Thread.sleep(100_000_000);
+    }
+
+    private static class DummyTimer {
+        private volatile long theSequence;
+
+        void start() {
+            add();
+        }
+
+        void restart() {
+            remove();
+            theSequence = SEQUENCE_CREATOR.getAndIncrement();
+            add();
+        }
+
+        private void add() {
+            theTimers.put(this, theSequence);
+        }
+
+        private void remove() {
+            if (theTimers.remove(this) == null) {
+                System.out.println("Ooops, failed to remove...");
+            }
+        }
+
+        public long getSequence() {
+            return theSequence;
+        }
+    }
+}
+
+Thanks,
+
+Alex
+[Image removed by sender. IMC Logo]<https://www.imc.com/us/>
+
+[Image removed by sender. F]<https://www.facebook.com/IMCTrading>
+
+
+[Image removed by sender. t]<http://twitter.com/IMCTrading>
+
+
+[Image removed by sender. I]<https://www.instagram.com/imctrading/>
+
+
+[Image removed by sender. in]<https://www.linkedin.com/company/imc-financial-markets>
+
+
+imc.com<https://www.imc.com/us/>
+
+
+________________________________
+The information in this e-mail is intended only for the person or entity to which it is addressed.
+
+It may contain confidential and /or privileged material. If you are not the intended recipient, please notify us immediately and delete it from your system. Any other use or disclosure by you, including through automated tools operating on your systems is prohibited.
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu<mailto:Concurrency-interest at cs.oswego.edu>
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+[IMC Logo]<https://www.imc.com/us/>
+
+[F]<https://www.facebook.com/IMCTrading>
+
+
+[t]<http://twitter.com/IMCTrading>
+
+
+[I]<https://www.instagram.com/imctrading/>
+
+
+[in]<https://www.linkedin.com/company/imc-financial-markets>
+
+
+imc.com<https://www.imc.com/us/>
+
+
+________________________________
+The information in this e-mail is intended only for the person or entity to which it is addressed.
+
+It may contain confidential and /or privileged material. If you are not the intended recipient, please notify us immediately and delete it from your system. Any other use or disclosure by you, including through automated tools operating on your systems is prohibited.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200604/cded809e/attachment-0001.htm>
+
+From martinrb at google.com  Thu Jun  4 00:08:53 2020
+From: martinrb at google.com (Martin Buchholz)
+Date: Wed, 3 Jun 2020 21:08:53 -0700
+Subject: [concurrency-interest] ConcurrentSkipListMap visibility
+ guarantees
+In-Reply-To: <83D3EF3A-F61F-4619-A41F-F2CBC706CA32@imc.com>
+References: <60EA08BF-5FDF-488D-BF8B-7F403FC6C66E@imc.com>
+ <CA+kOe08-Co+oZB7TL8BJ-xfz6JYfnUoBK0JdPUsL=xyi6SuOTw@mail.gmail.com>
+ <83D3EF3A-F61F-4619-A41F-F2CBC706CA32@imc.com>
+Message-ID: <CA+kOe0_ae+dotiNwo_=w2Cb_Wp+1WsJ=MxGSmt2i=izijPr9QQ@mail.gmail.com>
+
+The comparator is called with two keys in the map.  Even normally, the map
+has to deal with the possibility of a key being asynchronously removed
+while the comparator is running.  But it's really too much to expect that
+the map will be able to sanely handle the value of the key changing and
+being reinserted elsewhere in the map while the comparator is running.
+
+Another way to look at it is that a key might be in use by a comparator for
+an arbitrarily long time after it has been removed, so the key object can
+never be mutated and reused.
+
+On Wed, Jun 3, 2020 at 8:23 PM Alexandre De Champeaux <
+alexandre.dechampeaux at imc.com> wrote:
+
+> Ah yes, I dumbed down the example too much…
+>
+>
+>
+> Here it is again (But now with theSequence being updated inside add):
+>
+>
+>
+> public class ConcurrentSkipListMapMissingRemove {
+>
+>     private final static AtomicLong SEQUENCE_CREATOR = new AtomicLong();
+>
+>     private final static Comparator<DummyTimer> COMPARATOR =
+> Comparator.comparing(DummyTimer::getSequence);
+>
+>     private final static ConcurrentSkipListMap<DummyTimer, Long> TIMERS =
+> new ConcurrentSkipListMap<>(COMPARATOR);
+>
+>
+>
+>     public static void main(String[] args) throws InterruptedException {
+>
+>         for (int i = 0; i < 10; ++i) {
+>
+>             CompletableFuture.runAsync(() -> {
+>
+>                 DummyTimer myDummyTimer = new DummyTimer();
+>
+>                 myDummyTimer.start();
+>
+>
+>
+>                 while (true) {
+>
+>                     myDummyTimer.restart();
+>
+>                 }
+>
+>             });
+>
+>         }
+>
+>
+>
+>         Thread.sleep(100_000_000);
+>
+>     }
+>
+>
+>
+>     private static class DummyTimer {
+>
+>         private volatile long theSequence;
+>
+>
+>
+>         void start() {
+>
+>             add();
+>
+>         }
+>
+>
+>
+>         void restart() {
+>
+>             remove();
+>
+>             add();
+>
+>         }
+>
+>
+>
+>         private void add() {
+>
+>             theSequence = SEQUENCE_CREATOR.getAndIncrement();
+>
+>             TIMERS.put(this, theSequence);
+>
+>         }
+>
+>
+>
+>         private void remove() {
+>
+>             if (TIMERS.remove(this) == null) {
+>
+>                 System.out.println("Ooops, failed to remove...");
+>
+>             }
+>
+>         }
+>
+>
+>
+>         public long getSequence() {
+>
+>             return theSequence;
+>
+>         }
+>
+>     }
+>
+> }
+>
+>
+>
+> *From: *Martin Buchholz <martinrb at google.com>
+> *Date: *Thursday, 4 June 2020 at 12:11 pm
+> *To: *Alexandre De Champeaux <alexandre.dechampeaux at imc.com>
+> *Cc: *"concurrency-interest at cs.oswego.edu" <
+> concurrency-interest at cs.oswego.edu>
+> *Subject: *Re: [concurrency-interest] ConcurrentSkipListMap visibility
+> guarantees
+>
+>
+>
+> DummyTimer has no constructor, so they are all created with a sequence of
+> zero, so initially they compare equal, so the map considers them
+> equivalent, and so the initial add may fail.
+>
+>
+>
+> On Wed, Jun 3, 2020 at 6:00 PM Alexandre De Champeaux via
+> Concurrency-interest <concurrency-interest at cs.oswego.edu> wrote:
+>
+> Hello concurrency interest,
+>
+>
+>
+> I just came across some old code that concurrently does the following:
+>
+>    1. Remove Object o from ConcurrentSkipListMap
+>    2. Mutate Object o
+>    3. Add Object o back
+>
+> Sometimes, the remove will fail.
+>
+>
+>
+> I was wondering how badly this is abusing the guarantees of
+> ConcurrentSkipListMap, and what makes the remove fail?
+>
+>
+>
+> Here is some code that reproduces (tried with Java 8u241 and 13.0.2):
+>
+>
+>
+>
+>
+> public class ConcurrentSkipListMapMissingRemove {
+>
+>     private final static AtomicLong SEQUENCE_CREATOR = new AtomicLong();
+>
+>     private final static Comparator<DummyTimer> myTimerComparator =
+> Comparator.comparing(DummyTimer::getSequence);
+>
+>     private final static ConcurrentSkipListMap<DummyTimer, Long> theTimers
+> = new ConcurrentSkipListMap<>(myTimerComparator);
+>
+>
+>
+>     public static void main(String[] args) throws InterruptedException {
+>
+>         for (int i = 0; i < 10; ++i) {
+>
+>             CompletableFuture.runAsync(() -> {
+>
+>                 DummyTimer myDummyTimer = new DummyTimer();
+>
+>                 myDummyTimer.start();
+>
+>
+>
+>                 while (true) {
+>
+>                     myDummyTimer.restart();
+>
+>                 }
+>
+>             });
+>
+>         }
+>
+>
+>
+>         Thread.sleep(100_000_000);
+>
+>     }
+>
+>
+>
+>     private static class DummyTimer {
+>
+>         private volatile long theSequence;
+>
+>
+>
+>         void start() {
+>
+>             add();
+>
+>         }
+>
+>
+>
+>         void restart() {
+>
+>             remove();
+>
+>             theSequence = SEQUENCE_CREATOR.getAndIncrement();
+>
+>             add();
+>
+>         }
+>
+>
+>
+>         private void add() {
+>
+>             theTimers.put(this, theSequence);
+>
+>         }
+>
+>
+>
+>         private void remove() {
+>
+>             if (theTimers.remove(this) == null) {
+>
+>                 System.out.println("Ooops, failed to remove...");
+>
+>             }
+>
+>         }
+>
+>
+>
+>         public long getSequence() {
+>
+>             return theSequence;
+>
+>         }
+>
+>     }
+>
+> }
+>
+>
+>
+> Thanks,
+>
+>
+>
+> Alex
+>
+> [image: Image removed by sender. IMC Logo] <https://www.imc.com/us/>
+>
+> [image: Image removed by sender. F] <https://www.facebook.com/IMCTrading>
+>
+> [image: Image removed by sender. t] <http://twitter.com/IMCTrading>
+>
+> [image: Image removed by sender. I]
+> <https://www.instagram.com/imctrading/>
+>
+> [image: Image removed by sender. in]
+> <https://www.linkedin.com/company/imc-financial-markets>
+>
+> *imc.com* <https://www.imc.com/us/>
+> ------------------------------
+>
+> The information in this e-mail is intended only for the person or entity
+> to which it is addressed.
+>
+>
+> It may contain confidential and /or privileged material. If you are not
+> the intended recipient, please notify us immediately and delete it from
+> your system. Any other use or disclosure by you, including through
+> automated tools operating on your systems is prohibited.
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> [image: IMC Logo] <https://www.imc.com/us/>
+>
+> [image: F] <https://www.facebook.com/IMCTrading>
+>
+> [image: t] <http://twitter.com/IMCTrading>
+>
+> [image: I] <https://www.instagram.com/imctrading/>
+>
+> [image: in] <https://www.linkedin.com/company/imc-financial-markets>
+>
+> *imc.com* <https://www.imc.com/us/>
+> ------------------------------
+> The information in this e-mail is intended only for the person or entity
+> to which it is addressed.
+>
+> It may contain confidential and /or privileged material. If you are not
+> the intended recipient, please notify us immediately and delete it from
+> your system. Any other use or disclosure by you, including through
+> automated tools operating on your systems is prohibited.
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200603/4eafc2c6/attachment-0001.htm>
+
+From alexandre.dechampeaux at imc.com  Thu Jun  4 19:16:33 2020
+From: alexandre.dechampeaux at imc.com (Alexandre De Champeaux)
+Date: Thu, 4 Jun 2020 23:16:33 +0000
+Subject: [concurrency-interest] ConcurrentSkipListMap visibility
+ guarantees
+In-Reply-To: <CA+kOe0_ae+dotiNwo_=w2Cb_Wp+1WsJ=MxGSmt2i=izijPr9QQ@mail.gmail.com>
+References: <60EA08BF-5FDF-488D-BF8B-7F403FC6C66E@imc.com>
+ <CA+kOe08-Co+oZB7TL8BJ-xfz6JYfnUoBK0JdPUsL=xyi6SuOTw@mail.gmail.com>
+ <83D3EF3A-F61F-4619-A41F-F2CBC706CA32@imc.com>
+ <CA+kOe0_ae+dotiNwo_=w2Cb_Wp+1WsJ=MxGSmt2i=izijPr9QQ@mail.gmail.com>
+Message-ID: <7E5E5775-957B-410D-8166-202C1EF7B754@imc.com>
+
+Thanks for the quick reply Martin.
+
+That does sound pretty fair.
+
+From: Martin Buchholz <martinrb at google.com>
+Date: Thursday, 4 June 2020 at 2:09 pm
+To: Alexandre De Champeaux <alexandre.dechampeaux at imc.com>
+Cc: "concurrency-interest at cs.oswego.edu" <concurrency-interest at cs.oswego.edu>
+Subject: Re: [concurrency-interest] ConcurrentSkipListMap visibility guarantees
+
+The comparator is called with two keys in the map.  Even normally, the map has to deal with the possibility of a key being asynchronously removed while the comparator is running.  But it's really too much to expect that the map will be able to sanely handle the value of the key changing and being reinserted elsewhere in the map while the comparator is running.
+
+Another way to look at it is that a key might be in use by a comparator for an arbitrarily long time after it has been removed, so the key object can never be mutated and reused.
+
+On Wed, Jun 3, 2020 at 8:23 PM Alexandre De Champeaux <alexandre.dechampeaux at imc.com<mailto:alexandre.dechampeaux at imc.com>> wrote:
+Ah yes, I dumbed down the example too much…
+
+Here it is again (But now with theSequence being updated inside add):
+
+public class ConcurrentSkipListMapMissingRemove {
+    private final static AtomicLong SEQUENCE_CREATOR = new AtomicLong();
+    private final static Comparator<DummyTimer> COMPARATOR = Comparator.comparing(DummyTimer::getSequence);
+    private final static ConcurrentSkipListMap<DummyTimer, Long> TIMERS = new ConcurrentSkipListMap<>(COMPARATOR);
+
+    public static void main(String[] args) throws InterruptedException {
+        for (int i = 0; i < 10; ++i) {
+            CompletableFuture.runAsync(() -> {
+                DummyTimer myDummyTimer = new DummyTimer();
+                myDummyTimer.start();
+
+                while (true) {
+                    myDummyTimer.restart();
+                }
+            });
+        }
+
+        Thread.sleep(100_000_000);
+    }
+
+    private static class DummyTimer {
+        private volatile long theSequence;
+
+        void start() {
+            add();
+        }
+
+        void restart() {
+            remove();
+            add();
+        }
+
+        private void add() {
+            theSequence = SEQUENCE_CREATOR.getAndIncrement();
+            TIMERS.put(this, theSequence);
+        }
+
+        private void remove() {
+            if (TIMERS.remove(this) == null) {
+                System.out.println("Ooops, failed to remove...");
+            }
+        }
+
+        public long getSequence() {
+            return theSequence;
+        }
+    }
+}
+
+From: Martin Buchholz <martinrb at google.com<mailto:martinrb at google.com>>
+Date: Thursday, 4 June 2020 at 12:11 pm
+To: Alexandre De Champeaux <alexandre.dechampeaux at imc.com<mailto:alexandre.dechampeaux at imc.com>>
+Cc: "concurrency-interest at cs.oswego.edu<mailto:concurrency-interest at cs.oswego.edu>" <concurrency-interest at cs.oswego.edu<mailto:concurrency-interest at cs.oswego.edu>>
+Subject: Re: [concurrency-interest] ConcurrentSkipListMap visibility guarantees
+
+DummyTimer has no constructor, so they are all created with a sequence of zero, so initially they compare equal, so the map considers them equivalent, and so the initial add may fail.
+
+On Wed, Jun 3, 2020 at 6:00 PM Alexandre De Champeaux via Concurrency-interest <concurrency-interest at cs.oswego.edu<mailto:concurrency-interest at cs.oswego.edu>> wrote:
+Hello concurrency interest,
+
+I just came across some old code that concurrently does the following:
+
+  1.  Remove Object o from ConcurrentSkipListMap
+  2.  Mutate Object o
+  3.  Add Object o back
+Sometimes, the remove will fail.
+
+I was wondering how badly this is abusing the guarantees of ConcurrentSkipListMap, and what makes the remove fail?
+
+Here is some code that reproduces (tried with Java 8u241 and 13.0.2):
+
+
+public class ConcurrentSkipListMapMissingRemove {
+    private final static AtomicLong SEQUENCE_CREATOR = new AtomicLong();
+    private final static Comparator<DummyTimer> myTimerComparator = Comparator.comparing(DummyTimer::getSequence);
+    private final static ConcurrentSkipListMap<DummyTimer, Long> theTimers = new ConcurrentSkipListMap<>(myTimerComparator);
+
+    public static void main(String[] args) throws InterruptedException {
+        for (int i = 0; i < 10; ++i) {
+            CompletableFuture.runAsync(() -> {
+                DummyTimer myDummyTimer = new DummyTimer();
+                myDummyTimer.start();
+
+                while (true) {
+                    myDummyTimer.restart();
+                }
+            });
+        }
+
+        Thread.sleep(100_000_000);
+    }
+
+    private static class DummyTimer {
+        private volatile long theSequence;
+
+        void start() {
+            add();
+        }
+
+        void restart() {
+            remove();
+            theSequence = SEQUENCE_CREATOR.getAndIncrement();
+            add();
+        }
+
+        private void add() {
+            theTimers.put(this, theSequence);
+        }
+
+        private void remove() {
+            if (theTimers.remove(this) == null) {
+                System.out.println("Ooops, failed to remove...");
+            }
+        }
+
+        public long getSequence() {
+            return theSequence;
+        }
+    }
+}
+
+Thanks,
+
+Alex
+Error! Filename not specified.<https://www.imc.com/us/>
+
+Error! Filename not specified.<https://www.facebook.com/IMCTrading>
+
+
+Error! Filename not specified.<http://twitter.com/IMCTrading>
+
+
+Error! Filename not specified.<https://www.instagram.com/imctrading/>
+
+
+Error! Filename not specified.<https://www.linkedin.com/company/imc-financial-markets>
+
+
+imc.com<https://www.imc.com/us/>
+
+
+________________________________
+The information in this e-mail is intended only for the person or entity to which it is addressed.
+
+It may contain confidential and /or privileged material. If you are not the intended recipient, please notify us immediately and delete it from your system. Any other use or disclosure by you, including through automated tools operating on your systems is prohibited.
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu<mailto:Concurrency-interest at cs.oswego.edu>
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+[Image removed by sender. IMC Logo]<https://www.imc.com/us/>
+
+[Image removed by sender. F]<https://www.facebook.com/IMCTrading>
+
+
+[Image removed by sender. t]<http://twitter.com/IMCTrading>
+
+
+[Image removed by sender. I]<https://www.instagram.com/imctrading/>
+
+
+[Image removed by sender. in]<https://www.linkedin.com/company/imc-financial-markets>
+
+
+imc.com<https://www.imc.com/us/>
+
+
+________________________________
+The information in this e-mail is intended only for the person or entity to which it is addressed.
+
+It may contain confidential and /or privileged material. If you are not the intended recipient, please notify us immediately and delete it from your system. Any other use or disclosure by you, including through automated tools operating on your systems is prohibited.
+[IMC Logo]<https://www.imc.com/us/>
+
+[F]<https://www.facebook.com/IMCTrading>
+
+
+[t]<http://twitter.com/IMCTrading>
+
+
+[I]<https://www.instagram.com/imctrading/>
+
+
+[in]<https://www.linkedin.com/company/imc-financial-markets>
+
+
+imc.com<https://www.imc.com/us/>
+
+
+________________________________
+The information in this e-mail is intended only for the person or entity to which it is addressed.
+
+It may contain confidential and /or privileged material. If you are not the intended recipient, please notify us immediately and delete it from your system. Any other use or disclosure by you, including through automated tools operating on your systems is prohibited.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20200604/87afdab6/attachment-0001.htm>
+

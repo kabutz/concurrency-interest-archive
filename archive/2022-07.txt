@@ -1,0 +1,260 @@
+Subject: [concurrency-interest] Regression in LinkedTransferQueue since JDK17?
+From: Matthew Swift via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-07-05, 20:00
+To: concurrency-interest@cs.oswego.edu
+Reply-To: Matthew Swift <matthew.swift@gmail.com>
+
+Hello!
+
+Our application contains a work queue based on LinkedTransferQueue. After some initial load, I leave the server idle only to notice that one of the subscriber threads is spinning after a period of time.
+
+I've only noticed this problem while testing on 17.0.3 as well as the version of JDK18 currently shipped with Ubuntu 22.04 LTS (build 18-ea+36-Ubuntu-1 - sorry, no idea what this version really means). I suspect the problem is related to a recent refactoring in LTQ: https://bugs.openjdk.org/browse/JDK-8246677
+
+I've managed to implement a test case that reliably fails after a few minutes (attached). When running under the debugger I can see a single subscriber thread is spinning in java.util.concurrent.LinkedTransferQueue#awaitMatch while performing a timed poll():
+
+       while ((item = s.item) == e) {
+            if (needSweep)                               // FALSE
+                sweep();
+            else if ((timed && nanos <= 0L) || w.isInterrupted()) {
+                if (s.casItem(e, (e == null) ? s : null)) {
+                    unsplice(pred, s);   // cancelled
+                    return e;
+                }
+            }
+            else if (stat <= 0) {                       // TRUE (stat = 0)
+                if (pred != null && pred.next == s) {   // FALSE (pred != null but pred.next != s)
+                    if (stat < 0 &&
+                        (pred.isData != isData || pred.isMatched())) {
+                        stat = 0;
+                        Thread.yield();
+                    }
+                    else {
+                        stat = 1;
+                        s.waiter = w; 
+                    }
+                }
+            }
+            ...
+        }
+
+It's as if the subscribers race each other to poll the empty queue eventually causing one of the subscribers to get stuck in an infinite loop.
+Cheers,
+Matt
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+Attachments:
+LinkedTransferQueueTest.java	2.4 KB
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Regression in LinkedTransferQueue since JDK17?
+From: Doug Lea via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-07-06, 17:18
+To: concurrency-interest@cs.oswego.edu
+Reply-To: Doug Lea <dl@cs.oswego.edu>
+
+Thanks for reporting this! Sorry for problems. This anomaly/bug was a byproduct of changes to better support VirtualThreads, when they were being developed pre-JDK19 and there was no way distinguish them. It seemed innocuous but needs fixing. Now that there are methods that allow detection, we can use them here, and back-port rollback for pre-JDK19.
+
+ -Doug
+
+
+On 7/5/22 13:00, Matthew Swift via Concurrency-interest wrote:
+> Hello!
+>
+> Our application contains a work queue based on LinkedTransferQueue. After some initial load, I leave the server idle only to notice that one of the subscriber threads is spinning after a period of time.
+>
+> I've only noticed this problem while testing on 17.0.3 as well as the version of JDK18 currently shipped with Ubuntu 22.04 LTS (build 18-ea+36-Ubuntu-1 - sorry, no idea what this version really means). I suspect the problem is related to a recent refactoring in LTQ: https://bugs.openjdk.org/browse/JDK-8246677
+>
+> I've managed to implement a test case that reliably fails after a few minutes (attached). When running under the debugger I can see a single subscriber thread is spinning in java.util.concurrent.LinkedTransferQueue#awaitMatch while performing a timed poll():
+>
+>        while ((item = s.item) == e) {
+>             if (needSweep)                               // FALSE
+>                 sweep();
+>             else if ((timed && nanos <= 0L) || w.isInterrupted()) {
+>                 if (s.casItem(e, (e == null) ? s : null)) {
+>                     unsplice(pred, s);   // cancelled
+>                     return e;
+>                 }
+>             }
+>             else if (stat <= 0) {  // TRUE (stat = 0)
+>                 if (pred != null && pred.next == s) {   // FALSE (pred != null but pred.next != s)
+>                     if (stat < 0 &&
+>                         (pred.isData != isData || pred.isMatched())) {
+>                         stat = 0;
+>                         Thread.yield();
+>                     }
+>                     else {
+>                         stat = 1;
+>                         s.waiter = w;
+>                     }
+>                 }
+>             }
+>             ...
+>         }
+>
+> It's as if the subscribers race each other to poll the empty queue eventually causing one of the subscribers to get stuck in an infinite loop.
+> Cheers,
+> Matt
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest@cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Regression in LinkedTransferQueue since JDK17?
+From: Matthew Swift via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-07-07, 16:23
+To: Doug Lea <dl@cs.oswego.edu>
+CC: concurrency-interest@cs.oswego.edu
+Reply-To: Matthew Swift <matthew.swift@gmail.com>
+
+Thanks for the quick response.
+I'll switch our application over to LinkedBlockingQueue for now in that case.
+Do you know if there is an existing JDK bug tracking this issue which I can monitor to know when it's safe to switch back to LTQ? I couldn't find any obvious bug reports among the public JIRA issues.
+
+Kind regards,
+Matt
+
+
+On Wed, 6 Jul 2022 at 20:31, Dr Heinz M. Kabutz via Concurrency-interest <concurrency-interest@cs.oswego.edu> wrote:
+
+    I noticed today that LinkedTransferQueue is used in the
+    sun.nio.ch.Poller class. Until this is fixed, would it be wiser to use
+    LinkedBlockingQueue instead?
+
+    Regards
+
+    Heinz
+    -- 
+    Dr Heinz M. Kabutz (PhD CompSci)
+    Author of "The Java™ Specialists' Newsletter" - www.javaspecialists.eu
+    Java Champion - www.javachampions.org
+    JavaOne Rock Star Speaker
+    Tel: +30 69 75 595 262
+    Skype: kabutz
+
+    On 2022/07/06 17:18, Doug Lea via Concurrency-interest wrote:
+    > Thanks for reporting this! Sorry for problems. This anomaly/bug was a
+    > byproduct of changes to better support VirtualThreads, when they were
+    > being developed pre-JDK19 and there was no way distinguish them. It
+    > seemed innocuous but needs fixing. Now that there are methods that
+    > allow detection, we can use them here, and back-port rollback for
+    > pre-JDK19.
+    >
+    >  -Doug
+    >
+    >
+    > On 7/5/22 13:00, Matthew Swift via Concurrency-interest wrote:
+    >> Hello!
+    >>
+    >> Our application contains a work queue based on LinkedTransferQueue.
+    >> After some initial load, I leave the server idle only to notice that
+    >> one of the subscriber threads is spinning after a period of time.
+    >>
+    >> I've only noticed this problem while testing on 17.0.3 as well as the
+    >> version of JDK18 currently shipped with Ubuntu 22.04 LTS (build
+    >> 18-ea+36-Ubuntu-1 - sorry, no idea what this version really means). I
+    >> suspect the problem is related to a recent refactoring in LTQ:
+    >> https://bugs.openjdk.org/browse/JDK-8246677
+    >>
+    >> I've managed to implement a test case that reliably fails after a few
+    >> minutes (attached). When running under the debugger I can see a
+    >> single subscriber thread is spinning
+    >> in java.util.concurrent.LinkedTransferQueue#awaitMatch while
+    >> performing a timed poll():
+    >>
+    >>        while ((item = s.item) == e) {
+    >>             if (needSweep)                               // FALSE
+    >>                 sweep();
+    >>             else if ((timed && nanos <= 0L) || w.isInterrupted()) {
+    >>                 if (s.casItem(e, (e == null) ? s : null)) {
+    >>                     unsplice(pred, s);   // cancelled
+    >>                     return e;
+    >>                 }
+    >>             }
+    >>             else if (stat <= 0) {  // TRUE (stat = 0)
+    >>                 if (pred != null && pred.next == s) {  // FALSE (pred
+    >> != null but pred.next != s)
+    >>                     if (stat < 0 &&
+    >>                         (pred.isData != isData || pred.isMatched())) {
+    >>                         stat = 0;
+    >>                         Thread.yield();
+    >>                     }
+    >>                     else {
+    >>                         stat = 1;
+    >>                         s.waiter = w;
+    >>                     }
+    >>                 }
+    >>             }
+    >>             ...
+    >>         }
+    >>
+    >> It's as if the subscribers race each other to poll the empty queue
+    >> eventually causing one of the subscribers to get stuck in an infinite
+    >> loop.
+    >> Cheers,
+    >> Matt
+    >>
+    >>
+    >> _______________________________________________
+    >> Concurrency-interest mailing list
+    >> Concurrency-interest@cs.oswego.edu
+    >> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+    > _______________________________________________
+    > Concurrency-interest mailing list
+    > Concurrency-interest@cs.oswego.edu
+    > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+    _______________________________________________
+    Concurrency-interest mailing list
+    Concurrency-interest@cs.oswego.edu
+    http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+-------------------------
+
+Subject: Re: [concurrency-interest] Concurrency-interest Digest, Vol 205, Issue 2
+From: 5015039959--- via Concurrency-interest <concurrency-interest@cs.oswego.edu>
+Date: 2022-07-07, 19:01
+To: <concurrency-interest@cs.oswego.edu>
+Reply-To: 5015039959@txt.att.net
+
+Stop
+
+  -----Original Message-----
+  From: <concurrency-interest@cs.oswego.edu>
+  Sent: Thu, 07 Jul 2022 12:00:01 -0400
+  To: 5015039959@txt.att.net
+ Subject: Concurrency-interest Digest, Vol 205, Issue 2
+
+> >Send Concurrency-interest mailing list submissions to
+> >	concurrency-interest@cs.oswego.edu
+> >
+> >To subscribe or unsubscribe via the World Wide Web, visit
+> >	http://cs.oswego.edu/mai
+
+==================================================================
+This mobile text message is brought to you by AT&T
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest@cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest

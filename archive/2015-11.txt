@@ -1,0 +1,3083 @@
+From thurston at nomagicsoftware.com  Sun Nov  1 15:57:47 2015
+From: thurston at nomagicsoftware.com (thurstonn)
+Date: Sun, 1 Nov 2015 13:57:47 -0700 (MST)
+Subject: [concurrency-interest] Runtime intrinsic info
+In-Reply-To: <56353DEE.10500@oracle.com>
+References: <1446324027653-12850.post@n7.nabble.com>
+	<56353DEE.10500@oracle.com>
+Message-ID: <1446411467203-12853.post@n7.nabble.com>
+
+So when I use +PrintInlining I see pretty much what I expect (e.g. the Unsafe
+CAS methods), but Unsafe#getAndSetObject isn't there, although it's listed
+in the jdk 8 vmSymbols.hpp file.
+
+I'm using Oracle's JDK 1.8.0_45, so it really should be intrinsified, but
+maybe it's not among the methods that are always intrinsified?  Why would
+that be?
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/Runtime-intrinsic-info-tp12850p12853.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From vladimir.x.ivanov at oracle.com  Mon Nov  2 09:57:30 2015
+From: vladimir.x.ivanov at oracle.com (Vladimir Ivanov)
+Date: Mon, 2 Nov 2015 17:57:30 +0300
+Subject: [concurrency-interest] Runtime intrinsic info
+In-Reply-To: <1446411467203-12853.post@n7.nabble.com>
+References: <1446324027653-12850.post@n7.nabble.com>
+	<56353DEE.10500@oracle.com> <1446411467203-12853.post@n7.nabble.com>
+Message-ID: <563779DA.5070806@oracle.com>
+
+Can you share the test case? I don't see any obvious reasons why 
+Unsafe.getAndSetObject isn't intrinsified in your case.
+
+Best regards,
+Vladimir Ivanov
+
+On 11/1/15 11:57 PM, thurstonn wrote:
+> So when I use +PrintInlining I see pretty much what I expect (e.g. the Unsafe
+> CAS methods), but Unsafe#getAndSetObject isn't there, although it's listed
+> in the jdk 8 vmSymbols.hpp file.
+>
+> I'm using Oracle's JDK 1.8.0_45, so it really should be intrinsified, but
+> maybe it's not among the methods that are always intrinsified?  Why would
+> that be?
+>
+>
+>
+> --
+> View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/Runtime-intrinsic-info-tp12850p12853.html
+> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From thurston at nomagicsoftware.com  Mon Nov  2 18:05:59 2015
+From: thurston at nomagicsoftware.com (thurstonn)
+Date: Mon, 2 Nov 2015 16:05:59 -0700 (MST)
+Subject: [concurrency-interest] Runtime intrinsic info
+In-Reply-To: <563779DA.5070806@oracle.com>
+References: <1446324027653-12850.post@n7.nabble.com>
+	<56353DEE.10500@oracle.com>
+	<1446411467203-12853.post@n7.nabble.com>
+	<563779DA.5070806@oracle.com>
+Message-ID: <1446505559760-12855.post@n7.nabble.com>
+
+So after a variety of trial and error, the output shows that
+AtomicReference#getAndSet is being inlined and 
+sun.misc.Unsafe::getAndSetObject is marked intrinsic.
+
+It must have been a case where I was initially using a local AtomicReference
+that the JVM identified as being only accessible from a single thread?
+
+
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/Runtime-intrinsic-info-tp12850p12855.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From vladimir.x.ivanov at oracle.com  Tue Nov  3 06:25:12 2015
+From: vladimir.x.ivanov at oracle.com (Vladimir Ivanov)
+Date: Tue, 3 Nov 2015 14:25:12 +0300
+Subject: [concurrency-interest] Runtime intrinsic info
+In-Reply-To: <1446505559760-12855.post@n7.nabble.com>
+References: <1446324027653-12850.post@n7.nabble.com>
+	<56353DEE.10500@oracle.com> <1446411467203-12853.post@n7.nabble.com>
+	<563779DA.5070806@oracle.com> <1446505559760-12855.post@n7.nabble.com>
+Message-ID: <56389998.4000902@oracle.com>
+
+I don't believe HotSpot C2 can eliminate Unsafe::getAndSetObject if it 
+is accessible from a single thread.
+
+If Unsafe::getAndSetObject isn't present in compilation output, it means 
+JIT didn't compile the call site at all. Effectively dead code maybe?
+
+Otherwise, if intrinsic substitution failed, the call should be reported 
+as a native call. But Unsafe::getAndSetObject should be present in 
+compilation log irrespectively of whether the method was intrinsified or 
+not.
+
+So, I'd like to see the test case anyway to understand what is going on.
+
+Best regards,
+Vladimir Ivanov
+
+On 11/3/15 2:05 AM, thurstonn wrote:
+> So after a variety of trial and error, the output shows that
+> AtomicReference#getAndSet is being inlined and
+> sun.misc.Unsafe::getAndSetObject is marked intrinsic.
+>
+> It must have been a case where I was initially using a local AtomicReference
+> that the JVM identified as being only accessible from a single thread?
+>
+>
+>
+>
+>
+> --
+> View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/Runtime-intrinsic-info-tp12850p12855.html
+> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From nathan.reynolds at oracle.com  Tue Nov  3 08:44:02 2015
+From: nathan.reynolds at oracle.com (Nathan Reynolds)
+Date: Tue, 3 Nov 2015 06:44:02 -0700
+Subject: [concurrency-interest] Runtime intrinsic info
+In-Reply-To: <56389998.4000902@oracle.com>
+References: <1446324027653-12850.post@n7.nabble.com>
+	<56353DEE.10500@oracle.com> <1446411467203-12853.post@n7.nabble.com>
+	<563779DA.5070806@oracle.com> <1446505559760-12855.post@n7.nabble.com>
+	<56389998.4000902@oracle.com>
+Message-ID: <5638BA22.1060209@oracle.com>
+
+HotSpot has logic to detect if running on a 1 core/processor machine.  
+The default behavior was to change each atomic instruction into 1 
+regular instruction.  Since there is only 1 processor, the 1 regular 
+instruction's impact is atomic since a context switch can't split an 
+instruction's impact.  The default behavior was changed to keep the 
+atomic instructions and with a command line switch to turn it on.  Thus, 
+one could dynamically add processors and not cause problems in the 
+compiled code.
+
+This is a long shot... could it be that HotSpot eliminated the 
+Unsafe::getAndSetObject because HotSpot is converting it into a regular 
+instruction?  It seems the compilation log would still say something 
+about it.
+
+-Nathan
+
+On 11/3/2015 4:25 AM, Vladimir Ivanov wrote:
+> I don't believe HotSpot C2 can eliminate Unsafe::getAndSetObject if it 
+> is accessible from a single thread.
+>
+> If Unsafe::getAndSetObject isn't present in compilation output, it 
+> means JIT didn't compile the call site at all. Effectively dead code 
+> maybe?
+>
+> Otherwise, if intrinsic substitution failed, the call should be 
+> reported as a native call. But Unsafe::getAndSetObject should be 
+> present in compilation log irrespectively of whether the method was 
+> intrinsified or not.
+>
+> So, I'd like to see the test case anyway to understand what is going on.
+>
+> Best regards,
+> Vladimir Ivanov
+>
+> On 11/3/15 2:05 AM, thurstonn wrote:
+>> So after a variety of trial and error, the output shows that
+>> AtomicReference#getAndSet is being inlined and
+>> sun.misc.Unsafe::getAndSetObject is marked intrinsic.
+>>
+>> It must have been a case where I was initially using a local 
+>> AtomicReference
+>> that the JVM identified as being only accessible from a single thread?
+>>
+>>
+>>
+>>
+>>
+>> -- 
+>> View this message in context: 
+>> http://jsr166-concurrency.10961.n7.nabble.com/Runtime-intrinsic-info-tp12850p12855.html
+>> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151103/78559f02/attachment.html>
+
+From vitalyd at gmail.com  Tue Nov  3 09:23:41 2015
+From: vitalyd at gmail.com (Vitaly Davidovich)
+Date: Tue, 3 Nov 2015 09:23:41 -0500
+Subject: [concurrency-interest] Runtime intrinsic info
+In-Reply-To: <5638BA22.1060209@oracle.com>
+References: <1446324027653-12850.post@n7.nabble.com>
+	<56353DEE.10500@oracle.com>
+	<1446411467203-12853.post@n7.nabble.com>
+	<563779DA.5070806@oracle.com>
+	<1446505559760-12855.post@n7.nabble.com>
+	<56389998.4000902@oracle.com> <5638BA22.1060209@oracle.com>
+Message-ID: <CAHjP37Ei01nfygtcyPX_M1FdpE3HXSEifm4dnFxV0ZivZW7oig@mail.gmail.com>
+
+I just tried using a local AtomicReference, and 8u51 does not EA it out and
+shows intrinsic info.
+
+On Tue, Nov 3, 2015 at 8:44 AM, Nathan Reynolds <nathan.reynolds at oracle.com>
+wrote:
+
+> HotSpot has logic to detect if running on a 1 core/processor machine.  The
+> default behavior was to change each atomic instruction into 1 regular
+> instruction.  Since there is only 1 processor, the 1 regular instruction's
+> impact is atomic since a context switch can't split an instruction's
+> impact.  The default behavior was changed to keep the atomic instructions
+> and with a command line switch to turn it on.  Thus, one could dynamically
+> add processors and not cause problems in the compiled code.
+>
+> This is a long shot... could it be that HotSpot eliminated the
+> Unsafe::getAndSetObject because HotSpot is converting it into a regular
+> instruction?  It seems the compilation log would still say something about
+> it.
+>
+> -Nathan
+>
+> On 11/3/2015 4:25 AM, Vladimir Ivanov wrote:
+>
+> I don't believe HotSpot C2 can eliminate Unsafe::getAndSetObject if it is
+> accessible from a single thread.
+>
+> If Unsafe::getAndSetObject isn't present in compilation output, it means
+> JIT didn't compile the call site at all. Effectively dead code maybe?
+>
+> Otherwise, if intrinsic substitution failed, the call should be reported
+> as a native call. But Unsafe::getAndSetObject should be present in
+> compilation log irrespectively of whether the method was intrinsified or
+> not.
+>
+> So, I'd like to see the test case anyway to understand what is going on.
+>
+> Best regards,
+> Vladimir Ivanov
+>
+> On 11/3/15 2:05 AM, thurstonn wrote:
+>
+> So after a variety of trial and error, the output shows that
+> AtomicReference#getAndSet is being inlined and
+> sun.misc.Unsafe::getAndSetObject is marked intrinsic.
+>
+> It must have been a case where I was initially using a local
+> AtomicReference
+> that the JVM identified as being only accessible from a single thread?
+>
+>
+>
+>
+>
+> --
+> View this message in context:
+> http://jsr166-concurrency.10961.n7.nabble.com/Runtime-intrinsic-info-tp12850p12855.html
+> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151103/6f52cc84/attachment.html>
+
+From thurston at nomagicsoftware.com  Tue Nov  3 09:36:25 2015
+From: thurston at nomagicsoftware.com (thurstonn)
+Date: Tue, 3 Nov 2015 07:36:25 -0700 (MST)
+Subject: [concurrency-interest] Runtime intrinsic info
+In-Reply-To: <56389998.4000902@oracle.com>
+References: <1446324027653-12850.post@n7.nabble.com>
+	<56353DEE.10500@oracle.com>
+	<1446411467203-12853.post@n7.nabble.com>
+	<563779DA.5070806@oracle.com>
+	<1446505559760-12855.post@n7.nabble.com>
+	<56389998.4000902@oracle.com>
+Message-ID: <1446561385511-12859.post@n7.nabble.com>
+
+So, it's one of those engineering ironies that at first, I couldn't get the
+JVM to inline and intrinsify #getAndSet, and now I can't get it to *not*
+intrinsify.
+
+IIRC, the original code was something like:
+for (int i = 0; i < 10_000; i++)
+ {
+            //assertNotNull(this.ref.getAndSet(new Object()));
+       System.err.println(new AtomicReference().getAndSet(new Object()));
+ }
+but when I run that now, I see:
+992  292       3      
+java.util.concurrent.atomic.AtomicReference::getAndSet (12 bytes)
+          @ 8   sun.misc.Unsafe::getAndSetObject (24 bytes)   intrinsic
+
+in the output.
+You can shorten the loop (e.g. 1_000) and you won't see any intrinsic
+output, but that's because the JIT inline threshold isn't reached.
+
+I swear that I had a 10K iteration that produced no compilation intrinsic
+output, but I can't reproduce it now
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/Runtime-intrinsic-info-tp12850p12859.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From oleksandr.otenko at gmail.com  Tue Nov  3 10:42:59 2015
+From: oleksandr.otenko at gmail.com (Alex Otenko)
+Date: Tue, 3 Nov 2015 15:42:59 +0000
+Subject: [concurrency-interest] Runtime intrinsic info
+In-Reply-To: <5638BA22.1060209@oracle.com>
+References: <1446324027653-12850.post@n7.nabble.com>
+	<56353DEE.10500@oracle.com>
+	<1446411467203-12853.post@n7.nabble.com>
+	<563779DA.5070806@oracle.com>
+	<1446505559760-12855.post@n7.nabble.com>
+	<56389998.4000902@oracle.com> <5638BA22.1060209@oracle.com>
+Message-ID: <A49CCB18-31F4-45BD-9E0B-48C6B9124CA0@gmail.com>
+
+It used to have such logic. I think it has been removed. There were issues with the machines where the CPU count appeared 1, but turned out more than 1 later (tinkering with numactl during JVM lifetime). No matter how common such a case is, the saving these days probably wasn?t worth the effort.
+
+Alex
+
+
+> On 3 Nov 2015, at 13:44, Nathan Reynolds <nathan.reynolds at oracle.com> wrote:
+> 
+> HotSpot has logic to detect if running on a 1 core/processor machine.  The default behavior was to change each atomic instruction into 1 regular instruction.  Since there is only 1 processor, the 1 regular instruction's impact is atomic since a context switch can't split an instruction's impact.  The default behavior was changed to keep the atomic instructions and with a command line switch to turn it on.  Thus, one could dynamically add processors and not cause problems in the compiled code.
+> 
+> This is a long shot... could it be that HotSpot eliminated the Unsafe::getAndSetObject because HotSpot is converting it into a regular instruction?  It seems the compilation log would still say something about it.
+> -Nathan
+> On 11/3/2015 4:25 AM, Vladimir Ivanov wrote:
+>> I don't believe HotSpot C2 can eliminate Unsafe::getAndSetObject if it is accessible from a single thread. 
+>> 
+>> If Unsafe::getAndSetObject isn't present in compilation output, it means JIT didn't compile the call site at all. Effectively dead code maybe? 
+>> 
+>> Otherwise, if intrinsic substitution failed, the call should be reported as a native call. But Unsafe::getAndSetObject should be present in compilation log irrespectively of whether the method was intrinsified or not. 
+>> 
+>> So, I'd like to see the test case anyway to understand what is going on. 
+>> 
+>> Best regards, 
+>> Vladimir Ivanov 
+>> 
+>> On 11/3/15 2:05 AM, thurstonn wrote: 
+>>> So after a variety of trial and error, the output shows that 
+>>> AtomicReference#getAndSet is being inlined and 
+>>> sun.misc.Unsafe::getAndSetObject is marked intrinsic. 
+>>> 
+>>> It must have been a case where I was initially using a local AtomicReference 
+>>> that the JVM identified as being only accessible from a single thread? 
+>>> 
+>>> 
+>>> 
+>>> 
+>>> 
+>>> -- 
+>>> View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/Runtime-intrinsic-info-tp12850p12855.html <http://jsr166-concurrency.10961.n7.nabble.com/Runtime-intrinsic-info-tp12850p12855.html>
+>>> Sent from the JSR166 Concurrency mailing list archive at Nabble.com. 
+>>> _______________________________________________ 
+>>> Concurrency-interest mailing list 
+>>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu> 
+>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest> 
+>>> 
+>> _______________________________________________ 
+>> Concurrency-interest mailing list 
+>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu> 
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest> 
+>> 
+> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151103/c2481e05/attachment-0001.html>
+
+From vitalyd at gmail.com  Tue Nov  3 10:45:35 2015
+From: vitalyd at gmail.com (Vitaly Davidovich)
+Date: Tue, 3 Nov 2015 10:45:35 -0500
+Subject: [concurrency-interest] Runtime intrinsic info
+In-Reply-To: <1446561385511-12859.post@n7.nabble.com>
+References: <1446324027653-12850.post@n7.nabble.com>
+	<56353DEE.10500@oracle.com>
+	<1446411467203-12853.post@n7.nabble.com>
+	<563779DA.5070806@oracle.com>
+	<1446505559760-12855.post@n7.nabble.com>
+	<56389998.4000902@oracle.com>
+	<1446561385511-12859.post@n7.nabble.com>
+Message-ID: <CAHjP37Ft+bjz3Zo_0rWHO1ZrSOPnNX1=wD78nfQ6-8B47x5qrg@mail.gmail.com>
+
+If you're using exactly 10k iterations and not tweaking the
+CompileThreshold, then it's probably a good idea to specify -Xbatch to make
+the java thread wait for JIT compilation to finish.  Perhaps your previous
+run finished before compilation completed, and it wasn't printed? Just a
+thought.
+
+On Tue, Nov 3, 2015 at 9:36 AM, thurstonn <thurston at nomagicsoftware.com>
+wrote:
+
+> So, it's one of those engineering ironies that at first, I couldn't get the
+> JVM to inline and intrinsify #getAndSet, and now I can't get it to *not*
+> intrinsify.
+>
+> IIRC, the original code was something like:
+> for (int i = 0; i < 10_000; i++)
+>  {
+>             //assertNotNull(this.ref.getAndSet(new Object()));
+>        System.err.println(new AtomicReference().getAndSet(new Object()));
+>  }
+> but when I run that now, I see:
+> 992  292       3
+> java.util.concurrent.atomic.AtomicReference::getAndSet (12 bytes)
+>           @ 8   sun.misc.Unsafe::getAndSetObject (24 bytes)   intrinsic
+>
+> in the output.
+> You can shorten the loop (e.g. 1_000) and you won't see any intrinsic
+> output, but that's because the JIT inline threshold isn't reached.
+>
+> I swear that I had a 10K iteration that produced no compilation intrinsic
+> output, but I can't reproduce it now
+>
+>
+>
+> --
+> View this message in context:
+> http://jsr166-concurrency.10961.n7.nabble.com/Runtime-intrinsic-info-tp12850p12859.html
+> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151103/8799f9ae/attachment.html>
+
+From thurston at nomagicsoftware.com  Tue Nov  3 10:56:50 2015
+From: thurston at nomagicsoftware.com (thurstonn)
+Date: Tue, 3 Nov 2015 08:56:50 -0700 (MST)
+Subject: [concurrency-interest] Runtime intrinsic info
+In-Reply-To: <CAHjP37Ft+bjz3Zo_0rWHO1ZrSOPnNX1=wD78nfQ6-8B47x5qrg@mail.gmail.com>
+References: <1446324027653-12850.post@n7.nabble.com>
+	<56353DEE.10500@oracle.com>
+	<1446411467203-12853.post@n7.nabble.com>
+	<563779DA.5070806@oracle.com>
+	<1446505559760-12855.post@n7.nabble.com>
+	<56389998.4000902@oracle.com>
+	<1446561385511-12859.post@n7.nabble.com>
+	<CAHjP37Ft+bjz3Zo_0rWHO1ZrSOPnNX1=wD78nfQ6-8B47x5qrg@mail.gmail.com>
+Message-ID: <1446566210029-12862.post@n7.nabble.com>
+
+It does bring up an interesting question, viz. why is Unsafe#getAndSetObject
+being treated differently than say Unsafe::compareAndSwapObject ?
+
+The former's intrinsification appears to happen only upon JIT compilation
+threshold triggering (10K), while the latter doesn't (or at least has a much
+smaller threshold).
+Why would that be?
+
+A little background: I ran my code as a JUnit test, and as described in an
+earlier post, I could see the Unsafe::compareAndSwapObject (intrinsic) in
+the output (the JUnit test harness must either directly/indirectly invoke
+the CAS).
+
+Not sure I see the reasoning for the differential treatment
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/Runtime-intrinsic-info-tp12850p12862.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From vitalyd at gmail.com  Tue Nov  3 12:15:49 2015
+From: vitalyd at gmail.com (Vitaly Davidovich)
+Date: Tue, 3 Nov 2015 12:15:49 -0500
+Subject: [concurrency-interest] Runtime intrinsic info
+In-Reply-To: <1446566210029-12862.post@n7.nabble.com>
+References: <1446324027653-12850.post@n7.nabble.com>
+	<56353DEE.10500@oracle.com>
+	<1446411467203-12853.post@n7.nabble.com>
+	<563779DA.5070806@oracle.com>
+	<1446505559760-12855.post@n7.nabble.com>
+	<56389998.4000902@oracle.com>
+	<1446561385511-12859.post@n7.nabble.com>
+	<CAHjP37Ft+bjz3Zo_0rWHO1ZrSOPnNX1=wD78nfQ6-8B47x5qrg@mail.gmail.com>
+	<1446566210029-12862.post@n7.nabble.com>
+Message-ID: <CAHjP37FkA8HpAGMJQ5bjc1FL_hpMsktN=WpsyDxSqjKhja7X7Q@mail.gmail.com>
+
+>
+> The former's intrinsification appears to happen only upon JIT compilation
+> threshold triggering (10K), while the latter doesn't (or at least has a
+> much
+> smaller threshold).
+> Why would that be?
+
+
+What do you mean exactly? Can you show some compilation/inlining output
+that you're using to make the above suggestion? When your callsite using
+AtomicReference reaches compilation threshold, it'll typically inline the
+AR method(s) and then replace the java code with intrinsic implementation
+(this is all part of the compilation+optimization phase).  The AR methods
+can also be inlined into other callsites, which may reach compilation
+threshold earlier.
+
+On Tue, Nov 3, 2015 at 10:56 AM, thurstonn <thurston at nomagicsoftware.com>
+wrote:
+
+> It does bring up an interesting question, viz. why is
+> Unsafe#getAndSetObject
+> being treated differently than say Unsafe::compareAndSwapObject ?
+>
+> The former's intrinsification appears to happen only upon JIT compilation
+> threshold triggering (10K), while the latter doesn't (or at least has a
+> much
+> smaller threshold).
+> Why would that be?
+>
+> A little background: I ran my code as a JUnit test, and as described in an
+> earlier post, I could see the Unsafe::compareAndSwapObject (intrinsic) in
+> the output (the JUnit test harness must either directly/indirectly invoke
+> the CAS).
+>
+> Not sure I see the reasoning for the differential treatment
+>
+>
+>
+> --
+> View this message in context:
+> http://jsr166-concurrency.10961.n7.nabble.com/Runtime-intrinsic-info-tp12850p12862.html
+> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151103/7206d882/attachment.html>
+
+From colin.mailinglist at gmail.com  Thu Nov  5 03:28:29 2015
+From: colin.mailinglist at gmail.com (Colin Fleming)
+Date: Thu, 5 Nov 2015 21:28:29 +1300
+Subject: [concurrency-interest] jsr166y jar is compiled with Java 7
+Message-ID: <CACK23AdgRTQke8pdDOm5y2QmbvVJtpXWo_X5vXVeg9Hn_5nR_A@mail.gmail.com>
+
+Hi everyone,
+
+Today I needed to get a copy of the jsr166y jar, in order to run some
+Clojure code under Java 6. To my dismay, it seems that the classes in the
+jar have been compiled with Java 7 and are unusable from Java 6, contrary
+to what it says on the website:
+
+~/Downloads> wget http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166y.jar
+--2015-11-05 21:23:38--  http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166y.jar
+Resolving gee.cs.oswego.edu... 129.3.20.1
+Connecting to gee.cs.oswego.edu|129.3.20.1|:80... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 83992 (82K) [text/plain]
+Saving to: 'jsr166y.jar'
+
+jsr166y.jar
+100%[==================================================>]  82.02K
+74.4KB/s   in 1.1s
+
+2015-11-05 21:23:40 (74.4 KB/s) - 'jsr166y.jar' saved [83992/83992]
+
+~/Downloads> javap -verbose -classpath jsr166y.jar  jsr166y/ForkJoinPool |
+grep version
+  minor version: 0
+  major version: 51
+
+Cheers,
+Colin
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151105/80046a10/attachment.html>
+
+From martinrb at google.com  Thu Nov  5 10:02:52 2015
+From: martinrb at google.com (Martin Buchholz)
+Date: Thu, 5 Nov 2015 07:02:52 -0800
+Subject: [concurrency-interest] jsr166y jar is compiled with Java 7
+In-Reply-To: <CACK23AdgRTQke8pdDOm5y2QmbvVJtpXWo_X5vXVeg9Hn_5nR_A@mail.gmail.com>
+References: <CACK23AdgRTQke8pdDOm5y2QmbvVJtpXWo_X5vXVeg9Hn_5nR_A@mail.gmail.com>
+Message-ID: <CA+kOe09j04k1Vozny3NGFyMb-5ceV+0aWd08tRpd6ROVjzttYQ@mail.gmail.com>
+
+Confirmed.
+
+This seems to fix it:
+
+diff -u -r1.188 build.xml
+--- build.xml 12 Oct 2015 01:53:54 -0000 1.188
++++ build.xml 5 Nov 2015 15:01:01 -0000
+@@ -936,6 +936,7 @@
+            debuglevel="${build.debuglevel}"
+            deprecation="${build.deprecation}"
+            source="6"
++           target="6"
+            classpath=""
+            bootclasspath="${bootclasspath6}"
+            includeAntRuntime="false"
+
+Doug, please rebuild the jars.
+
+On Thu, Nov 5, 2015 at 12:28 AM, Colin Fleming <colin.mailinglist at gmail.com>
+wrote:
+
+> Hi everyone,
+>
+> Today I needed to get a copy of the jsr166y jar, in order to run some
+> Clojure code under Java 6. To my dismay, it seems that the classes in the
+> jar have been compiled with Java 7 and are unusable from Java 6, contrary
+> to what it says on the website:
+>
+> ~/Downloads> wget http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166y.jar
+> --2015-11-05 21:23:38--
+> http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166y.jar
+> Resolving gee.cs.oswego.edu... 129.3.20.1
+> Connecting to gee.cs.oswego.edu|129.3.20.1|:80... connected.
+> HTTP request sent, awaiting response... 200 OK
+> Length: 83992 (82K) [text/plain]
+> Saving to: 'jsr166y.jar'
+>
+> jsr166y.jar
+> 100%[==================================================>]  82.02K
+> 74.4KB/s   in 1.1s
+>
+> 2015-11-05 21:23:40 (74.4 KB/s) - 'jsr166y.jar' saved [83992/83992]
+>
+> ~/Downloads> javap -verbose -classpath jsr166y.jar  jsr166y/ForkJoinPool |
+> grep version
+>   minor version: 0
+>   major version: 51
+>
+> Cheers,
+> Colin
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151105/e6ac0341/attachment.html>
+
+From stephan.diestelhorst at gmail.com  Wed Nov 11 11:09:20 2015
+From: stephan.diestelhorst at gmail.com (Stephan Diestelhorst)
+Date: Wed, 11 Nov 2015 16:09:20 +0000
+Subject: [concurrency-interest] Call for Papers: 11th ACM SIGPLAN Workshop
+	on Transactional Computing (TRANSACT 2016) - deadline extended!
+Message-ID: <2023845.nXMPCkrU9M@mymac-ubuntu>
+
+
+          Apologies in case of cross-postings
+
+- - - - - - - ? - - - - - - - - - - - - - - - - - - - -
+
+TRANSACT 2016
+11th ACM SIGPLAN Workshop on Transactional Computing
+March 12, 2016, Barcelona, Spain
+In conjunction with the 21st ACM SIGPLAN Symposium on Principles and 
+Practice of Parallel Programming (PPoPP 2016)
+
+Website: http://conf.researchr.org/track/PPoPP-2016/TRANSACT-2016
+
+
+** Overview **
+
+The past decade has seen an explosion of interest in programming 
+languages, systems, and hardware to support transactions, speculation, 
+and related alternatives to classical lock-based concurrency. Recently, 
+transactional memory has crossed two important thresholds. First, IBM 
+and Intel are now shipping processors with hardware support for 
+transactional memory (TM). Second, the C++ Standard Committee has been 
+working intensively to integrate TM as a new language feature. On the 
+other hand, the post-release discovery of an erratum in Intel?s hardware 
+TM implementation has brought upfront the need for effective TM 
+verification mechanisms. Overall, these developments highlight the 
+demand for continued high quality transactional memory research.
+
+Transact 2016, the eleventh in its series, will provide a forum to 
+present and discuss the latest research on all aspects of transactional 
+computing. The scope of the workshop is intentionally broad, with the 
+goal of encouraging interaction across the languages, architecture, 
+systems, database, and theory communities. Papers may address 
+implementation techniques, foundational results, applications and 
+workloads, or experience with working systems. Environments of interest 
+include the full range from multithreaded or multicore processors to 
+high-end parallel and distributed computing platforms.
+
+
+** Topics **
+
+The workshop seeks papers on topics related to all areas of software and 
+hardware for transactional computing. Specific topics of interest 
+include but are not limited to:
+
+    * Run-time systems
+    * Hardware support
+    * Applications, workloads, and test suites
+    * Experience reports
+    * Language mechanisms and semantics
+    * Memory models
+    * Transactions for non-uniform and non-cache coherent memory systems 
+      (e.g., NUMA, GPUs, RDMA, distributed transactions)
+    * Formal verification
+    * Speculative concurrency
+    * Conflict detection and contention management
+    * Debugging and tools
+    * Static analysis and compiler optimizations
+    * Checkpointing and failure atomicity
+    * Persistence and I/O
+    * Nesting and exceptions
+
+Papers should present original research. As transactional memory spans 
+many disciplines, papers should provide sufficient background material 
+to make them accessible to the broader community. Papers focused on 
+foundations should indicate how the work can be used to advance 
+practice; papers on experiences and applications should indicate how the 
+experiments reinforce or reflect principles.
+
+
+** Submissions **
+
+Please use EasyChair 
+(https://easychair.org/conferences/?conf=transact16) to submit a paper 
+to TRANSACT!.
+
+Papers must be submitted in PDF, and be no more than 8 pages in standard 
+two-column SIGPLAN conference format including figures and tables but 
+not including references. Shorter submissions are welcome. The 
+submissions will be judged based on the merit of the ideas rather than 
+the length. Submissions must be made through the on-line submission 
+site. Final papers will be available to participants electronically at 
+the meeting, but to facilitate resubmission to more formal venues, no 
+archival proceedings will be published, and papers will not be sent to 
+the ACM Digital Library.
+
+Authors will have the option of having their final paper accessible from 
+the workshop website. Authors must be familiar with and abide by 
+SIGPLAN?s republication policy, which forbids simultaneous submission to 
+multiple venues and requires disclosing prior publication of closely 
+related work.
+
+At the discretion of the program committee and with the consent of the 
+authors, particularly worthy papers may be recommended for a special 
+journal issue.
+
+Additional information (e.g., templates for papers? submission) can be 
+found at the workshop?s webpage:
+
+    http://conf.researchr.org/track/PPoPP-2016/TRANSACT-2016
+
+For any additional information, do not hesitate to contact the PC Chair, 
+Paolo Romano:
+
+    romano at inesc-id.pt
+
+
+** Important dates **
+
+     28 November, 2015        Paper Submission deadline
+     24 January, 2016         Author notification
+
+
+** Travel Awards **
+
+PPoPP 2016 has received funds to support travel to Barcelona for student 
+authors of Transact?16 papers. Student authors will be contacted after 
+acceptance of their paper on how to apply for these funds.
+
+
+
+From martinrb at google.com  Sun Nov 15 18:42:20 2015
+From: martinrb at google.com (Martin Buchholz)
+Date: Sun, 15 Nov 2015 15:42:20 -0800
+Subject: [concurrency-interest] CompletableFuture improvements
+In-Reply-To: <CAJUoZVY3WRe-BJ76CNKQ6SeQyYm7ZW3aaPAffm+mTfrjivxw2g@mail.gmail.com>
+References: <CAJUoZVY3WRe-BJ76CNKQ6SeQyYm7ZW3aaPAffm+mTfrjivxw2g@mail.gmail.com>
+Message-ID: <CA+kOe0_OdqZag1PhMM2f9ERURM4Qubj52-SiJV7LGA=bYJ2ZGQ@mail.gmail.com>
+
+On Fri, Aug 14, 2015 at 3:48 AM, Chris Purcell <chris.purcell.39 at gmail.com>
+wrote:
+
+>
+> (2) CompletionStage.whenComplete discards exceptions if both input stage
+> and action fail. It would be less surprising if, like try/finally, it added
+> the action exception to the input exception as a suppressed exception. This
+> can be done safely by cloning the input exception (all Throwables are
+> Serializable). I don't think performance should be a blocker, as this is a
+> rare edge case, and we are providing a very useful service for the cost.
+>
+> Are there any other issues with doing this that I haven't thought about?
+>
+
+Very belatedly, we now add the action exception to the input exception as a
+suppressed exception in jsr166 CVS, and this micro-feature should appear
+later in jdk9.  Thanks!
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151115/867ba58a/attachment.html>
+
+From dmitry.zaslavsky at gmail.com  Mon Nov 16 20:44:07 2015
+From: dmitry.zaslavsky at gmail.com (Dmitry Zaslavsky)
+Date: Mon, 16 Nov 2015 20:44:07 -0500
+Subject: [concurrency-interest] Biased locking benchmark
+Message-ID: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+
+HI, 
+  I was trying to reproduce the benchmarks from the following article http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html <http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html> 
+
+On my current setup (haswell i7 laptop and idk 8) I see no difference between biased locking and no-biased locking.
+In a single threaded case j.u.c. lock is always faster by about 20%
+
+I am going to investigate more, but would some one know if JVM 8 disabled biased locking feature?
+ 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151116/8940cc68/attachment.html>
+
+From davidcholmes at aapt.net.au  Mon Nov 16 21:06:04 2015
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Tue, 17 Nov 2015 12:06:04 +1000
+Subject: [concurrency-interest] Biased locking benchmark
+In-Reply-To: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+References: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+Message-ID: <028901d120dc$83e76910$8bb63b30$@net.au>
+
+Hi,
+
+ 
+
+Generally biased-locking is enabled by default in 7, 8 and 9, but there can
+be architecture specific differences. Eg any platform only using the C++
+interpreter doesn't have biased-locking; aarch64 disables it by default.
+
+ 
+
+David
+
+ 
+
+From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of Dmitry
+Zaslavsky
+Sent: Tuesday, November 17, 2015 11:44 AM
+To: concurrency-interest
+Subject: [concurrency-interest] Biased locking benchmark
+
+ 
+
+HI, 
+
+  I was trying to reproduce the benchmarks from the following article
+http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-bench
+marking-fun.html 
+
+ 
+
+On my current setup (haswell i7 laptop and idk 8) I see no difference
+between biased locking and no-biased locking.
+
+In a single threaded case j.u.c. lock is always faster by about 20%
+
+ 
+
+I am going to investigate more, but would some one know if JVM 8 disabled
+biased locking feature?
+
+ 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151117/b54e8a59/attachment.html>
+
+From aph at redhat.com  Tue Nov 17 04:45:44 2015
+From: aph at redhat.com (Andrew Haley)
+Date: Tue, 17 Nov 2015 09:45:44 +0000
+Subject: [concurrency-interest] Biased locking benchmark
+In-Reply-To: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+References: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+Message-ID: <564AF748.1040603@redhat.com>
+
+Hi,
+
+On 17/11/15 01:44, Dmitry Zaslavsky wrote:
+
+>   I was trying to reproduce the benchmarks from the following
+> article
+> http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html
+> <http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html>
+> 
+> On my current setup (haswell i7 laptop and idk 8) I see no
+> difference between biased locking and no-biased locking.
+> In a single threaded case j.u.c. lock is always faster by about 20%
+
+I'm not surprised.  It's true that biased locking doesn't necessarily
+make sense on modern CPUs: it was invented in order to mitigate the
+local latency of CAS, and CAS has been improved.
+
+Andrew.
+
+From Volker.Borchert at atis-systems.com  Tue Nov 17 06:30:02 2015
+From: Volker.Borchert at atis-systems.com (Volker.Borchert at atis-systems.com)
+Date: Tue, 17 Nov 2015 11:30:02 +0000
+Subject: [concurrency-interest] 1.8/1.9: Iterator and ListIterator optional
+	operations
+Message-ID: <9DD392344AED044287E42246402FDAB464A5D80E@max.atis-systems.com>
+
+Sorry for this more-or-less off-topic post, but I couldn't find any discussion
+on this (thank you G**gle for tryimg to outsmart your users).
+
+With 1.8, Iterator's remove() has become a default methods that throws
+UnsupportedOperationException. But ListIterator's add(), set(), and remove()
+have stayed abstract, the latter even hiding Iterator's.
+
+Why? I.o.w., is there any hope this will change?
+
+Thank you for any enlightnment
+
+	Volker
+
+////////////////////////////////////////////////////////////////////
+
+ATIS systems GmbH 
+Sitz: Bad Homburg 
+Registergericht: Bad Homburg HRB 1514 
+Geschaeftsfuehrer: Stefan Diepolder, Daniel Sieh
+ 
+________________________________________________________________________________________________
+
+This message is confidential. It may also be privileged or otherwise protected by work product immunity or other legal rules. If you have received this message by mistake please let us know by reply and then delete it from your system; you should not copy it or disclose its contents to anyone. All messages sent to and from ATIS systems GmbH may be monitored to ensure compliance with internal policies and to protect our business. E-Mails are not secure and cannot be guaranteed to be error free as they can be intercepted, amended, lost or destroyed. Anyone who communicates with us by e-mail is taken to accept these risks.
+
+
+
+
+
+From vitalyd at gmail.com  Tue Nov 17 07:06:56 2015
+From: vitalyd at gmail.com (Vitaly Davidovich)
+Date: Tue, 17 Nov 2015 07:06:56 -0500
+Subject: [concurrency-interest] Biased locking benchmark
+In-Reply-To: <CAHjP37HE7qU_rjRn-S0YSvsrVcAQaPYdAi++CE3=BRVbyYzeVA@mail.gmail.com>
+References: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+	<564AF748.1040603@redhat.com>
+	<CAHjP37HE7qU_rjRn-S0YSvsrVcAQaPYdAi++CE3=BRVbyYzeVA@mail.gmail.com>
+Message-ID: <CAHjP37Gu6cRc7_Q46G2V10n89HEo2mV5=Qg8iqHQU5tf2pHGNA@mail.gmail.com>
+
+Whoops, replied just to Andrew mistakenly.
+
+sent from my phone
+On Nov 17, 2015 7:05 AM, "Vitaly Davidovich" <vitalyd at gmail.com> wrote:
+
+> I'd say the only remaining valid use case for biased locking is when using
+> synchronization heavy APIs that can be confined to a single thread.
+> Otherwise, turn it off unless one likes global safepoints :).
+>
+> sent from my phone
+> On Nov 17, 2015 4:54 AM, "Andrew Haley" <aph at redhat.com> wrote:
+>
+>> Hi,
+>>
+>> On 17/11/15 01:44, Dmitry Zaslavsky wrote:
+>>
+>> >   I was trying to reproduce the benchmarks from the following
+>> > article
+>> >
+>> http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html
+>> > <
+>> http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html
+>> >
+>> >
+>> > On my current setup (haswell i7 laptop and idk 8) I see no
+>> > difference between biased locking and no-biased locking.
+>> > In a single threaded case j.u.c. lock is always faster by about 20%
+>>
+>> I'm not surprised.  It's true that biased locking doesn't necessarily
+>> make sense on modern CPUs: it was invented in order to mitigate the
+>> local latency of CAS, and CAS has been improved.
+>>
+>> Andrew.
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151117/740d920c/attachment.html>
+
+From dmitry.zaslavsky at gmail.com  Tue Nov 17 13:23:48 2015
+From: dmitry.zaslavsky at gmail.com (Dmitry Zaslavsky)
+Date: Tue, 17 Nov 2015 13:23:48 -0500
+Subject: [concurrency-interest] Biased locking benchmark
+In-Reply-To: <028901d120dc$83e76910$8bb63b30$@net.au>
+References: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+	<028901d120dc$83e76910$8bb63b30$@net.au>
+Message-ID: <55582295-CC5D-450A-831B-A326015103A1@gmail.com>
+
+Thanks
+
+Tried few more JVMs. Makes no diff.
+Basically on haswell it seem like biased locks are off.
+On SB they are on.
+
+
+> On Nov 16, 2015, at 9:06 PM, David Holmes <davidcholmes at aapt.net.au> wrote:
+> 
+> Hi,
+>  
+> Generally biased-locking is enabled by default in 7, 8 and 9, but there can be architecture specific differences. Eg any platform only using the C++ interpreter doesn?t have biased-locking; aarch64 disables it by default.
+>  
+> David
+>  
+> From: concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu> [mailto:concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu>] On Behalf Of Dmitry Zaslavsky
+> Sent: Tuesday, November 17, 2015 11:44 AM
+> To: concurrency-interest
+> Subject: [concurrency-interest] Biased locking benchmark
+>  
+> HI, 
+>   I was trying to reproduce the benchmarks from the following article http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html <http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html> 
+>  
+> On my current setup (haswell i7 laptop and idk 8) I see no difference between biased locking and no-biased locking.
+> In a single threaded case j.u.c. lock is always faster by about 20%
+>  
+> I am going to investigate more, but would some one know if JVM 8 disabled biased locking feature?
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151117/34b6b5da/attachment.html>
+
+From jbloch at gmail.com  Tue Nov 17 13:29:48 2015
+From: jbloch at gmail.com (Joshua Bloch)
+Date: Tue, 17 Nov 2015 10:29:48 -0800
+Subject: [concurrency-interest] 1.8/1.9: Iterator and ListIterator
+ optional operations
+In-Reply-To: <9DD392344AED044287E42246402FDAB464A5D80E@max.atis-systems.com>
+References: <9DD392344AED044287E42246402FDAB464A5D80E@max.atis-systems.com>
+Message-ID: <CAP0L=URP0Y0m+G7EdXdVUouo16JvHrHJT3PtNDFjyG59MPZ=eQ@mail.gmail.com>
+
+That's a very good question. I definited all of these methods, and haven't
+a clue.
+
+Josh
+
+P.S. I also the that default methods were a big mistake, so perhaps my
+cluelessnes is irrelevant.
+
+On Tue, Nov 17, 2015 at 3:30 AM, <Volker.Borchert at atis-systems.com> wrote:
+
+> Sorry for this more-or-less off-topic post, but I couldn't find any
+> discussion
+> on this (thank you G**gle for tryimg to outsmart your users).
+>
+> With 1.8, Iterator's remove() has become a default methods that throws
+> UnsupportedOperationException. But ListIterator's add(), set(), and
+> remove()
+> have stayed abstract, the latter even hiding Iterator's.
+>
+> Why? I.o.w., is there any hope this will change?
+>
+> Thank you for any enlightnment
+>
+>         Volker
+>
+> ////////////////////////////////////////////////////////////////////
+>
+> ATIS systems GmbH
+> Sitz: Bad Homburg
+> Registergericht: Bad Homburg HRB 1514
+> Geschaeftsfuehrer: Stefan Diepolder, Daniel Sieh
+>
+>
+> ________________________________________________________________________________________________
+>
+> This message is confidential. It may also be privileged or otherwise
+> protected by work product immunity or other legal rules. If you have
+> received this message by mistake please let us know by reply and then
+> delete it from your system; you should not copy it or disclose its contents
+> to anyone. All messages sent to and from ATIS systems GmbH may be monitored
+> to ensure compliance with internal policies and to protect our business.
+> E-Mails are not secure and cannot be guaranteed to be error free as they
+> can be intercepted, amended, lost or destroyed. Anyone who communicates
+> with us by e-mail is taken to accept these risks.
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151117/239535ce/attachment.html>
+
+From vitalyd at gmail.com  Tue Nov 17 14:01:15 2015
+From: vitalyd at gmail.com (Vitaly Davidovich)
+Date: Tue, 17 Nov 2015 14:01:15 -0500
+Subject: [concurrency-interest] Biased locking benchmark
+In-Reply-To: <55582295-CC5D-450A-831B-A326015103A1@gmail.com>
+References: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+	<028901d120dc$83e76910$8bb63b30$@net.au>
+	<55582295-CC5D-450A-831B-A326015103A1@gmail.com>
+Message-ID: <CAHjP37G_GYJTKcfGg=cnHhrYSPYnzMTv_5=_B0sFJy8bGtnafQ@mail.gmail.com>
+
+Hotspot turns off biased locking if UseRTM is used (which haswell
+supports), but that option is disabled by default (AFAIK).  What does "java
+-XX:+PrintFlagsFinal -version | grep UseBiasedLocking" show on haswell?
+
+On Tue, Nov 17, 2015 at 1:23 PM, Dmitry Zaslavsky <
+dmitry.zaslavsky at gmail.com> wrote:
+
+> Thanks
+>
+> Tried few more JVMs. Makes no diff.
+> Basically on haswell it seem like biased locks are off.
+> On SB they are on.
+>
+>
+> On Nov 16, 2015, at 9:06 PM, David Holmes <davidcholmes at aapt.net.au>
+> wrote:
+>
+> Hi,
+>
+> Generally biased-locking is enabled by default in 7, 8 and 9, but there
+> can be architecture specific differences. Eg any platform only using the
+> C++ interpreter doesn?t have biased-locking; aarch64 disables it by default.
+>
+> David
+>
+> *From:* concurrency-interest-bounces at cs.oswego.edu [
+> mailto:concurrency-interest-bounces at cs.oswego.edu
+> <concurrency-interest-bounces at cs.oswego.edu>] *On Behalf Of *Dmitry
+> Zaslavsky
+> *Sent:* Tuesday, November 17, 2015 11:44 AM
+> *To:* concurrency-interest
+> *Subject:* [concurrency-interest] Biased locking benchmark
+>
+> HI,
+>   I was trying to reproduce the benchmarks from the following article
+> http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html
+>
+>
+> On my current setup (haswell i7 laptop and idk 8) I see no difference
+> between biased locking and no-biased locking.
+> In a single threaded case j.u.c. lock is always faster by about 20%
+>
+> I am going to investigate more, but would some one know if JVM 8 disabled
+> biased locking feature?
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151117/c49b5191/attachment.html>
+
+From dmitry.zaslavsky at gmail.com  Tue Nov 17 14:23:30 2015
+From: dmitry.zaslavsky at gmail.com (Dmitry Zaslavsky)
+Date: Tue, 17 Nov 2015 14:23:30 -0500
+Subject: [concurrency-interest] Biased locking benchmark
+In-Reply-To: <CAHjP37G_GYJTKcfGg=cnHhrYSPYnzMTv_5=_B0sFJy8bGtnafQ@mail.gmail.com>
+References: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+	<028901d120dc$83e76910$8bb63b30$@net.au>
+	<55582295-CC5D-450A-831B-A326015103A1@gmail.com>
+	<CAHjP37G_GYJTKcfGg=cnHhrYSPYnzMTv_5=_B0sFJy8bGtnafQ@mail.gmail.com>
+Message-ID: <C7B9D653-DB83-4204-8FEE-9C391A1305E3@gmail.com>
+
+ intx BiasedLockingBulkRebiasThreshold          = 20                                  {product}
+ intx BiasedLockingBulkRevokeThreshold          = 40                                  {product}
+ intx BiasedLockingDecayTime                    = 25000                               {product}
+ intx BiasedLockingStartupDelay                := 0               
+
+java version "1.8.0_40"
+Java(TM) SE Runtime Environment (build 1.8.0_40-b27)
+Java HotSpot(TM) 64-Bit Server VM (build 25.40-b25, mixed mode)
+
+> On Nov 17, 2015, at 2:01 PM, Vitaly Davidovich <vitalyd at gmail.com> wrote:
+> 
+> Hotspot turns off biased locking if UseRTM is used (which haswell supports), but that option is disabled by default (AFAIK).  What does "java -XX:+PrintFlagsFinal -version | grep UseBiasedLocking" show on haswell?
+> 
+> On Tue, Nov 17, 2015 at 1:23 PM, Dmitry Zaslavsky <dmitry.zaslavsky at gmail.com <mailto:dmitry.zaslavsky at gmail.com>> wrote:
+> Thanks
+> 
+> Tried few more JVMs. Makes no diff.
+> Basically on haswell it seem like biased locks are off.
+> On SB they are on.
+> 
+> 
+>> On Nov 16, 2015, at 9:06 PM, David Holmes <davidcholmes at aapt.net.au <mailto:davidcholmes at aapt.net.au>> wrote:
+>> 
+>> Hi,
+>>  
+>> Generally biased-locking is enabled by default in 7, 8 and 9, but there can be architecture specific differences. Eg any platform only using the C++ interpreter doesn?t have biased-locking; aarch64 disables it by default.
+>>  
+>> David
+>>  
+>> From: concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu> [mailto:concurrency-interest-bounces at cs.oswego.edu <mailto:concurrency-interest-bounces at cs.oswego.edu>] On Behalf Of Dmitry Zaslavsky
+>> Sent: Tuesday, November 17, 2015 11:44 AM
+>> To: concurrency-interest
+>> Subject: [concurrency-interest] Biased locking benchmark
+>>  
+>> HI, 
+>>   I was trying to reproduce the benchmarks from the following article http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html <http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html> 
+>>  
+>> On my current setup (haswell i7 laptop and idk 8) I see no difference between biased locking and no-biased locking.
+>> In a single threaded case j.u.c. lock is always faster by about 20%
+>>  
+>> I am going to investigate more, but would some one know if JVM 8 disabled biased locking feature?
+> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> 
+> 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151117/bb7f72ac/attachment-0001.html>
+
+From vitalyd at gmail.com  Tue Nov 17 14:25:07 2015
+From: vitalyd at gmail.com (Vitaly Davidovich)
+Date: Tue, 17 Nov 2015 14:25:07 -0500
+Subject: [concurrency-interest] Biased locking benchmark
+In-Reply-To: <C7B9D653-DB83-4204-8FEE-9C391A1305E3@gmail.com>
+References: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+	<028901d120dc$83e76910$8bb63b30$@net.au>
+	<55582295-CC5D-450A-831B-A326015103A1@gmail.com>
+	<CAHjP37G_GYJTKcfGg=cnHhrYSPYnzMTv_5=_B0sFJy8bGtnafQ@mail.gmail.com>
+	<C7B9D653-DB83-4204-8FEE-9C391A1305E3@gmail.com>
+Message-ID: <CAHjP37FtwuXUOBM6wnAxeALRwvra4AxjNUxDh0QipDMDAreETQ@mail.gmail.com>
+
+Where's the main UseBiasedLocking flag?
+
+sent from my phone
+On Nov 17, 2015 2:23 PM, "Dmitry Zaslavsky" <dmitry.zaslavsky at gmail.com>
+wrote:
+
+>  intx BiasedLockingBulkRebiasThreshold          = 20
+>             {product}
+>  intx BiasedLockingBulkRevokeThreshold          = 40
+>             {product}
+>  intx BiasedLockingDecayTime                    = 25000
+>             {product}
+>  intx BiasedLockingStartupDelay                := 0
+>
+> java version "1.8.0_40"
+> Java(TM) SE Runtime Environment (build 1.8.0_40-b27)
+> Java HotSpot(TM) 64-Bit Server VM (build 25.40-b25, mixed mode)
+>
+> On Nov 17, 2015, at 2:01 PM, Vitaly Davidovich <vitalyd at gmail.com> wrote:
+>
+> Hotspot turns off biased locking if UseRTM is used (which haswell
+> supports), but that option is disabled by default (AFAIK).  What does "java
+> -XX:+PrintFlagsFinal -version | grep UseBiasedLocking" show on haswell?
+>
+> On Tue, Nov 17, 2015 at 1:23 PM, Dmitry Zaslavsky <
+> dmitry.zaslavsky at gmail.com> wrote:
+>
+>> Thanks
+>>
+>> Tried few more JVMs. Makes no diff.
+>> Basically on haswell it seem like biased locks are off.
+>> On SB they are on.
+>>
+>>
+>> On Nov 16, 2015, at 9:06 PM, David Holmes <davidcholmes at aapt.net.au>
+>> wrote:
+>>
+>> Hi,
+>>
+>> Generally biased-locking is enabled by default in 7, 8 and 9, but there
+>> can be architecture specific differences. Eg any platform only using the
+>> C++ interpreter doesn?t have biased-locking; aarch64 disables it by default.
+>>
+>> David
+>>
+>> *From:* concurrency-interest-bounces at cs.oswego.edu [
+>> mailto:concurrency-interest-bounces at cs.oswego.edu
+>> <concurrency-interest-bounces at cs.oswego.edu>] *On Behalf Of *Dmitry
+>> Zaslavsky
+>> *Sent:* Tuesday, November 17, 2015 11:44 AM
+>> *To:* concurrency-interest
+>> *Subject:* [concurrency-interest] Biased locking benchmark
+>>
+>> HI,
+>>   I was trying to reproduce the benchmarks from the following article
+>> http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html
+>>
+>>
+>> On my current setup (haswell i7 laptop and idk 8) I see no difference
+>> between biased locking and no-biased locking.
+>> In a single threaded case j.u.c. lock is always faster by about 20%
+>>
+>> I am going to investigate more, but would some one know if JVM 8 disabled
+>> biased locking feature?
+>>
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151117/812e52c2/attachment.html>
+
+From dmitry.zaslavsky at gmail.com  Tue Nov 17 15:32:56 2015
+From: dmitry.zaslavsky at gmail.com (Dmitry Zaslavsky)
+Date: Tue, 17 Nov 2015 15:32:56 -0500
+Subject: [concurrency-interest] Biased locking benchmark
+In-Reply-To: <CAHjP37FtwuXUOBM6wnAxeALRwvra4AxjNUxDh0QipDMDAreETQ@mail.gmail.com>
+References: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+	<028901d120dc$83e76910$8bb63b30$@net.au>
+	<55582295-CC5D-450A-831B-A326015103A1@gmail.com>
+	<CAHjP37G_GYJTKcfGg=cnHhrYSPYnzMTv_5=_B0sFJy8bGtnafQ@mail.gmail.com>
+	<C7B9D653-DB83-4204-8FEE-9C391A1305E3@gmail.com>
+	<CAHjP37FtwuXUOBM6wnAxeALRwvra4AxjNUxDh0QipDMDAreETQ@mail.gmail.com>
+Message-ID: <2181AE87-5391-412D-A4A4-B3E01253EFE8@gmail.com>
+
+bool UseBiasedLocking                         := true
+
+> On Nov 17, 2015, at 2:25 PM, Vitaly Davidovich <vitalyd at gmail.com> wrote:
+> 
+> UseBiasedLocking
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151117/a09adfc6/attachment.html>
+
+From vitalyd at gmail.com  Tue Nov 17 15:55:08 2015
+From: vitalyd at gmail.com (Vitaly Davidovich)
+Date: Tue, 17 Nov 2015 15:55:08 -0500
+Subject: [concurrency-interest] Biased locking benchmark
+In-Reply-To: <2181AE87-5391-412D-A4A4-B3E01253EFE8@gmail.com>
+References: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+	<028901d120dc$83e76910$8bb63b30$@net.au>
+	<55582295-CC5D-450A-831B-A326015103A1@gmail.com>
+	<CAHjP37G_GYJTKcfGg=cnHhrYSPYnzMTv_5=_B0sFJy8bGtnafQ@mail.gmail.com>
+	<C7B9D653-DB83-4204-8FEE-9C391A1305E3@gmail.com>
+	<CAHjP37FtwuXUOBM6wnAxeALRwvra4AxjNUxDh0QipDMDAreETQ@mail.gmail.com>
+	<2181AE87-5391-412D-A4A4-B3E01253EFE8@gmail.com>
+Message-ID: <CAHjP37Gg9M_MrwEKY8iAF=fMmuqPYvOEQPmGijmfoZhGEGCfww@mail.gmail.com>
+
+Then it should be on.  Are you running the exact same benchmark as that
+blog post?
+
+On Tue, Nov 17, 2015 at 3:32 PM, Dmitry Zaslavsky <
+dmitry.zaslavsky at gmail.com> wrote:
+
+> bool UseBiasedLocking                         := true
+>
+> On Nov 17, 2015, at 2:25 PM, Vitaly Davidovich <vitalyd at gmail.com> wrote:
+>
+> UseBiasedLocking
+>
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151117/8554eb8e/attachment.html>
+
+From mr.chrisvest at gmail.com  Tue Nov 17 16:14:49 2015
+From: mr.chrisvest at gmail.com (Chris Vest)
+Date: Tue, 17 Nov 2015 22:14:49 +0100
+Subject: [concurrency-interest] Biased locking benchmark
+In-Reply-To: <CAHjP37G_GYJTKcfGg=cnHhrYSPYnzMTv_5=_B0sFJy8bGtnafQ@mail.gmail.com>
+References: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+	<028901d120dc$83e76910$8bb63b30$@net.au>
+	<55582295-CC5D-450A-831B-A326015103A1@gmail.com>
+	<CAHjP37G_GYJTKcfGg=cnHhrYSPYnzMTv_5=_B0sFJy8bGtnafQ@mail.gmail.com>
+Message-ID: <1D2E5823-7B33-4975-810F-CB9B69B606D5@gmail.com>
+
+Only the most recent Haswell Xeon models support RTM, and its support is turned off by default in HotSpot, locked behind an experimental flag. 
+
+Chris
+
+> On 17. nov. 2015, at 20.01, Vitaly Davidovich <vitalyd at gmail.com> wrote:
+> 
+> Hotspot turns off biased locking if UseRTM is used (which haswell supports), but that option is disabled by default (AFAIK).  What does "java -XX:+PrintFlagsFinal -version | grep UseBiasedLocking" show on haswell?
+> 
+>> On Tue, Nov 17, 2015 at 1:23 PM, Dmitry Zaslavsky <dmitry.zaslavsky at gmail.com> wrote:
+>> Thanks
+>> 
+>> Tried few more JVMs. Makes no diff.
+>> Basically on haswell it seem like biased locks are off.
+>> On SB they are on.
+>> 
+>> 
+>>> On Nov 16, 2015, at 9:06 PM, David Holmes <davidcholmes at aapt.net.au> wrote:
+>>> 
+>>> Hi,
+>>>  
+>>> Generally biased-locking is enabled by default in 7, 8 and 9, but there can be architecture specific differences. Eg any platform only using the C++ interpreter doesn?t have biased-locking; aarch64 disables it by default.
+>>>  
+>>> David
+>>>  
+>>> From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of Dmitry Zaslavsky
+>>> Sent: Tuesday, November 17, 2015 11:44 AM
+>>> To: concurrency-interest
+>>> Subject: [concurrency-interest] Biased locking benchmark
+>>>  
+>>> HI, 
+>>>   I was trying to reproduce the benchmarks from the following article http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html 
+>>>  
+>>> On my current setup (haswell i7 laptop and idk 8) I see no difference between biased locking and no-biased locking.
+>>> In a single threaded case j.u.c. lock is always faster by about 20%
+>>>  
+>>> I am going to investigate more, but would some one know if JVM 8 disabled biased locking feature?
+>> 
+>> 
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151117/8bf69627/attachment-0001.html>
+
+From dmitry.zaslavsky at gmail.com  Tue Nov 17 16:18:36 2015
+From: dmitry.zaslavsky at gmail.com (Dmitry Zaslavsky)
+Date: Tue, 17 Nov 2015 16:18:36 -0500
+Subject: [concurrency-interest] Biased locking benchmark
+In-Reply-To: <CAHjP37Gg9M_MrwEKY8iAF=fMmuqPYvOEQPmGijmfoZhGEGCfww@mail.gmail.com>
+References: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+	<028901d120dc$83e76910$8bb63b30$@net.au>
+	<55582295-CC5D-450A-831B-A326015103A1@gmail.com>
+	<CAHjP37G_GYJTKcfGg=cnHhrYSPYnzMTv_5=_B0sFJy8bGtnafQ@mail.gmail.com>
+	<C7B9D653-DB83-4204-8FEE-9C391A1305E3@gmail.com>
+	<CAHjP37FtwuXUOBM6wnAxeALRwvra4AxjNUxDh0QipDMDAreETQ@mail.gmail.com>
+	<2181AE87-5391-412D-A4A4-B3E01253EFE8@gmail.com>
+	<CAHjP37Gg9M_MrwEKY8iAF=fMmuqPYvOEQPmGijmfoZhGEGCfww@mail.gmail.com>
+Message-ID: <58CA717D-4EB4-4385-8929-535630E22341@gmail.com>
+
+Yes and I can repro the rough timings on my other machine 
+
+Also I was just thinking I can't repro under Mac OS. Maybe that's the key. I'll try later on Haskell with Linux 
+
+Sent from mobile device
+
+> On Nov 17, 2015, at 3:55 PM, Vitaly Davidovich <vitalyd at gmail.com> wrote:
+> 
+> Then it should be on.  Are you running the exact same benchmark as that blog post?
+> 
+>> On Tue, Nov 17, 2015 at 3:32 PM, Dmitry Zaslavsky <dmitry.zaslavsky at gmail.com> wrote:
+>> bool UseBiasedLocking                         := true
+>> 
+>>> On Nov 17, 2015, at 2:25 PM, Vitaly Davidovich <vitalyd at gmail.com> wrote:
+>>> 
+>>> UseBiasedLocking
+> 
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151117/a4b1bbc4/attachment.html>
+
+From openjdk at duigou.org  Tue Nov 17 18:44:12 2015
+From: openjdk at duigou.org (Mike Duigou)
+Date: Tue, 17 Nov 2015 15:44:12 -0800
+Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for Java 9
+Message-ID: <3baf79ce5afffadf73e15c7693f5896b@sonic.net>
+
+Hello all;
+
+Enclosed is an initial draft of the new NavigableSet implementation I 
+have been working on. Despite the late hour I would still like to pursue 
+inclusion of this feature into Java 9.
+
+The implementation is significantly based upon the existing 
+CopyOnWriteArraySet implementation and is an entirely "vanilla" 
+NavigableSet implementation in that it implements no methods not part of 
+the NavigableSet interface. The only major area of work is in the 
+handling of subsets which COWAS did not have to handle.
+
+I have been testing by using the existing Java Collections tests. 
+Extending those tests to support this new implementation was mostly a 
+matter of adding the new class to the lists of collections 
+implementations to test--I searched for both CopyOnWriteArraySet and 
+ConcurrentSkipListMap amongst the tests and added 
+CopyOnWriteArrayNavigableSet where appropriate. I can provide the 
+patches for anyone who is interested.
+
+Because the spec work for this proposed change is trivial and the 
+testing is well covered I believe it is still feasible to consider this 
+proposal for Java 9.
+
+Thanks to Paul Sandoz for his review comments on earlier drafts of this 
+implementation.
+
+Comments, corrections and suggestions welcome.
+
+Thanks,
+
+Mike
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151117/c7a3bb68/attachment-0001.html>
+
+From thurston at nomagicsoftware.com  Tue Nov 17 18:07:52 2015
+From: thurston at nomagicsoftware.com (thurstonn)
+Date: Tue, 17 Nov 2015 16:07:52 -0700 (MST)
+Subject: [concurrency-interest] MutableCallSite syncAll memory effects
+Message-ID: <1447801672903-12882.post@n7.nabble.com>
+
+Reading the  MutableCallSite#syncAll javadoc
+<http://docs.oracle.com/javase/8/docs/api/java/lang/invoke/MutableCallSite.html#syncAll-java.lang.invoke.MutableCallSite:A-> 
+, there seems to be an inconsistency, viz.
+
+this passage (call it P):
+"The overall effect is to force all future readers of each call site's
+target to accept the most recently stored value"
+
+doesn't quite gibe with:
+"Consider an arbitrary thread T (other than the current thread). *If T
+executes a synchronization action A* after the volatile write to V (in the
+global synchronization order), it is therefore required to see ... the
+current target of [the MutableCallSite]"
+
+But what if T never performs any subsequent synchronization action (i.e. A)? 
+There's nothing to suggest that reading the callsite's #target or invoking
+the callsite (which implies the former) constitutes a synchronization
+action.
+
+Yet passage P imposes no such condition on T (a future reader); given cache
+coherency, this probably isn't a real-world issue, but there appears to be
+an inconsistency, unless I'm missing something
+
+
+
+--
+View this message in context: http://jsr166-concurrency.10961.n7.nabble.com/MutableCallSite-syncAll-memory-effects-tp12882.html
+Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+
+From jsampson at guidewire.com  Tue Nov 17 19:45:52 2015
+From: jsampson at guidewire.com (Justin Sampson)
+Date: Wed, 18 Nov 2015 00:45:52 +0000
+Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for
+ Java 9
+In-Reply-To: <3baf79ce5afffadf73e15c7693f5896b@sonic.net>
+References: <3baf79ce5afffadf73e15c7693f5896b@sonic.net>
+Message-ID: <DM2PR0501MB875AA574DC4B33F9395FA65D11C0@DM2PR0501MB875.namprd05.prod.outlook.com>
+
+Neat! I just took a quick skim through. It's nice how it mostly just delegates to the CopyOnWriteArrayList, which is kept in sorted order. One concern I have is the definition of equals(), which is inconsistent with the contract of Set and therefore not symmetric with regard to other Set implementations. It should just check that the two sets contain the same elements, ignoring order.
+
+Cheers,
+Justin
+
+
+-----Original Message-----
+From: concurrency-interest-bounces at cs.oswego.edu [mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of Mike Duigou
+Sent: Tuesday, November 17, 2015 3:44 PM
+To: Concurrency Interest
+Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for Java 9
+
+Hello all;
+
+Enclosed is an initial draft of the new NavigableSet implementation I 
+have been working on. Despite the late hour I would still like to pursue 
+inclusion of this feature into Java 9.
+
+The implementation is significantly based upon the existing 
+CopyOnWriteArraySet implementation and is an entirely "vanilla" 
+NavigableSet implementation in that it implements no methods not part of 
+the NavigableSet interface. The only major area of work is in the 
+handling of subsets which COWAS did not have to handle.
+
+I have been testing by using the existing Java Collections tests. 
+Extending those tests to support this new implementation was mostly a 
+matter of adding the new class to the lists of collections 
+implementations to test--I searched for both CopyOnWriteArraySet and 
+ConcurrentSkipListMap amongst the tests and added 
+CopyOnWriteArrayNavigableSet where appropriate. I can provide the 
+patches for anyone who is interested.
+
+Because the spec work for this proposed change is trivial and the 
+testing is well covered I believe it is still feasible to consider this 
+proposal for Java 9.
+
+Thanks to Paul Sandoz for his review comments on earlier drafts of this 
+implementation.
+
+Comments, corrections and suggestions welcome.
+
+Thanks,
+
+Mike
+
+
+From forax at univ-mlv.fr  Wed Nov 18 06:35:04 2015
+From: forax at univ-mlv.fr (Remi Forax)
+Date: Wed, 18 Nov 2015 12:35:04 +0100 (CET)
+Subject: [concurrency-interest] MutableCallSite syncAll memory effects
+In-Reply-To: <1447801672903-12882.post@n7.nabble.com>
+References: <1447801672903-12882.post@n7.nabble.com>
+Message-ID: <91068467.1576786.1447846504326.JavaMail.zimbra@u-pem.fr>
+
+The effect of setTarget/syncAll is described in term of volatile read/volatile write.
+"In terms of the Java Memory Model, this operation performs a synchronization action which is comparable in effect to the writing of a volatile variable by the current thread, and an eventual volatile read by every other thread that may access one of the affected call sites."
+
+The volatile read is not something that really occurs, a thread that read the target, using getTarget(), of a MutableCallSite acts *as if* the target was read by a volatile read if syncAll was called before.
+
+cheers,
+R?mi
+
+----- Mail original -----
+> De: "thurstonn" <thurston at nomagicsoftware.com>
+> ?: concurrency-interest at cs.oswego.edu
+> Envoy?: Mercredi 18 Novembre 2015 00:07:52
+> Objet: [concurrency-interest] MutableCallSite syncAll memory effects
+> 
+> Reading the  MutableCallSite#syncAll javadoc
+> <http://docs.oracle.com/javase/8/docs/api/java/lang/invoke/MutableCallSite.html#syncAll-java.lang.invoke.MutableCallSite:A->
+> , there seems to be an inconsistency, viz.
+> 
+> this passage (call it P):
+> "The overall effect is to force all future readers of each call site's
+> target to accept the most recently stored value"
+> 
+> doesn't quite gibe with:
+> "Consider an arbitrary thread T (other than the current thread). *If T
+> executes a synchronization action A* after the volatile write to V (in the
+> global synchronization order), it is therefore required to see ... the
+> current target of [the MutableCallSite]"
+> 
+> But what if T never performs any subsequent synchronization action (i.e. A)?
+> There's nothing to suggest that reading the callsite's #target or invoking
+> the callsite (which implies the former) constitutes a synchronization
+> action.
+> 
+> Yet passage P imposes no such condition on T (a future reader); given cache
+> coherency, this probably isn't a real-world issue, but there appears to be
+> an inconsistency, unless I'm missing something
+> 
+> 
+> 
+> --
+> View this message in context:
+> http://jsr166-concurrency.10961.n7.nabble.com/MutableCallSite-syncAll-memory-effects-tp12882.html
+> Sent from the JSR166 Concurrency mailing list archive at Nabble.com.
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+> 
+
+
+From aleksey.shipilev at oracle.com  Wed Nov 18 07:04:11 2015
+From: aleksey.shipilev at oracle.com (Aleksey Shipilev)
+Date: Wed, 18 Nov 2015 15:04:11 +0300
+Subject: [concurrency-interest] Biased locking benchmark
+In-Reply-To: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+References: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+Message-ID: <564C693B.7040506@oracle.com>
+
+On 11/17/2015 04:44 AM, Dmitry Zaslavsky wrote:
+>   I was trying to reproduce the benchmarks from the following
+> article http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html 
+> 
+> On my current setup (haswell i7 laptop and idk 8) I see no difference
+> between biased locking and no-biased locking.
+> In a single threaded case j.u.c. lock is always faster by about 20%
+> 
+> I am going to investigate more, but would some one know if JVM 8
+> disabled biased locking feature?
+
+Oracle/OpenJDK 8 has biased locking enabled on by default.
+
+These benchmarking "deja vu"-s are coming strong, see e.g. two months
+ago on this list (BTW, that result is the counter-example to the myth
+that local CAS latency is so low these days that biased locking is not
+needed anymore):
+ http://cs.oswego.edu/pipermail/concurrency-interest/2015-September/014452.html
+
+Aside: it is much more productive to get into the habit of quickly
+analyzing the benchmarks, instead of speculating about what could and/or
+could not happen in them. JMH's -prof perfasm was designed to aid this
+kind of research, use it.
+
+Thanks,
+-Aleksey
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 819 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151118/cfc0f7ed/attachment.bin>
+
+From openjdk at duigou.org  Wed Nov 18 20:03:05 2015
+From: openjdk at duigou.org (Mike Duigou)
+Date: Wed, 18 Nov 2015 17:03:05 -0800
+Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for
+ Java 9
+In-Reply-To: <DM2PR0501MB875AA574DC4B33F9395FA65D11C0@DM2PR0501MB875.namprd05.prod.outlook.com>
+References: <3baf79ce5afffadf73e15c7693f5896b@sonic.net>
+	<DM2PR0501MB875AA574DC4B33F9395FA65D11C0@DM2PR0501MB875.namprd05.prod.outlook.com>
+Message-ID: <ec7a4d8ce7c4991b8eff9637286b83d1@sonic.net>
+
+Thanks Justin;
+
+You are correct about equals(). I constant forget that SortedSet doesn't 
+refine the equals definition as it probably should have.
+
+I've done some refactoring on the implementation to have it extend 
+CopyOnWriteArraySet which eliminates a lot of duplicated code. Once I 
+have finished testing it I will post an update to this list.
+
+Thanks!
+
+Mike
+
+On 2015-11-17 16:45, Justin Sampson wrote:
+> Neat! I just took a quick skim through. It's nice how it mostly just
+> delegates to the CopyOnWriteArrayList, which is kept in sorted order.
+> One concern I have is the definition of equals(), which is
+> inconsistent with the contract of Set and therefore not symmetric with
+> regard to other Set implementations. It should just check that the two
+> sets contain the same elements, ignoring order.
+> 
+> Cheers,
+> Justin
+> 
+> 
+> -----Original Message-----
+> From: concurrency-interest-bounces at cs.oswego.edu
+> [mailto:concurrency-interest-bounces at cs.oswego.edu] On Behalf Of Mike
+> Duigou
+> Sent: Tuesday, November 17, 2015 3:44 PM
+> To: Concurrency Interest
+> Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for 
+> Java 9
+> 
+> Hello all;
+> 
+> Enclosed is an initial draft of the new NavigableSet implementation I
+> have been working on. Despite the late hour I would still like to 
+> pursue
+> inclusion of this feature into Java 9.
+
+
+From dmitry.zaslavsky at gmail.com  Thu Nov 19 13:44:00 2015
+From: dmitry.zaslavsky at gmail.com (Dmitry Zaslavsky)
+Date: Thu, 19 Nov 2015 13:44:00 -0500
+Subject: [concurrency-interest] Biased locking benchmark
+In-Reply-To: <564C693B.7040506@oracle.com>
+References: <85CD1F84-BB2F-4FFC-9DEA-ACE201DBD2E3@gmail.com>
+	<564C693B.7040506@oracle.com>
+Message-ID: <1513E787-3B13-4BA4-B850-A96791CBA6CC@gmail.com>
+
+OK, I got to the bottom of this.
+Slightly faulty test :) (Thanks to Aleksey for suggesting that) 
+Thanks to Vitaly for suggesting dump of flags and my discovery of TraceBiasedLocking 
+
+The bottom line is that this test warms up by running test few times before.
+Each time creating a ?new? Thread()?. On windows / linux the real thread gets re-used.
+So the object which is static final never gets re-biased.
+On Mac for whatever reason the new Thread doesn?t reuse previous os thread (or id used for biasing is computed differently) and this ?lock? gets re-biased.
+I modified the code to create a new ?lock? object and can now repro the experiment.
+
+So just to confirm what you guys already said, based locking is on by default and can easily make 10x difference.
+
+
+> On Nov 18, 2015, at 7:04 AM, Aleksey Shipilev <aleksey.shipilev at oracle.com> wrote:
+> 
+> On 11/17/2015 04:44 AM, Dmitry Zaslavsky wrote:
+>>  I was trying to reproduce the benchmarks from the following
+>> article http://mechanical-sympathy.blogspot.com/2011/11/biased-locking-osr-and-benchmarking-fun.html 
+>> 
+>> On my current setup (haswell i7 laptop and idk 8) I see no difference
+>> between biased locking and no-biased locking.
+>> In a single threaded case j.u.c. lock is always faster by about 20%
+>> 
+>> I am going to investigate more, but would some one know if JVM 8
+>> disabled biased locking feature?
+> 
+> Oracle/OpenJDK 8 has biased locking enabled on by default.
+> 
+> These benchmarking "deja vu"-s are coming strong, see e.g. two months
+> ago on this list (BTW, that result is the counter-example to the myth
+> that local CAS latency is so low these days that biased locking is not
+> needed anymore):
+> http://cs.oswego.edu/pipermail/concurrency-interest/2015-September/014452.html
+> 
+> Aside: it is much more productive to get into the habit of quickly
+> analyzing the benchmarks, instead of speculating about what could and/or
+> could not happen in them. JMH's -prof perfasm was designed to aid this
+> kind of research, use it.
+> 
+> Thanks,
+> -Aleksey
+> 
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151119/8bd99710/attachment.html>
+
+From openjdk at duigou.org  Thu Nov 19 17:10:00 2015
+From: openjdk at duigou.org (Mike Duigou)
+Date: Thu, 19 Nov 2015 14:10:00 -0800
+Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for
+	Java 9
+Message-ID: <384f3b9b6ed10a4a05a359a05459ea35@sonic.net>
+
+Hello all;
+
+As promised here is an update to my CopyOnWriteArrayNavigableSet 
+implementation. Thanks to those who have already provided feedback. The 
+implementation is better because of it.
+
+This version eliminates a lot of the commonality with 
+CopyOnWriteArraySet by extending CopyOnWriteArraySet rather than 
+extending only AbstractSet. A few changes were required to 
+CopyOnWriteArraySet to properly support extension so I am now providing 
+a patch for review (vs. jdk9-dev) rather than the Java source file.
+
+Mike
+
+
+From openjdk at duigou.org  Fri Nov 20 15:54:19 2015
+From: openjdk at duigou.org (Mike Duigou)
+Date: Fri, 20 Nov 2015 12:54:19 -0800
+Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for
+	Java 9
+Message-ID: <035b1625bac81c5095a3c04fdaf146d4@sonic.net>
+
+Hello all;
+
+
+Here's the missing attachment.
+
+One piece of feedback that I have received from several people is that 
+they would prefer if COWANS did not extend COWAS. Originally the 
+implementation did not but I have done so in this most recent patch. The 
+primary concern is that tying the implementations together via 
+inheritance reduces future flexibility for COWANS optimization and 
+refactoring. Opinions from others?
+
+Mike
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: CopyOnWriteArrayNavigableSet.patch
+Type: text/x-diff
+Size: 42647 bytes
+Desc: not available
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151120/866c16f4/attachment-0001.bin>
+
+From brian at briangoetz.com  Fri Nov 20 16:09:33 2015
+From: brian at briangoetz.com (Brian Goetz)
+Date: Fri, 20 Nov 2015 16:09:33 -0500
+Subject: [concurrency-interest] 1.8/1.9: Iterator and ListIterator
+ optional operations
+In-Reply-To: <9DD392344AED044287E42246402FDAB464A5D80E@max.atis-systems.com>
+References: <9DD392344AED044287E42246402FDAB464A5D80E@max.atis-systems.com>
+Message-ID: <564F8C0D.4010709@briangoetz.com>
+
+The story with remove() is an unfortunate combination of tooling 
+limitations and oversight; ListIterator explicitly redeclares remove() 
+not because it wants to override it for any actual reason (e.g., to add 
+annotations), but instead because that's how you get to "override" the 
+Javadoc.  We should have noticed this when adding the default to remove, 
+since the same rationale about remove being effectively optional applies 
+to ListIterator as well as Iterator.  And a similar argument could be 
+made about set and add, not unlike the behavior of the mutative methods 
+in AbstractCollection, which default to throwing UOE.
+
+
+On 11/17/2015 6:30 AM, Volker.Borchert at atis-systems.com wrote:
+> Sorry for this more-or-less off-topic post, but I couldn't find any discussion
+> on this (thank you G**gle for tryimg to outsmart your users).
+>
+> With 1.8, Iterator's remove() has become a default methods that throws
+> UnsupportedOperationException. But ListIterator's add(), set(), and remove()
+> have stayed abstract, the latter even hiding Iterator's.
+>
+> Why? I.o.w., is there any hope this will change?
+>
+> Thank you for any enlightnment
+>
+> 	Volker
+>
+> ////////////////////////////////////////////////////////////////////
+>
+> ATIS systems GmbH
+> Sitz: Bad Homburg
+> Registergericht: Bad Homburg HRB 1514
+> Geschaeftsfuehrer: Stefan Diepolder, Daniel Sieh
+>
+> ________________________________________________________________________________________________
+>
+> This message is confidential. It may also be privileged or otherwise protected by work product immunity or other legal rules. If you have received this message by mistake please let us know by reply and then delete it from your system; you should not copy it or disclose its contents to anyone. All messages sent to and from ATIS systems GmbH may be monitored to ensure compliance with internal policies and to protect our business. E-Mails are not secure and cannot be guaranteed to be error free as they can be intercepted, amended, lost or destroyed. Anyone who communicates with us by e-mail is taken to accept these risks.
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+From cpovirk at google.com  Mon Nov 23 10:40:57 2015
+From: cpovirk at google.com (Chris Povirk)
+Date: Mon, 23 Nov 2015 10:40:57 -0500
+Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for
+	Java 9
+In-Reply-To: <035b1625bac81c5095a3c04fdaf146d4@sonic.net>
+References: <035b1625bac81c5095a3c04fdaf146d4@sonic.net>
+Message-ID: <CAEvq2nozfDKgbJi2=16=HwgjkkeiF62o4R3jYr1f-+VkwSRZMg@mail.gmail.com>
+
+Just one point from some black-box testing:
+emptySet.addAll(singleNullElement) will insert the null element into the
+set, even if the Comparator does not support it. More generally, it looks
+like you intend to forbid nulls, regardless of the Comparator. If this is
+the case, can you add docs?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151123/fa2e90d5/attachment.html>
+
+From peter.levart at gmail.com  Mon Nov 23 15:58:11 2015
+From: peter.levart at gmail.com (Peter Levart)
+Date: Mon, 23 Nov 2015 21:58:11 +0100
+Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for
+ Java 9
+In-Reply-To: <CAEvq2nozfDKgbJi2=16=HwgjkkeiF62o4R3jYr1f-+VkwSRZMg@mail.gmail.com>
+References: <035b1625bac81c5095a3c04fdaf146d4@sonic.net>
+	<CAEvq2nozfDKgbJi2=16=HwgjkkeiF62o4R3jYr1f-+VkwSRZMg@mail.gmail.com>
+Message-ID: <56537DE3.90208@gmail.com>
+
+
+
+On 11/23/2015 04:40 PM, Chris Povirk wrote:
+> Just one point from some black-box testing: 
+> emptySet.addAll(singleNullElement) will insert the null element into 
+> the set, even if the Comparator does not support it. More generally, 
+> it looks like you intend to forbid nulls, regardless of the 
+> Comparator. If this is the case, can you add docs?
+
+One idea for adding 'e' to empty set is to:
+
+- when using comparator, call comparator.compare(e, e);
+- when using Comparable, call Objects.requireNonNull((Comparable) e);
+
+This would trigger CCE or NPE in case 'e' is not of correct type for 
+comparator or null when comparator doesn't support nulls or not 
+Comparable or null when there's no comparator.
+
+There's no reason to not allow null elements when using comparator that 
+supports them?
+
+Regards, Peter
+
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151123/f3048f7c/attachment.html>
+
+From openjdk at duigou.org  Mon Nov 23 23:37:22 2015
+From: openjdk at duigou.org (Mike Duigou)
+Date: Mon, 23 Nov 2015 20:37:22 -0800
+Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for
+ Java 9
+In-Reply-To: <56537DE3.90208@gmail.com>
+References: <035b1625bac81c5095a3c04fdaf146d4@sonic.net>
+	<CAEvq2nozfDKgbJi2=16=HwgjkkeiF62o4R3jYr1f-+VkwSRZMg@mail.gmail.com>
+	<56537DE3.90208@gmail.com>
+Message-ID: <c712caa6cc1af5628cc6d153a87fa255@sonic.net>
+
+I've made some changes which will address this addAll() case.
+
+Not supporting nulls is for a couple reasons;
+- none of the other java.util.concurrent Sets support them.
+- Handling some of the cases of sub-sets when nulls are involved would 
+require extra work. It is the usual problem of telling whether a null 
+return means absent or a null value. I had included "// XXX needs to 
+handle null" in a bunch of places as I was writing the original code and 
+in my original review drafts but the Java 9 deadlines have caught up 
+with me and so I abandoned plans to support null when using a Comparator 
+that allows null.
+- I don't like nulls in Collections. Seriously they are a PITA and the 
+extra code to handle them often makes the general case slower.
+
+That's perhaps a little stronger than I actually believe. :-) With an 
+unrestricted schedule I probably would have included null element 
+support.
+
+Mike
+
+On 2015-11-23 12:58, Peter Levart wrote:
+> On 11/23/2015 04:40 PM, Chris Povirk wrote:
+> 
+>> Just one point from some black-box testing:
+>> emptySet.addAll(singleNullElement) will insert the null element into
+>> the set, even if the Comparator does not support it.
+
+>  There's no reason to not allow null elements when using comparator
+> that supports them?
+> 
+>  Regards, Peter
+
+
+From peter.levart at gmail.com  Tue Nov 24 08:27:11 2015
+From: peter.levart at gmail.com (Peter Levart)
+Date: Tue, 24 Nov 2015 14:27:11 +0100
+Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for
+ Java 9
+In-Reply-To: <c712caa6cc1af5628cc6d153a87fa255@sonic.net>
+References: <035b1625bac81c5095a3c04fdaf146d4@sonic.net>
+	<CAEvq2nozfDKgbJi2=16=HwgjkkeiF62o4R3jYr1f-+VkwSRZMg@mail.gmail.com>
+	<56537DE3.90208@gmail.com> <c712caa6cc1af5628cc6d153a87fa255@sonic.net>
+Message-ID: <565465AF.8030502@gmail.com>
+
+
+
+On 11/24/2015 05:37 AM, Mike Duigou wrote:
+> I've made some changes which will address this addAll() case.
+>
+> Not supporting nulls is for a couple reasons;
+> - none of the other java.util.concurrent Sets support them.
+> - Handling some of the cases of sub-sets when nulls are involved would 
+> require extra work. It is the usual problem of telling whether a null 
+> return means absent or a null value. I had included "// XXX needs to 
+> handle null" in a bunch of places as I was writing the original code 
+> and in my original review drafts but the Java 9 deadlines have caught 
+> up with me and so I abandoned plans to support null when using a 
+> Comparator that allows null.
+> - I don't like nulls in Collections. Seriously they are a PITA and the 
+> extra code to handle them often makes the general case slower.
+>
+> That's perhaps a little stronger than I actually believe. :-) With an 
+> unrestricted schedule I probably would have included null element 
+> support.
+>
+
+No, you're right. Methods that return null to signal the absence of an 
+element are enough of an argument to restrict support to non-null 
+elements. And NavigableSet has such methods.
+
+Regards, Peter
+
+>
+> On 2015-11-23 12:58, Peter Levart wrote:
+>> On 11/23/2015 04:40 PM, Chris Povirk wrote:
+>>
+>>> Just one point from some black-box testing:
+>>> emptySet.addAll(singleNullElement) will insert the null element into
+>>> the set, even if the Comparator does not support it.
+>
+>>  There's no reason to not allow null elements when using comparator
+>> that supports them?
+>>
+>>  Regards, Peter
+>
+
+
+From heinz at javaspecialists.eu  Tue Nov 24 18:17:49 2015
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Tue, 24 Nov 2015 23:17:49 +0000
+Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for
+ Java 9
+In-Reply-To: <e314d01cd9043ed5ed6dfc745cf36018@sonic.net>
+References: <035b1625bac81c5095a3c04fdaf146d4@sonic.net>
+	<56539B90.8080708@javaspecialists.eu>
+	<878c56c820fe8fd8b6a31988d4ab8af8@sonic.net>
+	<56539F24.4040809@javaspecialists.eu>
+	<e314d01cd9043ed5ed6dfc745cf36018@sonic.net>
+Message-ID: <5654F01D.60606@javaspecialists.eu>
+
+A few small comments:
+
+1. In the JavaDoc comment, probably use &lt;Handler> instead of <Handler>
+
+2. I would probably delegate to the Integer.compare(int, int) method in 
+your Handler:
+ public int compareTo(Handler other) { return Integer.compare(priority, 
+other.priority); } - otherwise we might get overflows resulting in 
+incorrect comparisons.
+
+3. Inside class X in the JavaDocs, use the diamond operator:
+ *   private final CopyOnWriteArrayNavigableSet&lt;Handler> handlers
+ *     = new CopyOnWriteArrayNavigableSet&lt;>();
+
+4. Unless there is a compelling reason, I would make both comparator and 
+al fields private.  Inside your BoundedNavigableSet you could then 
+access these with super.comparator and super.al.  IMHO always better to 
+start off as private as possible with a new class.
+
+5. I would make the internal constructor also private:
+    private CopyOnWriteArrayNavigableSet(Comparator<E> comparator, 
+CopyOnWriteArrayList<E> al) {...}
+
+6. Where you use the wrapped COWArrayList for locking, instead of 
+synchronized(super.al.lock), it would probably be better to do the 
+following (e.g. remove(Object o):
+
+    @Override
+    public boolean remove(Object o) {
+        al.lock.lock();
+        try {
+            @SuppressWarnings("unchecked")
+            E[] array = (E[]) al.getArray();
+            @SuppressWarnings("unchecked")
+            int loc = Arrays.binarySearch(array, (E) o, comparator);
+            if (loc >= 0) {
+                al.remove(loc);
+                return true;
+            }
+            return false;
+        } finally {
+            al.lock.unlock();
+        }
+    }
+
+7. I dislike turning off unchecked warnings.  Just a personal 
+preference.  I know sometimes you cannot get around it.  In your 
+constructor, we might have missed something that could cause potential 
+ClassCastExceptions.  For example, try the following code:
+
+public class COWANSTest {
+    static class A {
+    }
+
+    static class B extends A implements Comparable<B> {
+        int i;
+
+        public B(int i) {
+            this.i = i;
+        }
+
+        @Override
+        public int compareTo(B that) {
+            return Integer.compare(i, that.i);
+        }
+    }
+
+    public static void main(String... args) {
+        CopyOnWriteArrayNavigableSet<B> bs = new 
+CopyOnWriteArrayNavigableSet<>();
+        bs.add(new B(42));
+        CopyOnWriteArrayNavigableSet<A> cows = new 
+CopyOnWriteArrayNavigableSet<>(bs);
+        cows.add(new A());
+
+    }
+}
+
+It compiles fine, but of course when you run it we get a 
+ClassCastException, because the comparator is of the wrong type.  I 
+would probably change the constructor into three, thus
+
+    @SuppressWarnings("unchecked")
+    public CopyOnWriteArrayNavigableSet(Collection<? extends E> c) {
+        if (c.getClass() == CopyOnWriteArrayNavigableSet.class) {
+            this.comparator = ((CopyOnWriteArrayNavigableSet) c).comparator;
+            this.al = new CopyOnWriteArrayList<>();
+            this.al.setArray(((CopyOnWriteArrayNavigableSet) 
+c).al.getArray());
+        } else if (c instanceof SortedSet) {
+            this.comparator = ((SortedSet) c).comparator();
+            this.al = new CopyOnWriteArrayList<>(c);
+        } else {
+            this.comparator = null;
+            this.al = new CopyOnWriteArrayList<>();
+            CopyOnWriteArrayNavigableSet.addAll(this, c);
+        }
+    }
+
+becomes:
+
+    /**
+     * Creates a set containing all of the elements of the specified
+     * collection, assuming natural ordering.
+     *
+     * @param c the collection of elements to initially contain
+     * @throws NullPointerException if the specified collection is null
+     */
+    public CopyOnWriteArrayNavigableSet(Collection<? extends E> c) {
+        this.comparator = null;
+        this.al = new CopyOnWriteArrayList<>();
+        CopyOnWriteArrayNavigableSet.addAll(this, c);
+    }
+
+    /**
+     * Creates a set containing all of the elements of the specified
+     * collection, sharing the same underlying array and comparator.
+     *
+     * @param c the collection of elements to initially contain
+     * @throws NullPointerException if the specified collection is null
+     */
+    public CopyOnWriteArrayNavigableSet(CopyOnWriteArrayNavigableSet<E> c) {
+        this.comparator = c.comparator;
+        this.al = new CopyOnWriteArrayList<>();
+        this.al.setArray(c.al.getArray());
+    }
+
+    /**
+     * Creates a set containing all of the elements of the specified
+     * sorted set, sharing the same comparator.
+     *
+     * @param c the collection of elements to initially contain
+     * @throws NullPointerException if the specified collection is null
+     */
+    public CopyOnWriteArrayNavigableSet(SortedSet<E> c) {
+        this.comparator = c.comparator();
+        this.al = new CopyOnWriteArrayList<>(c);
+    }
+
+
+Now the code COWANSTest I wrote above would not compile anymore.
+
+8. Since we have type erasure in generics, it would probably be also a 
+bit more accurate to use Object[] instead of E[].  See the other classes 
+in java.util.* for comparison.  I understand why you did it - to get 
+Arrays.binarySort() to work.  However, it is a bit messy that one could 
+construct a CopyOnWriteArrayNavigableSet with a generic type that is not 
+Comparable and without a Comparator and where we would get an 
+ClassCastException the moment we use it.
+
+9. The fromLoc and toLoc methods both have the same code for finding the 
+comparator:
+
+super.comparator == null ? descending ? (Comparator<E>) 
+Comparator.reverseOrder() : null : descending ? 
+super.comparator.reversed() : super.comparator
+super.comparator == null ? descending ? (Comparator<E>) 
+Comparator.reverseOrder() : null : descending ? 
+super.comparator.reversed() : super.comparator
+
+which incidentally also occurs in the comparator() method.  I have 
+rewritten that to make it a bit clearer and to reduce the scope of the 
+"unchecked" warning:
+
+        @Override
+        public Comparator<? super E> comparator() {
+            if (descending) {
+                if (super.comparator == null) {
+                    @SuppressWarnings("unchecked")
+                    Comparator<? super E> comparator = (Comparator<? 
+super E>) Comparator.reverseOrder();
+                    return comparator;
+                } else {
+                    return super.comparator.reversed();
+                }
+            } else {
+                return super.comparator;
+            }
+        }
+
+10. I am concerned by the number of methods that are being called whilst 
+holding locks.  Whilst I don't have any concrete example, I am concerned 
+that this could lead to deadlocks.
+
+I have not tested correctness on the class and also not performance, 
+however, I hope this will give you something to chew over in the 
+meantime.  The class with my changes is as an attachment.  Please note 
+that all I have checked is that my code compiles, not that it is 
+correct.  It is extremely likely that I introduce logical errors into 
+the code, so please check everything very carefully.
+
+Regards
+
+Heinz
+-- 
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java(tm) Specialists' Newsletter"
+Sun/Oracle Java Champion since 2005
+JavaOne Rock Star Speaker 2012
+http://www.javaspecialists.eu
+Tel: +30 69 75 595 262
+Skype: kabutz
+
+
+
+Mike Duigou wrote:
+> Hello Heinz;
+>
+> Here's the updated implementation as promised. I welcome any feedback 
+> you have. I have a slight preference for public feedback on 
+> concurrency-interst because more visible evidence of review will 
+> bolster confidence and increase urgency. If you'd prefer not to post 
+> publicly, that is fine too!
+>
+> Thanks,
+>
+> Mike
+>
+> On 2015-11-23 15:20, Dr Heinz M. Kabutz wrote:
+>> Thanks Mike,
+>>
+>> once you're done, please send it along.  I'm at UTC at the moment, but
+>> will hopefully get to check it out tomorrow.
+>>
+>> Regards
+>>
+>> Heinz
+>> -- 
+>> Dr Heinz M. Kabutz (PhD CompSci)
+>> Author of "The Java(tm) Specialists' Newsletter"
+>> Sun/Oracle Java Champion since 2005
+>> JavaOne Rock Star Speaker 2012
+>> http://www.javaspecialists.eu
+>> Tel: +30 69 75 595 262
+>> Skype: kabutz
+>>
+>>
+>>
+>> Mike Duigou wrote:
+>>> Certainly. I am going to try to fix some of the reported issues 
+>>> today including inheriting from CopyOnWriteArraySet but I would 
+>>> certainly appreciate and no doubt benefit from your input.
+>>>
+>>> Mike
+>>>
+>>> On 2015-11-23 15:04, Dr Heinz M. Kabutz wrote:
+>>>> Hi Mike,
+>>>>
+>>>>  could you please email me your latest version?  I would like to
+>>>> check it for you this week.  I'm sure it's fine, but it always helps
+>>>> to have extra eyes on a piece of code :-)
+>>>>
+>>>> Regards
+>>>>
+>>>> Heinz
+>>>> -- Dr Heinz M. Kabutz (PhD CompSci)
+>>>> Author of "The Java(tm) Specialists' Newsletter"
+>>>> Sun/Oracle Java Champion since 2005
+>>>> JavaOne Rock Star Speaker 2012
+>>>> http://www.javaspecialists.eu [2]
+>>>> Tel: +30 69 75 595 262
+>>>> Skype: kabutz
+>>>>
+>>>>  Mike Duigou wrote:
+>>>>
+>>>>> Hello all;
+>>>>>
+>>>>> Here's the missing attachment.
+>>>>>
+>>>>> One piece of feedback that I have received from several people is
+>>>>> that they would prefer if COWANS did not extend COWAS. Originally
+>>>>> the implementation did not but I have done so in this most recent
+>>>>> patch. The primary concern is that tying the implementations
+>>>>> together via inheritance reduces future flexibility for COWANS
+>>>>> optimization and refactoring. Opinions from others?
+>>>>>
+>>>>> Mike
+>>>>>
+>>>>> -------------------------
+>>>>>
+>>>>> _______________________________________________
+>>>>> Concurrency-interest mailing list
+>>>>> Concurrency-interest at cs.oswego.edu
+>>>>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest [1]
+>>>>
+>>>>
+>>>> Links:
+>>>> ------
+>>>> [1] http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>>> [2] http://www.javaspecialists.eu
+>>>
+>
+> ------------------------------------------------------------------------
+>
+> /* * Written by Doug Lea & Mike Duigou with assistance from members of 
+> JCP JSR-166 * Expert Group and released to the public domain, as 
+> explained at * http://creativecommons.org/publicdomain/zero/1.0/ */ 
+> package java.util.concurrent; import java.lang.reflect.Array; import 
+> java.util.Collection; import java.util.AbstractSet; import 
+> java.util.Arrays; import java.util.Collections; import 
+> java.util.Comparator; import java.util.Iterator; import 
+> java.util.List; import java.util.NavigableSet; import 
+> java.util.NoSuchElementException; import java.util.Objects; import 
+> java.util.SortedSet; import java.util.Spliterator; import 
+> java.util.Spliterators; import java.util.function.Predicate; import 
+> java.util.function.Consumer; /** * A {@link java.util.NavigableSet} 
+> that uses an internal {@link CopyOnWriteArrayList} * for all of its 
+> operations. Thus, it shares the same basic properties: *
+>
+>     * * It is best suited for applications in which set sizes
+>       generally * stay small, read-only operations * vastly outnumber
+>       mutative operations, and you need * to prevent interference
+>       among threads during traversal. *
+>     * It is thread-safe. *
+>     * Mutative operations ({@code add}, {@code set}, {@code remove},
+>       etc.) * are expensive since they usually entail copying the
+>       entire underlying * array. *
+>     * Iterators do not support the mutative {@code remove} operation. *
+>     * Traversal via iterators is fast and cannot encounter *
+>       interference from other threads. Iterators rely on * unchanging
+>       snapshots of the array at the time the iterators were *
+>       constructed. *
+>
+> * *
+>
+> *Sample Usage.* The following code sketch uses a * copy-on-write 
+> navigable set to maintain a set of ordered Handler objects that * 
+> perform some action upon state updates until one of the handlers 
+> returns * true indicating that the update has been handled. * *
+>
+>  {@code
+>  * class Handler implements Comparable {
+>  *   // returns true if update has been handled
+>  *   boolean handle();
+>  *
+>  *   // ordered from highest to lowest
+>  *   public int compareTo(Handler other) { return priority - other.priority; }
+>  * }
+>  *
+>  * class X {
+>  *   // Will use "Natural Order" of Comparables
+>  *   private final CopyOnWriteArrayNavigableSet handlers
+>  *     = new CopyOnWriteArrayNavigableSet();
+>  *   public void addHandler(Handler h) { handlers.add(h); }
+>  *
+>  *   private long internalState;
+>  *   private synchronized void changeState() { internalState = ...; }
+>  *
+>  *   public void update() {
+>  *     changeState();
+>  *     for (Handler handler : handlers)
+>  *       if(handler.handle()) break;
+>  *   }
+>  * }}
+> * *
+>
+> This class is a member of the * * Java Collections Framework 
+> <%7B at docRoot%7D/../technotes/guides/collections/index.html>. * * @see 
+> CopyOnWriteArrayList * @since 9 * @author Doug Lea * @author Mike 
+> Duigou * @param the type of elements held in this collection */ public 
+> class CopyOnWriteArrayNavigableSet extends AbstractSet implements 
+> java.io.Serializable, NavigableSet { private static final long 
+> serialVersionUID = -3680134489612968105L; /** * Comparator for 
+> elements or null if elements are Comparable and sorted in * "Natural 
+> Order". */ final Comparator comparator; /** * Embedded 
+> CopyOnWriteArrayList used to hold the storage of this set. */ final 
+> CopyOnWriteArrayList al; CopyOnWriteArrayNavigableSet(Comparator 
+> comparator, CopyOnWriteArrayList al) { this.comparator = comparator; 
+> this.al = al; } /** * Creates an empty set which can be used for 
+> mutually * {@link java.lang.Comparable Comparable} object. */ public 
+> CopyOnWriteArrayNavigableSet() { this((Comparator)null); } /** * 
+> Creates an empty set with the specified comparator. * * @param 
+> comparator Used for ordering elements. */ 
+> @SuppressWarnings("unchecked") public 
+> CopyOnWriteArrayNavigableSet(Comparator comparator) { this(comparator, 
+> new CopyOnWriteArrayList<>()); } /** * Creates a set containing all of 
+> the elements of the specified * collection. If c is a sorted set then 
+> the same comparator is used. * * @param c the collection of elements 
+> to initially contain * @throws NullPointerException if the specified 
+> collection is null */ @SuppressWarnings("unchecked") public 
+> CopyOnWriteArrayNavigableSet(Collection c) { if (c.getClass() == 
+> CopyOnWriteArrayNavigableSet.class) { this.comparator = 
+> ((CopyOnWriteArrayNavigableSet) c).comparator; this.al = new 
+> CopyOnWriteArrayList<>(); 
+> this.al.setArray(((CopyOnWriteArrayNavigableSet) c).al.getArray()); } 
+> else if (c instanceof SortedSet) { this.comparator = ((SortedSet) 
+> c).comparator(); this.al = new CopyOnWriteArrayList<>(c); } else { 
+> this.comparator = null; this.al = new CopyOnWriteArrayList<>(); 
+> CopyOnWriteArrayNavigableSet.addAll(this, c); } } @Override 
+> @SuppressWarnings("unchecked") public boolean contains(Object o) { 
+> return Arrays.binarySearch((E[]) al.getArray(), (E) o, comparator) >= 
+> 0; } @Override public boolean remove(Object o) { synchronized(al.lock) 
+> { @SuppressWarnings("unchecked") E[] array = (E[]) al.getArray(); 
+> @SuppressWarnings("unchecked") int loc = Arrays.binarySearch(array, 
+> (E) o, comparator); if(loc >= 0) { al.remove(loc); return true; } 
+> return false; } } @Override public boolean add(E e) { 
+> Objects.requireNonNull(e, "e"); synchronized(al.lock) { 
+> @SuppressWarnings("unchecked") E[] array = (E[]) al.getArray(); int 
+> loc = Arrays.binarySearch(array, e, comparator); if(loc < 0) { 
+> al.add(-1 - loc, e); return true; } return false; } } @Override 
+> @SuppressWarnings("unchecked") public boolean containsAll(Collection 
+> c) { @SuppressWarnings("unchecked") E[] array = (E[]) al.getArray(); 
+> for(Object each : c) { if(Arrays.binarySearch(array, (E) each, 
+> comparator) < 0) { return false; } } return true; } @Override public 
+> boolean addAll(Collection c) { return 
+> CopyOnWriteArrayNavigableSet.addAll(this, c); } 
+> @SuppressWarnings("unchecked") private static boolean 
+> addAll(CopyOnWriteArrayNavigableSet cowans, Collection c) { Object[] 
+> cs = c.toArray(); if (cs.length == 0) return false; if(cs.length == 1) 
+> { return cowans.add((E) cs[0]); } synchronized (cowans.al.lock) { E[] 
+> array = (E[]) cowans.al.getArray(); int len = array.length; int added 
+> = 0; // uniquify and compact elements in cs for (int i = 0; i < 
+> cs.length; ++i) { Object e = Objects.requireNonNull(cs[i]); if 
+> (Arrays.binarySearch(array, (E) e, cowans.comparator) < 0) { int at = 
+> Arrays.binarySearch((E[]) cs, 0, added, (E) e, cowans.comparator); 
+> if(at < 0) { // insertion sort it into low portion of cs. at = -at - 
+> 1; //System.out.println( Arrays.asList(cs) + " len:" + cs.length + " 
+> e:" + e + " at:" + at + " added:" + added); System.arraycopy(cs, at, 
+> cs, at + 1, added++ - at); cs[at] = e; } } } if (added > 0) { Object[] 
+> newElements = (Object[]) 
+> Array.newInstance(array.getClass().getComponentType(), len + added); 
+> --len; --added; for(int i = newElements.length - 1; i >= 0; i--) { // 
+> merge into resulting array. Both array and cs are sorted. 
+> newElements[i] = len >= 0 && (added < 0 || cowans.compare(array[len], 
+> (E) cs[added]) > 0) ? array[len--] : (E) cs[added--]; } 
+> cowans.al.setArray(newElements); return true; } return false; } } 
+> @Override public Iterator iterator() { return al.iterator(); } 
+> @Override public int size() { return al.size(); } @Override public 
+> boolean removeIf(Predicate filter) { return al.removeIf(filter); } 
+> @Override public void forEach(Consumer action) { al.forEach(action); } 
+> @Override public boolean retainAll(Collection c) { return 
+> al.retainAll(c); } @Override public boolean removeAll(Collection c) { 
+> return al.removeAll(c); } @Override public Object[] toArray() { return 
+> al.toArray(); } @Override public T[] toArray(T[] a) { return 
+> al.toArray(a); } @Override public void clear() { al.clear(); } /** * 
+> Returns a {@link Spliterator} over the elements in this set in the 
+> order * in which these elements were added. * *
+>
+> The {@code Spliterator} reports {@link Spliterator#ORDERED}, * {@link 
+> Spliterator#NONNULL}, {@link Spliterator#IMMUTABLE}, * {@link 
+> Spliterator#DISTINCT}, and {@link Spliterator#SIZED}. * *
+>
+> The spliterator provides a snapshot of the state of the set * when the 
+> spliterator was constructed. No synchronization is needed while * 
+> operating on the spliterator. * * @return a {@code Spliterator} over 
+> the elements in this set */ @Override public Spliterator spliterator() 
+> { return Spliterators.spliterator (al.getArray(), Spliterator.ORDERED 
+> | Spliterator.NONNULL | Spliterator.IMMUTABLE | Spliterator.DISTINCT); 
+> } // +---+---+---+---+ // | 2 | 4 | 6 | 8 | // +---+---+---+---+ // 
+> lower(0) = null // lower(2) = null // lower(3) = 2 // lower(8) = 6 // 
+> lower(9) = 8 @Override @SuppressWarnings("unchecked") public E lower(E 
+> e) { E[] array = (E[]) al.getArray(); int loc = 
+> Arrays.binarySearch(array, e, comparator); return loc > 0 ? array[loc 
+> - 1] : loc < -1 // zero or minus one means nothing strictly lower. ? 
+> array[-2 - loc] : null; } // +---+---+---+---+ // | 2 | 4 | 6 | 8 | // 
+> +---+---+---+---+ // floor(0) = null // floor(2) = 2 // floor(3) = 2 
+> // floor(8) = 8 // floor(9) = 8 @Override 
+> @SuppressWarnings("unchecked") public E floor(E e) { E[] array = (E[]) 
+> al.getArray(); int loc = Arrays.binarySearch(array, e, comparator); 
+> return loc >= 0 ? array[loc] : loc < -1 // minus one means nothing 
+> matching or lower. ? array[-2 - loc] : null; } // +---+---+---+---+ // 
+> | 2 | 4 | 6 | 8 | // +---+---+---+---+ // ceiling(0) = 2 // ceiling(2) 
+> = 2 // ceiling(3) = 4 // ceiling(8) = 8 // ceiling(9) = null @Override 
+> @SuppressWarnings("unchecked") public E ceiling(E e) { E[] array = 
+> (E[]) al.getArray(); int loc = Arrays.binarySearch(array, e, 
+> comparator); return loc >= 0 ? array[loc] : -loc < array.length ? 
+> array[-1 - loc] : null; } // +---+---+---+---+ // | 2 | 4 | 6 | 8 | // 
+> +---+---+---+---+ // higher(0) = 2 // higher(2) = 4 // higher(3) = 4 
+> // higher(8) = null // higher(9) = null @Override 
+> @SuppressWarnings("unchecked") public E higher(E e) { E[] array = 
+> (E[]) al.getArray(); int loc = Arrays.binarySearch(array, e, 
+> comparator); return loc >= 0 ? (loc < array.length - 1 ) ? array[loc + 
+> 1] : null : -loc < array.length ? array[-1 - loc] : null; } @Override 
+> public E pollFirst() { if(al.isEmpty()) return null; 
+> synchronized(al.lock) { if(al.isEmpty()) return null; E result = 
+> al.remove(0); return result; } } @Override public E pollLast() { 
+> if(al.isEmpty()) return null; synchronized(al.lock) { if(al.isEmpty()) 
+> return null; E result = al.remove(al.size() - 1); return result; } } 
+> @Override public NavigableSet descendingSet() { return new 
+> BoundedNavigableSet<>(comparator, al, false, null, false, false, null, 
+> false, true); } @Override @SuppressWarnings("unchecked") public 
+> Iterator descendingIterator() { final Object[] array = al.getArray(); 
+> return array.length == 0 ? Collections.emptyIterator() : new 
+> Iterator() { int index = array.length - 1; @Override public boolean 
+> hasNext() { return index >= 0; } @Override public E next() { if 
+> (hasNext()) { return (E) array[index--]; } else { throw new 
+> NoSuchElementException(); } } }; } @Override public NavigableSet 
+> subSet(E fromElement, boolean fromInclusive, E toElement, boolean 
+> toInclusive) { return new BoundedNavigableSet<>(comparator, al, true, 
+> fromElement, fromInclusive, true, toElement, toInclusive, false); } 
+> @Override public NavigableSet headSet(E toElement, boolean inclusive) 
+> { return new BoundedNavigableSet<>(comparator, al, false, null, false, 
+> true, toElement, inclusive, false); } @Override public NavigableSet 
+> tailSet(E fromElement, boolean inclusive) { return new 
+> BoundedNavigableSet<>(comparator, al, true, fromElement, inclusive, 
+> false, null, false, false); } @Override public SortedSet subSet(E 
+> fromElement, E toElement) { return subSet(fromElement, true, 
+> toElement, false); } @Override public SortedSet headSet(E toElement) { 
+> return headSet(toElement, false); } @Override public SortedSet 
+> tailSet(E fromElement) { return tailSet(fromElement, true); } 
+> @Override public Comparator comparator() { return comparator; } 
+> @Override public E first() { if(al.isEmpty()) throw new 
+> NoSuchElementException(); @SuppressWarnings("unchecked") E[] array = 
+> (E[]) al.getArray(); if(array.length == 0) throw new 
+> NoSuchElementException(); return array[0]; } @Override public E last() 
+> { if(al.isEmpty()) throw new NoSuchElementException(); 
+> @SuppressWarnings("unchecked") E[] array = (E[]) al.getArray(); 
+> if(array.length == 0) throw new NoSuchElementException(); return 
+> array[array.length - 1]; } @SuppressWarnings("unchecked") final int 
+> compare(E e1, E e2) { return comparator != null ? 
+> comparator.compare(e1, e2) : ((Comparable) e1).compareTo(e2); } 
+> private static class BoundedNavigableSet extends 
+> CopyOnWriteArrayNavigableSet { private static final long 
+> serialVersionUID = 3830104881368453055L; /** * If true then iteration 
+> is done in descending order. */ final boolean descending; /** * If 
+> true then a lower bound relative to the super set. */ final boolean 
+> lowerBounded; /** * If true then we have an upper bound relative to 
+> the super set. */ final boolean upperBounded; /** * If true then the 
+> lower bound is included in the set. */ final boolean lowerInclusive; 
+> /** * If true then the upper bound is included in the set. */ final 
+> boolean upperInclusive; /** * The value of the lower bound. */ final E 
+> lowerBound; /** * The value of the upper bound. */ final E upperBound; 
+> @SuppressWarnings("unchecked") public BoundedNavigableSet( Comparator 
+> comparator, CopyOnWriteArrayList al, boolean lowerBounded, E 
+> fromElement, boolean lowerInclusive, boolean upperBounded, E 
+> toElement, boolean upperInclusive, boolean descending) { 
+> super(comparator, al); this.descending = descending; if (lowerBounded 
+> && upperBounded) { int fromCompared = 
+> Integer.signum(compare(fromElement,toElement)); int toCompared = 
+> Integer.signum(compare(toElement,fromElement)); if(fromCompared != 
+> -toCompared) { throw new IllegalArgumentException("inconsistent 
+> comparator"); } if (!descending) { if (fromCompared > 0) { throw new 
+> IllegalArgumentException("upper < lower"); } } else { if (fromCompared 
+> < 0) { throw new IllegalArgumentException("upper < lower"); } } } 
+> this.lowerBounded = lowerBounded; this.lowerBound = fromElement; 
+> this.lowerInclusive = lowerInclusive; this.upperBounded = 
+> upperBounded; this.upperBound = toElement; this.upperInclusive = 
+> upperInclusive; } @Override public boolean add(E e) { return 
+> super.add(inBounds(e)); } @Override @SuppressWarnings("unchecked") 
+> public boolean contains(Object o) { return checkInBounds((E) o) && 
+> super.contains(o); } @Override @SuppressWarnings("unchecked") public 
+> Comparator comparator() { return descending ? (comparator == null ? 
+> (Comparator) Comparator.naturalOrder() : comparator).reversed() : 
+> comparator; } @Override public NavigableSet descendingSet() { return 
+> new BoundedNavigableSet<>( comparator, al, upperBounded, upperBound, 
+> upperInclusive, lowerBounded, lowerBound, lowerInclusive, 
+> !descending); } @Override public NavigableSet subSet(E fromElement, 
+> boolean fromInclusive, E toElement, boolean toInclusive) { return new 
+> BoundedNavigableSet<>( comparator, al, true, inBounds(fromElement), 
+> fromInclusive, true, inBounds(toElement), toInclusive, descending); } 
+> @Override public NavigableSet headSet(E toElement, boolean inclusive) 
+> { return new BoundedNavigableSet<>( comparator, al, lowerBounded, 
+> lowerBound, lowerInclusive, true, inBounds(toElement), inclusive, 
+> descending); } @Override public NavigableSet tailSet(E fromElement, 
+> boolean inclusive) { return new BoundedNavigableSet<>( comparator, al, 
+> true, inBounds(fromElement), inclusive, upperBounded, upperBound, 
+> upperInclusive, descending); } @Override public SortedSet subSet(E 
+> fromElement, E toElement) { return subSet(fromElement, true, 
+> toElement, false); } @Override public SortedSet headSet(E toElement) { 
+> return headSet(toElement, false); } @Override public SortedSet 
+> tailSet(E fromElement) { return tailSet(fromElement, true); } private 
+> E inBounds(E element) { if (lowerBounded) { if (lowerInclusive) { if 
+> (compare(lowerBound,element) > 0) { throw new 
+> IllegalArgumentException("out of bounds: " + element + " < " + 
+> lowerBound); } } else { if (compare(lowerBound, element) >= 0) { throw 
+> new IllegalArgumentException("out of bounds: " + element + " <= " + 
+> lowerBound); } } } if (upperBounded) { if (upperInclusive) { if 
+> (compare(upperBound, element) < 0) { throw new 
+> IllegalArgumentException("out of bounds: " + element + " > " + 
+> upperBound); } } else { if (compare(upperBound, element) <= 0) { throw 
+> new IllegalArgumentException("out of bounds: " + element + " >= " + 
+> upperBound); } } } return element; } private boolean checkInBounds(E 
+> element) { if (lowerBounded) { if (lowerInclusive) { if 
+> (compare(lowerBound,element) > 0) { return false; } } else { if 
+> (compare(lowerBound, element) >= 0) { return false; } } } if 
+> (upperBounded) { if (upperInclusive) { if (compare(upperBound, 
+> element) < 0) { return false; } } else { if (compare(upperBound, 
+> element) <= 0) { return false; } } } return true; } @Override public 
+> Iterator descendingIterator() { return makeIterator(!descending); } 
+> @Override public void forEach(Consumer action) { 
+> Objects.requireNonNull(action, "action"); 
+> @SuppressWarnings("unchecked") E[] array = (E[]) al.getArray(); int 
+> start = fromLoc(array); int end = toLoc(array); for(int 
+> each=start;each filter) { Objects.requireNonNull(filter, "filter"); 
+> synchronized(al.lock) { @SuppressWarnings("unchecked") E[] array = 
+> (E[]) al.getArray(); int start = fromLoc(array); int end = 
+> toLoc(array); return al.subList(start, end).removeIf(filter); } } 
+> @Override public boolean retainAll(Collection c) { 
+> synchronized(al.lock) { @SuppressWarnings("unchecked") E[] array = 
+> (E[]) al.getArray(); int start = fromLoc(array); int end = 
+> toLoc(array); return al.subList(start, end).retainAll(c); } } 
+> @Override public boolean removeAll(Collection c) { 
+> synchronized(al.lock) { @SuppressWarnings("unchecked") E[] array = 
+> (E[]) al.getArray(); int start = fromLoc(array); int end = 
+> toLoc(array); return al.subList(start, end).removeAll(c); } } 
+> @Override public boolean addAll(Collection c) { for (E e : c) 
+> inBounds(e); return CopyOnWriteArrayNavigableSet.addAll(this, c); } 
+> @Override @SuppressWarnings("unchecked") public boolean 
+> containsAll(Collection c) { E[] array = (E[]) al.getArray(); int start 
+> = fromLoc(array); int end = toLoc(array); for (Object each : c) { if 
+> (Arrays.binarySearch(array, start, end, (E) each, comparator) < 0) { 
+> return false; } } return true; } @Override 
+> @SuppressWarnings("unchecked") public boolean remove(Object o) { 
+> return checkInBounds((E) o) && super.remove(o); } @Override public 
+> void clear() { synchronized(al.lock) { @SuppressWarnings("unchecked") 
+> E[] array = (E[]) al.getArray(); int start = fromLoc(array); int end = 
+> toLoc(array); al.removeRange(start, end); } } 
+> @SuppressWarnings("unchecked") private int fromLoc(E[] array) { int 
+> start; if(lowerBounded) { start = Arrays.binarySearch(array, 
+> lowerBound, comparator == null ? descending ? (Comparator) 
+> Comparator.reverseOrder() : null : descending ? comparator.reversed() 
+> : comparator); start = start >= 0 ? lowerInclusive ? start : start + 1 
+> : -1 - start; } else { start = 0; } return start; } 
+> @SuppressWarnings("unchecked") private int toLoc(E[] array) { int end; 
+> if(upperBounded) { end = Arrays.binarySearch(array, upperBound, 
+> comparator == null ? descending ? (Comparator) 
+> Comparator.reverseOrder() : null : descending ? comparator.reversed() 
+> : comparator); end = end >= 0 ? upperInclusive ? end + 1 : end : -1 - 
+> end; } else { end = array.length; } return end; } @Override public T[] 
+> toArray(T[] a) { return makeArray(a, descending); } 
+> @SuppressWarnings("unchecked") public T[] makeArray(T[] a, boolean 
+> inDescending) { E[] array = (E[]) al.getArray(); int start = 
+> fromLoc(array); int end = toLoc(array); int len = end - start; if 
+> (a.length < len) { a = (T[]) 
+> Array.newInstance(a.getClass().getComponentType(), len); } 
+> System.arraycopy(array, start, a, 0, len); if(len < a.length) a[len] = 
+> null; if(inDescending) Collections.reverse(Arrays.asList(a).subList(0, 
+> len)); return a; } @Override public Object[] toArray() { return 
+> makeArray(new Object[0], descending); } @Override public Iterator 
+> iterator() { return makeIterator(descending); } 
+> @SuppressWarnings("unchecked") private Iterator makeIterator(boolean 
+> inDescending) { List asList; if(inDescending) { asList = 
+> Arrays.asList((E[]) makeArray(new Object[0], inDescending)); } else { 
+> E[] array = (E[]) al.getArray(); int start = fromLoc(array); int end = 
+> toLoc(array); asList = Arrays.asList(array).subList(start, end); } 
+> return Collections.unmodifiableList(asList).iterator(); } @Override 
+> public int size() { @SuppressWarnings("unchecked") E[] array = (E[]) 
+> al.getArray(); return toLoc(array) - fromLoc(array); } @Override 
+> @SuppressWarnings("unchecked") public E lower(E e) { E result = 
+> descending ? super.higher(e) : super.lower(e); return result != null 
+> && checkInBounds(result) ? result : null; } @Override 
+> @SuppressWarnings("unchecked") public E floor(E e) { E result = 
+> descending ? super.ceiling(e) : super.floor(e); return result != null 
+> && checkInBounds(result) ? result : null; } @Override 
+> @SuppressWarnings("unchecked") public E ceiling(E e) { E result = 
+> descending ? super.floor(e) : super.ceiling(e); return result != null 
+> && checkInBounds(result) ? result : null; } @Override 
+> @SuppressWarnings("unchecked") public E higher(E e) { E result = 
+> descending ? super.lower(e) : super.higher(e); return result != null 
+> && checkInBounds(result) ? result : null; } @Override public E 
+> pollFirst() { return descending ? doPollLast() : doPollFirst(); } 
+> private E doPollFirst() { if(lowerBounded) synchronized(al.lock) { E 
+> remove = lowerInclusive ? floor(lowerBound) : higher(lowerBound); 
+> if(null != remove) { super.remove(remove); } return remove; } else 
+> return super.pollFirst(); } @Override public E pollLast() { return 
+> descending ? doPollFirst() : doPollLast(); } private E doPollLast() { 
+> if(upperBounded) synchronized(al.lock) { E remove = upperInclusive ? 
+> floor(upperBound) : lower(upperBound); if(null != remove) { 
+> super.remove(remove); } return remove; } else return super.pollLast(); 
+> } @Override public E first() { return descending ? doLast() : 
+> doFirst(); } private E doFirst() { E result = lowerInclusive ? 
+> ceiling(lowerBound) : higher(lowerBound); if(null == result) { throw 
+> new NoSuchElementException(); } return result; } @Override public E 
+> last() { return descending ? doFirst() : doLast(); } private E 
+> doLast() { E result = upperInclusive ? floor(upperBound) : 
+> lower(upperBound); if(null == result) { throw new 
+> NoSuchElementException(); } return result; } @Override public 
+> Spliterator spliterator() { @SuppressWarnings("unchecked") E[] array = 
+> (E[]) al.getArray(); return Spliterators.spliterator( array, 
+> fromLoc(array), toLoc(array), Spliterator.ORDERED | 
+> Spliterator.NONNULL | Spliterator.IMMUTABLE | Spliterator.DISTINCT); } 
+> } }
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151124/d1b1e0b0/attachment-0001.html>
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: CopyOnWriteArrayNavigableSet.java
+Type: text/x-java
+Size: 34239 bytes
+Desc: not available
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151124/d1b1e0b0/attachment-0001.bin>
+
+From heinz at javaspecialists.eu  Wed Nov 25 11:29:52 2015
+From: heinz at javaspecialists.eu (Dr Heinz M. Kabutz)
+Date: Wed, 25 Nov 2015 16:29:52 +0000
+Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for
+ Java 9
+In-Reply-To: <c712caa6cc1af5628cc6d153a87fa255@sonic.net>
+References: <035b1625bac81c5095a3c04fdaf146d4@sonic.net>	<CAEvq2nozfDKgbJi2=16=HwgjkkeiF62o4R3jYr1f-+VkwSRZMg@mail.gmail.com>	<56537DE3.90208@gmail.com>
+	<c712caa6cc1af5628cc6d153a87fa255@sonic.net>
+Message-ID: <5655E200.8020103@javaspecialists.eu>
+
+I've thought about this some more today.  At the moment you can 
+construct a CopyOnWriteArrayNavigableSet for a type that does not have a 
+natural ordering and without specifying a comparator.  I think that 
+makes our lives a lot harder in the implementation.  Better would be to 
+force the user to pass in a correct Comparator for that type.  That way 
+we know that we always have one and we don't need to check for null 
+anymore.  There is a precedent for this idea.  Look for example at the 
+List.sort() function:
+
+    default void sort(Comparator<? super E> c) {
+    ...
+    }
+
+Of course, with the sort() function you could pass in *null* and then it 
+would use the natural order.  My idea is to not allow null, but to make 
+sure that it matches the correct type of comparator for our type.  It is 
+easy enough to pass in Comparator.naturalOrder() and that also checks 
+that E is in fact Comparable.
+
+Regards
+
+Heinz
+-- 
+Dr Heinz M. Kabutz (PhD CompSci)
+Author of "The Java(tm) Specialists' Newsletter"
+Sun/Oracle Java Champion since 2005
+JavaOne Rock Star Speaker 2012
+http://www.javaspecialists.eu
+Tel: +30 69 75 595 262
+Skype: kabutz
+
+
+
+Mike Duigou wrote:
+> I've made some changes which will address this addAll() case.
+>
+> Not supporting nulls is for a couple reasons;
+> - none of the other java.util.concurrent Sets support them.
+> - Handling some of the cases of sub-sets when nulls are involved would 
+> require extra work. It is the usual problem of telling whether a null 
+> return means absent or a null value. I had included "// XXX needs to 
+> handle null" in a bunch of places as I was writing the original code 
+> and in my original review drafts but the Java 9 deadlines have caught 
+> up with me and so I abandoned plans to support null when using a 
+> Comparator that allows null.
+> - I don't like nulls in Collections. Seriously they are a PITA and the 
+> extra code to handle them often makes the general case slower.
+>
+> That's perhaps a little stronger than I actually believe. :-) With an 
+> unrestricted schedule I probably would have included null element 
+> support.
+>
+> Mike
+>
+> On 2015-11-23 12:58, Peter Levart wrote:
+>> On 11/23/2015 04:40 PM, Chris Povirk wrote:
+>>
+>>> Just one point from some black-box testing:
+>>> emptySet.addAll(singleNullElement) will insert the null element into
+>>> the set, even if the Comparator does not support it.
+>
+>>  There's no reason to not allow null elements when using comparator
+>> that supports them?
+>>
+>>  Regards, Peter
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151125/df7af235/attachment.html>
+
+From jbloch at gmail.com  Wed Nov 25 23:31:35 2015
+From: jbloch at gmail.com (Joshua Bloch)
+Date: Wed, 25 Nov 2015 20:31:35 -0800
+Subject: [concurrency-interest] 1.8/1.9: Iterator and ListIterator
+ optional operations
+In-Reply-To: <564F8C0D.4010709@briangoetz.com>
+References: <9DD392344AED044287E42246402FDAB464A5D80E@max.atis-systems.com>
+	<564F8C0D.4010709@briangoetz.com>
+Message-ID: <CAP0L=USyxuu_2JCrPhGc6eAb3Ym28ZFvkLhkoOA2RC6k74ruLA@mail.gmail.com>
+
+On Fri, Nov 20, 2015 at 1:09 PM, Brian Goetz <brian at briangoetz.com> wrote:
+
+> The story with remove() is an unfortunate combination of tooling
+> limitations and oversight; ListIterator explicitly redeclares remove() not
+> because it wants to override it for any actual reason
+
+
+I missed this when you wrote it, but i'd like to take issue with it:
+ListIterator overrides remove for the best of reasons: it refines the
+superclass (interface) contract. That is the quintessential reason for
+overriding an interface method.
+
+Josh
+
+P.S. Happy Thanksgiving, all.
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151125/037952c2/attachment.html>
+
+From jneidi.sleiman at gmail.com  Thu Nov 26 08:02:15 2015
+From: jneidi.sleiman at gmail.com (Sleiman Jneidi)
+Date: Thu, 26 Nov 2015 13:02:15 +0000
+Subject: [concurrency-interest] AtomicLongArray
+Message-ID: <CA+9AD=DHnx2nM0_tH6qRqdLx6QEcPXV_H6S5TAhM3HD7k=7_iA@mail.gmail.com>
+
+Hi everyone, I was looking at source code of AtomicLongArray and found this
+line in JDK 1.6
+
+public AtomicLongArray(int length) {
+    array = new long[length];
+    // must perform at least one volatile write to conform to JMM
+    if (length > 0)
+        unsafe.putLongVolatile(array, rawIndex(0), 0);
+}
+
+  Now, at later versions I noticed that lines were removed, and the code
+looks like this now
+
+public AtomicLongArray(int length) {
+        array = new long[length];
+}
+
+Any changes to the  JMM between 1.6 and 1.7?
+
+
+Thanks,
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151126/9cfa7a06/attachment.html>
+
+From aph at redhat.com  Thu Nov 26 09:06:25 2015
+From: aph at redhat.com (Andrew Haley)
+Date: Thu, 26 Nov 2015 14:06:25 +0000
+Subject: [concurrency-interest] AtomicLongArray
+In-Reply-To: <CA+9AD=DHnx2nM0_tH6qRqdLx6QEcPXV_H6S5TAhM3HD7k=7_iA@mail.gmail.com>
+References: <CA+9AD=DHnx2nM0_tH6qRqdLx6QEcPXV_H6S5TAhM3HD7k=7_iA@mail.gmail.com>
+Message-ID: <565711E1.4040102@redhat.com>
+
+On 11/26/2015 01:02 PM, Sleiman Jneidi wrote:
+> Hi everyone, I was looking at source code of AtomicLongArray and found this
+> line in JDK 1.6
+> 
+> public AtomicLongArray(int length) {
+>     array = new long[length];
+>     // must perform at least one volatile write to conform to JMM
+>     if (length > 0)
+>         unsafe.putLongVolatile(array, rawIndex(0), 0);
+> }
+> 
+>   Now, at later versions I noticed that lines were removed, and the code
+> looks like this now
+> 
+> public AtomicLongArray(int length) {
+>         array = new long[length];
+> }
+> 
+> Any changes to the  JMM between 1.6 and 1.7?
+
+array is final, so the VM guarantees safe publication.  This was guaranteed
+in Java SE5, so I guess this must have been a hangover from old code.
+
+Andrew.
+
+
+
+From cpovirk at google.com  Mon Nov 30 16:31:16 2015
+From: cpovirk at google.com (Chris Povirk)
+Date: Mon, 30 Nov 2015 16:31:16 -0500
+Subject: [concurrency-interest] RFR: CopyOnWriteArrayNavigableSet for
+	Java 9
+In-Reply-To: <5655E200.8020103@javaspecialists.eu>
+References: <035b1625bac81c5095a3c04fdaf146d4@sonic.net>
+	<CAEvq2nozfDKgbJi2=16=HwgjkkeiF62o4R3jYr1f-+VkwSRZMg@mail.gmail.com>
+	<56537DE3.90208@gmail.com>
+	<c712caa6cc1af5628cc6d153a87fa255@sonic.net>
+	<5655E200.8020103@javaspecialists.eu>
+Message-ID: <CAEvq2nozmdyTWpKbAAnJhVvDMBdXQ4o7_tB_fmuZC6=D3WueYQ@mail.gmail.com>
+
+On Wed, Nov 25, 2015 at 11:29 AM, Dr Heinz M. Kabutz <
+heinz at javaspecialists.eu> wrote:
+
+> I've thought about this some more today.  At the moment you can construct
+> a CopyOnWriteArrayNavigableSet for a type that does not have a natural
+> ordering and without specifying a comparator.  I think that makes our lives
+> a lot harder in the implementation.  Better would be to force the user to
+> pass in a correct Comparator for that type.  That way we know that we
+> always have one and we don't need to check for null anymore.  There is a
+> precedent for this idea.  Look for example at the List.sort() function:
+>
+>     default void sort(Comparator<? super E> c) {
+>     ...
+>     }
+>
+> Of course, with the sort() function you could pass in *null* and then it
+> would use the natural order.  My idea is to not allow null, but to make
+> sure that it matches the correct type of comparator for our type.  It is
+> easy enough to pass in Comparator.naturalOrder() and that also checks that
+> E is in fact Comparable.
+>
+
++1 for preventing users from creating a naturally ordered instance for a
+non-Comparable type. I have seen this surprisingly often with TreeSet. (I
+could try to get numbers for Google code if it would help.)
+
+Guava (example
+<http://google.github.io/guava/releases/18.0/api/docs/com/google/common/collect/TreeMultiset.html>)
+does this as a compile-time check by making the constructor private and
+setting appropriate constraints on its static factory methods. Here, it
+would look something like this:
+
+private CopyOnWriteArrayNavigableSet(
+    Comparator<? super E> comparator, Collection<? extends E> contents) {
+  ...
+}
+
+public static <E extends Comparable<? super E>>
+CopyOnWriteArrayNavigableSet<E> create() {
+  return new CopyOnWriteArrayNavigableSet<>(
+      Comparator.naturalOrder(), Collections.emptySet());
+}
+
+public static <E extends Comparable<? super E>>
+CopyOnWriteArrayNavigableSet<E> create(
+    Collection<? extends E> contents) {
+  return new CopyOnWriteArrayNavigableSet<>(
+      Comparator.naturalOrder(), contents);
+}
+
+public static <E> CopyOnWriteArrayNavigableSet<E> create(Comparator<? super
+E> comparator) {
+  return new CopyOnWriteArrayNavigableSet<>(
+      comparator, Collections.emptySet());
+}
+
+The downside is that the JDK doesn't use static factory methods as often as
+Guava does. (And it probably doesn't "need to" as much now that we have the
+diamond operator.) That means that these ones will look strange, especially
+alongside the constructors of CopyOnWriteArray(Set|List). At least there is
+some precedent for static factory methods in EnumSet (which itself differs
+from EnumMap).
+
+(Small note: You may want to use "<E extends Comparable<?>>" for maximum
+compatibility with pre-generics types -- that is, those that implement raw
+"Comparable" instead of "Comparable<Foo>." I don't have a great feel for
+the tradeoffs here.)
+
+(Unrelated: You could also consider accepting an Iterable instead of a
+Collection for further compatibility. But maybe that matters less in a
+world with Streams.)
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20151130/3077767b/attachment.html>
+

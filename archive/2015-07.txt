@@ -1,0 +1,3503 @@
+From bsder at allcaps.org  Tue Jul 14 04:43:24 2015
+From: bsder at allcaps.org (Andrew Lentvorski)
+Date: Tue, 14 Jul 2015 01:43:24 -0700
+Subject: [concurrency-interest] JNI signaling back to a thread/concurrent
+	structure?
+Message-ID: <55A4CBAC.80301@allcaps.org>
+
+This is probably a really stupid question, but is there a way to signal
+a java.util.concurrent structure from native code that would allow a JNI
+function to effectively "wake" a sleeping/blocked Java thread?
+
+The context is this.  I have a JNI audio callback trucking along in
+OpenSL on Android.  That callback is running in some sort of system
+thread with highly elevated priority.  A Java thread fills a buffer
+which the audio callback empties.  When the circular buffer is full, the
+Java thread which fills that buffer goes to sleep for a bit until the
+buffer empties out some.
+
+However, if something is going wrong and the circular audio buffer is
+about to empty, I would like to do something that would wake up the Java
+thread or at least queue it on a relatively soon timeslice.  Maybe it
+can recover and maybe it can't, but without the ability to signal that,
+the thread is going to stay asleep and the audio buffer will drain.
+
+Now, I can just wake the thread up every so many milliseconds, but
+that's kind of wasteful of power, CPU, etc. as the majority of the time
+the thread is just going to wake up to see that the buffer is fine,
+realize it has no work and go back to sleep.
+
+Any suggestions?  Or am I just completely barking mad for wanting this?
+
+Thanks,
+-a
+
+
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 473 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150714/fe9ffd90/attachment.bin>
+
+From davidcholmes at aapt.net.au  Tue Jul 14 05:21:20 2015
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Tue, 14 Jul 2015 19:21:20 +1000
+Subject: [concurrency-interest] JNI signaling back to a
+	thread/concurrentstructure?
+In-Reply-To: <55A4CBAC.80301@allcaps.org>
+Message-ID: <NFBBKALFDCPFIDBNKAPCAELELBAA.davidcholmes@aapt.net.au>
+
+Hi Andrew,
+
+Andrew Lentvorski writes:
+> This is probably a really stupid question, but is there a way to signal
+> a java.util.concurrent structure from native code that would allow a JNI
+> function to effectively "wake" a sleeping/blocked Java thread?
+>
+> The context is this.  I have a JNI audio callback trucking along in
+> OpenSL on Android.  That callback is running in some sort of system
+> thread with highly elevated priority.  A Java thread fills a buffer
+> which the audio callback empties.  When the circular buffer is full, the
+> Java thread which fills that buffer goes to sleep for a bit until the
+> buffer empties out some.
+>
+> However, if something is going wrong and the circular audio buffer is
+> about to empty, I would like to do something that would wake up the Java
+> thread or at least queue it on a relatively soon timeslice.  Maybe it
+> can recover and maybe it can't, but without the ability to signal that,
+> the thread is going to stay asleep and the audio buffer will drain.
+>
+> Now, I can just wake the thread up every so many milliseconds, but
+> that's kind of wasteful of power, CPU, etc. as the majority of the time
+> the thread is just going to wake up to see that the buffer is fine,
+> realize it has no work and go back to sleep.
+>
+> Any suggestions?  Or am I just completely barking mad for wanting this?
+
+Use JNI to invoke Thread.interrupt. That will unblock the sleep, or most
+other concurrency-based blocking mechanisms.
+
+David
+
+> Thanks,
+> -a
+>
+>
+>
+>
+
+
+From aph at redhat.com  Tue Jul 14 05:28:12 2015
+From: aph at redhat.com (Andrew Haley)
+Date: Tue, 14 Jul 2015 10:28:12 +0100
+Subject: [concurrency-interest] JNI signaling back to a
+ thread/concurrent structure?
+In-Reply-To: <55A4CBAC.80301@allcaps.org>
+References: <55A4CBAC.80301@allcaps.org>
+Message-ID: <55A4D62C.4040708@redhat.com>
+
+On 14/07/15 09:43, Andrew Lentvorski wrote:
+
+> However, if something is going wrong and the circular audio buffer
+> is about to empty, I would like to do something that would wake up
+> the Java thread or at least queue it on a relatively soon timeslice.
+> Maybe it can recover and maybe it can't, but without the ability to
+> signal that, the thread is going to stay asleep and the audio buffer
+> will drain.
+> 
+> Now, I can just wake the thread up every so many milliseconds, but
+> that's kind of wasteful of power, CPU, etc. as the majority of the
+> time the thread is just going to wake up to see that the buffer is
+> fine, realize it has no work and go back to sleep.
+
+Ah yes, priority inversion, or something similar.  If you know how to
+wake your Java task then you can use the invocation API from JNI code
+to call some Java code which will wake the Java thread.  I'm guessing
+you must know that, but want to do something different.
+
+Andrew.
+
+
+From arcadiy at ivanov.biz  Tue Jul 14 17:27:03 2015
+From: arcadiy at ivanov.biz (Arcadiy Ivanov)
+Date: Tue, 14 Jul 2015 17:27:03 -0400
+Subject: [concurrency-interest] JNI signaling back to a
+ thread/concurrent structure?
+In-Reply-To: <55A4CBAC.80301@allcaps.org>
+References: <55A4CBAC.80301@allcaps.org>
+Message-ID: <55A57EA7.5050205@ivanov.biz>
+
+On 2015-07-14 04:43, Andrew Lentvorski wrote:
+> This is probably a really stupid question, but is there a way to signal
+> a java.util.concurrent structure from native code that would allow a JNI
+> function to effectively "wake" a sleeping/blocked Java thread?
+>
+> The context is this.  I have a JNI audio callback trucking along in
+> OpenSL on Android.  That callback is running in some sort of system
+> thread with highly elevated priority.  A Java thread fills a buffer
+> which the audio callback empties.  When the circular buffer is full, the
+> Java thread which fills that buffer goes to sleep for a bit until the
+> buffer empties out some.
+>
+> However, if something is going wrong and the circular audio buffer is
+> about to empty, I would like to do something that would wake up the Java
+> thread or at least queue it on a relatively soon timeslice.  Maybe it
+> can recover and maybe it can't, but without the ability to signal that,
+> the thread is going to stay asleep and the audio buffer will drain.
+>
+> Now, I can just wake the thread up every so many milliseconds, but
+> that's kind of wasteful of power, CPU, etc. as the majority of the time
+> the thread is just going to wake up to see that the buffer is fine,
+> realize it has no work and go back to sleep.
+>
+> Any suggestions?  Or am I just completely barking mad for wanting this?
+http://docs.oracle.com/javase/8/docs/api/java/util/concurrent/locks/LockSupport.html#unpark(java.lang.Thread) 
+?
+> Thanks,
+> -a
+>
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+-- 
+Arcadiy Ivanov
+arcadiy at ivanov.biz | @arcivanov | https://ivanov.biz
+https://github.com/arcivanov
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150714/ceed9f64/attachment.html>
+
+From davidcholmes at aapt.net.au  Tue Jul 14 18:07:39 2015
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 15 Jul 2015 08:07:39 +1000
+Subject: [concurrency-interest] JNI signaling back to a
+	thread/concurrent structure?
+In-Reply-To: <55A57EA7.5050205@ivanov.biz>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKELGLBAA.davidcholmes@aapt.net.au>
+
+Calling unpark won't work:
+
+a) sleep doesn't use park()
+b) if in a blocking operation that does use park() the explicit unpark will
+be filtered out as a spurious wakeup
+
+David
+  -----Original Message-----
+  From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Arcadiy
+Ivanov
+  Sent: Wednesday, 15 July 2015 7:27 AM
+  To: Andrew Lentvorski; concurrency-interest at cs.oswego.edu
+  Subject: Re: [concurrency-interest] JNI signaling back to a
+thread/concurrent structure?
+
+
+  On 2015-07-14 04:43, Andrew Lentvorski wrote:
+
+This is probably a really stupid question, but is there a way to signal
+a java.util.concurrent structure from native code that would allow a JNI
+function to effectively "wake" a sleeping/blocked Java thread?
+
+The context is this.  I have a JNI audio callback trucking along in
+OpenSL on Android.  That callback is running in some sort of system
+thread with highly elevated priority.  A Java thread fills a buffer
+which the audio callback empties.  When the circular buffer is full, the
+Java thread which fills that buffer goes to sleep for a bit until the
+buffer empties out some.
+
+However, if something is going wrong and the circular audio buffer is
+about to empty, I would like to do something that would wake up the Java
+thread or at least queue it on a relatively soon timeslice.  Maybe it
+can recover and maybe it can't, but without the ability to signal that,
+the thread is going to stay asleep and the audio buffer will drain.
+
+Now, I can just wake the thread up every so many milliseconds, but
+that's kind of wasteful of power, CPU, etc. as the majority of the time
+the thread is just going to wake up to see that the buffer is fine,
+realize it has no work and go back to sleep.
+
+Any suggestions?  Or am I just completely barking mad for wanting this?
+http://docs.oracle.com/javase/8/docs/api/java/util/concurrent/locks/LockSupp
+ort.html#unpark(java.lang.Thread) ?
+
+Thanks,
+-a
+
+
+
+
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+--
+Arcadiy Ivanov
+arcadiy at ivanov.biz | @arcivanov | https://ivanov.biz
+https://github.com/arcivanov
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150715/497e9d46/attachment.html>
+
+From arcadiy at ivanov.biz  Tue Jul 14 18:19:06 2015
+From: arcadiy at ivanov.biz (Arcadiy Ivanov)
+Date: Tue, 14 Jul 2015 18:19:06 -0400
+Subject: [concurrency-interest] JNI signaling back to a
+ thread/concurrent structure?
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCKELGLBAA.davidcholmes@aapt.net.au>
+References: <NFBBKALFDCPFIDBNKAPCKELGLBAA.davidcholmes@aapt.net.au>
+Message-ID: <55A58ADA.9040205@ivanov.biz>
+
+On 2015-07-14 18:07, David Holmes wrote:
+> Calling unpark won't work:
+> a) sleep doesn't use park()
+> b) if in a blocking operation that does use park() the explicit unpark 
+> will be filtered out as a spurious wakeup
+I believe the question was:
+
+>> is there a way to signal a java.util.concurrent structure
+>> from native code that would allow a JNI
+>> function to effectively "wake" a sleeping/blocked Java thread?
+
+The "java.util.concurrent structure[s]" don't sleep and don't block in ioctl. Spurious wake is all that is needed to wake up a parked thread to force it to recheck the barrier condition, since most likely AQS or ALQS is used.
+If the OP really meant "waking up a thread in a sleeping state" then "j.u.c structures" have nothing to do with it and you're correct.
+
+> David
+>
+>     -----Original Message-----
+>     *From:* concurrency-interest-bounces at cs.oswego.edu
+>     [mailto:concurrency-interest-bounces at cs.oswego.edu]*On Behalf Of
+>     *Arcadiy Ivanov
+>     *Sent:* Wednesday, 15 July 2015 7:27 AM
+>     *To:* Andrew Lentvorski; concurrency-interest at cs.oswego.edu
+>     *Subject:* Re: [concurrency-interest] JNI signaling back to a
+>     thread/concurrent structure?
+>
+>     On 2015-07-14 04:43, Andrew Lentvorski wrote:
+>>     This is probably a really stupid question, but is there a way to signal
+>>     a java.util.concurrent structure from native code that would allow a JNI
+>>     function to effectively "wake" a sleeping/blocked Java thread?
+>>
+>>     The context is this.  I have a JNI audio callback trucking along in
+>>     OpenSL on Android.  That callback is running in some sort of system
+>>     thread with highly elevated priority.  A Java thread fills a buffer
+>>     which the audio callback empties.  When the circular buffer is full, the
+>>     Java thread which fills that buffer goes to sleep for a bit until the
+>>     buffer empties out some.
+>>
+>>     However, if something is going wrong and the circular audio buffer is
+>>     about to empty, I would like to do something that would wake up the Java
+>>     thread or at least queue it on a relatively soon timeslice.  Maybe it
+>>     can recover and maybe it can't, but without the ability to signal that,
+>>     the thread is going to stay asleep and the audio buffer will drain.
+>>
+>>     Now, I can just wake the thread up every so many milliseconds, but
+>>     that's kind of wasteful of power, CPU, etc. as the majority of the time
+>>     the thread is just going to wake up to see that the buffer is fine,
+>>     realize it has no work and go back to sleep.
+>>
+>>     Any suggestions?  Or am I just completely barking mad for wanting this?
+>     http://docs.oracle.com/javase/8/docs/api/java/util/concurrent/locks/LockSupport.html#unpark(java.lang.Thread)
+>     ?
+>>     Thanks,
+>>     -a
+>>
+>>
+>>
+>>
+>>
+>>     _______________________________________________
+>>     Concurrency-interest mailing list
+>>     Concurrency-interest at cs.oswego.edu
+>>     http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+>     -- 
+>     Arcadiy Ivanov
+>     arcadiy at ivanov.biz  | @arcivanov |https://ivanov.biz
+>     https://github.com/arcivanov
+>
+
+
+-- 
+Arcadiy Ivanov
+arcadiy at ivanov.biz | @arcivanov | https://ivanov.biz
+https://github.com/arcivanov
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150714/28b145df/attachment.html>
+
+From davidcholmes at aapt.net.au  Tue Jul 14 18:26:13 2015
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 15 Jul 2015 08:26:13 +1000
+Subject: [concurrency-interest] JNI signaling back to a
+	thread/concurrent structure?
+In-Reply-To: <55A58ADA.9040205@ivanov.biz>
+Message-ID: <NFBBKALFDCPFIDBNKAPCCELHLBAA.davidcholmes@aapt.net.au>
+
+j.u.c structures come under case (b) - as there is no state change
+accompanying the unpark() it will cause the thread to wake, see no change
+and re-park.
+
+The OP mentioned "sleeping/blocked" so I covered the "sleeping" case as
+well.
+
+David
+  -----Original Message-----
+  From: Arcadiy Ivanov [mailto:arcadiy at ivanov.biz]
+  Sent: Wednesday, 15 July 2015 8:19 AM
+  To: dholmes at ieee.org; Andrew Lentvorski;
+concurrency-interest at cs.oswego.edu
+  Subject: Re: [concurrency-interest] JNI signaling back to a
+thread/concurrent structure?
+
+
+  On 2015-07-14 18:07, David Holmes wrote:
+
+    Calling unpark won't work:
+
+    a) sleep doesn't use park()
+    b) if in a blocking operation that does use park() the explicit unpark
+will be filtered out as a spurious wakeup
+  I believe the question was:
+
+>> is there a way to signal a java.util.concurrent structure
+>> from native code that would allow a JNI
+>> function to effectively "wake" a sleeping/blocked Java thread?
+
+The "java.util.concurrent structure[s]" don't sleep and don't block in
+ioctl. Spurious wake is all that is needed to wake up a parked thread to
+force it to recheck the barrier condition, since most likely AQS or ALQS is
+used.
+If the OP really meant "waking up a thread in a sleeping state" then "j.u.c
+structures" have nothing to do with it and you're correct.
+
+
+    David
+      -----Original Message-----
+      From: concurrency-interest-bounces at cs.oswego.edu
+[mailto:concurrency-interest-bounces at cs.oswego.edu]On Behalf Of Arcadiy
+Ivanov
+      Sent: Wednesday, 15 July 2015 7:27 AM
+      To: Andrew Lentvorski; concurrency-interest at cs.oswego.edu
+      Subject: Re: [concurrency-interest] JNI signaling back to a
+thread/concurrent structure?
+
+
+      On 2015-07-14 04:43, Andrew Lentvorski wrote:
+
+This is probably a really stupid question, but is there a way to signal
+a java.util.concurrent structure from native code that would allow a JNI
+function to effectively "wake" a sleeping/blocked Java thread?
+
+The context is this.  I have a JNI audio callback trucking along in
+OpenSL on Android.  That callback is running in some sort of system
+thread with highly elevated priority.  A Java thread fills a buffer
+which the audio callback empties.  When the circular buffer is full, the
+Java thread which fills that buffer goes to sleep for a bit until the
+buffer empties out some.
+
+However, if something is going wrong and the circular audio buffer is
+about to empty, I would like to do something that would wake up the Java
+thread or at least queue it on a relatively soon timeslice.  Maybe it
+can recover and maybe it can't, but without the ability to signal that,
+the thread is going to stay asleep and the audio buffer will drain.
+
+Now, I can just wake the thread up every so many milliseconds, but
+that's kind of wasteful of power, CPU, etc. as the majority of the time
+the thread is just going to wake up to see that the buffer is fine,
+realize it has no work and go back to sleep.
+
+Any suggestions?  Or am I just completely barking mad for wanting this?
+http://docs.oracle.com/javase/8/docs/api/java/util/concurrent/locks/LockSupp
+ort.html#unpark(java.lang.Thread) ?
+
+Thanks,
+-a
+
+
+
+
+
+
+_______________________________________________
+Concurrency-interest mailing list
+Concurrency-interest at cs.oswego.edu
+http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+--
+Arcadiy Ivanov
+arcadiy at ivanov.biz | @arcivanov | https://ivanov.biz
+https://github.com/arcivanov
+
+
+--
+Arcadiy Ivanov
+arcadiy at ivanov.biz | @arcivanov | https://ivanov.biz
+https://github.com/arcivanov
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150715/ec936b02/attachment-0001.html>
+
+From arcadiy at ivanov.biz  Tue Jul 14 18:52:28 2015
+From: arcadiy at ivanov.biz (Arcadiy Ivanov)
+Date: Tue, 14 Jul 2015 18:52:28 -0400
+Subject: [concurrency-interest] JNI signaling back to a
+ thread/concurrent structure?
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCCELHLBAA.davidcholmes@aapt.net.au>
+References: <NFBBKALFDCPFIDBNKAPCCELHLBAA.davidcholmes@aapt.net.au>
+Message-ID: <55A592AC.7000506@ivanov.biz>
+
+On 2015-07-14 18:26, David Holmes wrote:
+
+> j.u.c structures come under case (b) - as there is no state change 
+> accompanying the unpark() it will cause the thread to wake, see no 
+> change and re-park.
+>
+ >> When the circular buffer is full, the Java thread which fills that 
+buffer goes to sleep for a bit until the buffer empties out some.
+
+It all depends on how the "until" condition is detected, whether "sleep" 
+actually means "Thread.sleep()".
+> The OP mentioned "sleeping/blocked" so I covered the "sleeping" case 
+> as well.
+>
+Again, if none of the "j.u.c structures" are involved, you're absolutely 
+right  - the Thread.interrupt() is the most sure way to wake a thread 
+up. But it will most likely cause the thread to quit altogether as it's 
+very rare that InterruptedException is treated as a legitimate way to 
+proceed.
+
+It does depend on the implementation and the mention of j.u.c. 
+structures may allow for a more elegant wakeup, especially if a custom 
+AQS derivative is used and "empty/full" barrier is checked in the park loop.
+
+> David
+>
+>     -----Original Message-----
+>     *From:* Arcadiy Ivanov [mailto:arcadiy at ivanov.biz]
+>     *Sent:* Wednesday, 15 July 2015 8:19 AM
+>     *To:* dholmes at ieee.org; Andrew Lentvorski;
+>     concurrency-interest at cs.oswego.edu
+>     *Subject:* Re: [concurrency-interest] JNI signaling back to a
+>     thread/concurrent structure?
+>
+>     On 2015-07-14 18:07, David Holmes wrote:
+>>     Calling unpark won't work:
+>>     a) sleep doesn't use park()
+>>     b) if in a blocking operation that does use park() the explicit
+>>     unpark will be filtered out as a spurious wakeup
+>     I believe the question was:
+>
+>     >> is there a way to signal a java.util.concurrent structure
+>     >> from native code that would allow a JNI
+>     >> function to effectively "wake" a sleeping/blocked Java thread?
+>
+>     The "java.util.concurrent structure[s]" don't sleep and don't block in ioctl. Spurious wake is all that is needed to wake up a parked thread to force it to recheck the barrier condition, since most likely AQS or ALQS is used.
+>     If the OP really meant "waking up a thread in a sleeping state" then "j.u.c structures" have nothing to do with it and you're correct.
+>
+>>     David
+>>
+>>         -----Original Message-----
+>>         *From:* concurrency-interest-bounces at cs.oswego.edu
+>>         [mailto:concurrency-interest-bounces at cs.oswego.edu]*On Behalf
+>>         Of *Arcadiy Ivanov
+>>         *Sent:* Wednesday, 15 July 2015 7:27 AM
+>>         *To:* Andrew Lentvorski; concurrency-interest at cs.oswego.edu
+>>         *Subject:* Re: [concurrency-interest] JNI signaling back to a
+>>         thread/concurrent structure?
+>>
+>>         On 2015-07-14 04:43, Andrew Lentvorski wrote:
+>>>         This is probably a really stupid question, but is there a way to signal
+>>>         a java.util.concurrent structure from native code that would allow a JNI
+>>>         function to effectively "wake" a sleeping/blocked Java thread?
+>>>
+>>>         The context is this.  I have a JNI audio callback trucking along in
+>>>         OpenSL on Android.  That callback is running in some sort of system
+>>>         thread with highly elevated priority.  A Java thread fills a buffer
+>>>         which the audio callback empties.  When the circular buffer is full, the
+>>>         Java thread which fills that buffer goes to sleep for a bit until the
+>>>         buffer empties out some.
+>>>
+>>>         However, if something is going wrong and the circular audio buffer is
+>>>         about to empty, I would like to do something that would wake up the Java
+>>>         thread or at least queue it on a relatively soon timeslice.  Maybe it
+>>>         can recover and maybe it can't, but without the ability to signal that,
+>>>         the thread is going to stay asleep and the audio buffer will drain.
+>>>
+>>>         Now, I can just wake the thread up every so many milliseconds, but
+>>>         that's kind of wasteful of power, CPU, etc. as the majority of the time
+>>>         the thread is just going to wake up to see that the buffer is fine,
+>>>         realize it has no work and go back to sleep.
+>>>
+>>>         Any suggestions?  Or am I just completely barking mad for wanting this?
+>>         http://docs.oracle.com/javase/8/docs/api/java/util/concurrent/locks/LockSupport.html#unpark(java.lang.Thread)
+>>         ?
+>>>         Thanks,
+>>>         -a
+>>>
+>>>
+>>>
+>>>
+>>>
+>>>         _______________________________________________
+>>>         Concurrency-interest mailing list
+>>>         Concurrency-interest at cs.oswego.edu
+>>>         http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+
+
+-- 
+Arcadiy Ivanov
+arcadiy at ivanov.biz | @arcivanov | https://ivanov.biz
+https://github.com/arcivanov
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150714/81c9d551/attachment.html>
+
+From bsder at allcaps.org  Tue Jul 14 20:38:50 2015
+From: bsder at allcaps.org (Andrew Lentvorski)
+Date: Tue, 14 Jul 2015 17:38:50 -0700
+Subject: [concurrency-interest] JNI signaling back to a
+	thread/concurrentstructure?
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCAELELBAA.davidcholmes@aapt.net.au>
+References: <NFBBKALFDCPFIDBNKAPCAELELBAA.davidcholmes@aapt.net.au>
+Message-ID: <55A5AB9A.2080801@allcaps.org>
+
+On 7/14/15, 2:21 AM, David Holmes wrote:
+
+> Use JNI to invoke Thread.interrupt. That will unblock the sleep, or most
+> other concurrency-based blocking mechanisms.
+
+Is that going to be kosher?
+
+Calling back from JNI to Java to to invoke Thread.interrupt seems like
+I'm going to set off a cascade of actions will trigger priority inversion.
+
+Any allocation of memory will pull a mutex that will cause a priority
+inversion.
+
+-a
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 473 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150714/825c7a70/attachment.bin>
+
+From davidcholmes at aapt.net.au  Tue Jul 14 21:07:11 2015
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Wed, 15 Jul 2015 11:07:11 +1000
+Subject: [concurrency-interest] JNI signaling back to
+	athread/concurrentstructure?
+In-Reply-To: <55A5AB9A.2080801@allcaps.org>
+Message-ID: <NFBBKALFDCPFIDBNKAPCOELILBAA.davidcholmes@aapt.net.au>
+
+Andrew Lentvorski writes:
+> On 7/14/15, 2:21 AM, David Holmes wrote:
+>
+> > Use JNI to invoke Thread.interrupt. That will unblock the sleep, or most
+> > other concurrency-based blocking mechanisms.
+>
+> Is that going to be kosher?
+>
+> Calling back from JNI to Java to to invoke Thread.interrupt seems like
+> I'm going to set off a cascade of actions will trigger priority inversion.
+>
+> Any allocation of memory will pull a mutex that will cause a priority
+> inversion.
+
+You have no choice but to make a JNI call back into Java (unless you
+introduce a native mechanism to implement your own blocking within a Java
+data structure). If you don't want to do JNI calls from the system thread
+executing the audio callback then you will need to introduce an intermediary
+native thread to do it.
+
+Priority issues are outside the scope of the JVM - you are now dealing with
+Android specifics, so you will need to ask Android folk about that.
+
+David
+
+> -a
+>
+>
+
+
+From bsder at allcaps.org  Wed Jul 15 01:25:55 2015
+From: bsder at allcaps.org (Andrew Lentvorski)
+Date: Tue, 14 Jul 2015 22:25:55 -0700
+Subject: [concurrency-interest] JNI signaling back to
+	athread/concurrentstructure?
+In-Reply-To: <NFBBKALFDCPFIDBNKAPCOELILBAA.davidcholmes@aapt.net.au>
+References: <NFBBKALFDCPFIDBNKAPCOELILBAA.davidcholmes@aapt.net.au>
+Message-ID: <55A5EEE3.4060404@allcaps.org>
+
+On 7/14/15, 6:07 PM, David Holmes wrote:
+> Andrew Lentvorski writes:
+>> On 7/14/15, 2:21 AM, David Holmes wrote:
+>>
+>>> Use JNI to invoke Thread.interrupt. That will unblock the sleep, or most
+>>> other concurrency-based blocking mechanisms.
+>>
+>> Is that going to be kosher?
+>>
+>> Calling back from JNI to Java to to invoke Thread.interrupt seems like
+>> I'm going to set off a cascade of actions will trigger priority inversion.
+>>
+>> Any allocation of memory will pull a mutex that will cause a priority
+>> inversion.
+> 
+> You have no choice but to make a JNI call back into Java (unless you
+> introduce a native mechanism to implement your own blocking within a Java
+> data structure). If you don't want to do JNI calls from the system thread
+> executing the audio callback then you will need to introduce an intermediary
+> native thread to do it.
+
+Ah, that's probably the trick.  I need a separate thread in the JNI
+arena that stays blocked until the audio thread swats it.
+
+Then, once that native thread gets scheduled, it does nothing but
+transfer the wakeup into the Java/JVM arena at the lower priority.  At
+that point, I can probably use all kinds of techniques.
+
+That's kind of grubby, but it's probably required to avoid the priority
+inversion.
+
+Thanks for the advice.
+
+-a
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 473 bytes
+Desc: OpenPGP digital signature
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150714/556abd49/attachment.bin>
+
+From gergg at cox.net  Mon Jul 20 10:29:31 2015
+From: gergg at cox.net (Gregg Wonderly)
+Date: Mon, 20 Jul 2015 09:29:31 -0500
+Subject: [concurrency-interest] JNI signaling back to a
+	thread/concurrentstructure?
+In-Reply-To: <s9VG1q00Q02hR0p019VKpx>
+References: <s9VG1q00Q02hR0p019VKpx>
+Message-ID: <28DD9399-7A5B-4273-9B4A-870C5840082B@cox.net>
+
+I have just had a thread running in a loop from JVM side to JNI side and blocking in JNI on a mutex.  I then unblocked it via the mutex and it would return to the Java side to do the necessary work.  You can include details of that work in the return value of the Java to JNI call.
+
+Gregg Wonderly
+
+Sent from my iPhone
+
+> On Jul 14, 2015, at 4:21 AM, David Holmes <davidcholmes at aapt.net.au> wrote:
+> 
+> Hi Andrew,
+> 
+> Andrew Lentvorski writes:
+>> This is probably a really stupid question, but is there a way to signal
+>> a java.util.concurrent structure from native code that would allow a JNI
+>> function to effectively "wake" a sleeping/blocked Java thread?
+>> 
+>> The context is this.  I have a JNI audio callback trucking along in
+>> OpenSL on Android.  That callback is running in some sort of system
+>> thread with highly elevated priority.  A Java thread fills a buffer
+>> which the audio callback empties.  When the circular buffer is full, the
+>> Java thread which fills that buffer goes to sleep for a bit until the
+>> buffer empties out some.
+>> 
+>> However, if something is going wrong and the circular audio buffer is
+>> about to empty, I would like to do something that would wake up the Java
+>> thread or at least queue it on a relatively soon timeslice.  Maybe it
+>> can recover and maybe it can't, but without the ability to signal that,
+>> the thread is going to stay asleep and the audio buffer will drain.
+>> 
+>> Now, I can just wake the thread up every so many milliseconds, but
+>> that's kind of wasteful of power, CPU, etc. as the majority of the time
+>> the thread is just going to wake up to see that the buffer is fine,
+>> realize it has no work and go back to sleep.
+>> 
+>> Any suggestions?  Or am I just completely barking mad for wanting this?
+> 
+> Use JNI to invoke Thread.interrupt. That will unblock the sleep, or most
+> other concurrency-based blocking mechanisms.
+> 
+> David
+> 
+>> Thanks,
+>> -a
+>> 
+>> 
+>> 
+>> 
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From dl at cs.oswego.edu  Thu Jul 23 10:23:17 2015
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Thu, 23 Jul 2015 10:23:17 -0400
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+Message-ID: <55B0F8D5.4050100@cs.oswego.edu>
+
+Thanks to people who have tried out the proposed updates for jdk9
+(modest, compared to previous releases) that have been in place since
+January -- a few enhancements to CompletableFuture, added class
+SubmissionPublisher and its interface-holder class Flow, plus misc
+minor updates. If you haven't, try them out from the usual places:
+
+     API specs: http://gee.cs.oswego.edu/dl/jsr166/dist/docs/
+     jar file: http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166.jar (compiled 
+using Java8 javac).
+     Browsable CVS sources: 
+http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/
+
+(As usual, the easiest way is to run with -Xbootclasspath/p:jsr166.jar
+but this will almost surely change under upcoming jdk9 module support.)
+
+We've been also working to improve async performance more generally
+inside implementations. Things seem to be stabilizing without
+controversy. (There has been continuing discussion of Flow interfaces
+at http://www.reactive-streams.org/ but nothing that has impacted
+these APIs.)  So it's time to actually propose them for jdk9 as an
+openjdk JEP.  Which I plan to do within a few days. If you have any
+comments or concerns, please let me know!
+
+Some notes:
+
+* Reactive-stream users may be disappointed that we do not include any
+net/IO-based Flow.Publisher/Subscriber classes, considering that
+reactive-streams are mainly motivated by net-based frameworks.  The
+reasons for triaging these out are that (1) IO generally falls outside
+of java.util.concurrent (2) Most net-based frameworks seem to use
+custom data representation etc (e.g., JSON) that are even further out
+of scope.  However class SubmissionPublisher can be used as an adaptor
+to turn just about any kind of source into a Publisher, so provides a
+nearly universal way of constructing a good non-custom Publisher even
+from IO-based sources.  (Also notice that SubmissionPublisher can
+serve as the basis of other actor-like frameworks, including those
+turning off back-pressure by calling
+subscription.request(Long.MAX_VALUE) in onSubscribe).
+
+* If you are trying out updates with jdk9 early access,
+(https://jdk9.java.net/download/) notice that as of b73 last week,
+it by default uses the G1 collector, which is (currently,
+but hopefully just transiently) not usually the best choice for
+high-throughput concurrency. You probably want to use switches
+  -XX:+UseParallelGC -XX:+UseCondCardMark -XX:-UseBiasedLocking
+
+* The implementation updates (some not yet committed) focus on
+improvements in async contexts (CompletableFutures,
+SubmissionPublishers, plus other older components).  Symmetric async
+(where agents may be both producers and consumers) performance is
+inherently more variable than other cases. ForkJoinPool in particular
+handles now these better. Updates include (1) pool.submit and
+task.fork now have identical semantics; (2) "Async" FJP mode is now
+probabilistically fair; (3) Spare threads cannot accumulate; and (4)
+Ramp-down is faster on large systems.  (In fact, of the oddities under
+abuse that Ed Harned enjoys identifying, I think the only remaining
+one is that we still take a global lock to fill in stack traces for
+cross-thread exceptions, which can slow things to a crawl if you have
+tons of them, but is still worthwhile in helping developer track down
+most problems.)
+
+* It is likely that some implementations (and possibly even new
+classes) will be impacted by VarHandles-related work (mainly by Paul
+Sandoz), that replaced the syntactically-nicer but too-problematic
+"Enhanced Volatiles" proposal (still the same JEP
+http://openjdk.java.net/jeps/193).
+
+-Doug
+
+
+From akarnokd at gmail.com  Thu Jul 23 14:55:54 2015
+From: akarnokd at gmail.com (=?UTF-8?Q?D=C3=A1vid_Karnok?=)
+Date: Thu, 23 Jul 2015 20:55:54 +0200
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <55B0F8D5.4050100@cs.oswego.edu>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+Message-ID: <CAAWwtm-nvASyuAhQu41Q=sayaeA+y7PTwyKrh+aZzhKk_d79Ww@mail.gmail.com>
+
+Hello,
+
+I've read through the code and javadoc and I have the following comments:
+
+Flow.java
+-------
+
+Line 70: the code schedules the exception with executor.execute(() ->
+subscriber.onError(ex)); but the subscriber can't cancel this action. For
+example, a subscriber calling request(-1) and then cancel() will inevitably
+receive the exception. I understand the RS spec allows for such late-coming
+events, but since this is an example, it should convey the right practices:
+one should always get the future of a scheduled action.
+
+Line 98: the text reads "Subscriber maintains multiple Subscriptions" which
+I don't see how would look like and I think the RS spec at least implies
+this shouldn't happen.
+
+Line 114: the count variable is set after the request is issued so a
+synchronous onNext call will request bufferSize - bufferSize / 2
+immediately, having a total of ~1.5 * bufferSize outstanding requests. In
+addition, if the generator emits asynchronous onNext events, a stall just
+before the count assignment may have the same effect, the onNext may
+experience a torn-read of count or onSubscribe and onNext may destroy each
+others count value. I suggest assigning count before the initial request.
+
+Line 314: the same issue is present: count is assigned after the request is
+issued.
+
+Line 325: I think, the subscription needs to be cancelled, otherwise the
+Consumer keeps receiving more elements, which may yield undefined behavior
+with most subscribers.
+
+Line 361: The consume() method returns a CompletableFuture whose cancel
+does nothing and there is no way to cancel the consumption unless the
+consumer throws an exception (which also doesn't work now due to 325). I
+can see implementing the cancellation is difficult due to the potential
+asynchrony involved, so at least the javadoc should mention the problem
+with cancel().
+
+Line 416: the text reads "Preliminary release note: Currently, this method
+collects all items before executing the stream computation." Correct me if
+I'm wrong, but since Stream is pull based, the stream() method would need
+to inject concurrency into the flow: the push end fills a queue and the
+pull end takes (blockingly) from the queue from some other thread.
+
+
+SubmissionPublisher.java
+---------
+
+Line 69: "to share schedulers" not sure about "schedulers" here, because
+the Flow terminology uses Executors otherwise.
+
+Line 222: From experience with RxJava, holding a lock while emitting events
+should be avoided, especially when blocking actions are nearby.
+
+Line 230: In RxJava, if the Subject is terminated with an exception, late
+Subscribers will receive the exception but here, they just get completed.
+Maybe it is worth considering this exception-replaying behavior.
+
+Line 623: getSubscribers() why would anyone be interested in the actual
+subscribers? Calling methods on them shouldn't be allowed anyway and I
+don't see any other reason to expose them.
+
+
+
+
+2015-07-23 16:23 GMT+02:00 Doug Lea <dl at cs.oswego.edu>:
+
+> Thanks to people who have tried out the proposed updates for jdk9
+> (modest, compared to previous releases) that have been in place since
+> January -- a few enhancements to CompletableFuture, added class
+> SubmissionPublisher and its interface-holder class Flow, plus misc
+> minor updates. If you haven't, try them out from the usual places:
+>
+>     API specs: http://gee.cs.oswego.edu/dl/jsr166/dist/docs/
+>     jar file: http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166.jar
+> (compiled using Java8 javac).
+>     Browsable CVS sources:
+> http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/
+>
+> (As usual, the easiest way is to run with -Xbootclasspath/p:jsr166.jar
+> but this will almost surely change under upcoming jdk9 module support.)
+>
+> We've been also working to improve async performance more generally
+> inside implementations. Things seem to be stabilizing without
+> controversy. (There has been continuing discussion of Flow interfaces
+> at http://www.reactive-streams.org/ but nothing that has impacted
+> these APIs.)  So it's time to actually propose them for jdk9 as an
+> openjdk JEP.  Which I plan to do within a few days. If you have any
+> comments or concerns, please let me know!
+>
+> Some notes:
+>
+> * Reactive-stream users may be disappointed that we do not include any
+> net/IO-based Flow.Publisher/Subscriber classes, considering that
+> reactive-streams are mainly motivated by net-based frameworks.  The
+> reasons for triaging these out are that (1) IO generally falls outside
+> of java.util.concurrent (2) Most net-based frameworks seem to use
+> custom data representation etc (e.g., JSON) that are even further out
+> of scope.  However class SubmissionPublisher can be used as an adaptor
+> to turn just about any kind of source into a Publisher, so provides a
+> nearly universal way of constructing a good non-custom Publisher even
+> from IO-based sources.  (Also notice that SubmissionPublisher can
+> serve as the basis of other actor-like frameworks, including those
+> turning off back-pressure by calling
+> subscription.request(Long.MAX_VALUE) in onSubscribe).
+>
+> * If you are trying out updates with jdk9 early access,
+> (https://jdk9.java.net/download/) notice that as of b73 last week,
+> it by default uses the G1 collector, which is (currently,
+> but hopefully just transiently) not usually the best choice for
+> high-throughput concurrency. You probably want to use switches
+>  -XX:+UseParallelGC -XX:+UseCondCardMark -XX:-UseBiasedLocking
+>
+> * The implementation updates (some not yet committed) focus on
+> improvements in async contexts (CompletableFutures,
+> SubmissionPublishers, plus other older components).  Symmetric async
+> (where agents may be both producers and consumers) performance is
+> inherently more variable than other cases. ForkJoinPool in particular
+> handles now these better. Updates include (1) pool.submit and
+> task.fork now have identical semantics; (2) "Async" FJP mode is now
+> probabilistically fair; (3) Spare threads cannot accumulate; and (4)
+> Ramp-down is faster on large systems.  (In fact, of the oddities under
+> abuse that Ed Harned enjoys identifying, I think the only remaining
+> one is that we still take a global lock to fill in stack traces for
+> cross-thread exceptions, which can slow things to a crawl if you have
+> tons of them, but is still worthwhile in helping developer track down
+> most problems.)
+>
+> * It is likely that some implementations (and possibly even new
+> classes) will be impacted by VarHandles-related work (mainly by Paul
+> Sandoz), that replaced the syntactically-nicer but too-problematic
+> "Enhanced Volatiles" proposal (still the same JEP
+> http://openjdk.java.net/jeps/193).
+>
+> -Doug
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+
+
+
+-- 
+Best regards,
+David Karnok
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150723/09c14cc0/attachment.html>
+
+From gregw at webtide.com  Thu Jul 23 18:35:12 2015
+From: gregw at webtide.com (Greg Wilkins)
+Date: Fri, 24 Jul 2015 08:35:12 +1000
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <55B0F8D5.4050100@cs.oswego.edu>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+Message-ID: <CAAPGdfFAb=bTHRs3smUQ_JefCA7ev=zvo+oLCHBf2zx843QHKg@mail.gmail.com>
+
+On 24 July 2015 at 00:23, Doug Lea <dl at cs.oswego.edu> wrote:
+
+>
+> * Reactive-stream users may be disappointed that we do not include any
+> net/IO-based Flow.Publisher/Subscriber classes, considering that
+> reactive-streams are mainly motivated by net-based frameworks.  The
+> reasons for triaging these out are that (1) IO generally falls outside
+> of java.util.concurrent (2) Most net-based frameworks seem to use
+> custom data representation etc (e.g., JSON) that are even further out
+> of scope.  However class SubmissionPublisher can be used as an adaptor
+> to turn just about any kind of source into a Publisher, so provides a
+> nearly universal way of constructing a good non-custom Publisher even
+> from IO-based sources.  (Also notice that SubmissionPublisher can
+> serve as the basis of other actor-like frameworks, including those
+> turning off back-pressure by calling
+> subscription.request(Long.MAX_VALUE) in onSubscribe).
+>
+>
+
+Doug et al,
+
+The Jetty project has been experimenting with the reactive streams API:
+https://github.com/jetty-project/jetty-reactive albiet not with the JDK-9
+version of it, but inspired by the proposed inclusion of it.
+
+We very much like the API and what it can bring to our space.  We don't see
+that it needs direct IO support and that it's power is actually bridging
+domains with a good asynchronous model that supports flow control.
+
+We've also begun some preliminary discussions about developing RS based
+proposal for the Servlet 4.0 specification.    Currently the Servlet API
+does well support asynchronous IO and behaviour, but the API is deceptively
+difficult to use correctly and gives no support for back pressure.   With
+RS's we can envisage solutions that look like:
+
+   - A database provides a RS Producer that provides the large results of a
+   query asynchronously from a remote database server
+   - Some business logic is encapsulated as a RS Processor subscribed to
+   the database producer
+   - Some framework provided  Porocessors subscribe to the business logic
+   Processor to perform a chain of functions such as serialization, compression
+   - A container provided Subscriber terminates the chain and sends the
+   resulting byte out over HTTP/HTTP2 or Websocket.   The flow control
+   mechanisms of these protocols would be the basis of the RS back pressure.
+
+In such solutions, a full HTTP/2 flow control window would result in back
+pressure on the remote database server, allowing threadless waiting without
+unlimited queuing of data.
+
+However, we have a significant concern with the API in that we do not like
+it's error handling design.  Specifically that it is asymmetric and an
+error in the middle of a chain of processors can be propagated downstream
+with onError(Throwable) but can only be propagated upstream with cancel().
+
+We believe that cancel without reason is an insufficient semantic to build
+a robust ecosystem of RS Processors that can be used to build
+applications.   Consider the above example, it would be ideal if the object
+serialization was handled by a 3rd party Processor (let's say
+JSONEncodingProcessor). If the business logic erroneously sent an
+non-jsonable object, or if the JSON converter was incorrectly configured
+then the JSONEcondiingProcessor could encounter an error during its
+onNext(Object item) handling and it's only permitted handling of that is to
+cancel the stream, without explanation.
+
+I have raised this as an issue on the RS github and it the current
+recommendation is to log and cancel:
+https://github.com/reactive-streams/reactive-streams-jvm/issues/271#issuecomment-121974544
+However I believe that log and cancel is a insufficient semantic.   Logging
+in assembled applications is often fraught as each component provider will
+fight over which logging framework is best.  RS chains may cross
+jurisdictional boundaries and logs may not even be readily available.
+
+The solution we see is to replace/augment cancel() with either
+cancel(Throwable reason) or an upstream onError(Throwable reason).  I
+acknowledge that the passed reason may not always be meaningful to the
+upstream processors and publishers, but it is better to ignore a
+meaningless reason than to be ignorant of a meaningful one.
+
+When considering this API, we have to look beyond usages that work well and
+consider usages that will fail well also!
+
+cheers
+
+-- 
+Greg Wilkins <gregw at webtide.com>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150724/3a56c27c/attachment-0001.html>
+
+From forax at univ-mlv.fr  Thu Jul 23 20:12:46 2015
+From: forax at univ-mlv.fr (Remi Forax)
+Date: Fri, 24 Jul 2015 02:12:46 +0200
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <55B0F8D5.4050100@cs.oswego.edu>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+Message-ID: <55B182FE.8050100@univ-mlv.fr>
+
+Hi Doug,
+I've again try to understand how the Flow API can be safe and i still do 
+not understand.
+
+Let suppose i want to use the OneShotPublisher with the SampleSubscriber 
+described in the overview of the class Flow.
+If you take a look to the fields of the class SampleSubscriber:
+- count is written in onSubscribe which is called by the thread that 
+call subscribe() but read in onNext() which is called by a thread of the 
+executor service.
+- subscription has the same issue, it is initialized by onSubscribe() 
+and read by onNext().
+Maybe it's working because ExecutorService.submit() works like 
+Thread.start() but as far as i know, the javadoc of sumit() doesn't 
+specify that.
+
+Moreover, the API expose an issue that are not visible in the current 
+snippets of code,
+onError() can be called either by the thread that have called 
+subscribe() and the thread that call onNext(), so basically, onError() 
+only works if the code of onError() has no side effect, so 
+ex.printStackTrace is fine but anything but logging is not.
+
+I'm sure i'm wrong and there is something subtle that my poor mind 
+doesn't understand.
+
+R?mi
+
+On 07/23/2015 04:23 PM, Doug Lea wrote:
+> Thanks to people who have tried out the proposed updates for jdk9
+> (modest, compared to previous releases) that have been in place since
+> January -- a few enhancements to CompletableFuture, added class
+> SubmissionPublisher and its interface-holder class Flow, plus misc
+> minor updates. If you haven't, try them out from the usual places:
+>
+>     API specs: http://gee.cs.oswego.edu/dl/jsr166/dist/docs/
+>     jar file: http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166.jar 
+> (compiled using Java8 javac).
+>     Browsable CVS sources: 
+> http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/
+>
+> (As usual, the easiest way is to run with -Xbootclasspath/p:jsr166.jar
+> but this will almost surely change under upcoming jdk9 module support.)
+>
+> We've been also working to improve async performance more generally
+> inside implementations. Things seem to be stabilizing without
+> controversy. (There has been continuing discussion of Flow interfaces
+> at http://www.reactive-streams.org/ but nothing that has impacted
+> these APIs.)  So it's time to actually propose them for jdk9 as an
+> openjdk JEP.  Which I plan to do within a few days. If you have any
+> comments or concerns, please let me know!
+>
+> Some notes:
+>
+> * Reactive-stream users may be disappointed that we do not include any
+> net/IO-based Flow.Publisher/Subscriber classes, considering that
+> reactive-streams are mainly motivated by net-based frameworks. The
+> reasons for triaging these out are that (1) IO generally falls outside
+> of java.util.concurrent (2) Most net-based frameworks seem to use
+> custom data representation etc (e.g., JSON) that are even further out
+> of scope.  However class SubmissionPublisher can be used as an adaptor
+> to turn just about any kind of source into a Publisher, so provides a
+> nearly universal way of constructing a good non-custom Publisher even
+> from IO-based sources.  (Also notice that SubmissionPublisher can
+> serve as the basis of other actor-like frameworks, including those
+> turning off back-pressure by calling
+> subscription.request(Long.MAX_VALUE) in onSubscribe).
+>
+> * If you are trying out updates with jdk9 early access,
+> (https://jdk9.java.net/download/) notice that as of b73 last week,
+> it by default uses the G1 collector, which is (currently,
+> but hopefully just transiently) not usually the best choice for
+> high-throughput concurrency. You probably want to use switches
+>  -XX:+UseParallelGC -XX:+UseCondCardMark -XX:-UseBiasedLocking
+>
+> * The implementation updates (some not yet committed) focus on
+> improvements in async contexts (CompletableFutures,
+> SubmissionPublishers, plus other older components).  Symmetric async
+> (where agents may be both producers and consumers) performance is
+> inherently more variable than other cases. ForkJoinPool in particular
+> handles now these better. Updates include (1) pool.submit and
+> task.fork now have identical semantics; (2) "Async" FJP mode is now
+> probabilistically fair; (3) Spare threads cannot accumulate; and (4)
+> Ramp-down is faster on large systems.  (In fact, of the oddities under
+> abuse that Ed Harned enjoys identifying, I think the only remaining
+> one is that we still take a global lock to fill in stack traces for
+> cross-thread exceptions, which can slow things to a crawl if you have
+> tons of them, but is still worthwhile in helping developer track down
+> most problems.)
+>
+> * It is likely that some implementations (and possibly even new
+> classes) will be impacted by VarHandles-related work (mainly by Paul
+> Sandoz), that replaced the syntactically-nicer but too-problematic
+> "Enhanced Volatiles" proposal (still the same JEP
+> http://openjdk.java.net/jeps/193).
+>
+> -Doug
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From davidcholmes at aapt.net.au  Thu Jul 23 20:42:18 2015
+From: davidcholmes at aapt.net.au (David Holmes)
+Date: Fri, 24 Jul 2015 10:42:18 +1000
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <55B182FE.8050100@univ-mlv.fr>
+Message-ID: <NFBBKALFDCPFIDBNKAPCKEPOLBAA.davidcholmes@aapt.net.au>
+
+Hi Remi,
+
+Remi Forax writes:
+> Hi Doug,
+> I've again try to understand how the Flow API can be safe and i still do
+> not understand.
+>
+> Let suppose i want to use the OneShotPublisher with the SampleSubscriber
+> described in the overview of the class Flow.
+> If you take a look to the fields of the class SampleSubscriber:
+> - count is written in onSubscribe which is called by the thread that
+> call subscribe() but read in onNext() which is called by a thread of the
+> executor service.
+> - subscription has the same issue, it is initialized by onSubscribe()
+> and read by onNext().
+> Maybe it's working because ExecutorService.submit() works like
+> Thread.start() but as far as i know, the javadoc of sumit() doesn't
+> specify that.
+
+Memory Consistency Properties
+
+"Actions in a thread prior to the submission of a Runnable to an Executor
+happen-before its execution begins. Similarly for Callables submitted to an
+ExecutorService."
+
+http://docs.oracle.com/javase/8/docs/api/java/util/concurrent/package-summar
+y.html
+
+Cheers,
+David
+-----
+
+> Moreover, the API expose an issue that are not visible in the current
+> snippets of code,
+> onError() can be called either by the thread that have called
+> subscribe() and the thread that call onNext(), so basically, onError()
+> only works if the code of onError() has no side effect, so
+> ex.printStackTrace is fine but anything but logging is not.
+>
+> I'm sure i'm wrong and there is something subtle that my poor mind
+> doesn't understand.
+>
+> R?mi
+>
+> On 07/23/2015 04:23 PM, Doug Lea wrote:
+> > Thanks to people who have tried out the proposed updates for jdk9
+> > (modest, compared to previous releases) that have been in place since
+> > January -- a few enhancements to CompletableFuture, added class
+> > SubmissionPublisher and its interface-holder class Flow, plus misc
+> > minor updates. If you haven't, try them out from the usual places:
+> >
+> >     API specs: http://gee.cs.oswego.edu/dl/jsr166/dist/docs/
+> >     jar file: http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166.jar
+> > (compiled using Java8 javac).
+> >     Browsable CVS sources:
+> > http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/
+> >
+> > (As usual, the easiest way is to run with -Xbootclasspath/p:jsr166.jar
+> > but this will almost surely change under upcoming jdk9 module support.)
+> >
+> > We've been also working to improve async performance more generally
+> > inside implementations. Things seem to be stabilizing without
+> > controversy. (There has been continuing discussion of Flow interfaces
+> > at http://www.reactive-streams.org/ but nothing that has impacted
+> > these APIs.)  So it's time to actually propose them for jdk9 as an
+> > openjdk JEP.  Which I plan to do within a few days. If you have any
+> > comments or concerns, please let me know!
+> >
+> > Some notes:
+> >
+> > * Reactive-stream users may be disappointed that we do not include any
+> > net/IO-based Flow.Publisher/Subscriber classes, considering that
+> > reactive-streams are mainly motivated by net-based frameworks. The
+> > reasons for triaging these out are that (1) IO generally falls outside
+> > of java.util.concurrent (2) Most net-based frameworks seem to use
+> > custom data representation etc (e.g., JSON) that are even further out
+> > of scope.  However class SubmissionPublisher can be used as an adaptor
+> > to turn just about any kind of source into a Publisher, so provides a
+> > nearly universal way of constructing a good non-custom Publisher even
+> > from IO-based sources.  (Also notice that SubmissionPublisher can
+> > serve as the basis of other actor-like frameworks, including those
+> > turning off back-pressure by calling
+> > subscription.request(Long.MAX_VALUE) in onSubscribe).
+> >
+> > * If you are trying out updates with jdk9 early access,
+> > (https://jdk9.java.net/download/) notice that as of b73 last week,
+> > it by default uses the G1 collector, which is (currently,
+> > but hopefully just transiently) not usually the best choice for
+> > high-throughput concurrency. You probably want to use switches
+> >  -XX:+UseParallelGC -XX:+UseCondCardMark -XX:-UseBiasedLocking
+> >
+> > * The implementation updates (some not yet committed) focus on
+> > improvements in async contexts (CompletableFutures,
+> > SubmissionPublishers, plus other older components).  Symmetric async
+> > (where agents may be both producers and consumers) performance is
+> > inherently more variable than other cases. ForkJoinPool in particular
+> > handles now these better. Updates include (1) pool.submit and
+> > task.fork now have identical semantics; (2) "Async" FJP mode is now
+> > probabilistically fair; (3) Spare threads cannot accumulate; and (4)
+> > Ramp-down is faster on large systems.  (In fact, of the oddities under
+> > abuse that Ed Harned enjoys identifying, I think the only remaining
+> > one is that we still take a global lock to fill in stack traces for
+> > cross-thread exceptions, which can slow things to a crawl if you have
+> > tons of them, but is still worthwhile in helping developer track down
+> > most problems.)
+> >
+> > * It is likely that some implementations (and possibly even new
+> > classes) will be impacted by VarHandles-related work (mainly by Paul
+> > Sandoz), that replaced the syntactically-nicer but too-problematic
+> > "Enhanced Volatiles" proposal (still the same JEP
+> > http://openjdk.java.net/jeps/193).
+> >
+> > -Doug
+> >
+> > _______________________________________________
+> > Concurrency-interest mailing list
+> > Concurrency-interest at cs.oswego.edu
+> > http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+From vitalyd at gmail.com  Thu Jul 23 20:56:35 2015
+From: vitalyd at gmail.com (Vitaly Davidovich)
+Date: Thu, 23 Jul 2015 20:56:35 -0400
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <55B182FE.8050100@univ-mlv.fr>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+	<55B182FE.8050100@univ-mlv.fr>
+Message-ID: <CAHjP37GggS8kbHgAmC2Y2L5BqVxuf_NfK-iUC4ab_USWLQPc7Q@mail.gmail.com>
+
+ExecutorService interface javadoc mentions the memory effects, and notes
+that the submission process ensures that effects prior to submission are
+visible in the task itself.
+
+sent from my phone
+On Jul 23, 2015 8:36 PM, "Remi Forax" <forax at univ-mlv.fr> wrote:
+
+> Hi Doug,
+> I've again try to understand how the Flow API can be safe and i still do
+> not understand.
+>
+> Let suppose i want to use the OneShotPublisher with the SampleSubscriber
+> described in the overview of the class Flow.
+> If you take a look to the fields of the class SampleSubscriber:
+> - count is written in onSubscribe which is called by the thread that call
+> subscribe() but read in onNext() which is called by a thread of the
+> executor service.
+> - subscription has the same issue, it is initialized by onSubscribe() and
+> read by onNext().
+> Maybe it's working because ExecutorService.submit() works like
+> Thread.start() but as far as i know, the javadoc of sumit() doesn't specify
+> that.
+>
+> Moreover, the API expose an issue that are not visible in the current
+> snippets of code,
+> onError() can be called either by the thread that have called subscribe()
+> and the thread that call onNext(), so basically, onError() only works if
+> the code of onError() has no side effect, so ex.printStackTrace is fine but
+> anything but logging is not.
+>
+> I'm sure i'm wrong and there is something subtle that my poor mind doesn't
+> understand.
+>
+> R?mi
+>
+> On 07/23/2015 04:23 PM, Doug Lea wrote:
+>
+>> Thanks to people who have tried out the proposed updates for jdk9
+>> (modest, compared to previous releases) that have been in place since
+>> January -- a few enhancements to CompletableFuture, added class
+>> SubmissionPublisher and its interface-holder class Flow, plus misc
+>> minor updates. If you haven't, try them out from the usual places:
+>>
+>>     API specs: http://gee.cs.oswego.edu/dl/jsr166/dist/docs/
+>>     jar file: http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166.jar
+>> (compiled using Java8 javac).
+>>     Browsable CVS sources:
+>> http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/
+>>
+>> (As usual, the easiest way is to run with -Xbootclasspath/p:jsr166.jar
+>> but this will almost surely change under upcoming jdk9 module support.)
+>>
+>> We've been also working to improve async performance more generally
+>> inside implementations. Things seem to be stabilizing without
+>> controversy. (There has been continuing discussion of Flow interfaces
+>> at http://www.reactive-streams.org/ but nothing that has impacted
+>> these APIs.)  So it's time to actually propose them for jdk9 as an
+>> openjdk JEP.  Which I plan to do within a few days. If you have any
+>> comments or concerns, please let me know!
+>>
+>> Some notes:
+>>
+>> * Reactive-stream users may be disappointed that we do not include any
+>> net/IO-based Flow.Publisher/Subscriber classes, considering that
+>> reactive-streams are mainly motivated by net-based frameworks. The
+>> reasons for triaging these out are that (1) IO generally falls outside
+>> of java.util.concurrent (2) Most net-based frameworks seem to use
+>> custom data representation etc (e.g., JSON) that are even further out
+>> of scope.  However class SubmissionPublisher can be used as an adaptor
+>> to turn just about any kind of source into a Publisher, so provides a
+>> nearly universal way of constructing a good non-custom Publisher even
+>> from IO-based sources.  (Also notice that SubmissionPublisher can
+>> serve as the basis of other actor-like frameworks, including those
+>> turning off back-pressure by calling
+>> subscription.request(Long.MAX_VALUE) in onSubscribe).
+>>
+>> * If you are trying out updates with jdk9 early access,
+>> (https://jdk9.java.net/download/) notice that as of b73 last week,
+>> it by default uses the G1 collector, which is (currently,
+>> but hopefully just transiently) not usually the best choice for
+>> high-throughput concurrency. You probably want to use switches
+>>  -XX:+UseParallelGC -XX:+UseCondCardMark -XX:-UseBiasedLocking
+>>
+>> * The implementation updates (some not yet committed) focus on
+>> improvements in async contexts (CompletableFutures,
+>> SubmissionPublishers, plus other older components).  Symmetric async
+>> (where agents may be both producers and consumers) performance is
+>> inherently more variable than other cases. ForkJoinPool in particular
+>> handles now these better. Updates include (1) pool.submit and
+>> task.fork now have identical semantics; (2) "Async" FJP mode is now
+>> probabilistically fair; (3) Spare threads cannot accumulate; and (4)
+>> Ramp-down is faster on large systems.  (In fact, of the oddities under
+>> abuse that Ed Harned enjoys identifying, I think the only remaining
+>> one is that we still take a global lock to fill in stack traces for
+>> cross-thread exceptions, which can slow things to a crawl if you have
+>> tons of them, but is still worthwhile in helping developer track down
+>> most problems.)
+>>
+>> * It is likely that some implementations (and possibly even new
+>> classes) will be impacted by VarHandles-related work (mainly by Paul
+>> Sandoz), that replaced the syntactically-nicer but too-problematic
+>> "Enhanced Volatiles" proposal (still the same JEP
+>> http://openjdk.java.net/jeps/193).
+>>
+>> -Doug
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150723/1aa22aff/attachment.html>
+
+From gregw at webtide.com  Fri Jul 24 00:30:03 2015
+From: gregw at webtide.com (Greg Wilkins)
+Date: Fri, 24 Jul 2015 14:30:03 +1000
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <55B182FE.8050100@univ-mlv.fr>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+	<55B182FE.8050100@univ-mlv.fr>
+Message-ID: <CAAPGdfEd4Tr-mY-V37+uYRkMH42QgAVVgp8A8JDK-s59+y3V+A@mail.gmail.com>
+
+Remi,
+
+I think the point that you are making is that implementations do have to be
+careful about which threads they use when calling back (this is not unique
+to this API, but a common problem with all async APIs).
+
+In our jetty work, we've encapsulated the concerns in a base class
+
+https://github.com/jetty-project/jetty-reactive/blob/master/src/main/java/org/eclipse/jetty/reactive/IteratingProcessor.java
+
+Who's prime intention is to stop the infinite recursion that can result
+with request() -> onNext() -> request() -> ...  However it also addresses
+similar issues of using the thread calling subscribe to perform work and
+other callbacks.
+
+cheers
+
+
+
+
+
+On 24 July 2015 at 10:12, Remi Forax <forax at univ-mlv.fr> wrote:
+
+> Hi Doug,
+> I've again try to understand how the Flow API can be safe and i still do
+> not understand.
+>
+> Let suppose i want to use the OneShotPublisher with the SampleSubscriber
+> described in the overview of the class Flow.
+> If you take a look to the fields of the class SampleSubscriber:
+> - count is written in onSubscribe which is called by the thread that call
+> subscribe() but read in onNext() which is called by a thread of the
+> executor service.
+> - subscription has the same issue, it is initialized by onSubscribe() and
+> read by onNext().
+> Maybe it's working because ExecutorService.submit() works like
+> Thread.start() but as far as i know, the javadoc of sumit() doesn't specify
+> that.
+>
+> Moreover, the API expose an issue that are not visible in the current
+> snippets of code,
+> onError() can be called either by the thread that have called subscribe()
+> and the thread that call onNext(), so basically, onError() only works if
+> the code of onError() has no side effect, so ex.printStackTrace is fine but
+> anything but logging is not.
+>
+> I'm sure i'm wrong and there is something subtle that my poor mind doesn't
+> understand.
+>
+> R?mi
+>
+>
+> On 07/23/2015 04:23 PM, Doug Lea wrote:
+>
+>> Thanks to people who have tried out the proposed updates for jdk9
+>> (modest, compared to previous releases) that have been in place since
+>> January -- a few enhancements to CompletableFuture, added class
+>> SubmissionPublisher and its interface-holder class Flow, plus misc
+>> minor updates. If you haven't, try them out from the usual places:
+>>
+>>     API specs: http://gee.cs.oswego.edu/dl/jsr166/dist/docs/
+>>     jar file: http://gee.cs.oswego.edu/dl/jsr166/dist/jsr166.jar
+>> (compiled using Java8 javac).
+>>     Browsable CVS sources:
+>> http://gee.cs.oswego.edu/cgi-bin/viewcvs.cgi/jsr166/src/main/java/util/
+>>
+>> (As usual, the easiest way is to run with -Xbootclasspath/p:jsr166.jar
+>> but this will almost surely change under upcoming jdk9 module support.)
+>>
+>> We've been also working to improve async performance more generally
+>> inside implementations. Things seem to be stabilizing without
+>> controversy. (There has been continuing discussion of Flow interfaces
+>> at http://www.reactive-streams.org/ but nothing that has impacted
+>> these APIs.)  So it's time to actually propose them for jdk9 as an
+>> openjdk JEP.  Which I plan to do within a few days. If you have any
+>> comments or concerns, please let me know!
+>>
+>> Some notes:
+>>
+>> * Reactive-stream users may be disappointed that we do not include any
+>> net/IO-based Flow.Publisher/Subscriber classes, considering that
+>> reactive-streams are mainly motivated by net-based frameworks. The
+>> reasons for triaging these out are that (1) IO generally falls outside
+>> of java.util.concurrent (2) Most net-based frameworks seem to use
+>> custom data representation etc (e.g., JSON) that are even further out
+>> of scope.  However class SubmissionPublisher can be used as an adaptor
+>> to turn just about any kind of source into a Publisher, so provides a
+>> nearly universal way of constructing a good non-custom Publisher even
+>> from IO-based sources.  (Also notice that SubmissionPublisher can
+>> serve as the basis of other actor-like frameworks, including those
+>> turning off back-pressure by calling
+>> subscription.request(Long.MAX_VALUE) in onSubscribe).
+>>
+>> * If you are trying out updates with jdk9 early access,
+>> (https://jdk9.java.net/download/) notice that as of b73 last week,
+>> it by default uses the G1 collector, which is (currently,
+>> but hopefully just transiently) not usually the best choice for
+>> high-throughput concurrency. You probably want to use switches
+>>  -XX:+UseParallelGC -XX:+UseCondCardMark -XX:-UseBiasedLocking
+>>
+>> * The implementation updates (some not yet committed) focus on
+>> improvements in async contexts (CompletableFutures,
+>> SubmissionPublishers, plus other older components).  Symmetric async
+>> (where agents may be both producers and consumers) performance is
+>> inherently more variable than other cases. ForkJoinPool in particular
+>> handles now these better. Updates include (1) pool.submit and
+>> task.fork now have identical semantics; (2) "Async" FJP mode is now
+>> probabilistically fair; (3) Spare threads cannot accumulate; and (4)
+>> Ramp-down is faster on large systems.  (In fact, of the oddities under
+>> abuse that Ed Harned enjoys identifying, I think the only remaining
+>> one is that we still take a global lock to fill in stack traces for
+>> cross-thread exceptions, which can slow things to a crawl if you have
+>> tons of them, but is still worthwhile in helping developer track down
+>> most problems.)
+>>
+>> * It is likely that some implementations (and possibly even new
+>> classes) will be impacted by VarHandles-related work (mainly by Paul
+>> Sandoz), that replaced the syntactically-nicer but too-problematic
+>> "Enhanced Volatiles" proposal (still the same JEP
+>> http://openjdk.java.net/jeps/193).
+>>
+>> -Doug
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150724/70efa9b6/attachment-0001.html>
+
+From rk at rkuhn.info  Fri Jul 24 01:55:32 2015
+From: rk at rkuhn.info (Roland Kuhn)
+Date: Fri, 24 Jul 2015 07:55:32 +0200
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <CAAPGdfFAb=bTHRs3smUQ_JefCA7ev=zvo+oLCHBf2zx843QHKg@mail.gmail.com>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+	<CAAPGdfFAb=bTHRs3smUQ_JefCA7ev=zvo+oLCHBf2zx843QHKg@mail.gmail.com>
+Message-ID: <EB1867BB-C1FB-4723-AE40-6771917D9387@rkuhn.info>
+
+Hi Greg,
+
+the reasoning behind the asymmetric RS design is that this communication primitive targets unidirectional communication, bidirectional conversations would utilize two such streams running in opposite directions. This means that for a single stream data elements (of which onError is but a special one) flow downstream and only demand flows upstream. Publishers only need to know about when and if to produce the next element(s), hence we didn?t see a use-case for propagating more information than ?N elements needed? and ?no more elements needed?. 
+
+If a single Reactive Stream could transport data upstream then we would need to implement back-pressure on that back channel as well, leading to the same complexity as having two RS running in opposite directions. Another reason why we made this separation lies in not burdening the API designers of conforming implementations with an impossible task: the combinators offered on stream transformation APIs flow with the (English) language from left to right and describe sequences of transformation stages but with data flowing upstream there would be the need for also describing how to handle that?even if it is ?only? an error channel?and since these data flow in the opposite direction there would be no natural way to write this down.
+
+Learning about the reason behind cancellation seems geared towards recovery in the sense that the Publisher would then construct and attach a different Subscriber afterwards?please let me know if you have something else in mind?and if you want to do that then the Subscriber will in any case be under the Publisher?s control and can use a different channel to communicate the onError signal back to the data source. Since that channel would transport data it would be a separate one flowing in the opposite direction as mentioned above, at least conceptually; with a single element like you describe it could well be a simpler callback mechanism and might not need full back-pressure.
+
+I hope this clarifies some of the background behind the RS design. Please share more of your intended use of an error back-channel so that we can understand what exactly the upstream components would do with that data in the example case you mention.
+
+Regards,
+
+Roland
+
+> 24 jul 2015 kl. 00:35 skrev Greg Wilkins <gregw at webtide.com>:
+> 
+> 
+> 
+> On 24 July 2015 at 00:23, Doug Lea <dl at cs.oswego.edu <mailto:dl at cs.oswego.edu>> wrote:
+> 
+> * Reactive-stream users may be disappointed that we do not include any
+> net/IO-based Flow.Publisher/Subscriber classes, considering that
+> reactive-streams are mainly motivated by net-based frameworks.  The
+> reasons for triaging these out are that (1) IO generally falls outside
+> of java.util.concurrent (2) Most net-based frameworks seem to use
+> custom data representation etc (e.g., JSON) that are even further out
+> of scope.  However class SubmissionPublisher can be used as an adaptor
+> to turn just about any kind of source into a Publisher, so provides a
+> nearly universal way of constructing a good non-custom Publisher even
+> from IO-based sources.  (Also notice that SubmissionPublisher can
+> serve as the basis of other actor-like frameworks, including those
+> turning off back-pressure by calling
+> subscription.request(Long.MAX_VALUE) in onSubscribe).
+> 
+> 
+> 
+> Doug et al,
+> 
+> The Jetty project has been experimenting with the reactive streams API: https://github.com/jetty-project/jetty-reactive <https://github.com/jetty-project/jetty-reactive> albiet not with the JDK-9 version of it, but inspired by the proposed inclusion of it.
+> 
+> We very much like the API and what it can bring to our space.  We don't see that it needs direct IO support and that it's power is actually bridging domains with a good asynchronous model that supports flow control.   
+> 
+> We've also begun some preliminary discussions about developing RS based proposal for the Servlet 4.0 specification.    Currently the Servlet API does well support asynchronous IO and behaviour, but the API is deceptively difficult to use correctly and gives no support for back pressure.   With RS's we can envisage solutions that look like:
+> A database provides a RS Producer that provides the large results of a query asynchronously from a remote database server
+> Some business logic is encapsulated as a RS Processor subscribed to the database producer
+> Some framework provided  Porocessors subscribe to the business logic Processor to perform a chain of functions such as serialization, compression
+> A container provided Subscriber terminates the chain and sends the resulting byte out over HTTP/HTTP2 or Websocket.   The flow control mechanisms of these protocols would be the basis of the RS back pressure.  
+> In such solutions, a full HTTP/2 flow control window would result in back pressure on the remote database server, allowing threadless waiting without unlimited queuing of data.
+> 
+> However, we have a significant concern with the API in that we do not like it's error handling design.  Specifically that it is asymmetric and an error in the middle of a chain of processors can be propagated downstream with onError(Throwable) but can only be propagated upstream with cancel().
+> 
+> We believe that cancel without reason is an insufficient semantic to build a robust ecosystem of RS Processors that can be used to build applications.   Consider the above example, it would be ideal if the object serialization was handled by a 3rd party Processor (let's say JSONEncodingProcessor). If the business logic erroneously sent an non-jsonable object, or if the JSON converter was incorrectly configured then the JSONEcondiingProcessor could encounter an error during its onNext(Object item) handling and it's only permitted handling of that is to cancel the stream, without explanation.
+> 
+> I have raised this as an issue on the RS github and it the current recommendation is to log and cancel: https://github.com/reactive-streams/reactive-streams-jvm/issues/271#issuecomment-121974544 <https://github.com/reactive-streams/reactive-streams-jvm/issues/271#issuecomment-121974544>   However I believe that log and cancel is a insufficient semantic.   Logging in assembled applications is often fraught as each component provider will fight over which logging framework is best.  RS chains may cross jurisdictional boundaries and logs may not even be readily available.
+> 
+> The solution we see is to replace/augment cancel() with either cancel(Throwable reason) or an upstream onError(Throwable reason).  I acknowledge that the passed reason may not always be meaningful to the upstream processors and publishers, but it is better to ignore a meaningless reason than to be ignorant of a meaningful one.
+> 
+> When considering this API, we have to look beyond usages that work well and consider usages that will fail well also!
+> 
+> cheers
+> 
+> -- 
+> Greg Wilkins <gregw at webtide.com <mailto:gregw at webtide.com>>
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+--
+I'm a physicist: I have a basic working knowledge of the universe and everything it contains!
+    - Sheldon Cooper (The Big Bang Theory)
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150724/faba46b5/attachment.html>
+
+From gregw at webtide.com  Fri Jul 24 02:31:08 2015
+From: gregw at webtide.com (Greg Wilkins)
+Date: Fri, 24 Jul 2015 16:31:08 +1000
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <EB1867BB-C1FB-4723-AE40-6771917D9387@rkuhn.info>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+	<CAAPGdfFAb=bTHRs3smUQ_JefCA7ev=zvo+oLCHBf2zx843QHKg@mail.gmail.com>
+	<EB1867BB-C1FB-4723-AE40-6771917D9387@rkuhn.info>
+Message-ID: <CAAPGdfEHoAgMQ2n8vMy=-si8=piEU+-4EiNnTtEtoDOeNJ219A@mail.gmail.com>
+
+Roland,
+
+thanks for the response.
+
+But I don't understand why you consider a terminal exception being notified
+upstream as a data flow?   It is data, but it is not a flow because it is
+terminal and cannot be used as a back channel.
+
+Implementations of the API are already required to send data upstream:
+Cancellation is a terminal boolean data state that must be sent upstream,
+and request(int) is a flow of integers that must be sent upstream [and as
+an aside, it is not beyond imagination that request(int) will be misused as
+a back channel for data - hey it might even get used to send an error code
+immediately prior/post to a cancel! ]
+
+Thus I don't see that there is any significant additional complexity with
+that cancellation having a reason associated with it.   Implementations
+must already support upward bound data and any sequencing and/or race
+conditions that exist with cancel(Throwable) also exist with just cancel().
+
+I also dispute that a Subscriber will be under the control of the
+Publisher.     In the example cited and application is providing a
+Processor, that is using a Publisher provided by a 3rd party database and
+an Subscriber provided by the Servlet container, with perhaps some
+framework provided Processors for serialization.   In this example there is
+the possibility of components from at least 4 difference code sources being
+combined in a chain that crosses deployment administration boundaries of:
+database, application and server.     The log & cancel handling of errors
+is going to be very difficult because many different log mechanism may be
+in use and access may not be easily achieved.  ie applications developers
+may not have full viability of database logs or servlet container logs.
+
+The type of error I'm concerned about are all terminal style errors and not
+intended to be a back flow of data, nor acknowledgement of messages sent.
+It is probably that the implementers of cancel(Throwable) would just log,
+cancel themselves and pass on the cancel(Throwable) to any of their
+Subscripions.   However the point being that would allow the reason for the
+failure to cross the administrative boundaries so that it can be known to
+all.
+
+I think that any argument that can be made for not sending a Throwable
+upstream can equally be made for not sending one downstream (or for not
+having any exceptions in the java language).   Exceptions are very rarely
+handled in any meaningful way, but are extremely useful for passing details
+of a failure so that they may be known to all who may need to know.
+
+Without exceptions  I'm imagining many many  stack over flow questions like
+"Why was my Subscription cancelled?" followed by obligatory "RTFLog
+Stupid!" responses!
+
+cheers
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+On 24 July 2015 at 15:55, Roland Kuhn <rk at rkuhn.info> wrote:
+
+> Hi Greg,
+>
+> the reasoning behind the asymmetric RS design is that this communication
+> primitive targets unidirectional communication, bidirectional conversations
+> would utilize two such streams running in opposite directions. This means
+> that for a single stream data elements (of which onError is but a special
+> one) flow downstream and only demand flows upstream. Publishers only need
+> to know about when and if to produce the next element(s), hence we didn?t
+> see a use-case for propagating more information than ?N elements needed?
+> and ?no more elements needed?.
+>
+> If a single Reactive Stream could transport data upstream then we would
+> need to implement back-pressure on that back channel as well, leading to
+> the same complexity as having two RS running in opposite directions.
+> Another reason why we made this separation lies in not burdening the API
+> designers of conforming implementations with an impossible task: the
+> combinators offered on stream transformation APIs flow with the (English)
+> language from left to right and describe sequences of transformation stages
+> but with data flowing upstream there would be the need for also describing
+> how to handle that?even if it is ?only? an error channel?and since these
+> data flow in the opposite direction there would be no natural way to write
+> this down.
+>
+> Learning about the reason behind cancellation seems geared towards
+> recovery in the sense that the Publisher would then construct and attach a
+> different Subscriber afterwards?please let me know if you have something
+> else in mind?and if you want to do that then the Subscriber will in any
+> case be under the Publisher?s control and can use a different channel to
+> communicate the onError signal back to the data source. Since that channel
+> would transport data it would be a separate one flowing in the opposite
+> direction as mentioned above, at least conceptually; with a single element
+> like you describe it could well be a simpler callback mechanism and might
+> not need full back-pressure.
+>
+> I hope this clarifies some of the background behind the RS design. Please
+> share more of your intended use of an error back-channel so that we can
+> understand what exactly the upstream components would do with that data in
+> the example case you mention.
+>
+> Regards,
+>
+> Roland
+>
+> 24 jul 2015 kl. 00:35 skrev Greg Wilkins <gregw at webtide.com>:
+>
+>
+>
+> On 24 July 2015 at 00:23, Doug Lea <dl at cs.oswego.edu> wrote:
+>
+>>
+>> * Reactive-stream users may be disappointed that we do not include any
+>> net/IO-based Flow.Publisher/Subscriber classes, considering that
+>> reactive-streams are mainly motivated by net-based frameworks.  The
+>> reasons for triaging these out are that (1) IO generally falls outside
+>> of java.util.concurrent (2) Most net-based frameworks seem to use
+>> custom data representation etc (e.g., JSON) that are even further out
+>> of scope.  However class SubmissionPublisher can be used as an adaptor
+>> to turn just about any kind of source into a Publisher, so provides a
+>> nearly universal way of constructing a good non-custom Publisher even
+>> from IO-based sources.  (Also notice that SubmissionPublisher can
+>> serve as the basis of other actor-like frameworks, including those
+>> turning off back-pressure by calling
+>> subscription.request(Long.MAX_VALUE) in onSubscribe).
+>>
+>>
+>
+> Doug et al,
+>
+> The Jetty project has been experimenting with the reactive streams API:
+> https://github.com/jetty-project/jetty-reactive albiet not with the JDK-9
+> version of it, but inspired by the proposed inclusion of it.
+>
+> We very much like the API and what it can bring to our space.  We don't
+> see that it needs direct IO support and that it's power is actually
+> bridging domains with a good asynchronous model that supports flow
+> control.
+>
+> We've also begun some preliminary discussions about developing RS based
+> proposal for the Servlet 4.0 specification.    Currently the Servlet API
+> does well support asynchronous IO and behaviour, but the API is deceptively
+> difficult to use correctly and gives no support for back pressure.   With
+> RS's we can envisage solutions that look like:
+>
+>    - A database provides a RS Producer that provides the large results of
+>    a query asynchronously from a remote database server
+>    - Some business logic is encapsulated as a RS Processor subscribed to
+>    the database producer
+>    - Some framework provided  Porocessors subscribe to the business logic
+>    Processor to perform a chain of functions such as serialization, compression
+>    - A container provided Subscriber terminates the chain and sends the
+>    resulting byte out over HTTP/HTTP2 or Websocket.   The flow control
+>    mechanisms of these protocols would be the basis of the RS back pressure.
+>
+> In such solutions, a full HTTP/2 flow control window would result in back
+> pressure on the remote database server, allowing threadless waiting without
+> unlimited queuing of data.
+>
+> However, we have a significant concern with the API in that we do not like
+> it's error handling design.  Specifically that it is asymmetric and an
+> error in the middle of a chain of processors can be propagated downstream
+> with onError(Throwable) but can only be propagated upstream with cancel().
+>
+> We believe that cancel without reason is an insufficient semantic to build
+> a robust ecosystem of RS Processors that can be used to build
+> applications.   Consider the above example, it would be ideal if the object
+> serialization was handled by a 3rd party Processor (let's say
+> JSONEncodingProcessor). If the business logic erroneously sent an
+> non-jsonable object, or if the JSON converter was incorrectly configured
+> then the JSONEcondiingProcessor could encounter an error during its
+> onNext(Object item) handling and it's only permitted handling of that is to
+> cancel the stream, without explanation.
+>
+> I have raised this as an issue on the RS github and it the current
+> recommendation is to log and cancel:
+> https://github.com/reactive-streams/reactive-streams-jvm/issues/271#issuecomment-121974544
+> However I believe that log and cancel is a insufficient semantic.   Logging
+> in assembled applications is often fraught as each component provider will
+> fight over which logging framework is best.  RS chains may cross
+> jurisdictional boundaries and logs may not even be readily available.
+>
+> The solution we see is to replace/augment cancel() with either
+> cancel(Throwable reason) or an upstream onError(Throwable reason).  I
+> acknowledge that the passed reason may not always be meaningful to the
+> upstream processors and publishers, but it is better to ignore a
+> meaningless reason than to be ignorant of a meaningful one.
+>
+> When considering this API, we have to look beyond usages that work well
+> and consider usages that will fail well also!
+>
+> cheers
+>
+> --
+> Greg Wilkins <gregw at webtide.com>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+> --
+> I'm a physicist: I have a basic working knowledge of the universe and
+> everything it contains!
+>     - Sheldon Cooper (The Big Bang Theory)
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150724/8dd29ff5/attachment-0001.html>
+
+From rk at rkuhn.info  Fri Jul 24 03:12:33 2015
+From: rk at rkuhn.info (Roland Kuhn)
+Date: Fri, 24 Jul 2015 09:12:33 +0200
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <CAAPGdfEHoAgMQ2n8vMy=-si8=piEU+-4EiNnTtEtoDOeNJ219A@mail.gmail.com>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+	<CAAPGdfFAb=bTHRs3smUQ_JefCA7ev=zvo+oLCHBf2zx843QHKg@mail.gmail.com>
+	<EB1867BB-C1FB-4723-AE40-6771917D9387@rkuhn.info>
+	<CAAPGdfEHoAgMQ2n8vMy=-si8=piEU+-4EiNnTtEtoDOeNJ219A@mail.gmail.com>
+Message-ID: <201125F7-B117-43A2-A1F8-04BD71A71189@rkuhn.info>
+
+Hi Greg,
+
+my reply has obviously opened two different discussions (namely ?why are things as they are?? and ?what is the suggested change all about?), I think it would be most fruitful if we stash the first one for now and come back to it after the second one has been understood better?at least by myself. That will put us into a better situation for judging the big picture.
+
+Considering the flow of data from the DB via application and framework processors into the Servlet container, at any point along this line failures can happen. The component emitting the failure will use whatever means it has outside of Reactive Streams to log/audit/monitor and provide metrics, I assume that that is just part of all reasonable code; the database will do that, the application will do it, the framework will probably allow the application to configure how to do that, and the application server will be configured how to do that. This means that everyone can debug their own failures.
+
+Data are flowing towards the Servlet (destined for whichever client made the request) and it is important to signal abnormal termination differently from normal termination, hence the onError propagation in this direction. This also allows downstream components to see failures coming from upstream, but this is a byproduct of needing to generate the right kind of final response to the external client. Now the interesting question is: why would the database need to know that some downstream component choked on the data it emitted? How exactly would this information be used by the database or its operators/programmers? Arguably the data exist and are ?correct? by definition, guarded by Java types, and any validation errors that occur are not stream failures (cf. this definition <http://www.reactivemanifesto.org/glossary#Failure>) and should be treated as normal data elements and sent downstream (or filtered out, depending on the requirements & protocol).
+
+I am deliberately painting with high contrast colors here in order to better understand what exactly it is that you want to achieve instead of just discussing the proposed solution, thanks for your patience!
+
+Regards,
+
+Roland
+
+> 24 jul 2015 kl. 08:31 skrev Greg Wilkins <gregw at webtide.com>:
+> 
+> Roland,
+> 
+> thanks for the response.
+> 
+> But I don't understand why you consider a terminal exception being notified upstream as a data flow?   It is data, but it is not a flow because it is terminal and cannot be used as a back channel. 
+> 
+> Implementations of the API are already required to send data upstream:  Cancellation is a terminal boolean data state that must be sent upstream, and request(int) is a flow of integers that must be sent upstream [and as an aside, it is not beyond imagination that request(int) will be misused as a back channel for data - hey it might even get used to send an error code immediately prior/post to a cancel! ]
+> 
+> Thus I don't see that there is any significant additional complexity with that cancellation having a reason associated with it.   Implementations must already support upward bound data and any sequencing and/or race conditions that exist with cancel(Throwable) also exist with just cancel().
+>  
+> I also dispute that a Subscriber will be under the control of the Publisher.     In the example cited and application is providing a Processor, that is using a Publisher provided by a 3rd party database and an Subscriber provided by the Servlet container, with perhaps some framework provided Processors for serialization.   In this example there is the possibility of components from at least 4 difference code sources being combined in a chain that crosses deployment administration boundaries of: database, application and server.     The log & cancel handling of errors is going to be very difficult because many different log mechanism may be in use and access may not be easily achieved.  ie applications developers may not have full viability of database logs or servlet container logs.
+> 
+> The type of error I'm concerned about are all terminal style errors and not intended to be a back flow of data, nor acknowledgement of messages sent.   It is probably that the implementers of cancel(Throwable) would just log, cancel themselves and pass on the cancel(Throwable) to any of their Subscripions.   However the point being that would allow the reason for the failure to cross the administrative boundaries so that it can be known to all.
+> 
+> I think that any argument that can be made for not sending a Throwable upstream can equally be made for not sending one downstream (or for not having any exceptions in the java language).   Exceptions are very rarely handled in any meaningful way, but are extremely useful for passing details of a failure so that they may be known to all who may need to know.    
+> 
+> Without exceptions  I'm imagining many many  stack over flow questions like "Why was my Subscription cancelled?" followed by obligatory "RTFLog Stupid!" responses!
+> 
+> cheers
+> 
+> 
+> 
+> 
+> 
+> 
+> 
+> 
+> 
+> 
+> 
+> 
+> 
+> 
+> 
+> 
+> 
+> On 24 July 2015 at 15:55, Roland Kuhn <rk at rkuhn.info <mailto:rk at rkuhn.info>> wrote:
+> Hi Greg,
+> 
+> the reasoning behind the asymmetric RS design is that this communication primitive targets unidirectional communication, bidirectional conversations would utilize two such streams running in opposite directions. This means that for a single stream data elements (of which onError is but a special one) flow downstream and only demand flows upstream. Publishers only need to know about when and if to produce the next element(s), hence we didn?t see a use-case for propagating more information than ?N elements needed? and ?no more elements needed?. 
+> 
+> If a single Reactive Stream could transport data upstream then we would need to implement back-pressure on that back channel as well, leading to the same complexity as having two RS running in opposite directions. Another reason why we made this separation lies in not burdening the API designers of conforming implementations with an impossible task: the combinators offered on stream transformation APIs flow with the (English) language from left to right and describe sequences of transformation stages but with data flowing upstream there would be the need for also describing how to handle that?even if it is ?only? an error channel?and since these data flow in the opposite direction there would be no natural way to write this down.
+> 
+> Learning about the reason behind cancellation seems geared towards recovery in the sense that the Publisher would then construct and attach a different Subscriber afterwards?please let me know if you have something else in mind?and if you want to do that then the Subscriber will in any case be under the Publisher?s control and can use a different channel to communicate the onError signal back to the data source. Since that channel would transport data it would be a separate one flowing in the opposite direction as mentioned above, at least conceptually; with a single element like you describe it could well be a simpler callback mechanism and might not need full back-pressure.
+> 
+> I hope this clarifies some of the background behind the RS design. Please share more of your intended use of an error back-channel so that we can understand what exactly the upstream components would do with that data in the example case you mention.
+> 
+> Regards,
+> 
+> Roland
+> 
+>> 24 jul 2015 kl. 00:35 skrev Greg Wilkins <gregw at webtide.com <mailto:gregw at webtide.com>>:
+>> 
+>> 
+>> 
+>> On 24 July 2015 at 00:23, Doug Lea <dl at cs.oswego.edu <mailto:dl at cs.oswego.edu>> wrote:
+>> 
+>> * Reactive-stream users may be disappointed that we do not include any
+>> net/IO-based Flow.Publisher/Subscriber classes, considering that
+>> reactive-streams are mainly motivated by net-based frameworks.  The
+>> reasons for triaging these out are that (1) IO generally falls outside
+>> of java.util.concurrent (2) Most net-based frameworks seem to use
+>> custom data representation etc (e.g., JSON) that are even further out
+>> of scope.  However class SubmissionPublisher can be used as an adaptor
+>> to turn just about any kind of source into a Publisher, so provides a
+>> nearly universal way of constructing a good non-custom Publisher even
+>> from IO-based sources.  (Also notice that SubmissionPublisher can
+>> serve as the basis of other actor-like frameworks, including those
+>> turning off back-pressure by calling
+>> subscription.request(Long.MAX_VALUE) in onSubscribe).
+>> 
+>> 
+>> 
+>> Doug et al,
+>> 
+>> The Jetty project has been experimenting with the reactive streams API: https://github.com/jetty-project/jetty-reactive <https://github.com/jetty-project/jetty-reactive> albiet not with the JDK-9 version of it, but inspired by the proposed inclusion of it.
+>> 
+>> We very much like the API and what it can bring to our space.  We don't see that it needs direct IO support and that it's power is actually bridging domains with a good asynchronous model that supports flow control.   
+>> 
+>> We've also begun some preliminary discussions about developing RS based proposal for the Servlet 4.0 specification.    Currently the Servlet API does well support asynchronous IO and behaviour, but the API is deceptively difficult to use correctly and gives no support for back pressure.   With RS's we can envisage solutions that look like:
+>> A database provides a RS Producer that provides the large results of a query asynchronously from a remote database server
+>> Some business logic is encapsulated as a RS Processor subscribed to the database producer
+>> Some framework provided  Porocessors subscribe to the business logic Processor to perform a chain of functions such as serialization, compression
+>> A container provided Subscriber terminates the chain and sends the resulting byte out over HTTP/HTTP2 or Websocket.   The flow control mechanisms of these protocols would be the basis of the RS back pressure.  
+>> In such solutions, a full HTTP/2 flow control window would result in back pressure on the remote database server, allowing threadless waiting without unlimited queuing of data.
+>> 
+>> However, we have a significant concern with the API in that we do not like it's error handling design.  Specifically that it is asymmetric and an error in the middle of a chain of processors can be propagated downstream with onError(Throwable) but can only be propagated upstream with cancel().
+>> 
+>> We believe that cancel without reason is an insufficient semantic to build a robust ecosystem of RS Processors that can be used to build applications.   Consider the above example, it would be ideal if the object serialization was handled by a 3rd party Processor (let's say JSONEncodingProcessor). If the business logic erroneously sent an non-jsonable object, or if the JSON converter was incorrectly configured then the JSONEcondiingProcessor could encounter an error during its onNext(Object item) handling and it's only permitted handling of that is to cancel the stream, without explanation.
+>> 
+>> I have raised this as an issue on the RS github and it the current recommendation is to log and cancel: https://github.com/reactive-streams/reactive-streams-jvm/issues/271#issuecomment-121974544 <https://github.com/reactive-streams/reactive-streams-jvm/issues/271#issuecomment-121974544>   However I believe that log and cancel is a insufficient semantic.   Logging in assembled applications is often fraught as each component provider will fight over which logging framework is best.  RS chains may cross jurisdictional boundaries and logs may not even be readily available.
+>> 
+>> The solution we see is to replace/augment cancel() with either cancel(Throwable reason) or an upstream onError(Throwable reason).  I acknowledge that the passed reason may not always be meaningful to the upstream processors and publishers, but it is better to ignore a meaningless reason than to be ignorant of a meaningful one.
+>> 
+>> When considering this API, we have to look beyond usages that work well and consider usages that will fail well also!
+>> 
+>> cheers
+>> 
+>> -- 
+>> Greg Wilkins <gregw at webtide.com <mailto:gregw at webtide.com>>
+>> 
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu <mailto:Concurrency-interest at cs.oswego.edu>
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest <http://cs.oswego.edu/mailman/listinfo/concurrency-interest>
+> 
+> --
+> I'm a physicist: I have a basic working knowledge of the universe and everything it contains!
+>     - Sheldon Cooper (The Big Bang Theory)
+> 
+> 
+
+--
+I'm a physicist: I have a basic working knowledge of the universe and everything it contains!
+    - Sheldon Cooper (The Big Bang Theory)
+
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150724/79c679ca/attachment-0001.html>
+
+From gregw at webtide.com  Fri Jul 24 04:18:51 2015
+From: gregw at webtide.com (Greg Wilkins)
+Date: Fri, 24 Jul 2015 18:18:51 +1000
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <201125F7-B117-43A2-A1F8-04BD71A71189@rkuhn.info>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+	<CAAPGdfFAb=bTHRs3smUQ_JefCA7ev=zvo+oLCHBf2zx843QHKg@mail.gmail.com>
+	<EB1867BB-C1FB-4723-AE40-6771917D9387@rkuhn.info>
+	<CAAPGdfEHoAgMQ2n8vMy=-si8=piEU+-4EiNnTtEtoDOeNJ219A@mail.gmail.com>
+	<201125F7-B117-43A2-A1F8-04BD71A71189@rkuhn.info>
+Message-ID: <CAAPGdfE=j_KgM537MfD-taJ1wQVg4ej4oMqJ1GiC1RH6KY_zCg@mail.gmail.com>
+
+Roland,
+
+thanks for engaging in this discussion and I like high contrast colours.
+
+Let me pick up on a number of key phrases in your response:
+
+> "everyone can debug their own failures"
+
+The location that a failure occurs does not imply ownership/blame of that
+failure.  I can think of lots of examples:
+
+   - A publisher calls onNext more than it was allowed to be a request(n)
+   call.  This is a specification compliance problem of the publisher that is
+   detected in the subscriber.  The subscriber does not own this problem and
+   thus cannot debug it.  The publisher needs to be told
+   IllegalStateException, which can't be thrown by the onNext call, as that
+   would make the subscriber violate the specification.
+   - A GzipInflator processor receives a tiny message that inflates to an
+   enormous buffer.  Either the OOME or preferably some limit violation
+   exception should be sent to the source of the too large message.
+   - A SerializingProcessor that receives an object that is not
+   serializable. Again this is an error of the publisher not the processor.
+
+> " why would the database need to know that some downstream component
+choked on the data it emitted?"
+
+In the example that I described, the database would not need to know about
+the exception and would be perfectly able to ignore the associated
+reason.   However, note that in that example there was an
+ApplicationProcessor between the JsonProcessor and the database
+publisher.   In that example it is probably the fault of the Application
+processor that forwarded a DB object onto the Jsonprocessor when it should
+not have.   A good implementation of the application would intercept the
+resulting JSONException in the application processor and just pass on
+either null or some ApplicationException to the database publisher.
+
+> " Arguably the data exist and are ?correct? by definition"
+
+Database developers are not beyond making errors, specially when
+implementing new asynchronous reactive stream clients.  Just because the
+database calls onNext does not mean that it is correctly implementing the
+RS specification.  Just because it provides an object does not mean that
+object entirely correct.  A database can be corrupted and could send an
+object containing a string with illegal unicode points for example.
+
+In general If a subscriber has some assumptions about the data a publisher
+should emit and those assumptions are not meet, then either the subscriber
+is wrong or the publisher is wrong - but it is beyond the scope of the API
+to resolve who is at fault, so best to tell both parties and let them each
+work out who is to blame.   Assuming that publishers are always faultless
+does not reflect reality.
+
+
+> "Data are flowing towards the Servlet (destined for whichever client made
+the request) and it is important to signal abnormal termination differently
+from normal termination, hence the onError propagation in this direction."
+
+I can bounce your earlier question back at you - why would a
+HTTPResponseSubscriber need to know the specific reason that some upstream
+component chocked before completing emitting all its data?  Mostly the
+subscribers don't really care and just need to know a reason, and just need
+to know if the termination was abnormal or not, so  onError()  would do
+just as well as onError(Throwable).... except in the few special cases when
+it does matter and perhaps the HTTPResponseSubscriber wants to look at the
+exception to decide if it should send a 500, 503, 403, an chunk trailer,
+etc.
+
+This type of argument applies equally to upstream and downstream. For the
+most part the reason throwable is ignorable in both directions, however
+there are always going to be special cases when it is meaningful.
+
+I content that it is better to ignore a meaningless reason than to be
+ignorant of a meaningful one.
+
+cheers
+
+
+
+
+
+
+On 24 July 2015 at 17:12, Roland Kuhn <rk at rkuhn.info> wrote:
+
+> Hi Greg,
+>
+> my reply has obviously opened two different discussions (namely ?why are
+> things as they are?? and ?what is the suggested change all about?), I think
+> it would be most fruitful if we stash the first one for now and come back
+> to it after the second one has been understood better?at least by myself.
+> That will put us into a better situation for judging the big picture.
+>
+> Considering the flow of data from the DB via application and framework
+> processors into the Servlet container, at any point along this line
+> failures can happen. The component emitting the failure will use whatever
+> means it has outside of Reactive Streams to log/audit/monitor and provide
+> metrics, I assume that that is just part of all reasonable code; the
+> database will do that, the application will do it, the framework will
+> probably allow the application to configure how to do that, and the
+> application server will be configured how to do that. This means that
+> everyone can debug their own failures.
+>
+> Data are flowing towards the Servlet (destined for whichever client made
+> the request) and it is important to signal abnormal termination differently
+> from normal termination, hence the onError propagation in this direction.
+> This also allows downstream components to see failures coming from
+> upstream, but this is a byproduct of needing to generate the right kind of
+> final response to the external client. Now the interesting question is: why
+> would the database need to know that some downstream component choked on
+> the data it emitted? How exactly would this information be used by the
+> database or its operators/programmers? Arguably the data exist and are
+> ?correct? by definition, guarded by Java types, and any validation errors
+> that occur are not stream failures (cf. this definition
+> <http://www.reactivemanifesto.org/glossary#Failure>) and should be
+> treated as normal data elements and sent downstream (or filtered out,
+> depending on the requirements & protocol).
+>
+> I am deliberately painting with high contrast colors here in order to
+> better understand what exactly it is that you want to achieve instead of
+> just discussing the proposed solution, thanks for your patience!
+>
+> Regards,
+>
+> Roland
+>
+> 24 jul 2015 kl. 08:31 skrev Greg Wilkins <gregw at webtide.com>:
+>
+> Roland,
+>
+> thanks for the response.
+>
+> But I don't understand why you consider a terminal exception being
+> notified upstream as a data flow?   It is data, but it is not a flow
+> because it is terminal and cannot be used as a back channel.
+>
+> Implementations of the API are already required to send data upstream:
+> Cancellation is a terminal boolean data state that must be sent upstream,
+> and request(int) is a flow of integers that must be sent upstream [and as
+> an aside, it is not beyond imagination that request(int) will be misused as
+> a back channel for data - hey it might even get used to send an error code
+> immediately prior/post to a cancel! ]
+>
+> Thus I don't see that there is any significant additional complexity with
+> that cancellation having a reason associated with it.   Implementations
+> must already support upward bound data and any sequencing and/or race
+> conditions that exist with cancel(Throwable) also exist with just cancel().
+>
+> I also dispute that a Subscriber will be under the control of the
+> Publisher.     In the example cited and application is providing a
+> Processor, that is using a Publisher provided by a 3rd party database and
+> an Subscriber provided by the Servlet container, with perhaps some
+> framework provided Processors for serialization.   In this example there is
+> the possibility of components from at least 4 difference code sources being
+> combined in a chain that crosses deployment administration boundaries of:
+> database, application and server.     The log & cancel handling of errors
+> is going to be very difficult because many different log mechanism may be
+> in use and access may not be easily achieved.  ie applications developers
+> may not have full viability of database logs or servlet container logs.
+>
+> The type of error I'm concerned about are all terminal style errors and
+> not intended to be a back flow of data, nor acknowledgement of messages
+> sent.   It is probably that the implementers of cancel(Throwable) would
+> just log, cancel themselves and pass on the cancel(Throwable) to any of
+> their Subscripions.   However the point being that would allow the reason
+> for the failure to cross the administrative boundaries so that it can be
+> known to all.
+>
+> I think that any argument that can be made for not sending a Throwable
+> upstream can equally be made for not sending one downstream (or for not
+> having any exceptions in the java language).   Exceptions are very rarely
+> handled in any meaningful way, but are extremely useful for passing details
+> of a failure so that they may be known to all who may need to know.
+>
+> Without exceptions  I'm imagining many many  stack over flow questions
+> like "Why was my Subscription cancelled?" followed by obligatory "RTFLog
+> Stupid!" responses!
+>
+> cheers
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+> On 24 July 2015 at 15:55, Roland Kuhn <rk at rkuhn.info> wrote:
+>
+>> Hi Greg,
+>>
+>> the reasoning behind the asymmetric RS design is that this communication
+>> primitive targets unidirectional communication, bidirectional conversations
+>> would utilize two such streams running in opposite directions. This means
+>> that for a single stream data elements (of which onError is but a special
+>> one) flow downstream and only demand flows upstream. Publishers only need
+>> to know about when and if to produce the next element(s), hence we didn?t
+>> see a use-case for propagating more information than ?N elements needed?
+>> and ?no more elements needed?.
+>>
+>> If a single Reactive Stream could transport data upstream then we would
+>> need to implement back-pressure on that back channel as well, leading to
+>> the same complexity as having two RS running in opposite directions.
+>> Another reason why we made this separation lies in not burdening the API
+>> designers of conforming implementations with an impossible task: the
+>> combinators offered on stream transformation APIs flow with the (English)
+>> language from left to right and describe sequences of transformation stages
+>> but with data flowing upstream there would be the need for also describing
+>> how to handle that?even if it is ?only? an error channel?and since these
+>> data flow in the opposite direction there would be no natural way to write
+>> this down.
+>>
+>> Learning about the reason behind cancellation seems geared towards
+>> recovery in the sense that the Publisher would then construct and attach a
+>> different Subscriber afterwards?please let me know if you have something
+>> else in mind?and if you want to do that then the Subscriber will in any
+>> case be under the Publisher?s control and can use a different channel to
+>> communicate the onError signal back to the data source. Since that channel
+>> would transport data it would be a separate one flowing in the opposite
+>> direction as mentioned above, at least conceptually; with a single element
+>> like you describe it could well be a simpler callback mechanism and might
+>> not need full back-pressure.
+>>
+>> I hope this clarifies some of the background behind the RS design. Please
+>> share more of your intended use of an error back-channel so that we can
+>> understand what exactly the upstream components would do with that data in
+>> the example case you mention.
+>>
+>> Regards,
+>>
+>> Roland
+>>
+>> 24 jul 2015 kl. 00:35 skrev Greg Wilkins <gregw at webtide.com>:
+>>
+>>
+>>
+>> On 24 July 2015 at 00:23, Doug Lea <dl at cs.oswego.edu> wrote:
+>>
+>>>
+>>> * Reactive-stream users may be disappointed that we do not include any
+>>> net/IO-based Flow.Publisher/Subscriber classes, considering that
+>>> reactive-streams are mainly motivated by net-based frameworks.  The
+>>> reasons for triaging these out are that (1) IO generally falls outside
+>>> of java.util.concurrent (2) Most net-based frameworks seem to use
+>>> custom data representation etc (e.g., JSON) that are even further out
+>>> of scope.  However class SubmissionPublisher can be used as an adaptor
+>>> to turn just about any kind of source into a Publisher, so provides a
+>>> nearly universal way of constructing a good non-custom Publisher even
+>>> from IO-based sources.  (Also notice that SubmissionPublisher can
+>>> serve as the basis of other actor-like frameworks, including those
+>>> turning off back-pressure by calling
+>>> subscription.request(Long.MAX_VALUE) in onSubscribe).
+>>>
+>>>
+>>
+>> Doug et al,
+>>
+>> The Jetty project has been experimenting with the reactive streams API:
+>> https://github.com/jetty-project/jetty-reactive albiet not with the
+>> JDK-9 version of it, but inspired by the proposed inclusion of it.
+>>
+>> We very much like the API and what it can bring to our space.  We don't
+>> see that it needs direct IO support and that it's power is actually
+>> bridging domains with a good asynchronous model that supports flow
+>> control.
+>>
+>> We've also begun some preliminary discussions about developing RS based
+>> proposal for the Servlet 4.0 specification.    Currently the Servlet API
+>> does well support asynchronous IO and behaviour, but the API is deceptively
+>> difficult to use correctly and gives no support for back pressure.   With
+>> RS's we can envisage solutions that look like:
+>>
+>>    - A database provides a RS Producer that provides the large results
+>>    of a query asynchronously from a remote database server
+>>    - Some business logic is encapsulated as a RS Processor subscribed to
+>>    the database producer
+>>    - Some framework provided  Porocessors subscribe to the business
+>>    logic Processor to perform a chain of functions such as serialization,
+>>    compression
+>>    - A container provided Subscriber terminates the chain and sends the
+>>    resulting byte out over HTTP/HTTP2 or Websocket.   The flow control
+>>    mechanisms of these protocols would be the basis of the RS back pressure.
+>>
+>> In such solutions, a full HTTP/2 flow control window would result in back
+>> pressure on the remote database server, allowing threadless waiting without
+>> unlimited queuing of data.
+>>
+>> However, we have a significant concern with the API in that we do not
+>> like it's error handling design.  Specifically that it is asymmetric and an
+>> error in the middle of a chain of processors can be propagated downstream
+>> with onError(Throwable) but can only be propagated upstream with cancel().
+>>
+>> We believe that cancel without reason is an insufficient semantic to
+>> build a robust ecosystem of RS Processors that can be used to build
+>> applications.   Consider the above example, it would be ideal if the object
+>> serialization was handled by a 3rd party Processor (let's say
+>> JSONEncodingProcessor). If the business logic erroneously sent an
+>> non-jsonable object, or if the JSON converter was incorrectly configured
+>> then the JSONEcondiingProcessor could encounter an error during its
+>> onNext(Object item) handling and it's only permitted handling of that is to
+>> cancel the stream, without explanation.
+>>
+>> I have raised this as an issue on the RS github and it the current
+>> recommendation is to log and cancel:
+>> https://github.com/reactive-streams/reactive-streams-jvm/issues/271#issuecomment-121974544
+>> However I believe that log and cancel is a insufficient semantic.   Logging
+>> in assembled applications is often fraught as each component provider will
+>> fight over which logging framework is best.  RS chains may cross
+>> jurisdictional boundaries and logs may not even be readily available.
+>>
+>> The solution we see is to replace/augment cancel() with either
+>> cancel(Throwable reason) or an upstream onError(Throwable reason).  I
+>> acknowledge that the passed reason may not always be meaningful to the
+>> upstream processors and publishers, but it is better to ignore a
+>> meaningless reason than to be ignorant of a meaningful one.
+>>
+>> When considering this API, we have to look beyond usages that work well
+>> and consider usages that will fail well also!
+>>
+>> cheers
+>>
+>> --
+>> Greg Wilkins <gregw at webtide.com>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+>> --
+>> I'm a physicist: I have a basic working knowledge of the universe and
+>> everything it contains!
+>>     - Sheldon Cooper (The Big Bang Theory)
+>>
+>>
+>
+> --
+> I'm a physicist: I have a basic working knowledge of the universe and
+> everything it contains!
+>     - Sheldon Cooper (The Big Bang Theory)
+>
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150724/b0be762b/attachment-0001.html>
+
+From viktor.klang at gmail.com  Fri Jul 24 04:26:17 2015
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Fri, 24 Jul 2015 10:26:17 +0200
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <201125F7-B117-43A2-A1F8-04BD71A71189@rkuhn.info>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+	<CAAPGdfFAb=bTHRs3smUQ_JefCA7ev=zvo+oLCHBf2zx843QHKg@mail.gmail.com>
+	<EB1867BB-C1FB-4723-AE40-6771917D9387@rkuhn.info>
+	<CAAPGdfEHoAgMQ2n8vMy=-si8=piEU+-4EiNnTtEtoDOeNJ219A@mail.gmail.com>
+	<201125F7-B117-43A2-A1F8-04BD71A71189@rkuhn.info>
+Message-ID: <CANPzfU9iEqtYXOd6JqNYo0uYw7A7stPiZ-zn2TD_15oAePGfMw@mail.gmail.com>
+
+This is a great discussion on the rationale for unidirectional fatal error
+propagation with Reactive Streams,
+may I be so bold to kindly request that we move it to the aforementioned RS
+Issue such that other parties that may not frequent this fine mailing list
+can stitch together the conversation that led to the final conclusion in
+this discussion?
+
+On Fri, Jul 24, 2015 at 9:12 AM, Roland Kuhn <rk at rkuhn.info> wrote:
+
+> Hi Greg,
+>
+> my reply has obviously opened two different discussions (namely ?why are
+> things as they are?? and ?what is the suggested change all about?), I think
+> it would be most fruitful if we stash the first one for now and come back
+> to it after the second one has been understood better?at least by myself.
+> That will put us into a better situation for judging the big picture.
+>
+> Considering the flow of data from the DB via application and framework
+> processors into the Servlet container, at any point along this line
+> failures can happen. The component emitting the failure will use whatever
+> means it has outside of Reactive Streams to log/audit/monitor and provide
+> metrics, I assume that that is just part of all reasonable code; the
+> database will do that, the application will do it, the framework will
+> probably allow the application to configure how to do that, and the
+> application server will be configured how to do that. This means that
+> everyone can debug their own failures.
+>
+> Data are flowing towards the Servlet (destined for whichever client made
+> the request) and it is important to signal abnormal termination differently
+> from normal termination, hence the onError propagation in this direction.
+> This also allows downstream components to see failures coming from
+> upstream, but this is a byproduct of needing to generate the right kind of
+> final response to the external client. Now the interesting question is: why
+> would the database need to know that some downstream component choked on
+> the data it emitted? How exactly would this information be used by the
+> database or its operators/programmers? Arguably the data exist and are
+> ?correct? by definition, guarded by Java types, and any validation errors
+> that occur are not stream failures (cf. this definition
+> <http://www.reactivemanifesto.org/glossary#Failure>) and should be
+> treated as normal data elements and sent downstream (or filtered out,
+> depending on the requirements & protocol).
+>
+> I am deliberately painting with high contrast colors here in order to
+> better understand what exactly it is that you want to achieve instead of
+> just discussing the proposed solution, thanks for your patience!
+>
+> Regards,
+>
+> Roland
+>
+> 24 jul 2015 kl. 08:31 skrev Greg Wilkins <gregw at webtide.com>:
+>
+> Roland,
+>
+> thanks for the response.
+>
+> But I don't understand why you consider a terminal exception being
+> notified upstream as a data flow?   It is data, but it is not a flow
+> because it is terminal and cannot be used as a back channel.
+>
+> Implementations of the API are already required to send data upstream:
+> Cancellation is a terminal boolean data state that must be sent upstream,
+> and request(int) is a flow of integers that must be sent upstream [and as
+> an aside, it is not beyond imagination that request(int) will be misused as
+> a back channel for data - hey it might even get used to send an error code
+> immediately prior/post to a cancel! ]
+>
+> Thus I don't see that there is any significant additional complexity with
+> that cancellation having a reason associated with it.   Implementations
+> must already support upward bound data and any sequencing and/or race
+> conditions that exist with cancel(Throwable) also exist with just cancel().
+>
+> I also dispute that a Subscriber will be under the control of the
+> Publisher.     In the example cited and application is providing a
+> Processor, that is using a Publisher provided by a 3rd party database and
+> an Subscriber provided by the Servlet container, with perhaps some
+> framework provided Processors for serialization.   In this example there is
+> the possibility of components from at least 4 difference code sources being
+> combined in a chain that crosses deployment administration boundaries of:
+> database, application and server.     The log & cancel handling of errors
+> is going to be very difficult because many different log mechanism may be
+> in use and access may not be easily achieved.  ie applications developers
+> may not have full viability of database logs or servlet container logs.
+>
+> The type of error I'm concerned about are all terminal style errors and
+> not intended to be a back flow of data, nor acknowledgement of messages
+> sent.   It is probably that the implementers of cancel(Throwable) would
+> just log, cancel themselves and pass on the cancel(Throwable) to any of
+> their Subscripions.   However the point being that would allow the reason
+> for the failure to cross the administrative boundaries so that it can be
+> known to all.
+>
+> I think that any argument that can be made for not sending a Throwable
+> upstream can equally be made for not sending one downstream (or for not
+> having any exceptions in the java language).   Exceptions are very rarely
+> handled in any meaningful way, but are extremely useful for passing details
+> of a failure so that they may be known to all who may need to know.
+>
+> Without exceptions  I'm imagining many many  stack over flow questions
+> like "Why was my Subscription cancelled?" followed by obligatory "RTFLog
+> Stupid!" responses!
+>
+> cheers
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+> On 24 July 2015 at 15:55, Roland Kuhn <rk at rkuhn.info> wrote:
+>
+>> Hi Greg,
+>>
+>> the reasoning behind the asymmetric RS design is that this communication
+>> primitive targets unidirectional communication, bidirectional conversations
+>> would utilize two such streams running in opposite directions. This means
+>> that for a single stream data elements (of which onError is but a special
+>> one) flow downstream and only demand flows upstream. Publishers only need
+>> to know about when and if to produce the next element(s), hence we didn?t
+>> see a use-case for propagating more information than ?N elements needed?
+>> and ?no more elements needed?.
+>>
+>> If a single Reactive Stream could transport data upstream then we would
+>> need to implement back-pressure on that back channel as well, leading to
+>> the same complexity as having two RS running in opposite directions.
+>> Another reason why we made this separation lies in not burdening the API
+>> designers of conforming implementations with an impossible task: the
+>> combinators offered on stream transformation APIs flow with the (English)
+>> language from left to right and describe sequences of transformation stages
+>> but with data flowing upstream there would be the need for also describing
+>> how to handle that?even if it is ?only? an error channel?and since these
+>> data flow in the opposite direction there would be no natural way to write
+>> this down.
+>>
+>> Learning about the reason behind cancellation seems geared towards
+>> recovery in the sense that the Publisher would then construct and attach a
+>> different Subscriber afterwards?please let me know if you have something
+>> else in mind?and if you want to do that then the Subscriber will in any
+>> case be under the Publisher?s control and can use a different channel to
+>> communicate the onError signal back to the data source. Since that channel
+>> would transport data it would be a separate one flowing in the opposite
+>> direction as mentioned above, at least conceptually; with a single element
+>> like you describe it could well be a simpler callback mechanism and might
+>> not need full back-pressure.
+>>
+>> I hope this clarifies some of the background behind the RS design. Please
+>> share more of your intended use of an error back-channel so that we can
+>> understand what exactly the upstream components would do with that data in
+>> the example case you mention.
+>>
+>> Regards,
+>>
+>> Roland
+>>
+>> 24 jul 2015 kl. 00:35 skrev Greg Wilkins <gregw at webtide.com>:
+>>
+>>
+>>
+>> On 24 July 2015 at 00:23, Doug Lea <dl at cs.oswego.edu> wrote:
+>>
+>>>
+>>> * Reactive-stream users may be disappointed that we do not include any
+>>> net/IO-based Flow.Publisher/Subscriber classes, considering that
+>>> reactive-streams are mainly motivated by net-based frameworks.  The
+>>> reasons for triaging these out are that (1) IO generally falls outside
+>>> of java.util.concurrent (2) Most net-based frameworks seem to use
+>>> custom data representation etc (e.g., JSON) that are even further out
+>>> of scope.  However class SubmissionPublisher can be used as an adaptor
+>>> to turn just about any kind of source into a Publisher, so provides a
+>>> nearly universal way of constructing a good non-custom Publisher even
+>>> from IO-based sources.  (Also notice that SubmissionPublisher can
+>>> serve as the basis of other actor-like frameworks, including those
+>>> turning off back-pressure by calling
+>>> subscription.request(Long.MAX_VALUE) in onSubscribe).
+>>>
+>>>
+>>
+>> Doug et al,
+>>
+>> The Jetty project has been experimenting with the reactive streams API:
+>> https://github.com/jetty-project/jetty-reactive albiet not with the
+>> JDK-9 version of it, but inspired by the proposed inclusion of it.
+>>
+>> We very much like the API and what it can bring to our space.  We don't
+>> see that it needs direct IO support and that it's power is actually
+>> bridging domains with a good asynchronous model that supports flow
+>> control.
+>>
+>> We've also begun some preliminary discussions about developing RS based
+>> proposal for the Servlet 4.0 specification.    Currently the Servlet API
+>> does well support asynchronous IO and behaviour, but the API is deceptively
+>> difficult to use correctly and gives no support for back pressure.   With
+>> RS's we can envisage solutions that look like:
+>>
+>>    - A database provides a RS Producer that provides the large results
+>>    of a query asynchronously from a remote database server
+>>    - Some business logic is encapsulated as a RS Processor subscribed to
+>>    the database producer
+>>    - Some framework provided  Porocessors subscribe to the business
+>>    logic Processor to perform a chain of functions such as serialization,
+>>    compression
+>>    - A container provided Subscriber terminates the chain and sends the
+>>    resulting byte out over HTTP/HTTP2 or Websocket.   The flow control
+>>    mechanisms of these protocols would be the basis of the RS back pressure.
+>>
+>> In such solutions, a full HTTP/2 flow control window would result in back
+>> pressure on the remote database server, allowing threadless waiting without
+>> unlimited queuing of data.
+>>
+>> However, we have a significant concern with the API in that we do not
+>> like it's error handling design.  Specifically that it is asymmetric and an
+>> error in the middle of a chain of processors can be propagated downstream
+>> with onError(Throwable) but can only be propagated upstream with cancel().
+>>
+>> We believe that cancel without reason is an insufficient semantic to
+>> build a robust ecosystem of RS Processors that can be used to build
+>> applications.   Consider the above example, it would be ideal if the object
+>> serialization was handled by a 3rd party Processor (let's say
+>> JSONEncodingProcessor). If the business logic erroneously sent an
+>> non-jsonable object, or if the JSON converter was incorrectly configured
+>> then the JSONEcondiingProcessor could encounter an error during its
+>> onNext(Object item) handling and it's only permitted handling of that is to
+>> cancel the stream, without explanation.
+>>
+>> I have raised this as an issue on the RS github and it the current
+>> recommendation is to log and cancel:
+>> https://github.com/reactive-streams/reactive-streams-jvm/issues/271#issuecomment-121974544
+>> However I believe that log and cancel is a insufficient semantic.   Logging
+>> in assembled applications is often fraught as each component provider will
+>> fight over which logging framework is best.  RS chains may cross
+>> jurisdictional boundaries and logs may not even be readily available.
+>>
+>> The solution we see is to replace/augment cancel() with either
+>> cancel(Throwable reason) or an upstream onError(Throwable reason).  I
+>> acknowledge that the passed reason may not always be meaningful to the
+>> upstream processors and publishers, but it is better to ignore a
+>> meaningless reason than to be ignorant of a meaningful one.
+>>
+>> When considering this API, we have to look beyond usages that work well
+>> and consider usages that will fail well also!
+>>
+>> cheers
+>>
+>> --
+>> Greg Wilkins <gregw at webtide.com>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>>
+>> --
+>> I'm a physicist: I have a basic working knowledge of the universe and
+>> everything it contains!
+>>     - Sheldon Cooper (The Big Bang Theory)
+>>
+>>
+>
+> --
+> I'm a physicist: I have a basic working knowledge of the universe and
+> everything it contains!
+>     - Sheldon Cooper (The Big Bang Theory)
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+
+-- 
+Cheers,
+?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150724/eb606b65/attachment-0001.html>
+
+From joerg.hettel at hs-kl.de  Fri Jul 24 11:32:55 2015
+From: joerg.hettel at hs-kl.de (=?UTF-8?Q?J=c3=b6rg_Hettel?=)
+Date: Fri, 24 Jul 2015 17:32:55 +0200
+Subject: [concurrency-interest] CompletableFuture: Which thread runs the
+ thenApply-Function?
+Message-ID: <55B25AA7.5020103@hs-kl.de>
+
+Hi everyone,
+
+the behaviour of a sequence build of CompletableFuture with non-async 
+methods depends on the ?duration? of the tasks.
+
+The documentation says:
+?Actions supplied for dependent completions of non-async methods may be 
+performed by the thread that completes the current CompletableFuture, or 
+by any other caller of a completion method.?
+
+If I run the test program below on my machine, I get different outputs, 
+if the first task has different runtimes.
+
+This raises the following question for me:
+
+1. It would therefore be a good idea always to use the then<XXXX>Async 
+method, right?
+2. What was the intent to include in each case async and non-async 
+versions of the methods in the API?
+3. In which cases can I safely use non-async methods to build 
+asynchronous sequences?
+
+Regards
+
+Joerg
+
+===========================================================================
+
+With work(10000);
+
+Thread[ForkJoinPool.commonPool-worker-1,5,main]
+Thread[main,5,main]
+Thread[main,5,main]
+Thread[main,5,main]
+done
+----------------------------------------------------------------
+
+With work(20000);
+
+Thread[ForkJoinPool.commonPool-worker-1,5,main]
+Thread[ForkJoinPool.commonPool-worker-1,5,main]
+Thread[main,5,main]
+Thread[main,5,main]
+done
+-----------------------------------------------------------------
+
+With work(60000);
+
+done
+Thread[ForkJoinPool.commonPool-worker-1,5,main]
+Thread[ForkJoinPool.commonPool-worker-1,5,main]
+Thread[ForkJoinPool.commonPool-worker-1,5,main]
+Thread[ForkJoinPool.commonPool-worker-1,5,main]
+  -----------------------------------------------------------------
+
+public class AsyncCalculation
+{
+   public static void main(String[] args)
+   {
+     CompletableFuture<Void> cf = CompletableFuture.supplyAsync( () -> {
+                                work(10000); // Here change the value
+                                System.out.println( 
+Thread.currentThread());
+                                return 2; } )
+                      .thenApply( r -> { System.out.println( 
+Thread.currentThread()); return r*r; } )
+                      .thenApply( r -> { System.out.println( 
+Thread.currentThread()); return r+2; } )
+                      .thenAccept(r -> { 
+System.out.println(Thread.currentThread() ); } );
+
+     System.out.println("done");
+     cf.join();
+   }
+
+   private static long work(int len)
+   {
+     long sum = 0;
+     for(int i=0; i < len; i++ )
+     {
+       sum += Math.sqrt(i);
+     }
+     return sum;
+   }
+}
+
+
+From martinrb at google.com  Fri Jul 24 12:44:51 2015
+From: martinrb at google.com (Martin Buchholz)
+Date: Fri, 24 Jul 2015 09:44:51 -0700
+Subject: [concurrency-interest] CompletableFuture: Which thread runs the
+	thenApply-Function?
+In-Reply-To: <55B25AA7.5020103@hs-kl.de>
+References: <55B25AA7.5020103@hs-kl.de>
+Message-ID: <CA+kOe09TWtxvqbn_HVLQMMXLVSHvp790+SSxH0bK6gfgC75VxA@mail.gmail.com>
+
+On Fri, Jul 24, 2015 at 8:32 AM, J?rg Hettel <joerg.hettel at hs-kl.de> wrote:
+
+>
+>
+> This raises the following question for me:
+>
+> 1. It would therefore be a good idea always to use the then<XXXX>Async
+> method, right?
+> 2. What was the intent to include in each case async and non-async
+> versions of the methods in the API?
+> 3. In which cases can I safely use non-async methods to build asynchronous
+> sequences?
+>
+
+I think the same question applies to any chunk of code anywhere - do you
+want to run it async?  The answer is more often "no" than "yes", since
+async execution is not free.  Just like in real life!
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150724/dc9bccc2/attachment.html>
+
+From dl at cs.oswego.edu  Fri Jul 24 14:52:49 2015
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 24 Jul 2015 14:52:49 -0400
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <CAAWwtm-nvASyuAhQu41Q=sayaeA+y7PTwyKrh+aZzhKk_d79Ww@mail.gmail.com>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+	<CAAWwtm-nvASyuAhQu41Q=sayaeA+y7PTwyKrh+aZzhKk_d79Ww@mail.gmail.com>
+Message-ID: <55B28981.1020101@cs.oswego.edu>
+
+On 07/23/2015 02:55 PM, D?vid Karnok wrote:
+
+> I've read through the code and javadoc and I have the following comments:
+
+Thanks! I addressed all except the ones discussed below:
+
+> Line 70: the code schedules the exception with executor.execute(() ->
+> subscriber.onError(ex)); but the subscriber can't cancel this action. For
+> example, a subscriber calling request(-1) and then cancel() will inevitably
+> receive the exception. I understand the RS spec allows for such late-coming
+> events, but since this is an example, it should convey the right practices: one
+> should always get the future of a scheduled action.
+
+This is illustrated with the simple OneShot version to minimize sample code
+size of a minimal fully compliant implementation at the expense of
+glossing over nuances. Unless you see a trivial change that would convey
+this, just adding something to more nicely address { request(-1); cancel()} 
+would probably impair understandability more than it would help.
+
+>
+> Line 98: the text reads "Subscriber maintains multiple Subscriptions" which I
+> don't see how would look like and I think the RS spec at least implies this
+> shouldn't happen.
+
+Right. The next sentence tells people what to do instead:
+
+  * Subscription} are strictly ordered, there is no need for these
+  * methods to use locks or volatiles unless a Subscriber maintains
+  * multiple Subscriptions (in which case it is better to instead
+  * define multiple Subscribers, each with its own Subscription).
+  *
+
+I suppose it could be strengthened by replacing "better" with
+"less insane" :-)
+
+>
+> Line 114: the count variable is set after the request is issued so a synchronous
+> onNext call will request bufferSize - bufferSize / 2 immediately, having a total
+> of ~1.5 * bufferSize outstanding requests.
+
+Not immediately: count is also initially set to: bufferSize - bufferSize / 2.
+
+(It is nice to illustrate early on that people can use
+techniques other than item-by-item request(1). This is the
+least code-intensive one I could think of.)
+
+>
+> Line 416: the text reads "Preliminary release note: Currently, this method
+> collects all items before executing the stream computation." Correct me if I'm
+> wrong, but since Stream is pull based, the stream() method would need to inject
+> concurrency into the flow:
+
+Yes, in general, it should. The implementation is currently a stand-in.
+
+> Line 222: From experience with RxJava, holding a lock while emitting events
+> should be avoided, especially when blocking actions are nearby.
+
+Right. Almost everything is lock-free. However, there is nothing
+preventing two different threads generating items into the
+same SubmissionPublisher, so this lock keeps the class fully
+thread-safe in this case. It does come at the expense of
+possibly blocking during onSubscribe, but still seems to be
+the best tradeoff.
+
+>
+> Line 230: In RxJava, if the Subject is terminated with an exception, late
+> Subscribers will receive the exception but here, they just get completed. Maybe
+> it is worth considering this exception-replaying behavior.
+
+Thanks. I'm going to sit on this for the moment. One alternative is
+to add method isClosedExceptionally so that only those new Subscribers
+that care how it was closed need to arrange special handling.
+
+>
+> Line 623: getSubscribers() why would anyone be interested in the actual
+> subscribers? Calling methods on them shouldn't be allowed anyway and I don't see
+> any other reason to expose them.
+
+As noted in the javadoc, it is just for monitoring and management.
+We have a lot of methods along these line in j.u.c, that aren't used much,
+but people appreciate them when they need them.
+
+-Doug
+
+
+
+
+From dl at cs.oswego.edu  Fri Jul 24 16:26:20 2015
+From: dl at cs.oswego.edu (Doug Lea)
+Date: Fri, 24 Jul 2015 16:26:20 -0400
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <CAAPGdfFAb=bTHRs3smUQ_JefCA7ev=zvo+oLCHBf2zx843QHKg@mail.gmail.com>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+	<CAAPGdfFAb=bTHRs3smUQ_JefCA7ev=zvo+oLCHBf2zx843QHKg@mail.gmail.com>
+Message-ID: <55B29F6C.5030105@cs.oswego.edu>
+
+
+I've been encouraging people to discuss spec issues at
+   https://github.com/reactive-streams/reactive-streams-jvm/issues
+just to keep them in one place.
+
+But this one might impact SubmissionPublisher (a potential j.u.c
+class, not the spec itself):
+
+
+On 07/23/2015 06:35 PM, Greg Wilkins wrote:
+
+> Specifically that it is asymmetric and an error in the
+> middle of a chain of processors can be propagated downstream with
+> onError(Throwable) but can only be propagated upstream with cancel().
+>
+
+If a call to onNext throws an exception, the only thing guaranteed
+is that the subscription will be cancelled. (There are also some
+words saying that the Subscriber is at that point non-compliant.)
+But I don't see anything that stops any publisher/subscription
+from doing something with that exception before/during the
+cancellation. So should there be a SubmissionPublisher method
+along the lines of:
+
+   onSubscriberException(Consumer<? extends Throwable> handler);
+
+-Doug
+
+
+
+
+
+
+
+From gregw at webtide.com  Fri Jul 24 17:59:43 2015
+From: gregw at webtide.com (Greg Wilkins)
+Date: Sat, 25 Jul 2015 07:59:43 +1000
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <55B29F6C.5030105@cs.oswego.edu>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+	<CAAPGdfFAb=bTHRs3smUQ_JefCA7ev=zvo+oLCHBf2zx843QHKg@mail.gmail.com>
+	<55B29F6C.5030105@cs.oswego.edu>
+Message-ID: <CAAPGdfE5vn73oQUtN4F5qc3BSa5T94+LTy8hUR2PGUiz9kwQ1A@mail.gmail.com>
+
+Doug,
+
+Note that the specification
+<https://github.com/reactive-streams/reactive-streams-jvm/blob/v1.0.0/README.md#specification>
+says that onNext should not throw an exception:
+
+*"the only legal way for a Subscriber to signal failure is by cancelling
+its Subscription"*
+
+However it also specifies what to do if that rule is broken:
+
+
+*In the case that this rule is violated, any associated Subscription to the
+Subscriber MUST be considered as cancelled, and the caller MUST raise this
+error condition in a fashion that is adequate for the runtime environment*
+
+So as there is no other legal outlet for failures in a subscriber, I'm
+guessing that lots of implementations will just throw unchecked exceptions
+from onNext (no point catching them if you have nothing you can do with
+them) and SubmissionPublisher needs to be able to deal with it....   which
+it currently does by feeding the exception back downstream by calling
+onError(Throwable)
+
+I would think that it should call cancel() and then notify with a callback
+like you suggest (or perhaps the default onSubscriberException
+implementation should be cancel?).
+
+So yes, I think the impl needs to be improved in this regards, but I also
+think this is a good example how not having a proper outlet for subscriber
+failures in the spec has confused an implementation.... but I'll take that
+discussion back to the issue.
+
+cheers
+
+
+
+
+
+
+
+
+
+
+On 25 July 2015 at 06:26, Doug Lea <dl at cs.oswego.edu> wrote:
+
+>
+> I've been encouraging people to discuss spec issues at
+>   https://github.com/reactive-streams/reactive-streams-jvm/issues
+> just to keep them in one place.
+>
+> But this one might impact SubmissionPublisher (a potential j.u.c
+> class, not the spec itself):
+>
+>
+> On 07/23/2015 06:35 PM, Greg Wilkins wrote:
+>
+>  Specifically that it is asymmetric and an error in the
+>> middle of a chain of processors can be propagated downstream with
+>> onError(Throwable) but can only be propagated upstream with cancel().
+>>
+>>
+> If a call to onNext throws an exception, the only thing guaranteed
+> is that the subscription will be cancelled. (There are also some
+> words saying that the Subscriber is at that point non-compliant.)
+> But I don't see anything that stops any publisher/subscription
+> from doing something with that exception before/during the
+> cancellation. So should there be a SubmissionPublisher method
+> along the lines of:
+>
+>   onSubscriberException(Consumer<? extends Throwable> handler);
+>
+>
+> -Doug
+>
+>
+>
+>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150725/b826f786/attachment.html>
+
+From gergg at cox.net  Sat Jul 25 20:02:28 2015
+From: gergg at cox.net (Gregg Wonderly)
+Date: Sat, 25 Jul 2015 19:02:28 -0500
+Subject: [concurrency-interest] CompletableFuture: Which thread runs the
+	thenApply-Function?
+In-Reply-To: <wFaz1q01l02hR0p01Fb8H1>
+References: <wFaz1q01l02hR0p01Fb8H1>
+Message-ID: <882447FB-4AE1-4EDA-9897-674C9D401EEC@cox.net>
+
+I see behaviors which have to do with the thread scheduling quanta time.  If you use async in a chain, what do you expect the results to look like for the value returned by cf?
+
+Gregg Wonderly
+
+> On Jul 24, 2015, at 10:32 AM, J?rg Hettel <joerg.hettel at hs-kl.de> wrote:
+> 
+> Hi everyone,
+> 
+> the behaviour of a sequence build of CompletableFuture with non-async methods depends on the ?duration? of the tasks.
+> 
+> The documentation says:
+> ?Actions supplied for dependent completions of non-async methods may be performed by the thread that completes the current CompletableFuture, or by any other caller of a completion method.?
+> 
+> If I run the test program below on my machine, I get different outputs, if the first task has different runtimes.
+> 
+> This raises the following question for me:
+> 
+> 1. It would therefore be a good idea always to use the then<XXXX>Async method, right?
+> 2. What was the intent to include in each case async and non-async versions of the methods in the API?
+> 3. In which cases can I safely use non-async methods to build asynchronous sequences?
+> 
+> Regards
+> 
+> Joerg
+> 
+> ===========================================================================
+> 
+> With work(10000);
+> 
+> Thread[ForkJoinPool.commonPool-worker-1,5,main]
+> Thread[main,5,main]
+> Thread[main,5,main]
+> Thread[main,5,main]
+> done
+> ----------------------------------------------------------------
+> 
+> With work(20000);
+> 
+> Thread[ForkJoinPool.commonPool-worker-1,5,main]
+> Thread[ForkJoinPool.commonPool-worker-1,5,main]
+> Thread[main,5,main]
+> Thread[main,5,main]
+> done
+> -----------------------------------------------------------------
+> 
+> With work(60000);
+> 
+> done
+> Thread[ForkJoinPool.commonPool-worker-1,5,main]
+> Thread[ForkJoinPool.commonPool-worker-1,5,main]
+> Thread[ForkJoinPool.commonPool-worker-1,5,main]
+> Thread[ForkJoinPool.commonPool-worker-1,5,main]
+> -----------------------------------------------------------------
+> 
+> public class AsyncCalculation
+> {
+>  public static void main(String[] args)
+>  {
+>    CompletableFuture<Void> cf = CompletableFuture.supplyAsync( () -> {
+>                               work(10000); // Here change the value
+>                               System.out.println( Thread.currentThread());
+>                               return 2; } )
+>                     .thenApply( r -> { System.out.println( Thread.currentThread()); return r*r; } )
+>                     .thenApply( r -> { System.out.println( Thread.currentThread()); return r+2; } )
+>                     .thenAccept(r -> { System.out.println(Thread.currentThread() ); } );
+> 
+>    System.out.println("done");
+>    cf.join();
+>  }
+> 
+>  private static long work(int len)
+>  {
+>    long sum = 0;
+>    for(int i=0; i < len; i++ )
+>    {
+>      sum += Math.sqrt(i);
+>    }
+>    return sum;
+>  }
+> }
+> 
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+
+
+From viktor.klang at gmail.com  Mon Jul 27 04:26:22 2015
+From: viktor.klang at gmail.com (Viktor Klang)
+Date: Mon, 27 Jul 2015 10:26:22 +0200
+Subject: [concurrency-interest] Upcoming jdk9 j.u.c JEP
+In-Reply-To: <CAAPGdfE5vn73oQUtN4F5qc3BSa5T94+LTy8hUR2PGUiz9kwQ1A@mail.gmail.com>
+References: <55B0F8D5.4050100@cs.oswego.edu>
+	<CAAPGdfFAb=bTHRs3smUQ_JefCA7ev=zvo+oLCHBf2zx843QHKg@mail.gmail.com>
+	<55B29F6C.5030105@cs.oswego.edu>
+	<CAAPGdfE5vn73oQUtN4F5qc3BSa5T94+LTy8hUR2PGUiz9kwQ1A@mail.gmail.com>
+Message-ID: <CANPzfU_owO5QxaGN6bi6s4a_s43QXs8ti_D6SCL=hUvQn0dT8A@mail.gmail.com>
+
+Note that since it is a spec for async, the invocation of onNext (called a
+signal in the spec) is divorced from the processing of said signal.
+
+Let's keep the discussion in the aforementioned Issue, to avoid confusion.
+
+On Fri, Jul 24, 2015 at 11:59 PM, Greg Wilkins <gregw at webtide.com> wrote:
+
+>
+> Doug,
+>
+> Note that the specification
+> <https://github.com/reactive-streams/reactive-streams-jvm/blob/v1.0.0/README.md#specification>
+> says that onNext should not throw an exception:
+>
+> *"the only legal way for a Subscriber to signal failure is by cancelling
+> its Subscription"*
+>
+> However it also specifies what to do if that rule is broken:
+>
+>
+> *In the case that this rule is violated, any associated Subscription to
+> the Subscriber MUST be considered as cancelled, and the caller MUST raise
+> this error condition in a fashion that is adequate for the runtime
+> environment*
+>
+> So as there is no other legal outlet for failures in a subscriber, I'm
+> guessing that lots of implementations will just throw unchecked exceptions
+> from onNext (no point catching them if you have nothing you can do with
+> them) and SubmissionPublisher needs to be able to deal with it....   which
+> it currently does by feeding the exception back downstream by calling
+> onError(Throwable)
+>
+> I would think that it should call cancel() and then notify with a callback
+> like you suggest (or perhaps the default onSubscriberException
+> implementation should be cancel?).
+>
+> So yes, I think the impl needs to be improved in this regards, but I also
+> think this is a good example how not having a proper outlet for subscriber
+> failures in the spec has confused an implementation.... but I'll take that
+> discussion back to the issue.
+>
+> cheers
+>
+>
+>
+>
+>
+>
+>
+>
+>
+>
+> On 25 July 2015 at 06:26, Doug Lea <dl at cs.oswego.edu> wrote:
+>
+>>
+>> I've been encouraging people to discuss spec issues at
+>>   https://github.com/reactive-streams/reactive-streams-jvm/issues
+>> just to keep them in one place.
+>>
+>> But this one might impact SubmissionPublisher (a potential j.u.c
+>> class, not the spec itself):
+>>
+>>
+>> On 07/23/2015 06:35 PM, Greg Wilkins wrote:
+>>
+>>  Specifically that it is asymmetric and an error in the
+>>> middle of a chain of processors can be propagated downstream with
+>>> onError(Throwable) but can only be propagated upstream with cancel().
+>>>
+>>>
+>> If a call to onNext throws an exception, the only thing guaranteed
+>> is that the subscription will be cancelled. (There are also some
+>> words saying that the Subscriber is at that point non-compliant.)
+>> But I don't see anything that stops any publisher/subscription
+>> from doing something with that exception before/during the
+>> cancellation. So should there be a SubmissionPublisher method
+>> along the lines of:
+>>
+>>   onSubscriberException(Consumer<? extends Throwable> handler);
+>>
+>>
+>> -Doug
+>>
+>>
+>>
+>>
+>>
+>>
+>> _______________________________________________
+>> Concurrency-interest mailing list
+>> Concurrency-interest at cs.oswego.edu
+>> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>>
+>
+>
+> _______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+>
+>
+
+
+-- 
+Cheers,
+?
+-------------- next part --------------
+An HTML attachment was scrubbed...
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150727/ae16efd3/attachment.html>
+
+From Steven.Adriaensen at vub.ac.be  Tue Jul 28 03:40:41 2015
+From: Steven.Adriaensen at vub.ac.be (steadria)
+Date: Tue, 28 Jul 2015 09:40:41 +0200
+Subject: [concurrency-interest] Unexpected Scalability results in Java
+	Fork-Join (Java 8)
+Message-ID: <40264c2e9b14560fa3eda20ab49c8903@imapproxy.vub.ac.be>
+
+Dear all,
+
+Recently, I was running some scalability experiments using Java 
+Fork-Join. Here, I used the non-default ForkJoinPool constructor 
+`ForkJoinPool(int parallelism)`, passing the desired parallelism level 
+(# workers = P) as argument.
+
+Specifically, using the piece of code attached, I got these results on a 
+processor with 4 physical and 8 logical cores (Using java 8: 
+jre1.8.0_45):
+
+T1: 11730
+T2: 2381 (speedup: 4,93)
+T4: 2463 (speedup: 4,76)
+T8: 2418 (speedup: 4,85)
+
+While when using java 7 (jre1.7.0), I get
+
+T1: 11938
+T2: 11843 (speedup: 1,01)
+T4: 5133 (speedup: 2,33)
+T8: 2607 (speedup: 4,58)
+
+(where TP is the execution time in ms, using parallelism level P)
+
+While both results surprise me, the latter I can understand (the join 
+will cause 1 worker (executing the loop) to block, as it
+fails to recognize that it could, while waiting, process other pending 
+dummy tasks from its local queue). The former, however, got me puzzled.
+
+Running further experiments on a 64-core SMP machine (jdk1.8.0_45), 
+using the JMH benchmarking tool (= 1 fork, 50 iterations (+ 50 warmup))
+
+I got the results below
+
+T1: 23.831
+
+   23.831 ?(99.9%) 0.116 s/op [Average]
+   (min, avg, max) = (23.449, 23.831, 24.522), stdev = 0.234
+   CI (99.9%): [23.715, 23.947] (assumes normal distribution)
+
+
+T2: 2.927 (speedup: 8.14)
+
+   2.927 ?(99.9%) 0.091 s/op [Average]
+   (min, avg, max) = (2.655, 2.927, 3.405), stdev = 0.184
+   CI (99.9%): [2.836, 3.018] (assumes normal distribution)
+
+T64: 1.550 (speedup: 15.37)
+
+   1.550 ?(99.9%) 0.027 s/op [Average]
+   (min, avg, max) = (1.460, 1.550, 1.786), stdev = 0.054
+   CI (99.9%): [1.523, 1.577] (assumes normal distribution)
+
+
+My current theory:
+
+I guess one explanation would be that the worker executing the parallel 
+loop does not go idle in java 8, but instead finds other work to 
+perform. Furthermore, I suspect there might be a 'bug' in this 
+mechanism, which causes more workers to be active (i.e. consuming 
+resources) than the desired level of parallelism (P) passed as 
+constructor argument, explaining the super-linear speedup observed.
+
+I was wondering whether someone of you has a better/other explanation? 
+Clearly the use of the java FJ framework in code attached is not 100% 
+kosher, however to my knowledge it doesn't violate any of the 
+framework's preconditions either?! Note that scalability results are 'as 
+expected', when dummy tasks are joined in reverse order.
+
+I really appreciate any help you can provide,
+
+Steven Adriaensen
+PhD Student
+Vrije Universiteit Brussel
+Brussels, Belgium
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: MinimalExample.java
+Type: text/x-c
+Size: 1049 bytes
+Desc: not available
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150728/c728c9d7/attachment.bin>
+
+From kirk at kodewerk.com  Tue Jul 28 05:04:15 2015
+From: kirk at kodewerk.com (Kirk Pepperdine)
+Date: Tue, 28 Jul 2015 11:04:15 +0200
+Subject: [concurrency-interest] Unexpected Scalability results in Java
+	Fork-Join (Java 8)
+In-Reply-To: <40264c2e9b14560fa3eda20ab49c8903@imapproxy.vub.ac.be>
+References: <40264c2e9b14560fa3eda20ab49c8903@imapproxy.vub.ac.be>
+Message-ID: <DA23E796-85BE-4709-9461-ED467F0DBCD5@kodewerk.com>
+
+You might find that Hotspot does a better job optimizing things in 1.8. I?ll be interested in running your bench comparing it to mine.
+
+? Kirk
+
+On Jul 28, 2015, at 9:40 AM, steadria <Steven.Adriaensen at vub.ac.be> wrote:
+
+> Dear all,
+> 
+> Recently, I was running some scalability experiments using Java Fork-Join. Here, I used the non-default ForkJoinPool constructor `ForkJoinPool(int parallelism)`, passing the desired parallelism level (# workers = P) as argument.
+> 
+> Specifically, using the piece of code attached, I got these results on a processor with 4 physical and 8 logical cores (Using java 8: jre1.8.0_45):
+> 
+> T1: 11730
+> T2: 2381 (speedup: 4,93)
+> T4: 2463 (speedup: 4,76)
+> T8: 2418 (speedup: 4,85)
+> 
+> While when using java 7 (jre1.7.0), I get
+> 
+> T1: 11938
+> T2: 11843 (speedup: 1,01)
+> T4: 5133 (speedup: 2,33)
+> T8: 2607 (speedup: 4,58)
+> 
+> (where TP is the execution time in ms, using parallelism level P)
+> 
+> While both results surprise me, the latter I can understand (the join will cause 1 worker (executing the loop) to block, as it
+> fails to recognize that it could, while waiting, process other pending dummy tasks from its local queue). The former, however, got me puzzled.
+> 
+> Running further experiments on a 64-core SMP machine (jdk1.8.0_45), using the JMH benchmarking tool (= 1 fork, 50 iterations (+ 50 warmup))
+> 
+> I got the results below
+> 
+> T1: 23.831
+> 
+>  23.831 ?(99.9%) 0.116 s/op [Average]
+>  (min, avg, max) = (23.449, 23.831, 24.522), stdev = 0.234
+>  CI (99.9%): [23.715, 23.947] (assumes normal distribution)
+> 
+> 
+> T2: 2.927 (speedup: 8.14)
+> 
+>  2.927 ?(99.9%) 0.091 s/op [Average]
+>  (min, avg, max) = (2.655, 2.927, 3.405), stdev = 0.184
+>  CI (99.9%): [2.836, 3.018] (assumes normal distribution)
+> 
+> T64: 1.550 (speedup: 15.37)
+> 
+>  1.550 ?(99.9%) 0.027 s/op [Average]
+>  (min, avg, max) = (1.460, 1.550, 1.786), stdev = 0.054
+>  CI (99.9%): [1.523, 1.577] (assumes normal distribution)
+> 
+> 
+> My current theory:
+> 
+> I guess one explanation would be that the worker executing the parallel loop does not go idle in java 8, but instead finds other work to perform. Furthermore, I suspect there might be a 'bug' in this mechanism, which causes more workers to be active (i.e. consuming resources) than the desired level of parallelism (P) passed as constructor argument, explaining the super-linear speedup observed.
+> 
+> I was wondering whether someone of you has a better/other explanation? Clearly the use of the java FJ framework in code attached is not 100% kosher, however to my knowledge it doesn't violate any of the framework's preconditions either?! Note that scalability results are 'as expected', when dummy tasks are joined in reverse order.
+> 
+> I really appreciate any help you can provide,
+> 
+> Steven Adriaensen
+> PhD Student
+> Vrije Universiteit Brussel
+> Brussels, Belgium<MinimalExample.java>_______________________________________________
+> Concurrency-interest mailing list
+> Concurrency-interest at cs.oswego.edu
+> http://cs.oswego.edu/mailman/listinfo/concurrency-interest
+
+-------------- next part --------------
+A non-text attachment was scrubbed...
+Name: signature.asc
+Type: application/pgp-signature
+Size: 496 bytes
+Desc: Message signed with OpenPGP using GPGMail
+URL: <http://cs.oswego.edu/pipermail/concurrency-interest/attachments/20150728/66c8ce98/attachment.bin>
+
